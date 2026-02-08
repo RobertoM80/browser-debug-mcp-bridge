@@ -39,6 +39,10 @@ export interface MCPServerRuntime {
   start: () => Promise<void>;
 }
 
+export interface MCPServerOptions {
+  captureClient?: CaptureCommandClient;
+}
+
 const TOOL_SCHEMAS: Record<string, object> = {
   list_sessions: {
     type: 'object',
@@ -260,6 +264,22 @@ interface GroupedNetworkFailureRow {
   last_ts: number;
 }
 
+export interface CaptureClientResult {
+  ok: boolean;
+  payload?: Record<string, unknown>;
+  truncated?: boolean;
+  error?: string;
+}
+
+export interface CaptureCommandClient {
+  execute(
+    sessionId: string,
+    command: 'CAPTURE_DOM_SUBTREE' | 'CAPTURE_DOM_DOCUMENT' | 'CAPTURE_COMPUTED_STYLES' | 'CAPTURE_LAYOUT_METRICS',
+    payload: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<CaptureClientResult>;
+}
+
 function resolveLimit(value: unknown, fallback: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return fallback;
@@ -362,6 +382,50 @@ function buildNetworkFailureFilter(errorType: unknown): string {
   }
 
   return 'error_class = ?';
+}
+
+function resolveCaptureBytes(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  const floored = Math.floor(value);
+  if (floored < 1_000) {
+    return fallback;
+  }
+
+  return Math.min(floored, 1_000_000);
+}
+
+function resolveCaptureDepth(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  const floored = Math.floor(value);
+  if (floored < 1) {
+    return fallback;
+  }
+
+  return Math.min(floored, 10);
+}
+
+function asStringArray(value: unknown, maxItems: number): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+    .slice(0, maxItems);
+}
+
+function ensureCaptureSuccess(result: CaptureClientResult): Record<string, unknown> {
+  if (!result.ok) {
+    throw new Error(result.error ?? 'Capture command failed');
+  }
+
+  return result.payload ?? {};
 }
 
 export function createV1ToolHandlers(getDb: () => Database): Partial<Record<string, ToolHandler>> {
@@ -846,6 +910,143 @@ export function createV1ToolHandlers(getDb: () => Database): Partial<Record<stri
   };
 }
 
+export function createV2ToolHandlers(captureClient: CaptureCommandClient): Partial<Record<string, ToolHandler>> {
+  return {
+    get_dom_subtree: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const selector = typeof input.selector === 'string' ? input.selector : '';
+      if (!selector) {
+        throw new Error('selector is required');
+      }
+
+      const maxDepth = resolveCaptureDepth(input.maxDepth, 3);
+      const maxBytes = resolveCaptureBytes(input.maxBytes, 50_000);
+      const capture = await captureClient.execute(
+        sessionId,
+        'CAPTURE_DOM_SUBTREE',
+        { selector, maxDepth, maxBytes },
+        4_000,
+      );
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: maxBytes,
+          truncated: capture.truncated ?? false,
+        },
+        ...ensureCaptureSuccess(capture),
+      };
+    },
+
+    get_dom_document: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const mode = input.mode === 'html' ? 'html' : 'outline';
+      const maxBytes = resolveCaptureBytes(input.maxBytes, 200_000);
+      const maxDepth = resolveCaptureDepth(input.maxDepth, 4);
+
+      try {
+        const capture = await captureClient.execute(
+          sessionId,
+          'CAPTURE_DOM_DOCUMENT',
+          { mode, maxBytes, maxDepth },
+          4_000,
+        );
+
+        return {
+          ...createBaseResponse(sessionId),
+          limitsApplied: {
+            maxResults: maxBytes,
+            truncated: capture.truncated ?? false,
+          },
+          ...ensureCaptureSuccess(capture),
+        };
+      } catch (error) {
+        if (mode !== 'html') {
+          throw error;
+        }
+
+        const fallback = await captureClient.execute(
+          sessionId,
+          'CAPTURE_DOM_DOCUMENT',
+          { mode: 'outline', maxBytes, maxDepth },
+          4_000,
+        );
+
+        return {
+          ...createBaseResponse(sessionId),
+          limitsApplied: {
+            maxResults: maxBytes,
+            truncated: true,
+          },
+          fallbackReason: 'timeout',
+          ...ensureCaptureSuccess(fallback),
+        };
+      }
+    },
+
+    get_computed_styles: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const selector = typeof input.selector === 'string' ? input.selector : '';
+      if (!selector) {
+        throw new Error('selector is required');
+      }
+
+      const properties = asStringArray(input.properties, 64);
+      const capture = await captureClient.execute(
+        sessionId,
+        'CAPTURE_COMPUTED_STYLES',
+        { selector, properties },
+        3_000,
+      );
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: properties.length || 8,
+          truncated: capture.truncated ?? false,
+        },
+        ...ensureCaptureSuccess(capture),
+      };
+    },
+
+    get_layout_metrics: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const selector = typeof input.selector === 'string' ? input.selector : undefined;
+      const capture = await captureClient.execute(
+        sessionId,
+        'CAPTURE_LAYOUT_METRICS',
+        { selector },
+        3_000,
+      );
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: capture.truncated ?? false,
+        },
+        ...ensureCaptureSuccess(capture),
+      };
+    },
+  };
+}
+
 function isRecord(value: unknown): value is ToolInput {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -901,9 +1102,14 @@ export async function routeToolCall(
   return tool.handler(isRecord(input) ? input : {});
 }
 
-export function createMCPServer(overrides: Partial<Record<string, ToolHandler>> = {}): MCPServerRuntime {
+export function createMCPServer(
+  overrides: Partial<Record<string, ToolHandler>> = {},
+  options: MCPServerOptions = {},
+): MCPServerRuntime {
+  const v2Handlers = options.captureClient ? createV2ToolHandlers(options.captureClient) : {};
   const tools = createToolRegistry({
     ...createV1ToolHandlers(() => getConnection().db),
+    ...v2Handlers,
     ...overrides,
   });
   const server = new Server(

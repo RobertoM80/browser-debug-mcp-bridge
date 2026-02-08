@@ -29,6 +29,10 @@ class MockWebSocket {
     this.emit('open', {});
   }
 
+  receive(data: unknown): void {
+    this.emit('message', { data });
+  }
+
   private emit(type: string, event: unknown): void {
     const listeners = this.listeners[type] ?? [];
     for (const listener of listeners) {
@@ -148,5 +152,51 @@ describe('SessionManager', () => {
     expect(sent.data.apiKey).toBe('api_key: [API_KEY]');
     expect(sent.data.token).toBe('token: [TOKEN]');
     expect(sent.data.password).toBe('password: [PASSWORD]');
+  });
+
+  it('handles capture commands received from server', async () => {
+    const ws = new MockWebSocket();
+    const manager = new SessionManager({
+      createSessionId: () => 'session-5',
+      createWebSocket: () => ws,
+      now: () => 1700000000000,
+      handleCaptureCommand: async (command, payload) => ({
+        payload: {
+          command,
+          selector: payload.selector,
+          ok: true,
+        },
+        truncated: false,
+      }),
+    });
+
+    manager.startSession({ url: 'https://example.com' });
+    ws.open();
+    ws.sentMessages.length = 0;
+
+    ws.receive(
+      JSON.stringify({
+        type: 'capture_command',
+        commandId: 'cmd-1',
+        sessionId: 'session-5',
+        command: 'CAPTURE_DOM_SUBTREE',
+        payload: { selector: '#app' },
+      })
+    );
+
+    await Promise.resolve();
+
+    expect(ws.sentMessages).toHaveLength(1);
+    const response = JSON.parse(ws.sentMessages[0]) as {
+      type: string;
+      commandId: string;
+      ok: boolean;
+      payload: { selector: string; command: string };
+    };
+    expect(response.type).toBe('capture_result');
+    expect(response.commandId).toBe('cmd-1');
+    expect(response.ok).toBe(true);
+    expect(response.payload.selector).toBe('#app');
+    expect(response.payload.command).toBe('CAPTURE_DOM_SUBTREE');
   });
 });

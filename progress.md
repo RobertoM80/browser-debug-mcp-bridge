@@ -165,3 +165,13 @@
   - Added consistent pagination metadata to MCP query responses and extended query input schemas with `limit`/`offset`
   - Added unit/integration tests for error fingerprints, grouped network failures, and element ref lookup
   - Verified with `pnpm test` (all projects passing)
+
+### Completed: 2026-02-08
+- [Implement heavy capture on-demand (V2)] - COMPLETED
+  - Added bidirectional WebSocket capture protocol messages (`capture_command` / `capture_result`) with typed command payloads
+  - Implemented server-side capture command dispatch in `WebSocketManager` with timeout handling and pending request tracking
+  - Added extension command handling pipeline: server command -> background -> content script capture execution -> response back over WebSocket
+  - Implemented heavy capture logic for DOM subtree/document (with maxBytes/maxDepth controls and outline fallback), computed styles, and layout metrics
+  - Added V2 MCP tool handlers (`get_dom_subtree`, `get_dom_document`, `get_computed_styles`, `get_layout_metrics`) with strict limits and html-to-outline fallback on timeout
+  - Added/updated unit tests for SessionManager command handling, content script capture execution, WebSocket command roundtrips, and MCP V2 tools
+  - Verified with `pnpm test` (all projects passing)

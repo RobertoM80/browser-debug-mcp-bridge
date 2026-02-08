@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { BRIDGE_KIND, BRIDGE_SOURCE, installContentCapture } from './content-script';
+import { BRIDGE_KIND, BRIDGE_SOURCE, executeCaptureCommand, installContentCapture } from './content-script';
 
 function createRuntimeMock(
   sendMessage: (message: unknown, callback?: () => void) => void
@@ -110,5 +110,35 @@ describe('content-script capture', () => {
     expect(payload.data.typedText).toBeUndefined();
 
     cleanup();
+  });
+
+  it('captures DOM subtree and falls back to outline when maxBytes is exceeded', () => {
+    const longText = 'x'.repeat(4000);
+    document.body.innerHTML = `<div id="root"><section><p>${longText}</p></section></div>`;
+
+    const output = executeCaptureCommand(window, 'CAPTURE_DOM_SUBTREE', {
+      selector: '#root',
+      maxDepth: 2,
+      maxBytes: 1000,
+    });
+
+    expect(output.result.mode).toBe('outline');
+    expect(output.truncated).toBe(true);
+    expect(output.result.fallbackReason).toBe('maxBytes');
+  });
+
+  it('captures only requested computed style properties', () => {
+    document.body.innerHTML = '<div id="target" style="display: block; visibility: visible;"></div>';
+
+    const output = executeCaptureCommand(window, 'CAPTURE_COMPUTED_STYLES', {
+      selector: '#target',
+      properties: ['display', 'visibility'],
+    });
+
+    expect(output.result.selector).toBe('#target');
+    expect(output.result.properties).toMatchObject({
+      display: 'block',
+      visibility: 'visible',
+    });
   });
 });

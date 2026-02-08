@@ -1,4 +1,4 @@
-import { SessionManager, SessionState } from './session-manager';
+import { SessionManager, SessionState, CaptureCommandType } from './session-manager';
 import {
   applySafeModeRestrictions,
   CaptureConfig,
@@ -21,7 +21,60 @@ type RuntimeResponse =
   | { ok: true; config: CaptureConfig }
   | { ok: false; error: string };
 
-const sessionManager = new SessionManager();
+interface CaptureTabResponse {
+  ok: boolean;
+  result?: Record<string, unknown>;
+  truncated?: boolean;
+  error?: string;
+}
+
+async function executeCaptureCommand(
+  command: CaptureCommandType,
+  payload: Record<string, unknown>
+): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  const tab = await getActiveTab();
+  const tabId = tab?.id;
+  if (tabId === undefined) {
+    throw new Error('No active tab available for capture');
+  }
+
+  return new Promise((resolve, reject) => {
+    chrome.tabs.sendMessage(
+      tabId,
+      {
+        type: 'CAPTURE_EXECUTE',
+        command,
+        payload,
+      },
+      (response?: CaptureTabResponse) => {
+        const runtimeError = chrome.runtime.lastError;
+        if (runtimeError) {
+          reject(new Error(runtimeError.message));
+          return;
+        }
+
+        if (!response) {
+          reject(new Error('No capture response from content script'));
+          return;
+        }
+
+        if (!response.ok) {
+          reject(new Error(response.error ?? 'Capture command failed'));
+          return;
+        }
+
+        resolve({
+          payload: response.result ?? {},
+          truncated: response.truncated,
+        });
+      }
+    );
+  });
+}
+
+const sessionManager = new SessionManager({
+  handleCaptureCommand: executeCaptureCommand,
+});
 let captureConfig: CaptureConfig = { ...DEFAULT_CAPTURE_CONFIG };
 
 void loadCaptureConfig(chrome.storage.local).then((loaded) => {

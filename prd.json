@@ -229,7 +229,7 @@
       "Implement get_layout_metrics with bounding boxes",
       "Add strict limits, timeouts, and fallback to outline mode"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "MCP tools",

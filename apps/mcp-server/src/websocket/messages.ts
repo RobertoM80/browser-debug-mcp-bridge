@@ -15,7 +15,16 @@ export const WebSocketMessageTypeSchema = z.enum([
   'event',
   'session_start',
   'session_end',
+  'capture_command',
+  'capture_result',
   'error',
+]);
+
+export const CaptureCommandSchema = z.enum([
+  'CAPTURE_DOM_SUBTREE',
+  'CAPTURE_DOM_DOCUMENT',
+  'CAPTURE_COMPUTED_STYLES',
+  'CAPTURE_LAYOUT_METRICS',
 ]);
 
 export const BaseWebSocketMessageSchema = z.object({
@@ -58,6 +67,25 @@ export const SessionEndMessageSchema = BaseWebSocketMessageSchema.extend({
   sessionId: z.string(),
 });
 
+export const CaptureCommandMessageSchema = BaseWebSocketMessageSchema.extend({
+  type: z.literal('capture_command'),
+  commandId: z.string(),
+  sessionId: z.string(),
+  command: CaptureCommandSchema,
+  payload: z.record(z.string(), z.unknown()).default({}),
+  timeoutMs: z.number().int().min(100).max(30000).optional(),
+});
+
+export const CaptureResultMessageSchema = BaseWebSocketMessageSchema.extend({
+  type: z.literal('capture_result'),
+  commandId: z.string(),
+  sessionId: z.string(),
+  ok: z.boolean(),
+  payload: z.record(z.string(), z.unknown()).optional(),
+  truncated: z.boolean().optional(),
+  error: z.string().optional(),
+});
+
 export const ErrorMessageSchema = BaseWebSocketMessageSchema.extend({
   type: z.literal('error'),
   error: z.string(),
@@ -70,6 +98,8 @@ export const WebSocketMessageSchema = z.discriminatedUnion('type', [
   EventMessageSchema,
   SessionStartMessageSchema,
   SessionEndMessageSchema,
+  CaptureCommandMessageSchema,
+  CaptureResultMessageSchema,
   ErrorMessageSchema,
 ]);
 
@@ -79,6 +109,9 @@ export type PongMessage = z.infer<typeof PongMessageSchema>;
 export type EventMessage = z.infer<typeof EventMessageSchema>;
 export type SessionStartMessage = z.infer<typeof SessionStartMessageSchema>;
 export type SessionEndMessage = z.infer<typeof SessionEndMessageSchema>;
+export type CaptureCommand = z.infer<typeof CaptureCommandSchema>;
+export type CaptureCommandMessage = z.infer<typeof CaptureCommandMessageSchema>;
+export type CaptureResultMessage = z.infer<typeof CaptureResultMessageSchema>;
 export type ErrorMessage = z.infer<typeof ErrorMessageSchema>;
 
 export function parseMessage(data: string): WebSocketMessage | null {
@@ -106,6 +139,24 @@ export function createErrorMessage(error: string, code?: string): ErrorMessage {
     type: 'error',
     error,
     code,
+    timestamp: Date.now(),
+  };
+}
+
+export function createCaptureCommandMessage(
+  commandId: string,
+  sessionId: string,
+  command: CaptureCommand,
+  payload: Record<string, unknown>,
+  timeoutMs?: number,
+): CaptureCommandMessage {
+  return {
+    type: 'capture_command',
+    commandId,
+    sessionId,
+    command,
+    payload,
+    timeoutMs,
     timestamp: Date.now(),
   };
 }

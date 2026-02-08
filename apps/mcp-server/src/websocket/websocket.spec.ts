@@ -13,7 +13,15 @@ import { initializeDatabase } from '../db/migrations';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { unlinkSync, existsSync } from 'fs';
-import type { PingMessage, PongMessage, EventMessage, SessionStartMessage, SessionEndMessage, ErrorMessage } from './messages';
+import type {
+  PingMessage,
+  PongMessage,
+  EventMessage,
+  SessionStartMessage,
+  SessionEndMessage,
+  ErrorMessage,
+  CaptureCommandMessage,
+} from './messages';
 
 async function waitForMessage(ws: WebSocket, timeout = 1000): Promise<unknown> {
   return new Promise((resolve, reject) => {
@@ -551,6 +559,57 @@ describe('WebSocket Server', () => {
       const { db } = global.testDbConn!;
       const events = db.prepare('SELECT COUNT(*) as count FROM events WHERE session_id = ?').get('validation-test') as { count: number };
       expect(events.count).toBe(validTypes.length);
+
+      ws.close();
+    });
+  });
+
+  describe('Capture Commands', () => {
+    it('sends capture command to extension and resolves capture result', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      const sessionStart: SessionStartMessage = {
+        type: 'session_start',
+        sessionId: 'capture-test-session',
+        url: 'https://example.com',
+        timestamp: Date.now(),
+        safeMode: false,
+      };
+
+      ws.send(JSON.stringify(sessionStart));
+      await wait(100);
+
+      const commandPromise = wsManager.sendCaptureCommand(
+        'capture-test-session',
+        'CAPTURE_DOM_SUBTREE',
+        { selector: '#app', maxDepth: 2, maxBytes: 4000 },
+        2000,
+      );
+
+      const commandMessage = await waitForMessage(ws) as CaptureCommandMessage;
+      expect(commandMessage.type).toBe('capture_command');
+      expect(commandMessage.command).toBe('CAPTURE_DOM_SUBTREE');
+
+      ws.send(
+        JSON.stringify({
+          type: 'capture_result',
+          commandId: commandMessage.commandId,
+          sessionId: 'capture-test-session',
+          ok: true,
+          payload: {
+            mode: 'outline',
+            selector: '#app',
+            outline: '{"tag":"div"}',
+          },
+          truncated: false,
+          timestamp: Date.now(),
+        })
+      );
+
+      const result = await commandPromise;
+      expect(result.ok).toBe(true);
+      expect(result.payload?.mode).toBe('outline');
 
       ws.close();
     });

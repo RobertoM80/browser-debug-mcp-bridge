@@ -5,6 +5,7 @@ import {
   createMCPServer,
   createToolRegistry,
   createV1ToolHandlers,
+  createV2ToolHandlers,
   routeToolCall,
   type ToolHandler,
 } from './server.js';
@@ -345,5 +346,101 @@ describe('mcp/server V1 query tools', () => {
     expect((response.refs as Array<{ eventId: string }>)[0]?.eventId).toBe('evt-3');
 
     db.close();
+  });
+});
+
+describe('mcp/server V2 capture tools', () => {
+  it('captures dom subtree with limits', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          return {
+            ok: true,
+            payload: {
+              mode: 'outline',
+              selector: payload.selector,
+              outline: '{"tag":"body"}',
+            },
+            truncated: true,
+          };
+        },
+      })
+    );
+
+    const response = await routeToolCall(tools, 'get_dom_subtree', {
+      sessionId: 'session-v2',
+      selector: '#root',
+      maxDepth: 2,
+      maxBytes: 10000,
+    });
+
+    expect(captureCalls).toHaveLength(1);
+    expect(captureCalls[0]).toMatchObject({ command: 'CAPTURE_DOM_SUBTREE' });
+    expect(response.mode).toBe('outline');
+    expect(response.limitsApplied).toEqual({ maxResults: 10000, truncated: true });
+  });
+
+  it('falls back to outline document mode when html capture times out', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          if (command === 'CAPTURE_DOM_DOCUMENT' && payload.mode === 'html') {
+            throw new Error('Capture command timed out after 4000ms');
+          }
+
+          return {
+            ok: true,
+            payload: {
+              mode: 'outline',
+              outline: '{"tag":"html"}',
+            },
+            truncated: true,
+          };
+        },
+      })
+    );
+
+    const response = await routeToolCall(tools, 'get_dom_document', {
+      sessionId: 'session-v2',
+      mode: 'html',
+      maxBytes: 5000,
+    });
+
+    expect(response.mode).toBe('outline');
+    expect(response.fallbackReason).toBe('timeout');
+    expect(response.limitsApplied).toEqual({ maxResults: 5000, truncated: true });
+  });
+
+  it('requests only specified computed style properties', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          expect(command).toBe('CAPTURE_COMPUTED_STYLES');
+          expect(payload.properties).toEqual(['display', 'visibility']);
+
+          return {
+            ok: true,
+            payload: {
+              selector: payload.selector,
+              properties: {
+                display: 'block',
+                visibility: 'visible',
+              },
+            },
+          };
+        },
+      })
+    );
+
+    const response = await routeToolCall(tools, 'get_computed_styles', {
+      sessionId: 'session-v2',
+      selector: '.target',
+      properties: ['display', 'visibility'],
+    });
+
+    expect(response.selector).toBe('.target');
+    expect(response.properties).toEqual({ display: 'block', visibility: 'visible' });
   });
 });

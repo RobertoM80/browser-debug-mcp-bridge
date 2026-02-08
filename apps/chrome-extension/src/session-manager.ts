@@ -25,6 +25,30 @@ export interface SessionState {
 
 type WsEventType = 'open' | 'close' | 'error' | 'message';
 
+export type CaptureCommandType =
+  | 'CAPTURE_DOM_SUBTREE'
+  | 'CAPTURE_DOM_DOCUMENT'
+  | 'CAPTURE_COMPUTED_STYLES'
+  | 'CAPTURE_LAYOUT_METRICS';
+
+interface CaptureCommandMessage {
+  type: 'capture_command';
+  commandId: string;
+  sessionId: string;
+  command: CaptureCommandType;
+  payload?: Record<string, unknown>;
+}
+
+interface CaptureCommandResponse {
+  payload: Record<string, unknown>;
+  truncated?: boolean;
+}
+
+type CaptureCommandHandler = (
+  command: CaptureCommandType,
+  payload: Record<string, unknown>
+) => Promise<CaptureCommandResponse>;
+
 interface WebSocketLike {
   readyState: number;
   send(data: string): void;
@@ -57,6 +81,7 @@ interface SessionManagerOptions {
   createWebSocket?: (url: string) => WebSocketLike;
   now?: () => number;
   redactionEngine?: RedactionEngine;
+  handleCaptureCommand?: CaptureCommandHandler;
 }
 
 const WS_CONNECTING = 0;
@@ -69,6 +94,7 @@ export class SessionManager {
   private readonly createWebSocket: (url: string) => WebSocketLike;
   private readonly now: () => number;
   private readonly redactionEngine: RedactionEngine;
+  private readonly handleCaptureCommand?: CaptureCommandHandler;
 
   private ws: WebSocketLike | null = null;
   private buffer: OutboundMessage[] = [];
@@ -84,6 +110,7 @@ export class SessionManager {
     this.createWebSocket = options.createWebSocket ?? ((url) => new WebSocket(url));
     this.now = options.now ?? (() => Date.now());
     this.redactionEngine = options.redactionEngine ?? new RedactionEngine();
+    this.handleCaptureCommand = options.handleCaptureCommand;
   }
 
   startSession(context: SessionStartContext): SessionState {
@@ -174,6 +201,118 @@ export class SessionManager {
     this.ws.addEventListener('error', () => {
       this.connectionStatus = 'disconnected';
     });
+
+    this.ws.addEventListener('message', (event) => {
+      void this.handleInboundMessage(event);
+    });
+  }
+
+  private async handleInboundMessage(event: unknown): Promise<void> {
+    const data = this.readInboundData(event);
+    if (!data || !this.ws || this.ws.readyState !== WS_OPEN) {
+      return;
+    }
+
+    const parsed = this.parseCaptureCommand(data);
+    if (!parsed || !this.sessionId || parsed.sessionId !== this.sessionId) {
+      return;
+    }
+
+    if (!this.handleCaptureCommand) {
+      this.ws.send(
+        JSON.stringify({
+          type: 'capture_result',
+          commandId: parsed.commandId,
+          sessionId: parsed.sessionId,
+          ok: false,
+          error: 'Capture command handler not configured',
+          timestamp: this.now(),
+        })
+      );
+      return;
+    }
+
+    try {
+      const response = await this.handleCaptureCommand(parsed.command, parsed.payload ?? {});
+      this.ws.send(
+        JSON.stringify({
+          type: 'capture_result',
+          commandId: parsed.commandId,
+          sessionId: parsed.sessionId,
+          ok: true,
+          payload: response.payload,
+          truncated: response.truncated,
+          timestamp: this.now(),
+        })
+      );
+    } catch (error) {
+      this.ws.send(
+        JSON.stringify({
+          type: 'capture_result',
+          commandId: parsed.commandId,
+          sessionId: parsed.sessionId,
+          ok: false,
+          error: error instanceof Error ? error.message : 'Failed to capture',
+          timestamp: this.now(),
+        })
+      );
+    }
+  }
+
+  private readInboundData(event: unknown): string | null {
+    if (typeof event === 'string') {
+      return event;
+    }
+
+    if (event && typeof event === 'object' && 'data' in event) {
+      const data = (event as { data?: unknown }).data;
+      if (typeof data === 'string') {
+        return data;
+      }
+    }
+
+    return null;
+  }
+
+  private parseCaptureCommand(data: string): CaptureCommandMessage | null {
+    try {
+      const parsed = JSON.parse(data) as unknown;
+      if (!parsed || typeof parsed !== 'object') {
+        return null;
+      }
+
+      const message = parsed as Partial<CaptureCommandMessage>;
+      if (
+        message.type !== 'capture_command'
+        || typeof message.commandId !== 'string'
+        || typeof message.sessionId !== 'string'
+        || typeof message.command !== 'string'
+      ) {
+        return null;
+      }
+
+      if (
+        message.command !== 'CAPTURE_DOM_SUBTREE'
+        && message.command !== 'CAPTURE_DOM_DOCUMENT'
+        && message.command !== 'CAPTURE_COMPUTED_STYLES'
+        && message.command !== 'CAPTURE_LAYOUT_METRICS'
+      ) {
+        return null;
+      }
+
+      return {
+        type: 'capture_command',
+        commandId: message.commandId,
+        sessionId: message.sessionId,
+        command: message.command,
+        payload:
+          message.payload && typeof message.payload === 'object' && !Array.isArray(message.payload)
+            ? (message.payload as Record<string, unknown>)
+            : {},
+      };
+    } catch {
+      return null;
+    }
   }
 
   private enqueueMessage(message: OutboundMessage): void {
