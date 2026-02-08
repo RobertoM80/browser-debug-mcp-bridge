@@ -86,3 +86,11 @@
   - Implemented buffered outbound queue with backpressure and dropped-event tracking
   - Added popup UI controls for start/stop and live session status display
   - Added unit tests for session lifecycle and buffering behavior
+
+### Completed: 2026-02-08
+- [Capture navigation and console events] - COMPLETED
+  - Implemented navigation capture in content script for init, `pushState`, `replaceState`, `popstate`, and `hashchange`
+  - Added bridge forwarding from injected script to background worker via `SESSION_QUEUE_EVENT`
+  - Hooked `console.warn` and `console.error` in injected script with structured payloads
+  - Captured runtime errors from `window.onerror` and promise failures from `unhandledrejection`
+  - Added unit tests for content-script navigation/forwarding and injected-script console/error capture

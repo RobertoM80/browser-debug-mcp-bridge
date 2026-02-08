@@ -107,7 +107,7 @@
       "Send events through background worker to server",
       "Verify events are persisted to SQLite database"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "domain utilities",
