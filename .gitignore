@@ -1,5 +1,9 @@
 # NPM dependencies
 node_modules
+node_modules/*
+node_modules/**
+node_modules/**/**
+node_modules/**/**/**
 
 # Nx
 .nx/
