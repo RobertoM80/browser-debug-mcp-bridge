@@ -34,7 +34,7 @@
       "Add stub content script, injected script, and background service worker",
       "Verify nx build chrome-extension produces installable output"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "setup",

@@ -1,0 +1,57 @@
+{
+  "name": "chrome-extension",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "apps/chrome-extension/src",
+  "projectType": "application",
+  "tags": [],
+  "targets": {
+    "build": {
+      "executor": "@nx/vite:build",
+      "outputs": ["{options.outputPath}"],
+      "defaultConfiguration": "production",
+      "options": {
+        "outputPath": "dist/apps/chrome-extension"
+      },
+      "configurations": {
+        "development": {
+          "mode": "development"
+        },
+        "production": {
+          "mode": "production"
+        }
+      }
+    },
+    "serve": {
+      "executor": "@nx/vite:dev-server",
+      "defaultConfiguration": "development",
+      "options": {
+        "buildTarget": "chrome-extension:build"
+      },
+      "configurations": {
+        "development": {
+          "buildTarget": "chrome-extension:build:development",
+          "hmr": true
+        },
+        "production": {
+          "buildTarget": "chrome-extension:build:production",
+          "hmr": false
+        }
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint"
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vitest run --config=apps/chrome-extension/vitest.config.ts"
+      }
+    },
+    "pack": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "cd dist/apps/chrome-extension && zip -r ../chrome-extension.zip ."
+      }
+    }
+  }
+}
