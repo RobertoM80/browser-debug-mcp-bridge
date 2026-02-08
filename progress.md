@@ -102,3 +102,11 @@
   - Added `withRedactionSummary` helper and default summary contract for all MCP tool responses
   - Added unit tests for token pattern redaction, extension outbound-event redaction, and MCP response redaction summaries
   - Verified full test suite via `pnpm test` (all projects passing)
+
+### Completed: 2026-02-08
+- [Implement domain allowlist and safe mode controls] - COMPLETED
+  - Added extension capture config storage with normalized allowlist + safe mode defaults
+  - Implemented domain allowlist matching logic (exact + wildcard) used for session start and event capture decisions
+  - Added safe mode controls to popup UI (toggle, allowlist input, and save action)
+  - Enforced safe mode payload restrictions for cookies, storage fields, and input values
+  - Added unit tests for allowlist parsing/matching, safe mode redaction, and config persistence

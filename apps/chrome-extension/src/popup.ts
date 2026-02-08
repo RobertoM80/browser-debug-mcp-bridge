@@ -6,8 +6,14 @@ type SessionState = {
   droppedEvents: number;
 };
 
+type CaptureConfig = {
+  safeMode: boolean;
+  allowlist: string[];
+};
+
 type SessionResponse =
   | { ok: true; state: SessionState; accepted?: boolean }
+  | { ok: true; config: CaptureConfig }
   | { ok: false; error: string };
 
 function sendRuntimeMessage(message: unknown): Promise<SessionResponse> {
@@ -52,36 +58,106 @@ function renderSessionState(state: SessionState): void {
   }
 }
 
+function renderConfig(config: CaptureConfig): void {
+  const safeModeCheckbox = document.getElementById('safe-mode') as HTMLInputElement | null;
+  const allowlistInput = document.getElementById('allowlist-domains') as HTMLTextAreaElement | null;
+
+  if (safeModeCheckbox) {
+    safeModeCheckbox.checked = config.safeMode;
+  }
+
+  if (allowlistInput) {
+    allowlistInput.value = config.allowlist.join('\n');
+  }
+}
+
+function getConfigFromForm(): CaptureConfig {
+  const safeModeCheckbox = document.getElementById('safe-mode') as HTMLInputElement | null;
+  const allowlistInput = document.getElementById('allowlist-domains') as HTMLTextAreaElement | null;
+
+  const allowlist = (allowlistInput?.value ?? '')
+    .split(/[\n,]+/g)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  return {
+    safeMode: safeModeCheckbox?.checked ?? true,
+    allowlist,
+  };
+}
+
+function setConfigStatus(message: string): void {
+  const status = document.getElementById('config-status');
+  if (status) {
+    status.textContent = message;
+  }
+}
+
 async function refreshState(): Promise<void> {
   const result = await sendRuntimeMessage({ type: 'SESSION_GET_STATE' });
-  if (result.ok) {
+  if (result.ok && 'state' in result) {
     renderSessionState(result.state);
     return;
   }
 
   const statusEl = document.getElementById('status');
-  if (statusEl) {
+  if (statusEl && !result.ok) {
     statusEl.textContent = `Error: ${result.error}`;
   }
+}
+
+async function refreshConfig(): Promise<void> {
+  const result = await sendRuntimeMessage({ type: 'SESSION_GET_CONFIG' });
+  if (result.ok && 'config' in result) {
+    renderConfig(result.config);
+    return;
+  }
+  if (!result.ok) {
+    setConfigStatus(`Error: ${result.error}`);
+    return;
+  }
+  setConfigStatus('Unknown configuration error');
 }
 
 document.addEventListener('DOMContentLoaded', () => {
   const startButton = document.getElementById('start-session');
   const stopButton = document.getElementById('stop-session');
+  const saveConfigButton = document.getElementById('save-config');
 
   startButton?.addEventListener('click', async () => {
     const result = await sendRuntimeMessage({ type: 'SESSION_START' });
-    if (result.ok) {
+    if (result.ok && 'state' in result) {
       renderSessionState(result.state);
+      return;
     }
+    setConfigStatus(result.ok ? 'Unable to start session' : result.error);
   });
 
   stopButton?.addEventListener('click', async () => {
     const result = await sendRuntimeMessage({ type: 'SESSION_STOP' });
-    if (result.ok) {
+    if (result.ok && 'state' in result) {
       renderSessionState(result.state);
+      return;
     }
+    setConfigStatus(result.ok ? 'Unable to stop session' : result.error);
+  });
+
+  saveConfigButton?.addEventListener('click', async () => {
+    setConfigStatus('Saving...');
+    const result = await sendRuntimeMessage({
+      type: 'SESSION_UPDATE_CONFIG',
+      config: getConfigFromForm(),
+    });
+
+    if (result.ok && 'config' in result) {
+      renderConfig(result.config);
+      setConfigStatus('Settings saved');
+      return;
+    }
+
+    setConfigStatus(result.ok ? 'Unable to save settings' : result.error);
   });
 
   refreshState();
+  refreshConfig();
 });

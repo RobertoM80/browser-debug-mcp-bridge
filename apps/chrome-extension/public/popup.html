@@ -18,6 +18,16 @@
       <button id="start-session" type="button">Start Session</button>
       <button id="stop-session" type="button">Stop Session</button>
     </div>
+    <div class="settings">
+      <label class="toggle" for="safe-mode">
+        <input id="safe-mode" type="checkbox">
+        <span>Safe mode</span>
+      </label>
+      <label class="allowlist" for="allowlist-domains">Domain allowlist</label>
+      <textarea id="allowlist-domains" rows="4" placeholder="example.com&#10;*.staging.example.com"></textarea>
+      <button id="save-config" type="button">Save Settings</button>
+      <div id="config-status" class="config-status"></div>
+    </div>
   </div>
   <script type="module" src="popup.js"></script>
 </body>

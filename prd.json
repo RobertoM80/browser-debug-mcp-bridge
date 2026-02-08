@@ -131,7 +131,7 @@
       "Enforce safe mode restrictions (no cookies, no storage, no input values)",
       "Write tests for allowlist and safe mode logic"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "domain utilities",
