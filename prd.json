@@ -253,7 +253,7 @@
       "Add domain allowlist input",
       "Style popup with minimal CSS"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "UI flows",
