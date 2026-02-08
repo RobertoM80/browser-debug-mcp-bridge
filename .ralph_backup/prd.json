@@ -9,7 +9,7 @@
       "Configure pnpm-workspace.yaml with apps/* and libs/* patterns",
       "Create root tsconfig.base.json with strict TypeScript settings"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "setup",

@@ -21,7 +21,7 @@
       "Add minimal src/main.ts entry point with Fastify server stub",
       "Verify nx build mcp-server and nx serve mcp-server work"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "setup",
