@@ -196,3 +196,6 @@
   - Added structured MCP logging for `list_tools` and `call_tool` requests with start/completion/failure events and durations
   - Added extension-side log prefixes for background/content/injected scripts for easier debugging
   - Added unit test coverage for `/stats` endpoint response shape in `apps/mcp-server/src/main.spec.ts`
+
+### Completed: 2026-02-08
+- Verified [Create integration test suite for end-to-end flow] was already complete

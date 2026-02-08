@@ -277,7 +277,7 @@
       "Add test coverage for heavy capture commands",
       "Ensure all critical paths have test coverage"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "performance/polish",
