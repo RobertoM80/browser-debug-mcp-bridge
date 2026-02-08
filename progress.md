@@ -208,3 +208,12 @@
   - Added batched SQLite writes using a single transaction per batch via `EventsRepository.insertEventsBatch`
   - Added/updated unit and integration tests for extension batch emission and server batch ingestion/persistence
   - Measured verification by running `pnpm test` (all 6 projects passing, 107 tests total)
+
+### Completed: 2026-02-08
+- [Create documentation and usage guides] - COMPLETED
+  - Added root `README.md` with installation, setup, extension loading, and docs map
+  - Added root `SECURITY.md` with privacy defaults, redaction policy, and guardrails
+  - Added `docs/MCP_TOOLS.md` with V1/V2/V3 tool references and request examples
+  - Added `docs/TROUBLESHOOTING.md` with startup, connection, testing, and diagnostics guidance
+  - Added `docs/ARCHITECTURE_DECISIONS.md` to record key architectural decisions and tradeoffs
+  - Added unit tests in `libs/shared/src/lib/documentation.spec.ts` to verify required docs exist and contain expected content

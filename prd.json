@@ -301,6 +301,6 @@
       "Add troubleshooting guide",
       "Document architecture decisions"
     ],
-    "passes": false
+    "passes": true
   }
 ]
