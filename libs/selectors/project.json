@@ -1,0 +1,29 @@
+{
+  "name": "selectors",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/selectors/src",
+  "projectType": "library",
+  "tags": ["lib"],
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "dist/libs/selectors",
+        "main": "libs/selectors/src/index.ts",
+        "tsConfig": "libs/selectors/tsconfig.lib.json",
+        "assets": ["libs/selectors/*.md"]
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint"
+    },
+    "test": {
+      "executor": "@nx/vite:test",
+      "outputs": ["{options.reportsDirectory}"],
+      "options": {
+        "reportsDirectory": "../../coverage/libs/selectors"
+      }
+    }
+  }
+}

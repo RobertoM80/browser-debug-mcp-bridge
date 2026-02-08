@@ -1,0 +1,29 @@
+{
+  "name": "redaction",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/redaction/src",
+  "projectType": "library",
+  "tags": ["lib"],
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "dist/libs/redaction",
+        "main": "libs/redaction/src/index.ts",
+        "tsConfig": "libs/redaction/tsconfig.lib.json",
+        "assets": ["libs/redaction/*.md"]
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint"
+    },
+    "test": {
+      "executor": "@nx/vite:test",
+      "outputs": ["{options.reportsDirectory}"],
+      "options": {
+        "reportsDirectory": "../../coverage/libs/redaction"
+      }
+    }
+  }
+}

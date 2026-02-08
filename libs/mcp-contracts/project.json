@@ -1,0 +1,29 @@
+{
+  "name": "mcp-contracts",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "libs/mcp-contracts/src",
+  "projectType": "library",
+  "tags": ["lib"],
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "dist/libs/mcp-contracts",
+        "main": "libs/mcp-contracts/src/index.ts",
+        "tsConfig": "libs/mcp-contracts/tsconfig.lib.json",
+        "assets": ["libs/mcp-contracts/*.md"]
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint"
+    },
+    "test": {
+      "executor": "@nx/vite:test",
+      "outputs": ["{options.reportsDirectory}"],
+      "options": {
+        "reportsDirectory": "../../coverage/libs/mcp-contracts"
+      }
+    }
+  }
+}

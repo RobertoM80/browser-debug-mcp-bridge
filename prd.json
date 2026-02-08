@@ -47,7 +47,7 @@
       "Configure all libs with proper project.json and tsconfig files",
       "Verify builds pass for all libraries"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "setup",
