@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import Database from 'better-sqlite3';
+import { initializeDatabase } from '../db/migrations';
 import {
   createMCPServer,
   createToolRegistry,
+  createV1ToolHandlers,
   routeToolCall,
   type ToolHandler,
 } from './server.js';
@@ -64,5 +67,174 @@ describe('mcp/server foundation', () => {
     const tools = createToolRegistry();
 
     await expect(routeToolCall(tools, 'does_not_exist', {})).rejects.toThrow('Unknown tool');
+  });
+});
+
+describe('mcp/server V1 query tools', () => {
+  function createTestDb(): Database.Database {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    return db;
+  }
+
+  it('lists sessions with sinceMinutes filtering', async () => {
+    const db = createTestDb();
+    const now = Date.now();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode, url_start, url_last)
+        VALUES (?, ?, ?, ?, ?)
+      `
+    ).run('session-old', now - 30 * 60_000, 0, 'https://old.example', 'https://old.example');
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode, url_start, url_last)
+        VALUES (?, ?, ?, ?, ?)
+      `
+    ).run('session-new', now - 5 * 60_000, 1, 'https://new.example', 'https://new.example');
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'list_sessions', { sinceMinutes: 10 });
+
+    expect(response.limitsApplied.maxResults).toBe(25);
+    expect(response.limitsApplied.truncated).toBe(false);
+    expect(response.sessions).toHaveLength(1);
+    expect((response.sessions as Array<{ sessionId: string }>)[0]?.sessionId).toBe('session-new');
+
+    db.close();
+  });
+
+  it('returns session summary counts and time range', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, ended_at, safe_mode, url_start, url_last)
+        VALUES ('session-1', 1000, 5000, 0, 'https://start.example', 'https://fallback.example')
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO events (event_id, session_id, ts, type, payload_json)
+        VALUES
+          ('evt-nav', 'session-1', 1100, 'nav', '{"url":"https://latest-nav.example"}'),
+          ('evt-warn', 'session-1', 1200, 'console', '{"level":"warn","message":"watch out"}'),
+          ('evt-error', 'session-1', 1300, 'error', '{"message":"boom"}')
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO network (request_id, session_id, ts_start, duration_ms, method, url, status, initiator)
+        VALUES ('req-1', 'session-1', 1250, 20, 'GET', 'https://api.example/fail', 500, 'fetch')
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_session_summary', { sessionId: 'session-1' });
+
+    expect(response.sessionId).toBe('session-1');
+    expect(response.counts).toEqual({ errors: 1, warnings: 1, networkFails: 1 });
+    expect(response.lastUrl).toBe('https://latest-nav.example');
+    expect(response.timeRange).toEqual({ start: 1100, end: 1300 });
+
+    db.close();
+  });
+
+  it('returns recent events with type filtering and limits', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-1', 1000, 0)
+      `
+    ).run();
+    db.prepare(
+      `
+        INSERT INTO events (event_id, session_id, ts, type, payload_json)
+        VALUES
+          ('evt-nav', 'session-1', 1001, 'nav', '{"url":"https://a.example"}'),
+          ('evt-console', 'session-1', 1002, 'console', '{"level":"info"}'),
+          ('evt-error', 'session-1', 1003, 'error', '{"message":"boom"}')
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_recent_events', {
+      sessionId: 'session-1',
+      types: ['navigation', 'error'],
+      limit: 1,
+    });
+
+    expect(response.limitsApplied).toEqual({ maxResults: 1, truncated: true });
+    expect(response.events).toHaveLength(1);
+    expect((response.events as Array<{ eventId: string }>)[0]?.eventId).toBe('evt-error');
+
+    db.close();
+  });
+
+  it('returns only navigation history entries', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-1', 1000, 0)
+      `
+    ).run();
+    db.prepare(
+      `
+        INSERT INTO events (event_id, session_id, ts, type, payload_json)
+        VALUES
+          ('evt-nav-1', 'session-1', 1001, 'nav', '{"url":"https://first.example"}'),
+          ('evt-console', 'session-1', 1002, 'console', '{"level":"warn"}'),
+          ('evt-nav-2', 'session-1', 1003, 'nav', '{"url":"https://second.example"}')
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_navigation_history', { sessionId: 'session-1', limit: 10 });
+
+    expect(response.events).toHaveLength(2);
+    expect((response.events as Array<{ eventId: string }>).map((event) => event.eventId)).toEqual([
+      'evt-nav-2',
+      'evt-nav-1',
+    ]);
+
+    db.close();
+  });
+
+  it('returns console events filtered by level', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-1', 1000, 0)
+      `
+    ).run();
+    db.prepare(
+      `
+        INSERT INTO events (event_id, session_id, ts, type, payload_json)
+        VALUES
+          ('evt-info', 'session-1', 1001, 'console', '{"level":"info","message":"ok"}'),
+          ('evt-warn', 'session-1', 1002, 'console', '{"level":"warn","message":"warn"}'),
+          ('evt-error', 'session-1', 1003, 'console', '{"level":"error","message":"err"}')
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_console_events', {
+      sessionId: 'session-1',
+      level: 'warn',
+    });
+
+    expect(response.events).toHaveLength(1);
+    expect((response.events as Array<{ eventId: string }>)[0]?.eventId).toBe('evt-warn');
+
+    db.close();
   });
 });

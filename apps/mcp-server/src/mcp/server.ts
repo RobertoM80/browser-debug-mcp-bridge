@@ -1,6 +1,8 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import type { Database } from 'better-sqlite3';
+import { getConnection } from '../db/connection';
 
 type ToolInput = Record<string, unknown>;
 
@@ -177,6 +179,360 @@ const DEFAULT_REDACTION_SUMMARY: RedactionSummary = {
   rulesApplied: [],
 };
 
+const DEFAULT_LIST_LIMIT = 25;
+const DEFAULT_EVENT_LIMIT = 50;
+const MAX_LIMIT = 200;
+
+interface SessionRow {
+  session_id: string;
+  created_at: number;
+  ended_at: number | null;
+  tab_id: number | null;
+  window_id: number | null;
+  url_start: string | null;
+  url_last: string | null;
+  user_agent: string | null;
+  viewport_w: number | null;
+  viewport_h: number | null;
+  dpr: number | null;
+  safe_mode: number;
+}
+
+interface EventRow {
+  event_id: string;
+  session_id: string;
+  ts: number;
+  type: string;
+  payload_json: string;
+}
+
+function resolveLimit(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  const floored = Math.floor(value);
+  if (floored < 1) {
+    return fallback;
+  }
+
+  return Math.min(floored, MAX_LIMIT);
+}
+
+function readJsonPayload(payloadJson: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(payloadJson) as unknown;
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>;
+    }
+  } catch {
+    // ignore malformed payloads and return an empty object
+  }
+
+  return {};
+}
+
+function mapRequestedEventType(type: string): string {
+  switch (type) {
+    case 'navigation':
+      return 'nav';
+    case 'click':
+    case 'custom':
+      return 'ui';
+    default:
+      return type;
+  }
+}
+
+function parseRequestedTypes(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalized = value
+    .filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+    .map((entry) => mapRequestedEventType(entry));
+
+  return Array.from(new Set(normalized));
+}
+
+function resolveLastUrl(payload: Record<string, unknown>): string | undefined {
+  const candidates = [payload.url, payload.to, payload.href, payload.location];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.length > 0) {
+      return candidate;
+    }
+  }
+
+  return undefined;
+}
+
+function mapEventRecord(row: EventRow): Record<string, unknown> {
+  return {
+    eventId: row.event_id,
+    sessionId: row.session_id,
+    timestamp: row.ts,
+    type: row.type,
+    payload: readJsonPayload(row.payload_json),
+  };
+}
+
+export function createV1ToolHandlers(getDb: () => Database): Partial<Record<string, ToolHandler>> {
+  return {
+    list_sessions: async (input) => {
+      const db = getDb();
+      const sinceMinutes = typeof input.sinceMinutes === 'number' ? input.sinceMinutes : undefined;
+      const limit = resolveLimit(input.limit, DEFAULT_LIST_LIMIT);
+
+      const where: string[] = [];
+      const params: unknown[] = [];
+
+      if (sinceMinutes !== undefined && Number.isFinite(sinceMinutes) && sinceMinutes > 0) {
+        where.push('created_at >= ?');
+        params.push(Date.now() - Math.floor(sinceMinutes * 60_000));
+      }
+
+      const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+      const sql = `
+        SELECT
+          session_id,
+          created_at,
+          ended_at,
+          tab_id,
+          window_id,
+          url_start,
+          url_last,
+          user_agent,
+          viewport_w,
+          viewport_h,
+          dpr,
+          safe_mode
+        FROM sessions
+        ${whereClause}
+        ORDER BY created_at DESC
+        LIMIT ?
+      `;
+
+      const rows = db.prepare(sql).all(...params, limit + 1) as SessionRow[];
+      const truncated = rows.length > limit;
+      const sessions = rows.slice(0, limit).map((row) => ({
+        sessionId: row.session_id,
+        createdAt: row.created_at,
+        endedAt: row.ended_at ?? undefined,
+        tabId: row.tab_id ?? undefined,
+        windowId: row.window_id ?? undefined,
+        urlStart: row.url_start ?? undefined,
+        urlLast: row.url_last ?? undefined,
+        userAgent: row.user_agent ?? undefined,
+        viewport:
+          row.viewport_w !== null && row.viewport_h !== null
+            ? {
+                width: row.viewport_w,
+                height: row.viewport_h,
+              }
+            : undefined,
+        dpr: row.dpr ?? undefined,
+        safeMode: row.safe_mode === 1,
+      }));
+
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: limit,
+          truncated,
+        },
+        sessions,
+      };
+    },
+
+    get_session_summary: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const session = db
+        .prepare('SELECT session_id, created_at, ended_at, url_last FROM sessions WHERE session_id = ?')
+        .get(sessionId) as
+        | {
+            session_id: string;
+            created_at: number;
+            ended_at: number | null;
+            url_last: string | null;
+          }
+        | undefined;
+
+      if (!session) {
+        throw new Error(`Session not found: ${sessionId}`);
+      }
+
+      const counters = db
+        .prepare(`
+        SELECT
+          SUM(CASE WHEN type = 'error' THEN 1 ELSE 0 END) AS errors,
+          SUM(CASE WHEN type = 'console' AND json_extract(payload_json, '$.level') = 'warn' THEN 1 ELSE 0 END) AS warnings
+        FROM events
+        WHERE session_id = ?
+      `)
+        .get(sessionId) as { errors: number | null; warnings: number | null };
+
+      const networkFails = db
+        .prepare(`
+        SELECT COUNT(*) AS count
+        FROM network
+        WHERE session_id = ?
+          AND (error_class IS NOT NULL OR COALESCE(status, 0) >= 400)
+      `)
+        .get(sessionId) as { count: number };
+
+      const latestNav = db
+        .prepare(`
+        SELECT payload_json
+        FROM events
+        WHERE session_id = ? AND type = 'nav'
+        ORDER BY ts DESC
+        LIMIT 1
+      `)
+        .get(sessionId) as { payload_json: string } | undefined;
+
+      const eventRange = db
+        .prepare(`
+        SELECT MIN(ts) AS start_ts, MAX(ts) AS end_ts
+        FROM events
+        WHERE session_id = ?
+      `)
+        .get(sessionId) as { start_ts: number | null; end_ts: number | null };
+
+      const navPayload = latestNav ? readJsonPayload(latestNav.payload_json) : {};
+      const lastUrl = resolveLastUrl(navPayload) ?? session.url_last ?? undefined;
+
+      return {
+        ...createBaseResponse(sessionId),
+        counts: {
+          errors: counters.errors ?? 0,
+          warnings: counters.warnings ?? 0,
+          networkFails: networkFails.count,
+        },
+        lastUrl,
+        timeRange: {
+          start: eventRange.start_ts ?? session.created_at,
+          end: eventRange.end_ts ?? session.ended_at ?? session.created_at,
+        },
+      };
+    },
+
+    get_recent_events: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
+      const requestedTypes = parseRequestedTypes(input.types ?? input.eventTypes);
+
+      const params: unknown[] = [sessionId];
+      const where: string[] = ['session_id = ?'];
+      if (requestedTypes.length > 0) {
+        const placeholders = requestedTypes.map(() => '?').join(', ');
+        where.push(`type IN (${placeholders})`);
+        params.push(...requestedTypes);
+      }
+
+      const rows = db
+        .prepare(`
+        SELECT event_id, session_id, ts, type, payload_json
+        FROM events
+        WHERE ${where.join(' AND ')}
+        ORDER BY ts DESC
+        LIMIT ?
+      `)
+        .all(...params, limit + 1) as EventRow[];
+
+      const truncated = rows.length > limit;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: limit,
+          truncated,
+        },
+        events: rows.slice(0, limit).map((row) => mapEventRecord(row)),
+      };
+    },
+
+    get_navigation_history: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
+      const rows = db
+        .prepare(`
+        SELECT event_id, session_id, ts, type, payload_json
+        FROM events
+        WHERE session_id = ? AND type = 'nav'
+        ORDER BY ts DESC
+        LIMIT ?
+      `)
+        .all(sessionId, limit + 1) as EventRow[];
+
+      const truncated = rows.length > limit;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: limit,
+          truncated,
+        },
+        events: rows.slice(0, limit).map((row) => mapEventRecord(row)),
+      };
+    },
+
+    get_console_events: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const level = typeof input.level === 'string' ? input.level : undefined;
+      const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
+      const params: unknown[] = [sessionId];
+      let levelClause = '';
+
+      if (level) {
+        levelClause = "AND json_extract(payload_json, '$.level') = ?";
+        params.push(level);
+      }
+
+      const rows = db
+        .prepare(`
+        SELECT event_id, session_id, ts, type, payload_json
+        FROM events
+        WHERE session_id = ? AND type = 'console' ${levelClause}
+        ORDER BY ts DESC
+        LIMIT ?
+      `)
+        .all(...params, limit + 1) as EventRow[];
+
+      const truncated = rows.length > limit;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: limit,
+          truncated,
+        },
+        events: rows.slice(0, limit).map((row) => mapEventRecord(row)),
+      };
+    },
+  };
+}
+
 function isRecord(value: unknown): value is ToolInput {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -233,7 +589,10 @@ export async function routeToolCall(
 }
 
 export function createMCPServer(overrides: Partial<Record<string, ToolHandler>> = {}): MCPServerRuntime {
-  const tools = createToolRegistry(overrides);
+  const tools = createToolRegistry({
+    ...createV1ToolHandlers(() => getConnection().db),
+    ...overrides,
+  });
   const server = new Server(
     {
       name: 'browser-debug-mcp-bridge',

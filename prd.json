@@ -204,7 +204,7 @@
       "Implement get_console_events with level filtering",
       "Write integration tests for all V1 tools"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "MCP tools",

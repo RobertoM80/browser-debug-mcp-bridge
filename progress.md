@@ -148,3 +148,11 @@
   - Added common response contract fields (`sessionId`, `limitsApplied`, `redactionSummary`)
   - Added unit tests for MCP runtime initialization, registration, routing, and unknown-tool handling
   - Verified with `pnpm test` (all projects passing)
+
+### Completed: 2026-02-08
+- [Implement V1 MCP query tools] - COMPLETED
+  - Implemented live handlers for `list_sessions`, `get_session_summary`, `get_recent_events`, `get_navigation_history`, and `get_console_events`
+  - Added SQLite-backed filtering, session summaries, event type mapping, and response limit/truncation behavior
+  - Added integration tests covering all five V1 query tools against an initialized in-memory database
+  - Updated MCP runtime to register V1 handlers by default while keeping non-V1 tools as not implemented
+  - Verified with `pnpm test` (all projects passing)
