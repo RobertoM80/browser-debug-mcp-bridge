@@ -52,7 +52,7 @@ describe('mcp/server foundation', () => {
 
   it('returns default response contract for unimplemented tools', async () => {
     const tools = createToolRegistry();
-    const response = await routeToolCall(tools, 'get_network_failures', { sessionId: 's-2' });
+    const response = await routeToolCall(tools, 'get_dom_subtree', { sessionId: 's-2', selector: 'body' });
 
     expect(response.sessionId).toBe('s-2');
     expect(response.limitsApplied).toEqual({ maxResults: 0, truncated: false });
@@ -61,6 +61,7 @@ describe('mcp/server foundation', () => {
       redactedFields: 0,
       rulesApplied: [],
     });
+    expect(response.status).toBe('not_implemented');
   });
 
   it('throws on unknown tools', async () => {
@@ -234,6 +235,114 @@ describe('mcp/server V1 query tools', () => {
 
     expect(response.events).toHaveLength(1);
     expect((response.events as Array<{ eventId: string }>)[0]?.eventId).toBe('evt-warn');
+
+    db.close();
+  });
+
+  it('returns error fingerprints with pagination', async () => {
+    const db = createTestDb();
+    const now = Date.now();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-1', ?, 0)
+      `
+    ).run(now - 1_000);
+
+    db.prepare(
+      `
+        INSERT INTO error_fingerprints (
+          fingerprint, session_id, count, sample_message, sample_stack, first_seen_at, last_seen_at
+        ) VALUES
+          ('fp-1', 'session-1', 4, 'boom-1', 'stack-1', ?, ?),
+          ('fp-2', 'session-1', 2, 'boom-2', 'stack-2', ?, ?)
+      `
+    ).run(now - 5_000, now - 5_000, now - 4_000, now - 4_000);
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_error_fingerprints', {
+      sessionId: 'session-1',
+      limit: 1,
+      offset: 1,
+    });
+
+    expect(response.sessionId).toBe('session-1');
+    expect(response.limitsApplied).toEqual({ maxResults: 1, truncated: false });
+    expect(response.pagination).toEqual({ offset: 1, returned: 1 });
+    expect((response.fingerprints as Array<{ fingerprint: string }>)[0]?.fingerprint).toBe('fp-2');
+
+    db.close();
+  });
+
+  it('returns grouped network failures by errorType', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-1', 1000, 0)
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO network (request_id, session_id, ts_start, duration_ms, method, url, status, initiator, error_class)
+        VALUES
+          ('req-timeout', 'session-1', 1010, 1200, 'GET', 'https://a.example/api', NULL, 'fetch', 'timeout'),
+          ('req-http-a', 'session-1', 1020, 200, 'GET', 'https://a.example/fail', 500, 'fetch', NULL),
+          ('req-http-b', 'session-1', 1030, 210, 'POST', 'https://b.example/fail', 502, 'xhr', NULL)
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_network_failures', {
+      sessionId: 'session-1',
+      groupBy: 'errorType',
+    });
+
+    expect(response.groupBy).toBe('errorType');
+    expect(response.limitsApplied.truncated).toBe(false);
+    expect((response.groups as Array<{ key: string; count: number }>)[0]).toEqual({
+      key: 'http_error',
+      count: 2,
+      firstSeenAt: 1020,
+      lastSeenAt: 1030,
+    });
+
+    db.close();
+  });
+
+  it('returns element refs filtered by selector with pagination', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-1', 1000, 0)
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO events (event_id, session_id, ts, type, payload_json)
+        VALUES
+          ('evt-1', 'session-1', 1001, 'ui', '{"selector":"#save","eventType":"click"}'),
+          ('evt-2', 'session-1', 1002, 'ui', '{"selector":"#cancel","eventType":"click"}'),
+          ('evt-3', 'session-1', 1003, 'element_ref', '{"selector":"#save","label":"Save"}')
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_element_refs', {
+      sessionId: 'session-1',
+      selector: '#save',
+      limit: 1,
+    });
+
+    expect(response.selector).toBe('#save');
+    expect(response.limitsApplied).toEqual({ maxResults: 1, truncated: true });
+    expect((response.refs as Array<{ eventId: string }>)[0]?.eventId).toBe('evt-3');
 
     db.close();
   });

@@ -44,6 +44,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
     type: 'object',
     properties: {
       sinceMinutes: { type: 'number' },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
     },
   },
   get_session_summary: {
@@ -60,6 +62,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       sessionId: { type: 'string' },
       eventTypes: { type: 'array', items: { type: 'string' } },
       limit: { type: 'number' },
+      offset: { type: 'number' },
     },
   },
   get_navigation_history: {
@@ -67,6 +70,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
     required: ['sessionId'],
     properties: {
       sessionId: { type: 'string' },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
     },
   },
   get_console_events: {
@@ -75,6 +80,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       level: { type: 'string' },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
     },
   },
   get_error_fingerprints: {
@@ -82,6 +89,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       sinceMinutes: { type: 'number' },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
     },
   },
   get_network_failures: {
@@ -90,6 +99,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
       sessionId: { type: 'string' },
       errorType: { type: 'string' },
       groupBy: { type: 'string' },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
     },
   },
   get_element_refs: {
@@ -98,6 +109,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       selector: { type: 'string' },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
     },
   },
   get_dom_subtree: {
@@ -183,6 +196,18 @@ const DEFAULT_LIST_LIMIT = 25;
 const DEFAULT_EVENT_LIMIT = 50;
 const MAX_LIMIT = 200;
 
+const NETWORK_DOMAIN_GROUP_SQL = `
+  CASE
+    WHEN instr(replace(replace(url, 'https://', ''), 'http://', ''), '/') > 0
+      THEN substr(
+        replace(replace(url, 'https://', ''), 'http://', ''),
+        1,
+        instr(replace(replace(url, 'https://', ''), 'http://', ''), '/') - 1
+      )
+    ELSE replace(replace(url, 'https://', ''), 'http://', '')
+  END
+`;
+
 interface SessionRow {
   session_id: string;
   created_at: number;
@@ -206,6 +231,35 @@ interface EventRow {
   payload_json: string;
 }
 
+interface ErrorFingerprintRow {
+  fingerprint: string;
+  session_id: string;
+  count: number;
+  sample_message: string;
+  sample_stack: string | null;
+  first_seen_at: number;
+  last_seen_at: number;
+}
+
+interface NetworkFailureRow {
+  request_id: string;
+  session_id: string;
+  ts_start: number;
+  duration_ms: number | null;
+  method: string;
+  url: string;
+  status: number | null;
+  initiator: string | null;
+  error_class: string | null;
+}
+
+interface GroupedNetworkFailureRow {
+  group_key: string;
+  count: number;
+  first_ts: number;
+  last_ts: number;
+}
+
 function resolveLimit(value: unknown, fallback: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return fallback;
@@ -217,6 +271,15 @@ function resolveLimit(value: unknown, fallback: number): number {
   }
 
   return Math.min(floored, MAX_LIMIT);
+}
+
+function resolveOffset(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 0;
+  }
+
+  const floored = Math.floor(value);
+  return floored < 0 ? 0 : floored;
 }
 
 function readJsonPayload(payloadJson: string): Record<string, unknown> {
@@ -277,12 +340,37 @@ function mapEventRecord(row: EventRow): Record<string, unknown> {
   };
 }
 
+function classifyNetworkFailure(status: number | null, errorClass: string | null): string {
+  if (errorClass && errorClass.length > 0) {
+    return errorClass;
+  }
+
+  if (typeof status === 'number' && status >= 400) {
+    return 'http_error';
+  }
+
+  return 'unknown';
+}
+
+function buildNetworkFailureFilter(errorType: unknown): string {
+  if (typeof errorType !== 'string' || errorType.length === 0) {
+    return '(error_class IS NOT NULL OR COALESCE(status, 0) >= 400)';
+  }
+
+  if (errorType === 'http_error') {
+    return "(error_class = 'http_error' OR (error_class IS NULL AND COALESCE(status, 0) >= 400))";
+  }
+
+  return 'error_class = ?';
+}
+
 export function createV1ToolHandlers(getDb: () => Database): Partial<Record<string, ToolHandler>> {
   return {
     list_sessions: async (input) => {
       const db = getDb();
       const sinceMinutes = typeof input.sinceMinutes === 'number' ? input.sinceMinutes : undefined;
       const limit = resolveLimit(input.limit, DEFAULT_LIST_LIMIT);
+      const offset = resolveOffset(input.offset);
 
       const where: string[] = [];
       const params: unknown[] = [];
@@ -310,10 +398,10 @@ export function createV1ToolHandlers(getDb: () => Database): Partial<Record<stri
         FROM sessions
         ${whereClause}
         ORDER BY created_at DESC
-        LIMIT ?
+        LIMIT ? OFFSET ?
       `;
 
-      const rows = db.prepare(sql).all(...params, limit + 1) as SessionRow[];
+      const rows = db.prepare(sql).all(...params, limit + 1, offset) as SessionRow[];
       const truncated = rows.length > limit;
       const sessions = rows.slice(0, limit).map((row) => ({
         sessionId: row.session_id,
@@ -340,6 +428,10 @@ export function createV1ToolHandlers(getDb: () => Database): Partial<Record<stri
         limitsApplied: {
           maxResults: limit,
           truncated,
+        },
+        pagination: {
+          offset,
+          returned: sessions.length,
         },
         sessions,
       };
@@ -430,6 +522,7 @@ export function createV1ToolHandlers(getDb: () => Database): Partial<Record<stri
       }
 
       const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
+      const offset = resolveOffset(input.offset);
       const requestedTypes = parseRequestedTypes(input.types ?? input.eventTypes);
 
       const params: unknown[] = [sessionId];
@@ -446,9 +539,9 @@ export function createV1ToolHandlers(getDb: () => Database): Partial<Record<stri
         FROM events
         WHERE ${where.join(' AND ')}
         ORDER BY ts DESC
-        LIMIT ?
+        LIMIT ? OFFSET ?
       `)
-        .all(...params, limit + 1) as EventRow[];
+        .all(...params, limit + 1, offset) as EventRow[];
 
       const truncated = rows.length > limit;
 
@@ -457,6 +550,10 @@ export function createV1ToolHandlers(getDb: () => Database): Partial<Record<stri
         limitsApplied: {
           maxResults: limit,
           truncated,
+        },
+        pagination: {
+          offset,
+          returned: Math.min(rows.length, limit),
         },
         events: rows.slice(0, limit).map((row) => mapEventRecord(row)),
       };
@@ -470,15 +567,16 @@ export function createV1ToolHandlers(getDb: () => Database): Partial<Record<stri
       }
 
       const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
+      const offset = resolveOffset(input.offset);
       const rows = db
         .prepare(`
         SELECT event_id, session_id, ts, type, payload_json
         FROM events
         WHERE session_id = ? AND type = 'nav'
         ORDER BY ts DESC
-        LIMIT ?
+        LIMIT ? OFFSET ?
       `)
-        .all(sessionId, limit + 1) as EventRow[];
+        .all(sessionId, limit + 1, offset) as EventRow[];
 
       const truncated = rows.length > limit;
 
@@ -487,6 +585,10 @@ export function createV1ToolHandlers(getDb: () => Database): Partial<Record<stri
         limitsApplied: {
           maxResults: limit,
           truncated,
+        },
+        pagination: {
+          offset,
+          returned: Math.min(rows.length, limit),
         },
         events: rows.slice(0, limit).map((row) => mapEventRecord(row)),
       };
@@ -501,6 +603,7 @@ export function createV1ToolHandlers(getDb: () => Database): Partial<Record<stri
 
       const level = typeof input.level === 'string' ? input.level : undefined;
       const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
+      const offset = resolveOffset(input.offset);
       const params: unknown[] = [sessionId];
       let levelClause = '';
 
@@ -515,9 +618,9 @@ export function createV1ToolHandlers(getDb: () => Database): Partial<Record<stri
         FROM events
         WHERE session_id = ? AND type = 'console' ${levelClause}
         ORDER BY ts DESC
-        LIMIT ?
+        LIMIT ? OFFSET ?
       `)
-        .all(...params, limit + 1) as EventRow[];
+        .all(...params, limit + 1, offset) as EventRow[];
 
       const truncated = rows.length > limit;
 
@@ -527,7 +630,217 @@ export function createV1ToolHandlers(getDb: () => Database): Partial<Record<stri
           maxResults: limit,
           truncated,
         },
+        pagination: {
+          offset,
+          returned: Math.min(rows.length, limit),
+        },
         events: rows.slice(0, limit).map((row) => mapEventRecord(row)),
+      };
+    },
+
+    get_error_fingerprints: async (input) => {
+      const db = getDb();
+      const sessionId = typeof input.sessionId === 'string' ? input.sessionId : undefined;
+      const sinceMinutes = typeof input.sinceMinutes === 'number' && Number.isFinite(input.sinceMinutes)
+        ? Math.floor(input.sinceMinutes)
+        : undefined;
+      const limit = resolveLimit(input.limit, DEFAULT_LIST_LIMIT);
+      const offset = resolveOffset(input.offset);
+
+      const params: unknown[] = [];
+      const where: string[] = [];
+
+      if (sessionId) {
+        where.push('session_id = ?');
+        params.push(sessionId);
+      }
+
+      if (sinceMinutes !== undefined && sinceMinutes > 0) {
+        where.push('last_seen_at >= ?');
+        params.push(Date.now() - sinceMinutes * 60_000);
+      }
+
+      const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+
+      const rows = db
+        .prepare(`
+          SELECT fingerprint, session_id, count, sample_message, sample_stack, first_seen_at, last_seen_at
+          FROM error_fingerprints
+          ${whereClause}
+          ORDER BY count DESC, last_seen_at DESC
+          LIMIT ? OFFSET ?
+        `)
+        .all(...params, limit + 1, offset) as ErrorFingerprintRow[];
+
+      const truncated = rows.length > limit;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: limit,
+          truncated,
+        },
+        pagination: {
+          offset,
+          returned: Math.min(rows.length, limit),
+        },
+        fingerprints: rows.slice(0, limit).map((row) => ({
+          fingerprint: row.fingerprint,
+          sessionId: row.session_id,
+          count: row.count,
+          sampleMessage: row.sample_message,
+          sampleStack: row.sample_stack ?? undefined,
+          firstSeenAt: row.first_seen_at,
+          lastSeenAt: row.last_seen_at,
+        })),
+      };
+    },
+
+    get_network_failures: async (input) => {
+      const db = getDb();
+      const sessionId = typeof input.sessionId === 'string' ? input.sessionId : undefined;
+      const groupBy = typeof input.groupBy === 'string' ? input.groupBy : undefined;
+      const errorType = typeof input.errorType === 'string' ? input.errorType : undefined;
+      const limit = resolveLimit(input.limit, DEFAULT_LIST_LIMIT);
+      const offset = resolveOffset(input.offset);
+
+      const params: unknown[] = [];
+      const where: string[] = [];
+      const errorFilter = buildNetworkFailureFilter(errorType);
+
+      if (sessionId) {
+        where.push('session_id = ?');
+        params.push(sessionId);
+      }
+
+      where.push(errorFilter);
+      if (errorFilter === 'error_class = ?' && errorType) {
+        params.push(errorType);
+      }
+
+      const whereClause = `WHERE ${where.join(' AND ')}`;
+
+      if (groupBy === 'url' || groupBy === 'errorType' || groupBy === 'domain') {
+        const groupExpression =
+          groupBy === 'url'
+            ? 'url'
+            : groupBy === 'domain'
+              ? NETWORK_DOMAIN_GROUP_SQL
+              : "COALESCE(error_class, CASE WHEN COALESCE(status, 0) >= 400 THEN 'http_error' ELSE 'unknown' END)";
+
+        const rows = db
+          .prepare(`
+            SELECT
+              ${groupExpression} AS group_key,
+              COUNT(*) AS count,
+              MIN(ts_start) AS first_ts,
+              MAX(ts_start) AS last_ts
+            FROM network
+            ${whereClause}
+            GROUP BY group_key
+            ORDER BY count DESC, last_ts DESC
+            LIMIT ? OFFSET ?
+          `)
+          .all(...params, limit + 1, offset) as GroupedNetworkFailureRow[];
+
+        const truncated = rows.length > limit;
+
+        return {
+          ...createBaseResponse(sessionId),
+          limitsApplied: {
+            maxResults: limit,
+            truncated,
+          },
+          pagination: {
+            offset,
+            returned: Math.min(rows.length, limit),
+          },
+          groupBy,
+          groups: rows.slice(0, limit).map((row) => ({
+            key: row.group_key,
+            count: row.count,
+            firstSeenAt: row.first_ts,
+            lastSeenAt: row.last_ts,
+          })),
+        };
+      }
+
+      const rows = db
+        .prepare(`
+          SELECT request_id, session_id, ts_start, duration_ms, method, url, status, initiator, error_class
+          FROM network
+          ${whereClause}
+          ORDER BY ts_start DESC
+          LIMIT ? OFFSET ?
+        `)
+        .all(...params, limit + 1, offset) as NetworkFailureRow[];
+
+      const truncated = rows.length > limit;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: limit,
+          truncated,
+        },
+        pagination: {
+          offset,
+          returned: Math.min(rows.length, limit),
+        },
+        failures: rows.slice(0, limit).map((row) => ({
+          requestId: row.request_id,
+          sessionId: row.session_id,
+          timestamp: row.ts_start,
+          durationMs: row.duration_ms ?? undefined,
+          method: row.method,
+          url: row.url,
+          status: row.status ?? undefined,
+          initiator: row.initiator ?? undefined,
+          errorType: classifyNetworkFailure(row.status, row.error_class),
+        })),
+      };
+    },
+
+    get_element_refs: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const selector = typeof input.selector === 'string' ? input.selector : undefined;
+      if (!selector) {
+        throw new Error('selector is required');
+      }
+
+      const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
+      const offset = resolveOffset(input.offset);
+      const rows = db
+        .prepare(`
+          SELECT event_id, session_id, ts, type, payload_json
+          FROM events
+          WHERE session_id = ?
+            AND type IN ('ui', 'element_ref')
+            AND json_extract(payload_json, '$.selector') = ?
+          ORDER BY ts DESC
+          LIMIT ? OFFSET ?
+        `)
+        .all(sessionId, selector, limit + 1, offset) as EventRow[];
+
+      const truncated = rows.length > limit;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: limit,
+          truncated,
+        },
+        pagination: {
+          offset,
+          returned: Math.min(rows.length, limit),
+        },
+        selector,
+        refs: rows.slice(0, limit).map((row) => mapEventRecord(row)),
       };
     },
   };

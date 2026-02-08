@@ -3,6 +3,10 @@ import { z } from 'zod';
 export const ListSessionsSchema = z.object({
   sinceMinutes: z.number().int().min(1).max(1440).default(60)
     .describe('Number of minutes to look back for sessions'),
+  limit: z.number().int().min(1).max(200).optional()
+    .describe('Maximum number of results to return'),
+  offset: z.number().int().min(0).optional()
+    .describe('Pagination offset for result set'),
 });
 
 export const GetSessionSummarySchema = z.object({
@@ -15,22 +19,36 @@ export const GetRecentEventsSchema = z.object({
     .describe('Filter by event types'),
   limit: z.number().int().min(1).max(1000).default(100)
     .describe('Maximum number of events to return'),
+  offset: z.number().int().min(0).optional()
+    .describe('Pagination offset for result set'),
 });
 
 export const GetNavigationHistorySchema = z.object({
   sessionId: z.string().describe('Unique session identifier'),
+  limit: z.number().int().min(1).max(200).optional()
+    .describe('Maximum number of navigation events to return'),
+  offset: z.number().int().min(0).optional()
+    .describe('Pagination offset for result set'),
 });
 
 export const GetConsoleEventsSchema = z.object({
   sessionId: z.string().describe('Unique session identifier'),
   level: z.enum(['error', 'warn', 'info', 'debug']).optional()
     .describe('Filter by console level'),
+  limit: z.number().int().min(1).max(200).optional()
+    .describe('Maximum number of console events to return'),
+  offset: z.number().int().min(0).optional()
+    .describe('Pagination offset for result set'),
 });
 
 export const GetErrorFingerprintsSchema = z.object({
   sessionId: z.string().optional().describe('Filter by session ID'),
   sinceMinutes: z.number().int().min(1).max(10080).default(1440)
     .describe('Number of minutes to look back'),
+  limit: z.number().int().min(1).max(200).optional()
+    .describe('Maximum number of fingerprints to return'),
+  offset: z.number().int().min(0).optional()
+    .describe('Pagination offset for result set'),
 });
 
 export const GetNetworkFailuresSchema = z.object({
@@ -39,11 +57,19 @@ export const GetNetworkFailuresSchema = z.object({
     .describe('Filter by error type'),
   groupBy: z.enum(['url', 'errorType', 'domain']).optional()
     .describe('Group results by field'),
+  limit: z.number().int().min(1).max(200).optional()
+    .describe('Maximum number of failures/groups to return'),
+  offset: z.number().int().min(0).optional()
+    .describe('Pagination offset for result set'),
 });
 
 export const GetElementRefsSchema = z.object({
   sessionId: z.string().describe('Unique session identifier'),
   selector: z.string().describe('CSS selector to find elements'),
+  limit: z.number().int().min(1).max(200).optional()
+    .describe('Maximum number of matching element refs to return'),
+  offset: z.number().int().min(0).optional()
+    .describe('Pagination offset for result set'),
 });
 
 export const GetDOMSubtreeSchema = z.object({

@@ -156,3 +156,12 @@
   - Added integration tests covering all five V1 query tools against an initialized in-memory database
   - Updated MCP runtime to register V1 handlers by default while keeping non-V1 tools as not implemented
   - Verified with `pnpm test` (all projects passing)
+
+### Completed: 2026-02-08
+- [Implement error and network query tools] - COMPLETED
+  - Implemented `get_error_fingerprints` with session/time filtering plus `limit`/`offset` pagination
+  - Implemented `get_network_failures` with failure classification and grouping by `url`, `errorType`, or `domain`
+  - Implemented `get_element_refs` selector-based lookup across `ui` and `element_ref` events
+  - Added consistent pagination metadata to MCP query responses and extended query input schemas with `limit`/`offset`
+  - Added unit/integration tests for error fingerprints, grouped network failures, and element ref lookup
+  - Verified with `pnpm test` (all projects passing)

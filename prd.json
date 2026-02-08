@@ -216,7 +216,7 @@
       "Add proper limits and pagination to all query tools",
       "Write tests for error and network query tools"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "MCP tools",
