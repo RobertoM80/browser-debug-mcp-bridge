@@ -59,7 +59,7 @@
       "Create example test files to verify test runner works",
       "Verify pnpm nx run-many -t test runs all tests"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "domain core",
