@@ -110,3 +110,6 @@
   - Added safe mode controls to popup UI (toggle, allowlist input, and save action)
   - Enforced safe mode payload restrictions for cookies, storage fields, and input values
   - Added unit tests for allowlist parsing/matching, safe mode redaction, and config persistence
+
+### Completed: 2026-02-08
+- Verified [Implement robust selector generation] was already complete
