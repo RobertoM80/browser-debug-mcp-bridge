@@ -138,3 +138,13 @@
   - Verified no typed text or input values are captured in click payloads
   - Added unit tests for click capture payload shape and sensitive-value exclusion
   - Added WebSocket integration test to verify click events persist in SQLite `events` as user journey data
+
+### Completed: 2026-02-08
+- [Implement MCP server foundation] - COMPLETED
+  - Added `@modelcontextprotocol/sdk` dependency to `apps/mcp-server`
+  - Implemented MCP stdio runtime in `apps/mcp-server/src/mcp/server.ts`
+  - Added tool registration for all planned MCP tool names with input schemas
+  - Added tool routing with default not-implemented handlers and structured error responses
+  - Added common response contract fields (`sessionId`, `limitsApplied`, `redactionSummary`)
+  - Added unit tests for MCP runtime initialization, registration, routing, and unknown-tool handling
+  - Verified with `pnpm test` (all projects passing)

@@ -191,7 +191,7 @@
       "Add common response contract (limitsApplied, redactionSummary, sessionId)",
       "Write tests for MCP server initialization"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "MCP tools",
