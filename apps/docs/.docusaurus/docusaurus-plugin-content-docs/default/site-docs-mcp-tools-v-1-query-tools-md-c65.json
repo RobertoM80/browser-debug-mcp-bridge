@@ -1,0 +1,23 @@
+{
+  "id": "mcp-tools/v1-query-tools",
+  "title": "V1 Query Tools",
+  "description": "list_sessions",
+  "source": "@site/docs/mcp-tools/v1-query-tools.md",
+  "sourceDirName": "mcp-tools",
+  "slug": "/mcp-tools/v1-query-tools",
+  "permalink": "/docs/mcp-tools/v1-query-tools",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "MCP Tools Overview",
+    "permalink": "/docs/mcp-tools/overview"
+  },
+  "next": {
+    "title": "V2 Heavy Capture Tools",
+    "permalink": "/docs/mcp-tools/v2-heavy-capture"
+  }
+}

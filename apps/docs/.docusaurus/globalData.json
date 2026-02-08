@@ -1,0 +1,133 @@
+{
+  "docusaurus-plugin-content-docs": {
+    "default": {
+      "path": "/docs",
+      "versions": [
+        {
+          "name": "current",
+          "label": "Next",
+          "isLast": true,
+          "path": "/docs",
+          "mainDocId": "intro",
+          "docs": [
+            {
+              "id": "architecture/overview",
+              "path": "/docs/architecture/overview",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "contributing/docs-contribution",
+              "path": "/docs/contributing/docs-contribution",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "contributing/versioning-strategy",
+              "path": "/docs/contributing/versioning-strategy",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "extension/overview",
+              "path": "/docs/extension/overview",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "faq",
+              "path": "/docs/faq",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "getting-started/local-debug-session",
+              "path": "/docs/getting-started/local-debug-session",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "getting-started/quick-start",
+              "path": "/docs/getting-started/quick-start",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "intro",
+              "path": "/docs/intro",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "mcp-tools/overview",
+              "path": "/docs/mcp-tools/overview",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "mcp-tools/v1-query-tools",
+              "path": "/docs/mcp-tools/v1-query-tools",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "mcp-tools/v2-heavy-capture",
+              "path": "/docs/mcp-tools/v2-heavy-capture",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "mcp-tools/v3-correlation",
+              "path": "/docs/mcp-tools/v3-correlation",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "reference/limits-and-redaction",
+              "path": "/docs/reference/limits-and-redaction",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "security-privacy/controls",
+              "path": "/docs/security-privacy/controls",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "server/overview",
+              "path": "/docs/server/overview",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "testing/strategy",
+              "path": "/docs/testing/strategy",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "troubleshooting/common-issues",
+              "path": "/docs/troubleshooting/common-issues",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "workflows/failure-diagnosis-playbook",
+              "path": "/docs/workflows/failure-diagnosis-playbook",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "/category/getting-started",
+              "path": "/docs/category/getting-started",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "/category/architecture",
+              "path": "/docs/category/architecture",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "/category/mcp-tools",
+              "path": "/docs/category/mcp-tools",
+              "sidebar": "docsSidebar"
+            }
+          ],
+          "draftIds": [],
+          "sidebars": {
+            "docsSidebar": {
+              "link": {
+                "path": "/docs/intro",
+                "label": "intro"
+              }
+            }
+          }
+        }
+      ],
+      "breadcrumbs": true
+    }
+  }
+}

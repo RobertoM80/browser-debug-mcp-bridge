@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD041 MD033 -->
+
 import { DocWarning } from '../../src/components/DocWarning';
 import { DocLimit } from '../../src/components/DocLimit';
 

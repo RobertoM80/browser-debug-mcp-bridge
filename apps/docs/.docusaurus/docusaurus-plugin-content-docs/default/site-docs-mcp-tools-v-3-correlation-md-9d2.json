@@ -1,0 +1,23 @@
+{
+  "id": "mcp-tools/v3-correlation",
+  "title": "V3 Correlation Tools",
+  "description": "explainlastfailure",
+  "source": "@site/docs/mcp-tools/v3-correlation.md",
+  "sourceDirName": "mcp-tools",
+  "slug": "/mcp-tools/v3-correlation",
+  "permalink": "/docs/mcp-tools/v3-correlation",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "V2 Heavy Capture Tools",
+    "permalink": "/docs/mcp-tools/v2-heavy-capture"
+  },
+  "next": {
+    "title": "Extension",
+    "permalink": "/docs/extension/overview"
+  }
+}

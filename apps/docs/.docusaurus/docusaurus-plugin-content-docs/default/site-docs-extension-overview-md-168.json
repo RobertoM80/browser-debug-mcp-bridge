@@ -1,0 +1,23 @@
+{
+  "id": "extension/overview",
+  "title": "Extension",
+  "description": "The MV3 extension contains:",
+  "source": "@site/docs/extension/overview.md",
+  "sourceDirName": "extension",
+  "slug": "/extension/overview",
+  "permalink": "/docs/extension/overview",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "V3 Correlation Tools",
+    "permalink": "/docs/mcp-tools/v3-correlation"
+  },
+  "next": {
+    "title": "Server",
+    "permalink": "/docs/server/overview"
+  }
+}

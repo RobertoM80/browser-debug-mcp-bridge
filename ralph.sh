@@ -23,7 +23,7 @@ echo ""
 # Specify the AI model to use (e.g. "gpt-4o", "claude-3-5-sonnet-20240620")
 # Leave empty "" to use OpenCode's default.
 # If you have "Codex" installed/configured, you can try setting it here. "openai/gpt-5.2-codex"
-MODEL_NAME="opencode/kimi-k2.5-free"
+MODEL_NAME="openai/gpt-5.3-codex"
 # ------------------------------------------------------------------
 
 # Function to backup Ralph files

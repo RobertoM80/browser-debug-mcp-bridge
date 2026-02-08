@@ -133,32 +133,6 @@ export class EventsRepository {
     return mapping[eventType] || 'ui';
   }
 
-  private upsertErrorFingerprint(sessionId: string, data: Record<string, unknown>): void {
-    const fingerprint = resolveErrorFingerprint(data);
-    if (!fingerprint) return;
-
-    const upsert = this.db.prepare(`
-      INSERT INTO error_fingerprints (
-        fingerprint, session_id, count, sample_message, sample_stack, first_seen_at, last_seen_at
-      ) VALUES (?, ?, 1, ?, ?, ?, ?)
-      ON CONFLICT(fingerprint) DO UPDATE SET
-        count = count + 1,
-        last_seen_at = excluded.last_seen_at,
-        sample_message = COALESCE(error_fingerprints.sample_message, excluded.sample_message),
-        sample_stack = COALESCE(error_fingerprints.sample_stack, excluded.sample_stack)
-    `);
-
-    const now = Date.now();
-    upsert.run(
-      fingerprint,
-      sessionId,
-      (data.message as string) ?? 'Unknown error',
-      (data.stack as string) ?? null,
-      now,
-      now
-    );
-  }
-
   private upsertErrorFingerprintPrepared(
     statement: ReturnType<Database['prepare']>,
     sessionId: string,
@@ -175,29 +149,6 @@ export class EventsRepository {
       (data.stack as string) ?? null,
       now,
       now
-    );
-  }
-
-  private insertNetworkEvent(sessionId: string, data: Record<string, unknown>): void {
-    const insert = this.db.prepare(`
-      INSERT INTO network (
-        request_id, session_id, ts_start, duration_ms, method, url, status, initiator, error_class, response_size_est
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const requestId = `${sessionId}-net-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-    
-    insert.run(
-      requestId,
-      sessionId,
-      data.timestamp as number ?? Date.now(),
-      data.duration as number ?? null,
-      data.method as string ?? 'GET',
-      data.url as string ?? '',
-      data.status as number ?? null,
-      data.initiator as string ?? 'other',
-      data.errorType as string ?? null,
-      data.responseSize as number ?? null
     );
   }
 

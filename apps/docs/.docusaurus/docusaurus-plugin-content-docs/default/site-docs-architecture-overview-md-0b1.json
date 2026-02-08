@@ -1,0 +1,23 @@
+{
+  "id": "architecture/overview",
+  "title": "Architecture Overview",
+  "description": "The platform has three logical components:",
+  "source": "@site/docs/architecture/overview.md",
+  "sourceDirName": "architecture",
+  "slug": "/architecture/overview",
+  "permalink": "/docs/architecture/overview",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Architecture",
+    "permalink": "/docs/category/architecture"
+  },
+  "next": {
+    "title": "MCP Tools",
+    "permalink": "/docs/category/mcp-tools"
+  }
+}

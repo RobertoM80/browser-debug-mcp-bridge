@@ -1,0 +1,23 @@
+{
+  "id": "contributing/versioning-strategy",
+  "title": "Documentation Versioning Strategy",
+  "description": "Use Docusaurus versioned docs for release-level snapshots.",
+  "source": "@site/docs/contributing/versioning-strategy.md",
+  "sourceDirName": "contributing",
+  "slug": "/contributing/versioning-strategy",
+  "permalink": "/docs/contributing/versioning-strategy",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Contributing Documentation",
+    "permalink": "/docs/contributing/docs-contribution"
+  },
+  "next": {
+    "title": "Failure Diagnosis Playbook",
+    "permalink": "/docs/workflows/failure-diagnosis-playbook"
+  }
+}

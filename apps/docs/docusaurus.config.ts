@@ -7,12 +7,15 @@ const config: Config = {
   url: 'https://example.invalid',
   baseUrl: '/',
   onBrokenLinks: 'throw',
-  onBrokenMarkdownLinks: 'throw',
+  markdown: {
+    hooks: {
+      onBrokenMarkdownLinks: 'throw'
+    }
+  },
   i18n: {
     defaultLocale: 'en',
     locales: ['en']
   },
-  themes: ['@easyops-cn/docusaurus-search-local'],
   themeConfig: {
     colorMode: {
       defaultMode: 'light',
@@ -60,7 +63,6 @@ const config: Config = {
           editUrl: undefined
         },
         blog: false,
-        pages: false,
         theme: {
           customCss: './src/css/custom.css'
         }
@@ -75,6 +77,7 @@ const config: Config = {
         language: ['en'],
         docsRouteBasePath: '/docs',
         indexDocs: true,
+        indexBlog: false,
         indexPages: false,
         explicitSearchResultPath: true
       }

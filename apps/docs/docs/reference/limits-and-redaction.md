@@ -1,3 +1,5 @@
+<!-- markdownlint-disable MD041 MD033 -->
+
 import { DocNote } from '../../src/components/DocNote';
 
 # Limits and Redaction Reference

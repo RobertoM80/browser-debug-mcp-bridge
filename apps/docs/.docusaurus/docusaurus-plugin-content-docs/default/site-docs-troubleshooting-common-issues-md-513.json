@@ -1,0 +1,23 @@
+{
+  "id": "troubleshooting/common-issues",
+  "title": "Troubleshooting",
+  "description": "Extension cannot connect to server",
+  "source": "@site/docs/troubleshooting/common-issues.md",
+  "sourceDirName": "troubleshooting",
+  "slug": "/troubleshooting/common-issues",
+  "permalink": "/docs/troubleshooting/common-issues",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Testing",
+    "permalink": "/docs/testing/strategy"
+  },
+  "next": {
+    "title": "FAQ",
+    "permalink": "/docs/faq"
+  }
+}

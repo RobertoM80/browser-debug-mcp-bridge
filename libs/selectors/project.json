@@ -16,13 +16,15 @@
       }
     },
     "lint": {
-      "executor": "@nx/eslint:lint"
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc --noEmit -p libs/selectors/tsconfig.lib.json"
+      }
     },
     "test": {
-      "executor": "@nx/vite:test",
-      "outputs": ["{options.reportsDirectory}"],
+      "executor": "nx:run-commands",
       "options": {
-        "reportsDirectory": "../../coverage/libs/selectors"
+        "command": "vitest run --config=libs/selectors/vitest.config.ts"
       }
     }
   }

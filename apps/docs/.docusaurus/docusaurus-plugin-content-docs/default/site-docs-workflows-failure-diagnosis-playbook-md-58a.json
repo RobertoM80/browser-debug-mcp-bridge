@@ -1,0 +1,23 @@
+{
+  "id": "workflows/failure-diagnosis-playbook",
+  "title": "Failure Diagnosis Playbook",
+  "description": "Goal",
+  "source": "@site/docs/workflows/failure-diagnosis-playbook.md",
+  "sourceDirName": "workflows",
+  "slug": "/workflows/failure-diagnosis-playbook",
+  "permalink": "/docs/workflows/failure-diagnosis-playbook",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {},
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Documentation Versioning Strategy",
+    "permalink": "/docs/contributing/versioning-strategy"
+  },
+  "next": {
+    "title": "limits-and-redaction",
+    "permalink": "/docs/reference/limits-and-redaction"
+  }
+}
