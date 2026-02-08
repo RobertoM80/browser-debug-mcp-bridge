@@ -10,8 +10,10 @@
     "lint": "tsc --noEmit -p tsconfig.app.json"
   },
   "dependencies": {
+    "@types/ws": "^8.18.1",
     "better-sqlite3": "^12.6.2",
-    "fastify": "^4.28.0"
+    "fastify": "^4.28.0",
+    "ws": "^8.19.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

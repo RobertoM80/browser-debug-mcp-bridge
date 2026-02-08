@@ -83,7 +83,7 @@
       "Add connection management and health ping/pong",
       "Write integration tests for WS event ingestion"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "domain core",
