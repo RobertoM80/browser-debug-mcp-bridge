@@ -1,0 +1,306 @@
+[
+  {
+    "category": "setup",
+    "description": "Initialize git repository and Nx monorepo workspace with pnpm",
+    "steps": [
+      "Run git init to initialize repository",
+      "Run pnpm init to create package.json with private: true",
+      "Install Nx globally and create workspace: pnpm dlx create-nx-workspace@latest --preset=ts --pm=pnpm",
+      "Configure pnpm-workspace.yaml with apps/* and libs/* patterns",
+      "Create root tsconfig.base.json with strict TypeScript settings"
+    ],
+    "passes": false
+  },
+  {
+    "category": "setup",
+    "description": "Create Nx project structure for mcp-server app",
+    "steps": [
+      "Create apps/mcp-server directory structure with src/ folder",
+      "Create project.json with build, lint, test, and serve targets",
+      "Create tsconfig.app.json and tsconfig.spec.json extending base",
+      "Add minimal src/main.ts entry point with Fastify server stub",
+      "Verify nx build mcp-server and nx serve mcp-server work"
+    ],
+    "passes": false
+  },
+  {
+    "category": "setup",
+    "description": "Create Nx project structure for chrome-extension app",
+    "steps": [
+      "Create apps/chrome-extension directory with src/ and public/ folders",
+      "Create project.json with build, lint, test, and pack targets",
+      "Set up Vite configuration for MV3 extension build",
+      "Create manifest.json in public/ with MV3 permissions",
+      "Add stub content script, injected script, and background service worker",
+      "Verify nx build chrome-extension produces installable output"
+    ],
+    "passes": false
+  },
+  {
+    "category": "setup",
+    "description": "Create shared library packages",
+    "steps": [
+      "Create libs/shared with common types, schemas, and utilities",
+      "Create libs/redaction with token/PII redaction logic",
+      "Create libs/selectors with DOM selector generation utilities",
+      "Create libs/mcp-contracts with MCP tool definitions and Zod schemas",
+      "Configure all libs with proper project.json and tsconfig files",
+      "Verify builds pass for all libraries"
+    ],
+    "passes": false
+  },
+  {
+    "category": "setup",
+    "description": "Set up testing infrastructure with Vitest",
+    "steps": [
+      "Install vitest and @vitest/coverage-v8 as dev dependencies",
+      "Create vitest.config.ts at root with shared configuration",
+      "Add vitest configs for each app and lib",
+      "Create example test files to verify test runner works",
+      "Verify pnpm nx run-many -t test runs all tests"
+    ],
+    "passes": false
+  },
+  {
+    "category": "domain core",
+    "description": "Implement SQLite database schema and connection",
+    "steps": [
+      "Install better-sqlite3 dependency in mcp-server",
+      "Create database schema: sessions, events, network, error_fingerprints tables",
+      "Implement database initialization and migration utilities",
+      "Create database connection singleton with proper typing",
+      "Write unit tests for database operations"
+    ],
+    "passes": false
+  },
+  {
+    "category": "domain core",
+    "description": "Implement WebSocket server for event ingestion",
+    "steps": [
+      "Install ws dependency for WebSocket support",
+      "Create WebSocket server integrated with Fastify",
+      "Implement message parsing and validation with Zod",
+      "Add connection management and health ping/pong",
+      "Write integration tests for WS event ingestion"
+    ],
+    "passes": false
+  },
+  {
+    "category": "domain core",
+    "description": "Implement session management in extension",
+    "steps": [
+      "Create session state management in background service worker",
+      "Implement start/stop session with sessionId generation",
+      "Add WebSocket connection to local server from extension",
+      "Create buffering and backpressure handling for events",
+      "Add extension popup UI for session control"
+    ],
+    "passes": false
+  },
+  {
+    "category": "domain core",
+    "description": "Capture navigation and console events",
+    "steps": [
+      "Implement navigation event capture in content script",
+      "Hook console methods (error, warn) in injected script",
+      "Capture runtime errors via window.onerror and unhandledrejection",
+      "Send events through background worker to server",
+      "Verify events are persisted to SQLite database"
+    ],
+    "passes": false
+  },
+  {
+    "category": "domain utilities",
+    "description": "Implement redaction engine for sensitive data",
+    "steps": [
+      "Create redaction patterns for Authorization headers, JWTs, tokens",
+      "Implement redaction utility with configurable rules",
+      "Add redaction to all outgoing events from extension",
+      "Add redactionSummary to all MCP tool responses",
+      "Write unit tests for redaction patterns"
+    ],
+    "passes": false
+  },
+  {
+    "category": "domain utilities",
+    "description": "Implement domain allowlist and safe mode controls",
+    "steps": [
+      "Create allowlist configuration storage in extension",
+      "Implement domain matching logic for capture decisions",
+      "Add safe mode toggle in extension popup",
+      "Enforce safe mode restrictions (no cookies, no storage, no input values)",
+      "Write tests for allowlist and safe mode logic"
+    ],
+    "passes": false
+  },
+  {
+    "category": "domain utilities",
+    "description": "Implement robust selector generation",
+    "steps": [
+      "Create selector generation from DOM elements",
+      "Support multiple strategies: id, class, data attributes, CSS path",
+      "Handle dynamic classes and unstable selectors",
+      "Add selector utilities to libs/selectors",
+      "Write unit tests for selector generation"
+    ],
+    "passes": false
+  },
+  {
+    "category": "data/persistence",
+    "description": "Capture network request metadata",
+    "steps": [
+      "Hook fetch and XHR in injected script",
+      "Capture method, URL, status, duration, initiator for each request",
+      "Classify errors: timeout, cors, dns, blocked, http_error",
+      "Store network metadata in database (no body capture)",
+      "Verify network events are queryable via MCP tools"
+    ],
+    "passes": false
+  },
+  {
+    "category": "data/persistence",
+    "description": "Implement error fingerprinting and aggregation",
+    "steps": [
+      "Create error fingerprinting algorithm (message + stack hash)",
+      "Aggregate errors by fingerprint in database",
+      "Store count, sample message, and sample stack per fingerprint",
+      "Update error_fingerprints table on new errors",
+      "Write tests for fingerprinting logic"
+    ],
+    "passes": false
+  },
+  {
+    "category": "data/persistence",
+    "description": "Capture minimal user journey events",
+    "steps": [
+      "Capture click events with target selector (no typed text)",
+      "Store event type, selector, and timestamp",
+      "Avoid capturing sensitive input values",
+      "Send user events to server via WebSocket",
+      "Verify user journey events are persisted"
+    ],
+    "passes": false
+  },
+  {
+    "category": "MCP tools",
+    "description": "Implement MCP server foundation",
+    "steps": [
+      "Install @modelcontextprotocol/sdk dependency",
+      "Create MCP server with stdio transport",
+      "Implement tool registration and routing",
+      "Add common response contract (limitsApplied, redactionSummary, sessionId)",
+      "Write tests for MCP server initialization"
+    ],
+    "passes": false
+  },
+  {
+    "category": "MCP tools",
+    "description": "Implement V1 MCP query tools",
+    "steps": [
+      "Implement list_sessions tool with sinceMinutes filter",
+      "Implement get_session_summary with counts and timeRange",
+      "Implement get_recent_events with type filtering",
+      "Implement get_navigation_history tool",
+      "Implement get_console_events with level filtering",
+      "Write integration tests for all V1 tools"
+    ],
+    "passes": false
+  },
+  {
+    "category": "MCP tools",
+    "description": "Implement error and network query tools",
+    "steps": [
+      "Implement get_error_fingerprints tool",
+      "Implement get_network_failures with grouping options",
+      "Implement get_element_refs tool",
+      "Add proper limits and pagination to all query tools",
+      "Write tests for error and network query tools"
+    ],
+    "passes": false
+  },
+  {
+    "category": "MCP tools",
+    "description": "Implement heavy capture on-demand (V2)",
+    "steps": [
+      "Create server-to-extension command protocol via WebSocket",
+      "Implement get_dom_subtree tool with maxBytes and maxDepth limits",
+      "Implement get_dom_document with outline and html modes",
+      "Implement get_computed_styles for specific properties",
+      "Implement get_layout_metrics with bounding boxes",
+      "Add strict limits, timeouts, and fallback to outline mode"
+    ],
+    "passes": false
+  },
+  {
+    "category": "MCP tools",
+    "description": "Implement correlation engine tools (V3)",
+    "steps": [
+      "Implement time-window correlation algorithm",
+      "Create explain_last_failure tool with reasoned timeline",
+      "Implement get_event_correlation for linking related events",
+      "Connect user actions to network failures and errors",
+      "Write integration tests for correlation logic"
+    ],
+    "passes": false
+  },
+  {
+    "category": "UI flows",
+    "description": "Create extension popup UI",
+    "steps": [
+      "Build popup HTML with session controls",
+      "Add connection status indicator",
+      "Implement safe mode toggle",
+      "Add domain allowlist input",
+      "Style popup with minimal CSS"
+    ],
+    "passes": false
+  },
+  {
+    "category": "UI flows",
+    "description": "Add health and debugging endpoints",
+    "steps": [
+      "Implement GET /health endpoint with DB status",
+      "Implement GET /stats endpoint for dev debugging",
+      "Add structured logging for WS connections and MCP calls",
+      "Create log prefixes for extension-side debugging",
+      "Verify endpoints return correct data"
+    ],
+    "passes": false
+  },
+  {
+    "category": "testing/verification",
+    "description": "Create integration test suite for end-to-end flow",
+    "steps": [
+      "Set up test harness for WebSocket event streaming",
+      "Create mocked event stream tests",
+      "Test MCP tool responses for limits, redaction, and correctness",
+      "Add test coverage for heavy capture commands",
+      "Ensure all critical paths have test coverage"
+    ],
+    "passes": false
+  },
+  {
+    "category": "performance/polish",
+    "description": "Optimize event buffering and backpressure",
+    "steps": [
+      "Implement efficient event batching in extension",
+      "Add backpressure handling when server is slow",
+      "Track dropped events and log warnings",
+      "Optimize database writes with batching",
+      "Measure and document performance characteristics"
+    ],
+    "passes": false
+  },
+  {
+    "category": "performance/polish",
+    "description": "Create documentation and usage guides",
+    "steps": [
+      "Write README.md with installation and setup instructions",
+      "Document MCP tools with examples",
+      "Create SECURITY.md with privacy controls explained",
+      "Add troubleshooting guide",
+      "Document architecture decisions"
+    ],
+    "passes": false
+  }
+]

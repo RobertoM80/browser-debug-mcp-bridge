@@ -1,0 +1,20 @@
+{
+  "name": "browser-debug-mcp-bridge",
+  "version": "1.0.0",
+  "description": "Chrome Extension + Node.js MCP server for browser debugging",
+  "private": true,
+  "scripts": {
+    "test": "nx run-many -t test",
+    "lint": "nx run-many -t lint",
+    "build": "nx run-many -t build",
+    "serve": "nx serve mcp-server"
+  },
+  "keywords": ["mcp", "chrome-extension", "debugging"],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.28.2",
+  "devDependencies": {
+    "nx": "^20.0.0",
+    "typescript": "^5.3.0"
+  }
+}
