@@ -241,7 +241,7 @@
       "Connect user actions to network failures and errors",
       "Write integration tests for correlation logic"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "UI flows",

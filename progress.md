@@ -175,3 +175,12 @@
   - Added V2 MCP tool handlers (`get_dom_subtree`, `get_dom_document`, `get_computed_styles`, `get_layout_metrics`) with strict limits and html-to-outline fallback on timeout
   - Added/updated unit tests for SessionManager command handling, content script capture execution, WebSocket command roundtrips, and MCP V2 tools
   - Verified with `pnpm test` (all projects passing)
+
+### Completed: 2026-02-08
+- [Implement correlation engine tools (V3)] - COMPLETED
+  - Implemented time-window correlation scoring for related events and network failures
+  - Added `explain_last_failure` with a reasoned timeline and root-cause hint generation
+  - Added `get_event_correlation` to link nearby events with correlation scores and relationships
+  - Connected user actions to downstream network/error failures in correlation output
+  - Added integration-style MCP server tests for both V3 tools
+  - Verified with `pnpm test`

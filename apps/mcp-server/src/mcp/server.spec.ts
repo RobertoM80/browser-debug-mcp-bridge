@@ -347,6 +347,100 @@ describe('mcp/server V1 query tools', () => {
 
     db.close();
   });
+
+  it('explains latest failure timeline with correlated user action', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-1', 1000, 0)
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO events (event_id, session_id, ts, type, payload_json)
+        VALUES
+          ('evt-click', 'session-1', 2000, 'ui', '{"eventType":"click","selector":"#submit"}'),
+          ('evt-error', 'session-1', 2400, 'error', '{"message":"boom"}')
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO network (request_id, session_id, ts_start, duration_ms, method, url, status, initiator, error_class)
+        VALUES
+          ('req-1', 'session-1', 2300, 50, 'POST', 'https://api.example/submit', 500, 'fetch', NULL)
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'explain_last_failure', {
+      sessionId: 'session-1',
+      lookbackSeconds: 10,
+    });
+
+    expect(response.sessionId).toBe('session-1');
+    expect(response.explanation).toContain('Latest failure');
+    expect(response.rootCause).toContain('network http_error');
+    expect(response.timeline).toBeInstanceOf(Array);
+    expect((response.timeline as Array<{ eventId: string }>).map((entry) => entry.eventId)).toEqual([
+      'evt-click',
+      'req-1',
+      'evt-error',
+    ]);
+
+    db.close();
+  });
+
+  it('returns correlated events around an anchor event', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-1', 1000, 0)
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO events (event_id, session_id, ts, type, payload_json)
+        VALUES
+          ('evt-click', 'session-1', 1000, 'ui', '{"eventType":"click","selector":"#save"}'),
+          ('evt-nav', 'session-1', 1050, 'nav', '{"url":"https://app.example/dashboard"}'),
+          ('evt-error', 'session-1', 1100, 'error', '{"message":"request failed"}')
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO network (request_id, session_id, ts_start, duration_ms, method, url, status, initiator, error_class)
+        VALUES
+          ('req-timeout', 'session-1', 1120, 1200, 'GET', 'https://api.example/items', NULL, 'fetch', 'timeout')
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_event_correlation', {
+      sessionId: 'session-1',
+      eventId: 'evt-click',
+      windowSeconds: 1,
+    });
+
+    expect(response.sessionId).toBe('session-1');
+    expect(response.anchorEvent).toMatchObject({ eventId: 'evt-click', type: 'ui' });
+    expect(response.windowSeconds).toBe(1);
+    expect((response.correlatedEvents as Array<{ eventId: string }>).map((entry) => entry.eventId)).toEqual([
+      'evt-error',
+      'req-timeout',
+      'evt-nav',
+    ]);
+    expect((response.correlatedEvents as Array<{ relationship: string }>)[0]?.relationship).toBe('possible_consequence');
+
+    db.close();
+  });
 });
 
 describe('mcp/server V2 capture tools', () => {

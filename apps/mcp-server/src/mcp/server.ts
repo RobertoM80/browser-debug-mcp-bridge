@@ -264,6 +264,16 @@ interface GroupedNetworkFailureRow {
   last_ts: number;
 }
 
+interface CorrelationCandidate {
+  eventId: string;
+  type: string;
+  timestamp: number;
+  payload?: Record<string, unknown>;
+  correlationScore: number;
+  relationship: string;
+  deltaMs: number;
+}
+
 export interface CaptureClientResult {
   ok: boolean;
   payload?: Record<string, unknown>;
@@ -382,6 +392,100 @@ function buildNetworkFailureFilter(errorType: unknown): string {
   }
 
   return 'error_class = ?';
+}
+
+function resolveWindowSeconds(value: unknown, fallback: number, maxValue: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  const floored = Math.floor(value);
+  if (floored < 1) {
+    return fallback;
+  }
+
+  return Math.min(floored, maxValue);
+}
+
+function formatUrlPath(url: string): string {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.hostname}${parsed.pathname}`;
+  } catch {
+    return url;
+  }
+}
+
+function describeEvent(type: string, payload: Record<string, unknown>): string {
+  if (type === 'nav') {
+    return `Navigation to ${resolveLastUrl(payload) ?? 'unknown URL'}`;
+  }
+
+  if (type === 'ui') {
+    const selector = typeof payload.selector === 'string' ? payload.selector : 'unknown target';
+    const eventType = typeof payload.eventType === 'string' ? payload.eventType : 'interaction';
+    return `User ${eventType} on ${selector}`;
+  }
+
+  if (type === 'console') {
+    const level = typeof payload.level === 'string' ? payload.level : 'log';
+    const message = typeof payload.message === 'string' ? payload.message : 'no message';
+    return `Console ${level}: ${message}`;
+  }
+
+  if (type === 'error') {
+    const message = typeof payload.message === 'string' ? payload.message : 'Unknown runtime error';
+    return `Runtime error: ${message}`;
+  }
+
+  return `${type} event`;
+}
+
+function describeNetworkFailure(row: NetworkFailureRow): string {
+  const errorType = classifyNetworkFailure(row.status, row.error_class);
+  const method = row.method || 'REQUEST';
+  const target = formatUrlPath(row.url);
+  const statusText = typeof row.status === 'number' ? ` status ${row.status}` : '';
+  return `Network ${errorType}: ${method} ${target}${statusText}`;
+}
+
+function inferCorrelationRelationship(anchorType: string, candidateType: string, deltaMs: number): string {
+  if (anchorType === 'ui' && (candidateType === 'error' || candidateType === 'network')) {
+    return deltaMs >= 0 ? 'possible_consequence' : 'possible_trigger';
+  }
+
+  if ((anchorType === 'error' || anchorType === 'network') && (candidateType === 'error' || candidateType === 'network')) {
+    return 'same_failure_window';
+  }
+
+  if (candidateType === 'nav') {
+    return 'navigation_context';
+  }
+
+  if (candidateType === 'ui') {
+    return deltaMs <= 0 ? 'preceding_user_action' : 'subsequent_user_action';
+  }
+
+  return 'temporal_proximity';
+}
+
+function scoreCorrelation(anchorType: string, candidateType: string, deltaMs: number, windowMs: number): number {
+  const distance = Math.abs(deltaMs);
+  const temporalScore = Math.max(0, 1 - distance / Math.max(windowMs, 1));
+
+  let semanticWeight = 0.45;
+  if (anchorType === 'ui' && (candidateType === 'error' || candidateType === 'network')) {
+    semanticWeight = 0.85;
+  } else if ((anchorType === 'error' || anchorType === 'network') && (candidateType === 'error' || candidateType === 'network')) {
+    semanticWeight = 0.9;
+  } else if ((anchorType === 'error' || anchorType === 'network') && candidateType === 'ui') {
+    semanticWeight = 0.75;
+  } else if (candidateType === 'nav') {
+    semanticWeight = 0.6;
+  }
+
+  const combined = semanticWeight * 0.7 + temporalScore * 0.3;
+  return Number(combined.toFixed(3));
 }
 
 function resolveCaptureBytes(value: unknown, fallback: number): number {
@@ -905,6 +1009,253 @@ export function createV1ToolHandlers(getDb: () => Database): Partial<Record<stri
         },
         selector,
         refs: rows.slice(0, limit).map((row) => mapEventRecord(row)),
+      };
+    },
+
+    explain_last_failure: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const lookbackSeconds = resolveWindowSeconds(input.lookbackSeconds, 30, 300);
+      const windowMs = lookbackSeconds * 1000;
+
+      const latestErrorEvent = db
+        .prepare(`
+          SELECT event_id, session_id, ts, type, payload_json
+          FROM events
+          WHERE session_id = ?
+            AND (type = 'error' OR (type = 'console' AND json_extract(payload_json, '$.level') = 'error'))
+          ORDER BY ts DESC
+          LIMIT 1
+        `)
+        .get(sessionId) as EventRow | undefined;
+
+      const latestNetworkFailure = db
+        .prepare(`
+          SELECT request_id, session_id, ts_start, duration_ms, method, url, status, initiator, error_class
+          FROM network
+          WHERE session_id = ?
+            AND (error_class IS NOT NULL OR COALESCE(status, 0) >= 400)
+          ORDER BY ts_start DESC
+          LIMIT 1
+        `)
+        .get(sessionId) as NetworkFailureRow | undefined;
+
+      const eventFailureTs = latestErrorEvent?.ts ?? -1;
+      const networkFailureTs = latestNetworkFailure?.ts_start ?? -1;
+
+      if (eventFailureTs < 0 && networkFailureTs < 0) {
+        return {
+          ...createBaseResponse(sessionId),
+          limitsApplied: {
+            maxResults: 0,
+            truncated: false,
+          },
+          explanation: 'No failure events found for this session.',
+          timeline: [],
+        };
+      }
+
+      const anchorIsEvent = eventFailureTs >= networkFailureTs;
+      const anchorTs = anchorIsEvent ? eventFailureTs : networkFailureTs;
+      const anchorType = anchorIsEvent ? latestErrorEvent?.type ?? 'error' : 'network';
+
+      const windowStart = anchorTs - windowMs;
+      const windowEnd = anchorTs + 1_000;
+
+      const eventRows = db
+        .prepare(`
+          SELECT event_id, session_id, ts, type, payload_json
+          FROM events
+          WHERE session_id = ?
+            AND ts BETWEEN ? AND ?
+          ORDER BY ts ASC
+        `)
+        .all(sessionId, windowStart, windowEnd) as EventRow[];
+
+      const networkRows = db
+        .prepare(`
+          SELECT request_id, session_id, ts_start, duration_ms, method, url, status, initiator, error_class
+          FROM network
+          WHERE session_id = ?
+            AND ts_start BETWEEN ? AND ?
+            AND (error_class IS NOT NULL OR COALESCE(status, 0) >= 400)
+          ORDER BY ts_start ASC
+        `)
+        .all(sessionId, windowStart, windowEnd) as NetworkFailureRow[];
+
+      const timeline = [
+        ...eventRows.map((row) => {
+          const payload = readJsonPayload(row.payload_json);
+          return {
+            timestamp: row.ts,
+            type: row.type,
+            eventId: row.event_id,
+            description: describeEvent(row.type, payload),
+            payload,
+          };
+        }),
+        ...networkRows.map((row) => ({
+          timestamp: row.ts_start,
+          type: 'network',
+          eventId: row.request_id,
+          description: describeNetworkFailure(row),
+          payload: {
+            method: row.method,
+            url: row.url,
+            status: row.status ?? undefined,
+            errorType: classifyNetworkFailure(row.status, row.error_class),
+          },
+        })),
+      ]
+        .sort((a, b) => a.timestamp - b.timestamp)
+        .slice(0, 60);
+
+      const closestAction = timeline
+        .filter((entry) => entry.type === 'ui' && entry.timestamp <= anchorTs)
+        .at(-1);
+
+      const closestNetworkFailure = timeline
+        .filter((entry) => entry.type === 'network' && entry.timestamp <= anchorTs)
+        .at(-1);
+
+      let rootCause = '';
+      if (anchorType === 'network' && latestNetworkFailure) {
+        rootCause = describeNetworkFailure(latestNetworkFailure);
+      } else if (anchorType === 'error' || anchorType === 'console') {
+        if (closestNetworkFailure && anchorTs - closestNetworkFailure.timestamp <= 5_000) {
+          rootCause = `Runtime failure likely connected to recent ${closestNetworkFailure.description.toLowerCase()}.`;
+        } else if (closestAction && anchorTs - closestAction.timestamp <= 10_000) {
+          rootCause = `Runtime failure likely triggered after user action (${closestAction.description.toLowerCase()}).`;
+        } else {
+          rootCause = 'Runtime failure occurred without a clear nearby trigger in the correlation window.';
+        }
+      }
+
+      const explanation = `Latest failure at ${anchorTs} with a ${lookbackSeconds}s correlation window.`;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: timeline.length,
+          truncated: timeline.length >= 60,
+        },
+        explanation,
+        rootCause,
+        anchor: {
+          type: anchorType,
+          timestamp: anchorTs,
+        },
+        timeline,
+      };
+    },
+
+    get_event_correlation: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const eventId = typeof input.eventId === 'string' ? input.eventId : '';
+      if (!eventId) {
+        throw new Error('eventId is required');
+      }
+
+      const anchorEvent = db
+        .prepare(`
+          SELECT event_id, session_id, ts, type, payload_json
+          FROM events
+          WHERE session_id = ? AND event_id = ?
+          LIMIT 1
+        `)
+        .get(sessionId, eventId) as EventRow | undefined;
+
+      if (!anchorEvent) {
+        throw new Error(`Event not found: ${eventId}`);
+      }
+
+      const windowSeconds = resolveWindowSeconds(input.windowSeconds, 5, 60);
+      const windowMs = windowSeconds * 1000;
+      const windowStart = anchorEvent.ts - windowMs;
+      const windowEnd = anchorEvent.ts + windowMs;
+
+      const nearbyEvents = db
+        .prepare(`
+          SELECT event_id, session_id, ts, type, payload_json
+          FROM events
+          WHERE session_id = ?
+            AND event_id != ?
+            AND ts BETWEEN ? AND ?
+        `)
+        .all(sessionId, eventId, windowStart, windowEnd) as EventRow[];
+
+      const nearbyNetworkFailures = db
+        .prepare(`
+          SELECT request_id, session_id, ts_start, duration_ms, method, url, status, initiator, error_class
+          FROM network
+          WHERE session_id = ?
+            AND ts_start BETWEEN ? AND ?
+            AND (error_class IS NOT NULL OR COALESCE(status, 0) >= 400)
+        `)
+        .all(sessionId, windowStart, windowEnd) as NetworkFailureRow[];
+
+      const correlations: CorrelationCandidate[] = [
+        ...nearbyEvents.map((row) => {
+          const deltaMs = row.ts - anchorEvent.ts;
+          return {
+            eventId: row.event_id,
+            type: row.type,
+            timestamp: row.ts,
+            payload: readJsonPayload(row.payload_json),
+            correlationScore: scoreCorrelation(anchorEvent.type, row.type, deltaMs, windowMs),
+            relationship: inferCorrelationRelationship(anchorEvent.type, row.type, deltaMs),
+            deltaMs,
+          };
+        }),
+        ...nearbyNetworkFailures.map((row) => {
+          const deltaMs = row.ts_start - anchorEvent.ts;
+          return {
+            eventId: row.request_id,
+            type: 'network',
+            timestamp: row.ts_start,
+            payload: {
+              method: row.method,
+              url: row.url,
+              status: row.status ?? undefined,
+              errorType: classifyNetworkFailure(row.status, row.error_class),
+            },
+            correlationScore: scoreCorrelation(anchorEvent.type, 'network', deltaMs, windowMs),
+            relationship: inferCorrelationRelationship(anchorEvent.type, 'network', deltaMs),
+            deltaMs,
+          };
+        }),
+      ]
+        .sort((a, b) => {
+          if (b.correlationScore !== a.correlationScore) {
+            return b.correlationScore - a.correlationScore;
+          }
+          return Math.abs(a.deltaMs) - Math.abs(b.deltaMs);
+        })
+        .slice(0, 50);
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 50,
+          truncated: nearbyEvents.length + nearbyNetworkFailures.length > 50,
+        },
+        anchorEvent: {
+          eventId: anchorEvent.event_id,
+          type: anchorEvent.type,
+          timestamp: anchorEvent.ts,
+          payload: readJsonPayload(anchorEvent.payload_json),
+        },
+        windowSeconds,
+        correlatedEvents: correlations,
       };
     },
   };
