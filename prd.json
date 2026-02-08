@@ -155,7 +155,7 @@
       "Store network metadata in database (no body capture)",
       "Verify network events are queryable via MCP tools"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "data/persistence",

@@ -113,3 +113,12 @@
 
 ### Completed: 2026-02-08
 - Verified [Implement robust selector generation] was already complete
+
+### Completed: 2026-02-08
+- [Capture network request metadata] - COMPLETED
+  - Added network capture hooks for `fetch` and `XMLHttpRequest` in injected script
+  - Captured method, URL, status, duration, initiator, response size estimate, and timestamp
+  - Added network error classification for timeout, cors, dns, blocked, and http_error
+  - Verified network events continue flowing through background session queue to server persistence
+  - Added unit tests for fetch success, fetch failure classification, and xhr capture
+  - Ran `pnpm test` successfully (all projects passing)
