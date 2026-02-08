@@ -71,7 +71,7 @@
       "Create database connection singleton with proper typing",
       "Write unit tests for database operations"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "domain core",
