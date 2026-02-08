@@ -167,7 +167,7 @@
       "Update error_fingerprints table on new errors",
       "Write tests for fingerprinting logic"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "data/persistence",

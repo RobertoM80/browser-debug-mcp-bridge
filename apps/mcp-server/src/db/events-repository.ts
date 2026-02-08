@@ -1,5 +1,6 @@
 import { Database } from 'better-sqlite3';
 import type { EventMessage, SessionStartMessage, SessionEndMessage } from '../websocket/messages';
+import { resolveErrorFingerprint } from './error-fingerprints';
 
 export interface SessionRecord {
   sessionId: string;
@@ -81,7 +82,7 @@ export class EventsRepository {
       JSON.stringify(message.data)
     );
 
-    if (message.eventType === 'error' && message.data.fingerprint) {
+    if (message.eventType === 'error') {
       this.upsertErrorFingerprint(message.sessionId, message.data);
     }
 
@@ -103,7 +104,7 @@ export class EventsRepository {
   }
 
   private upsertErrorFingerprint(sessionId: string, data: Record<string, unknown>): void {
-    const fingerprint = data.fingerprint as string;
+    const fingerprint = resolveErrorFingerprint(data);
     if (!fingerprint) return;
 
     const upsert = this.db.prepare(`

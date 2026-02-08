@@ -122,3 +122,11 @@
   - Verified network events continue flowing through background session queue to server persistence
   - Added unit tests for fetch success, fetch failure classification, and xhr capture
   - Ran `pnpm test` successfully (all projects passing)
+
+### Completed: 2026-02-08
+- [Implement error fingerprinting and aggregation] - COMPLETED
+  - Added deterministic fingerprinting utility using a message+stack SHA-256 hash (`fp-<hash>`)
+  - Updated event ingestion to compute fingerprints when missing and upsert into `error_fingerprints`
+  - Verified aggregation increments count for repeated errors while keeping sample message/stack
+  - Added unit tests for fingerprint stability, stack sensitivity, and repository aggregation behavior
+  - Ran `pnpm test` successfully (all projects passing)
