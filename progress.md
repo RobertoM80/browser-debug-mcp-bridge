@@ -187,3 +187,12 @@
 
 ### Completed: 2026-02-08
 - Verified [Create extension popup UI] was already complete
+
+### Completed: 2026-02-08
+- [Add health and debugging endpoints] - COMPLETED
+  - Added `GET /stats` endpoint in `apps/mcp-server/src/main.ts` with uptime, memory usage, DB counts, and WebSocket connection metrics
+  - Updated `GET /health` to reuse DB status helper and include active WebSocket connection/session data consistently
+  - Added structured server-side WebSocket logs for connection lifecycle, message handling, stale connection termination, and capture command dispatch
+  - Added structured MCP logging for `list_tools` and `call_tool` requests with start/completion/failure events and durations
+  - Added extension-side log prefixes for background/content/injected scripts for easier debugging
+  - Added unit test coverage for `/stats` endpoint response shape in `apps/mcp-server/src/main.spec.ts`

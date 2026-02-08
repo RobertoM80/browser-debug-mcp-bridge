@@ -75,6 +75,7 @@ async function executeCaptureCommand(
 const sessionManager = new SessionManager({
   handleCaptureCommand: executeCaptureCommand,
 });
+const LOG_PREFIX = '[BrowserDebug][Background]';
 let captureConfig: CaptureConfig = { ...DEFAULT_CAPTURE_CONFIG };
 
 void loadCaptureConfig(chrome.storage.local).then((loaded) => {
@@ -182,12 +183,12 @@ chrome.runtime.onMessage.addListener((request: RuntimeRequest, _sender, sendResp
   return true;
 });
 
-console.log('[BrowserDebug] Background service worker started');
+console.log(`${LOG_PREFIX} Service worker started`);
 
 chrome.runtime.onStartup.addListener(() => {
-  console.log('[BrowserDebug] Extension started');
+  console.log(`${LOG_PREFIX} Extension started`);
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  console.log('[BrowserDebug] Extension installed');
+  console.log(`${LOG_PREFIX} Extension installed`);
 });

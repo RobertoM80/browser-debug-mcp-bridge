@@ -41,6 +41,27 @@ export interface MCPServerRuntime {
 
 export interface MCPServerOptions {
   captureClient?: CaptureCommandClient;
+  logger?: MCPLogger;
+}
+
+export interface MCPLogger {
+  info(payload: Record<string, unknown>, message?: string): void;
+  error(payload: Record<string, unknown>, message?: string): void;
+  debug(payload: Record<string, unknown>, message?: string): void;
+}
+
+function createDefaultMcpLogger(): MCPLogger {
+  return {
+    info: (payload, message) => {
+      console.info(message ?? '[MCPServer][MCP][info]', payload);
+    },
+    error: (payload, message) => {
+      console.error(message ?? '[MCPServer][MCP][error]', payload);
+    },
+    debug: (payload, message) => {
+      console.debug(message ?? '[MCPServer][MCP][debug]', payload);
+    },
+  };
 }
 
 const TOOL_SCHEMAS: Record<string, object> = {
@@ -1457,6 +1478,7 @@ export function createMCPServer(
   overrides: Partial<Record<string, ToolHandler>> = {},
   options: MCPServerOptions = {},
 ): MCPServerRuntime {
+  const logger = options.logger ?? createDefaultMcpLogger();
   const v2Handlers = options.captureClient ? createV2ToolHandlers(options.captureClient) : {};
   const tools = createToolRegistry({
     ...createV1ToolHandlers(() => getConnection().db),
@@ -1476,6 +1498,7 @@ export function createMCPServer(
   );
 
   server.setRequestHandler(ListToolsRequestSchema, async () => {
+    logger.debug({ component: 'mcp', event: 'list_tools' }, '[MCPServer][MCP] list_tools request');
     return {
       tools: tools.map((tool) => ({
         name: tool.name,
@@ -1487,9 +1510,24 @@ export function createMCPServer(
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const toolName = request.params.name;
+    const startedAt = Date.now();
+
+    logger.info(
+      { component: 'mcp', event: 'tool_call_started', toolName },
+      '[MCPServer][MCP] Tool call started',
+    );
 
     try {
       const response = await routeToolCall(tools, toolName, request.params.arguments);
+      logger.info(
+        {
+          component: 'mcp',
+          event: 'tool_call_completed',
+          toolName,
+          durationMs: Date.now() - startedAt,
+        },
+        '[MCPServer][MCP] Tool call completed',
+      );
       return {
         content: [
           {
@@ -1500,6 +1538,16 @@ export function createMCPServer(
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown MCP tool error';
+      logger.error(
+        {
+          component: 'mcp',
+          event: 'tool_call_failed',
+          toolName,
+          durationMs: Date.now() - startedAt,
+          error: message,
+        },
+        '[MCPServer][MCP] Tool call failed',
+      );
       return {
         isError: true,
         content: [

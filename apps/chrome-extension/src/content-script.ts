@@ -462,5 +462,5 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
 
 if (typeof window !== 'undefined' && typeof chrome !== 'undefined' && !!chrome.runtime) {
   installContentCapture();
-  console.log('[BrowserDebug] Content script loaded');
+  console.log('[BrowserDebug][ContentScript] Loaded');
 }

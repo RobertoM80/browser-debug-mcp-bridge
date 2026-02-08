@@ -265,7 +265,7 @@
       "Create log prefixes for extension-side debugging",
       "Verify endpoints return correct data"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "testing/verification",

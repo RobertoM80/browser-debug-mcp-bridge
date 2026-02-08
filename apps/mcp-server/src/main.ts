@@ -10,25 +10,58 @@ const fastify = Fastify({
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 let wsManager: WebSocketManager | null = null;
+const startedAt = Date.now();
+
+function getDbStats(): { status: 'connected' | 'disconnected'; sessions: number; events: number; network: number; fingerprints: number } {
+  try {
+    const db = getConnection().db;
+    return {
+      status: 'connected',
+      sessions: (db.prepare('SELECT COUNT(*) as count FROM sessions').get() as { count: number }).count,
+      events: (db.prepare('SELECT COUNT(*) as count FROM events').get() as { count: number }).count,
+      network: (db.prepare('SELECT COUNT(*) as count FROM network').get() as { count: number }).count,
+      fingerprints: (db.prepare('SELECT COUNT(*) as count FROM error_fingerprints').get() as { count: number }).count,
+    };
+  } catch {
+    return {
+      status: 'disconnected',
+      sessions: 0,
+      events: 0,
+      network: 0,
+      fingerprints: 0,
+    };
+  }
+}
 
 fastify.get('/health', async () => {
-  let dbStatus = 'disconnected';
-  try {
-    dbStatus = getConnection().isConnected ? 'connected' : 'disconnected';
-  } catch {
-    // Database not initialized
-  }
+  const dbStats = getDbStats();
   
   const wsStats = wsManager?.getConnectionStats() ?? { total: 0, withSession: 0 };
   
   return { 
     status: 'ok', 
     timestamp: new Date().toISOString(),
-    database: dbStatus,
+    database: dbStats.status,
     websocket: {
       connections: wsStats.total,
       activeSessions: wsStats.withSession
     }
+  };
+});
+
+fastify.get('/stats', async () => {
+  const dbStats = getDbStats();
+  const wsStats = wsManager?.getConnectionStats() ?? { total: 0, withSession: 0 };
+
+  return {
+    timestamp: new Date().toISOString(),
+    uptimeMs: Date.now() - startedAt,
+    memory: process.memoryUsage(),
+    database: dbStats,
+    websocket: {
+      connections: wsStats.total,
+      activeSessions: wsStats.withSession,
+    },
   };
 });
 

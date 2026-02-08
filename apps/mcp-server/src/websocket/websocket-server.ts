@@ -11,6 +11,30 @@ import {
 import { EventsRepository } from '../db/events-repository';
 import { getConnection } from '../db/connection';
 
+interface StructuredLogger {
+  info(payload: Record<string, unknown>, message?: string): void;
+  warn(payload: Record<string, unknown>, message?: string): void;
+  error(payload: Record<string, unknown>, message?: string): void;
+  debug(payload: Record<string, unknown>, message?: string): void;
+}
+
+function createConsoleLogger(): StructuredLogger {
+  return {
+    info: (payload, message) => {
+      console.info(message ?? '[MCPServer][WebSocket][info]', payload);
+    },
+    warn: (payload, message) => {
+      console.warn(message ?? '[MCPServer][WebSocket][warn]', payload);
+    },
+    error: (payload, message) => {
+      console.error(message ?? '[MCPServer][WebSocket][error]', payload);
+    },
+    debug: (payload, message) => {
+      console.debug(message ?? '[MCPServer][WebSocket][debug]', payload);
+    },
+  };
+}
+
 interface ConnectionInfo {
   ws: WebSocket;
   sessionId?: string;
@@ -39,14 +63,16 @@ export class WebSocketManager {
   private eventsRepository: EventsRepository | null = null;
   private pendingCaptureRequests: Map<string, PendingCaptureRequest> = new Map();
   private commandCounter = 0;
+  private logger: StructuredLogger;
   private pingInterval: NodeJS.Timeout | null = null;
   private readonly PING_INTERVAL_MS = 30000;
   private readonly PONG_TIMEOUT_MS = 10000;
 
-  constructor(eventsRepository?: EventsRepository) {
+  constructor(eventsRepository?: EventsRepository, logger?: StructuredLogger) {
     if (eventsRepository) {
       this.eventsRepository = eventsRepository;
     }
+    this.logger = logger ?? createConsoleLogger();
   }
 
   setRepository(repository: EventsRepository): void {
@@ -62,6 +88,13 @@ export class WebSocketManager {
   }
 
   initialize(server: FastifyInstance): void {
+    this.logger = {
+      info: (payload, message) => server.log.info(payload, message),
+      warn: (payload, message) => server.log.warn(payload, message),
+      error: (payload, message) => server.log.error(payload, message),
+      debug: (payload, message) => server.log.debug(payload, message),
+    };
+
     this.wss = new WebSocketServer({
       server: server.server,
       path: '/ws',
@@ -73,7 +106,7 @@ export class WebSocketManager {
 
     this.startPingInterval();
 
-    server.log.info('WebSocket server initialized on /ws');
+    this.logger.info({ component: 'websocket', event: 'server_initialized', path: '/ws' }, '[MCPServer][WebSocket] Initialized');
   }
 
   private handleConnection(ws: WebSocket): void {
@@ -85,6 +118,14 @@ export class WebSocketManager {
     };
 
     this.connections.set(ws, connectionInfo);
+    this.logger.info(
+      {
+        component: 'websocket',
+        event: 'connection_open',
+        connections: this.connections.size,
+      },
+      '[MCPServer][WebSocket] Connection opened',
+    );
 
     ws.on('message', (data: Buffer) => {
       this.handleMessage(ws, data.toString());
@@ -95,7 +136,14 @@ export class WebSocketManager {
     });
 
     ws.on('error', (error: Error) => {
-      console.error('[WebSocket] Connection error:', error.message);
+      this.logger.error(
+        {
+          component: 'websocket',
+          event: 'connection_error',
+          message: error.message,
+        },
+        '[MCPServer][WebSocket] Connection error',
+      );
       this.handleDisconnect(ws);
     });
   }
@@ -112,6 +160,15 @@ export class WebSocketManager {
       ws.send(JSON.stringify(createErrorMessage('Invalid message format', 'INVALID_MESSAGE')));
       return;
     }
+
+    this.logger.debug(
+      {
+        component: 'websocket',
+        event: 'message_received',
+        messageType: message.type,
+      },
+      '[MCPServer][WebSocket] Message received',
+    );
 
     try {
       switch (message.type) {
@@ -152,7 +209,14 @@ export class WebSocketManager {
           ws.send(JSON.stringify(createErrorMessage(`Unknown message type`, 'UNKNOWN_TYPE')));
       }
     } catch (error) {
-      console.error('[WebSocket] Error handling message:', error);
+      this.logger.error(
+        {
+          component: 'websocket',
+          event: 'message_error',
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        '[MCPServer][WebSocket] Error handling message',
+      );
       ws.send(JSON.stringify(createErrorMessage(
         error instanceof Error ? error.message : 'Internal server error',
         'INTERNAL_ERROR'
@@ -166,6 +230,15 @@ export class WebSocketManager {
       this.rejectPendingForSession(connection.sessionId, 'Connection closed before capture completed');
     }
     this.connections.delete(ws);
+    this.logger.info(
+      {
+        component: 'websocket',
+        event: 'connection_closed',
+        sessionId: connection?.sessionId,
+        connections: this.connections.size,
+      },
+      '[MCPServer][WebSocket] Connection closed',
+    );
   }
 
   private resolvePendingCapture(message: CaptureResultMessage): void {
@@ -222,6 +295,17 @@ export class WebSocketManager {
     const commandId = `capture-${Date.now()}-${this.commandCounter++}`;
     const message = createCaptureCommandMessage(commandId, sessionId, command, payload, timeoutMs);
 
+    this.logger.debug(
+      {
+        component: 'websocket',
+        event: 'capture_command_sent',
+        sessionId,
+        command,
+        commandId,
+      },
+      '[MCPServer][WebSocket] Sending capture command',
+    );
+
     return new Promise<CaptureCommandResult>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pendingCaptureRequests.delete(commandId);
@@ -251,7 +335,15 @@ export class WebSocketManager {
       
       for (const [ws, info] of this.connections) {
         if (now - info.lastPingAt > this.PING_INTERVAL_MS + this.PONG_TIMEOUT_MS) {
-          console.log('[WebSocket] Closing stale connection');
+          this.logger.warn(
+            {
+              component: 'websocket',
+              event: 'stale_connection_terminated',
+              sessionId: info.sessionId,
+              idleMs: now - info.lastPingAt,
+            },
+            '[MCPServer][WebSocket] Closing stale connection',
+          );
           ws.terminate();
           this.connections.delete(ws);
         }

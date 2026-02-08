@@ -324,5 +324,5 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
 
 if (typeof window !== 'undefined') {
   installInjectedCapture();
-  console.log('[BrowserDebug] Injected script loaded');
+  console.log('[BrowserDebug][InjectedScript] Loaded');
 }
