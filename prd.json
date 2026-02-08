@@ -95,7 +95,7 @@
       "Create buffering and backpressure handling for events",
       "Add extension popup UI for session control"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "domain core",

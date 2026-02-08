@@ -8,7 +8,16 @@
 <body>
   <div class="container">
     <h1>Browser Debug MCP Bridge</h1>
-    <div id="status">Loading...</div>
+    <div id="status" class="status">Loading...</div>
+    <div class="session-meta">
+      <div><strong>Session:</strong> <span id="session-id">-</span></div>
+      <div><strong>Queue:</strong> <span id="queue-size">0</span></div>
+      <div><strong>Dropped:</strong> <span id="dropped-events">0</span></div>
+    </div>
+    <div class="controls">
+      <button id="start-session" type="button">Start Session</button>
+      <button id="stop-session" type="button">Stop Session</button>
+    </div>
   </div>
   <script type="module" src="popup.js"></script>
 </body>

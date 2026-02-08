@@ -77,3 +77,12 @@
 
 ### Completed: 2026-02-08
 - Verified [Implement WebSocket server for event ingestion] was already complete
+
+### Completed: 2026-02-08
+- [Implement session management in extension] - COMPLETED
+  - Added background session state management and runtime message handlers
+  - Implemented start/stop session flow with generated session IDs
+  - Added extension-to-server WebSocket connection (`ws://127.0.0.1:3000/ws`)
+  - Implemented buffered outbound queue with backpressure and dropped-event tracking
+  - Added popup UI controls for start/stop and live session status display
+  - Added unit tests for session lifecycle and buffering behavior
