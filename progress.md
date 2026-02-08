@@ -94,3 +94,11 @@
   - Hooked `console.warn` and `console.error` in injected script with structured payloads
   - Captured runtime errors from `window.onerror` and promise failures from `unhandledrejection`
   - Added unit tests for content-script navigation/forwarding and injected-script console/error capture
+
+### Completed: 2026-02-08
+- [Implement redaction engine for sensitive data] - COMPLETED
+  - Added token redaction support alongside authorization, JWT, API key, and password redaction patterns
+  - Applied recursive redaction to all outbound extension messages in `SessionManager`
+  - Added `withRedactionSummary` helper and default summary contract for all MCP tool responses
+  - Added unit tests for token pattern redaction, extension outbound-event redaction, and MCP response redaction summaries
+  - Verified full test suite via `pnpm test` (all projects passing)

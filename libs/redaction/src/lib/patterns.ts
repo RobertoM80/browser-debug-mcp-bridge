@@ -33,6 +33,11 @@ export const DEFAULT_REDACTION_RULES: RedactionRule[] = [
     replacement: '$1[API_KEY]',
   },
   {
+    name: 'token',
+    pattern: /((?:access[_-]?token|refresh[_-]?token|token)\s*[:=]\s*)[^\s,;]+/gi,
+    replacement: '$1[TOKEN]',
+  },
+  {
     name: 'password',
     pattern: /((?:password|pwd)\s*[:=]\s*)\S+/gi,
     replacement: '$1[PASSWORD]',

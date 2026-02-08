@@ -119,7 +119,7 @@
       "Add redactionSummary to all MCP tool responses",
       "Write unit tests for redaction patterns"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "domain utilities",

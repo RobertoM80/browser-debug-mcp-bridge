@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { RedactionEngine, redact, redactObject } from './redaction-engine';
-import { DEFAULT_REDACTION_RULES } from './patterns';
 
 describe('redaction-engine', () => {
   describe('RedactionEngine', () => {
@@ -25,6 +24,13 @@ describe('redaction-engine', () => {
       const result = engine.redact('api_key: sk-1234567890abcdef');
       expect(result.redacted).toBe(true);
       expect(result.value).toBe('api_key: [API_KEY]');
+    });
+
+    it('should redact generic tokens', () => {
+      const engine = new RedactionEngine();
+      const result = engine.redact('token: secret-token-value');
+      expect(result.redacted).toBe(true);
+      expect(result.value).toBe('token: [TOKEN]');
     });
 
     it('should not redact safe content', () => {

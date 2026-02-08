@@ -1,3 +1,5 @@
+import { RedactionEngine } from '../../../libs/redaction/src';
+
 export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
 
 export interface SessionStartContext {
@@ -54,6 +56,7 @@ interface SessionManagerOptions {
   createSessionId?: () => string;
   createWebSocket?: (url: string) => WebSocketLike;
   now?: () => number;
+  redactionEngine?: RedactionEngine;
 }
 
 const WS_CONNECTING = 0;
@@ -65,6 +68,7 @@ export class SessionManager {
   private readonly createSessionId: () => string;
   private readonly createWebSocket: (url: string) => WebSocketLike;
   private readonly now: () => number;
+  private readonly redactionEngine: RedactionEngine;
 
   private ws: WebSocketLike | null = null;
   private buffer: OutboundMessage[] = [];
@@ -79,6 +83,7 @@ export class SessionManager {
     this.createSessionId = options.createSessionId ?? (() => `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
     this.createWebSocket = options.createWebSocket ?? ((url) => new WebSocket(url));
     this.now = options.now ?? (() => Date.now());
+    this.redactionEngine = options.redactionEngine ?? new RedactionEngine();
   }
 
   startSession(context: SessionStartContext): SessionState {
@@ -172,13 +177,20 @@ export class SessionManager {
   }
 
   private enqueueMessage(message: OutboundMessage): void {
+    const sanitizedMessage = this.redactOutboundMessage(message);
+
     if (this.buffer.length >= this.maxBufferSize) {
       this.buffer.shift();
       this.droppedEvents += 1;
     }
 
-    this.buffer.push(message);
+    this.buffer.push(sanitizedMessage);
     this.flushBuffer();
+  }
+
+  private redactOutboundMessage(message: OutboundMessage): OutboundMessage {
+    const { result } = this.redactionEngine.redactObject(message as unknown as Record<string, unknown>);
+    return result as unknown as OutboundMessage;
   }
 
   private flushBuffer(): void {

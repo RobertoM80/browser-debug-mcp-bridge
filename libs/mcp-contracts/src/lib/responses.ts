@@ -1,13 +1,31 @@
+export interface RedactionSummary {
+  totalFields: number;
+  redactedFields: number;
+  rulesApplied: string[];
+}
+
+export const DEFAULT_REDACTION_SUMMARY: RedactionSummary = {
+  totalFields: 0,
+  redactedFields: 0,
+  rulesApplied: [],
+};
+
 export interface BaseResponse {
   sessionId?: string;
   limitsApplied?: {
     maxResults?: number;
     truncated?: boolean;
   };
-  redactionSummary?: {
-    totalFields: number;
-    redactedFields: number;
-    rulesApplied: string[];
+  redactionSummary: RedactionSummary;
+}
+
+export function withRedactionSummary<T extends Omit<BaseResponse, 'redactionSummary'>>(
+  response: T,
+  redactionSummary: RedactionSummary = DEFAULT_REDACTION_SUMMARY
+): T & Pick<BaseResponse, 'redactionSummary'> {
+  return {
+    ...response,
+    redactionSummary,
   };
 }
 

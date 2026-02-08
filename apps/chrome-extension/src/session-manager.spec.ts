@@ -112,4 +112,41 @@ describe('SessionManager', () => {
     const accepted = manager.queueEvent('console', { level: 'error' });
     expect(accepted).toBe(false);
   });
+
+  it('redacts sensitive data in outbound events', () => {
+    const ws = new MockWebSocket();
+    const manager = new SessionManager({
+      createSessionId: () => 'session-4',
+      createWebSocket: () => ws,
+      now: () => 1700000000000,
+    });
+
+    manager.startSession({ url: 'https://example.com' });
+    ws.open();
+    ws.sentMessages.length = 0;
+
+    manager.queueEvent('console', {
+      auth: 'Authorization: Bearer token123',
+      jwt: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
+      apiKey: 'api_key: sk-abcdef',
+      token: 'token: top-secret',
+      password: 'password: super-secret',
+    });
+
+    const sent = JSON.parse(ws.sentMessages[0]) as {
+      data: {
+        auth: string;
+        jwt: string;
+        apiKey: string;
+        token: string;
+        password: string;
+      };
+    };
+
+    expect(sent.data.auth).toBe('Authorization: Bearer [REDACTED]');
+    expect(sent.data.jwt).toBe('[JWT_TOKEN]');
+    expect(sent.data.apiKey).toBe('api_key: [API_KEY]');
+    expect(sent.data.token).toBe('token: [TOKEN]');
+    expect(sent.data.password).toBe('password: [PASSWORD]');
+  });
 });
