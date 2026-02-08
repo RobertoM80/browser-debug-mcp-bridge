@@ -8,6 +8,46 @@ export interface BridgePayload {
   data: Record<string, unknown>;
 }
 
+function getClickableTarget(event: Event): Element | null {
+  const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+  const firstPathTarget = path.find((entry) => entry instanceof Element);
+  if (firstPathTarget instanceof Element) {
+    return firstPathTarget;
+  }
+
+  if (event.target instanceof Element) {
+    return event.target;
+  }
+
+  return null;
+}
+
+function cssEscape(value: string): string {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(value);
+  }
+  return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+}
+
+function getClickSelector(target: Element): string | null {
+  if (target.id) {
+    return `#${cssEscape(target.id)}`;
+  }
+
+  const testId = target.getAttribute('data-testid');
+  if (testId) {
+    return `[data-testid="${cssEscape(testId)}"]`;
+  }
+
+  const classes = Array.from(target.classList).filter((entry) => !/^\d/.test(entry));
+  if (classes.length > 0) {
+    return `${target.tagName.toLowerCase()}.${cssEscape(classes[0])}`;
+  }
+
+  const tagName = target.tagName.toLowerCase();
+  return tagName || null;
+}
+
 interface ContentCaptureOptions {
   win?: Window;
   runtime?: RuntimeMessenger;
@@ -74,6 +114,22 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
 
     sendToBackground(runtime, payload.eventType, payload.data);
   };
+  const onClick = (event: MouseEvent): void => {
+    const target = getClickableTarget(event);
+    if (!target) {
+      return;
+    }
+
+    const selector = getClickSelector(target);
+    if (!selector) {
+      return;
+    }
+
+    sendToBackground(runtime, 'click', {
+      selector,
+      timestamp: Date.now(),
+    });
+  };
 
   win.history.pushState = function pushState(...args: Parameters<History['pushState']>): void {
     originalPushState(...args);
@@ -88,6 +144,7 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
   win.addEventListener('popstate', onPopState);
   win.addEventListener('hashchange', onHashChange);
   win.addEventListener('message', onMessage);
+  win.addEventListener('click', onClick, true);
 
   sendToBackground(runtime, 'navigation', {
     from: null,
@@ -102,6 +159,7 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
     win.removeEventListener('popstate', onPopState);
     win.removeEventListener('hashchange', onHashChange);
     win.removeEventListener('message', onMessage);
+    win.removeEventListener('click', onClick, true);
   };
 }
 

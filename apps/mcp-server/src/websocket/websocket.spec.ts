@@ -349,6 +349,35 @@ describe('WebSocket Server', () => {
       ws.close();
     });
 
+    it('should store click events as user journey records', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      await new Promise<void>(resolve => ws.on('open', resolve));
+
+      const eventMessage: EventMessage = {
+        type: 'event',
+        sessionId: 'event-test-session',
+        eventType: 'click',
+        data: {
+          selector: '#purchase-button',
+          timestamp: Date.now(),
+        },
+        timestamp: Date.now(),
+      };
+
+      ws.send(JSON.stringify(eventMessage));
+      await wait(100);
+
+      const { db } = global.testDbConn!;
+      const events = db.prepare('SELECT * FROM events WHERE session_id = ? AND type = ?').all('event-test-session', 'ui') as { payload_json: string }[];
+
+      expect(events.length).toBeGreaterThan(0);
+      const payload = JSON.parse(events[0].payload_json);
+      expect(payload.selector).toBe('#purchase-button');
+      expect(typeof payload.timestamp).toBe('number');
+
+      ws.close();
+    });
+
     it('should store error events and create fingerprint', async () => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
       await new Promise<void>(resolve => ws.on('open', resolve));

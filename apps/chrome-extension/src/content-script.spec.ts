@@ -62,4 +62,53 @@ describe('content-script capture', () => {
     expect(forwarded).toBeDefined();
     cleanup();
   });
+
+  it('captures click events with selector and timestamp', () => {
+    document.body.innerHTML = '<button id="cta-button">Click me</button>';
+    const sendMessage = vi.fn((_message: unknown, callback?: () => void) => {
+      callback?.();
+    });
+    const cleanup = installContentCapture({ runtime: createRuntimeMock(sendMessage) });
+
+    const button = document.getElementById('cta-button');
+    expect(button).toBeTruthy();
+    button!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    const clickCall = sendMessage.mock.calls.find((entry: unknown[]) => {
+      const message = entry[0] as { eventType?: string };
+      return message.eventType === 'click';
+    });
+
+    expect(clickCall).toBeDefined();
+    const payload = clickCall![0] as { data: { selector: string; timestamp: number } };
+    expect(payload.data.selector).toBe('#cta-button');
+    expect(typeof payload.data.timestamp).toBe('number');
+
+    cleanup();
+  });
+
+  it('does not include typed text or values in click payload', () => {
+    document.body.innerHTML = '<input id="secret-input" value="my-secret" />';
+    const sendMessage = vi.fn((_message: unknown, callback?: () => void) => {
+      callback?.();
+    });
+    const cleanup = installContentCapture({ runtime: createRuntimeMock(sendMessage) });
+
+    const input = document.getElementById('secret-input');
+    expect(input).toBeTruthy();
+    input!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    const clickCall = sendMessage.mock.calls.find((entry: unknown[]) => {
+      const message = entry[0] as { eventType?: string };
+      return message.eventType === 'click';
+    });
+
+    expect(clickCall).toBeDefined();
+    const payload = clickCall![0] as { data: Record<string, unknown> };
+    expect(payload.data.selector).toBe('#secret-input');
+    expect(payload.data.value).toBeUndefined();
+    expect(payload.data.typedText).toBeUndefined();
+
+    cleanup();
+  });
 });

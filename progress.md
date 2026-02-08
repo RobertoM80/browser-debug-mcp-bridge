@@ -130,3 +130,11 @@
   - Verified aggregation increments count for repeated errors while keeping sample message/stack
   - Added unit tests for fingerprint stability, stack sensitivity, and repository aggregation behavior
   - Ran `pnpm test` successfully (all projects passing)
+
+### Completed: 2026-02-08
+- [Capture minimal user journey events] - COMPLETED
+  - Added click capture in content script with selector generation and timestamp-only payloads
+  - Forwarded click events through existing `SESSION_QUEUE_EVENT` flow to background/session WebSocket pipeline
+  - Verified no typed text or input values are captured in click payloads
+  - Added unit tests for click capture payload shape and sensitive-value exclusion
+  - Added WebSocket integration test to verify click events persist in SQLite `events` as user journey data

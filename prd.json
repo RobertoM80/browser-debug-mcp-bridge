@@ -179,7 +179,7 @@
       "Send user events to server via WebSocket",
       "Verify user journey events are persisted"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "MCP tools",
