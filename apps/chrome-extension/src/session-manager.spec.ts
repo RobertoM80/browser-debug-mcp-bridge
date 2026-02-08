@@ -87,6 +87,34 @@ describe('SessionManager', () => {
     expect(state.droppedEvents).toBe(2);
   });
 
+  it('sends queued events as batches when connection opens', () => {
+    const ws = new MockWebSocket();
+    const manager = new SessionManager({
+      createSessionId: () => 'session-batch',
+      createWebSocket: () => ws,
+      maxBatchSize: 10,
+    });
+
+    manager.startSession({ url: 'https://example.com' });
+    manager.queueEvent('console', { level: 'warn' });
+    manager.queueEvent('navigation', { to: 'https://example.com/next' });
+    manager.queueEvent('click', { selector: '#buy' });
+
+    ws.open();
+
+    expect(ws.sentMessages).toHaveLength(2);
+    const batch = JSON.parse(ws.sentMessages[1]) as {
+      type: string;
+      sessionId: string;
+      events: Array<{ eventType: string }>;
+    };
+
+    expect(batch.type).toBe('event_batch');
+    expect(batch.sessionId).toBe('session-batch');
+    expect(batch.events).toHaveLength(3);
+    expect(batch.events.map((event) => event.eventType)).toEqual(['console', 'navigation', 'click']);
+  });
+
   it('sends session_end when stopping an active session', () => {
     const ws = new MockWebSocket();
     const manager = new SessionManager({

@@ -17,6 +17,7 @@ import type {
   PingMessage,
   PongMessage,
   EventMessage,
+  EventBatchMessage,
   SessionStartMessage,
   SessionEndMessage,
   ErrorMessage,
@@ -460,6 +461,53 @@ describe('WebSocket Server', () => {
       expect(networkEvents[0].url).toBe('https://api.example.com/data');
       expect(networkEvents[0].status).toBe(200);
       expect(networkEvents[0].duration_ms).toBe(150);
+
+      ws.close();
+    });
+
+    it('should ingest event batches and persist all events', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      await new Promise<void>(resolve => ws.on('open', resolve));
+
+      const batchMessage: EventBatchMessage = {
+        type: 'event_batch',
+        sessionId: 'event-test-session',
+        timestamp: Date.now(),
+        events: [
+          {
+            eventType: 'console',
+            data: { level: 'warn', message: 'batch warn' },
+            timestamp: Date.now(),
+          },
+          {
+            eventType: 'click',
+            data: { selector: '#batch-button', timestamp: Date.now() },
+            timestamp: Date.now(),
+          },
+          {
+            eventType: 'network',
+            data: {
+              method: 'GET',
+              url: 'https://api.example.com/batch',
+              status: 500,
+              duration: 12,
+              initiator: 'fetch',
+              errorType: 'http_error',
+            },
+            timestamp: Date.now(),
+          },
+        ],
+      };
+
+      ws.send(JSON.stringify(batchMessage));
+      await wait(120);
+
+      const { db } = global.testDbConn!;
+      const eventCount = db.prepare('SELECT COUNT(*) as count FROM events WHERE session_id = ?').get('event-test-session') as { count: number };
+      const networkCount = db.prepare('SELECT COUNT(*) as count FROM network WHERE session_id = ?').get('event-test-session') as { count: number };
+
+      expect(eventCount.count).toBeGreaterThanOrEqual(3);
+      expect(networkCount.count).toBeGreaterThanOrEqual(1);
 
       ws.close();
     });

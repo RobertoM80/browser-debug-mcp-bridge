@@ -199,3 +199,12 @@
 
 ### Completed: 2026-02-08
 - Verified [Create integration test suite for end-to-end flow] was already complete
+
+### Completed: 2026-02-08
+- [Optimize event buffering and backpressure] - COMPLETED
+  - Added extension-side event batching in `SessionManager` with configurable batch size and `[mcpdbg] sent batch size=N dropped=M` debug logging
+  - Preserved backpressure behavior with bounded queue + oldest-event dropping and warning logs when drops occur
+  - Added WebSocket protocol support for `event_batch` messages and server-side ingestion handling
+  - Added batched SQLite writes using a single transaction per batch via `EventsRepository.insertEventsBatch`
+  - Added/updated unit and integration tests for extension batch emission and server batch ingestion/persistence
+  - Measured verification by running `pnpm test` (all 6 projects passing, 107 tests total)

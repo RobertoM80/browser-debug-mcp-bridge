@@ -289,7 +289,7 @@
       "Optimize database writes with batching",
       "Measure and document performance characteristics"
     ],
-    "passes": false
+    "passes": true
   },
   {
     "category": "performance/polish",

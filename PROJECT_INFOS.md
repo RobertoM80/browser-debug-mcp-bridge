@@ -231,6 +231,12 @@ Specific:
   - `GET /health` (OK + db connected)
   - `GET /stats` (dev only: sessions, events, backlog)
 
+### Performance characteristics (current defaults)
+- Extension queue limit: `200` events per session manager instance
+- Extension batch size: up to `20` events sent in one `event_batch` WebSocket message
+- Backpressure strategy: drop oldest queued event when at capacity, increment dropped counter, emit warning log
+- Server ingest path: batch inserts run in one SQLite transaction for reduced write overhead
+
 ---
 
 ## 9) Data model (SQLite) – conceptual

@@ -13,6 +13,7 @@ export const WebSocketMessageTypeSchema = z.enum([
   'ping',
   'pong',
   'event',
+  'event_batch',
   'session_start',
   'session_end',
   'capture_command',
@@ -45,6 +46,16 @@ export const EventMessageSchema = BaseWebSocketMessageSchema.extend({
   sessionId: z.string(),
   eventType: EventTypeSchema,
   data: z.record(z.string(), z.unknown()),
+});
+
+export const EventBatchMessageSchema = BaseWebSocketMessageSchema.extend({
+  type: z.literal('event_batch'),
+  sessionId: z.string(),
+  events: z.array(z.object({
+    eventType: EventTypeSchema,
+    data: z.record(z.string(), z.unknown()),
+    timestamp: z.number().optional(),
+  })).min(1).max(100),
 });
 
 export const SessionStartMessageSchema = BaseWebSocketMessageSchema.extend({
@@ -96,6 +107,7 @@ export const WebSocketMessageSchema = z.discriminatedUnion('type', [
   PingMessageSchema,
   PongMessageSchema,
   EventMessageSchema,
+  EventBatchMessageSchema,
   SessionStartMessageSchema,
   SessionEndMessageSchema,
   CaptureCommandMessageSchema,
@@ -107,6 +119,7 @@ export type WebSocketMessage = z.infer<typeof WebSocketMessageSchema>;
 export type PingMessage = z.infer<typeof PingMessageSchema>;
 export type PongMessage = z.infer<typeof PongMessageSchema>;
 export type EventMessage = z.infer<typeof EventMessageSchema>;
+export type EventBatchMessage = z.infer<typeof EventBatchMessageSchema>;
 export type SessionStartMessage = z.infer<typeof SessionStartMessageSchema>;
 export type SessionEndMessage = z.infer<typeof SessionEndMessageSchema>;
 export type CaptureCommand = z.infer<typeof CaptureCommandSchema>;

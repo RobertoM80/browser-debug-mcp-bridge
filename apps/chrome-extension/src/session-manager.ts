@@ -74,12 +74,26 @@ interface OutboundMessage {
   data?: Record<string, unknown>;
 }
 
+interface OutboundEventPayload {
+  eventType: string;
+  data: Record<string, unknown>;
+  timestamp: number;
+}
+
+interface EventBatchMessage {
+  type: 'event_batch';
+  sessionId: string;
+  timestamp: number;
+  events: OutboundEventPayload[];
+}
+
 interface SessionManagerOptions {
   wsUrl?: string;
   maxBufferSize?: number;
   createSessionId?: () => string;
   createWebSocket?: (url: string) => WebSocketLike;
   now?: () => number;
+  maxBatchSize?: number;
   redactionEngine?: RedactionEngine;
   handleCaptureCommand?: CaptureCommandHandler;
 }
@@ -93,6 +107,7 @@ export class SessionManager {
   private readonly createSessionId: () => string;
   private readonly createWebSocket: (url: string) => WebSocketLike;
   private readonly now: () => number;
+  private readonly maxBatchSize: number;
   private readonly redactionEngine: RedactionEngine;
   private readonly handleCaptureCommand?: CaptureCommandHandler;
 
@@ -109,6 +124,7 @@ export class SessionManager {
     this.createSessionId = options.createSessionId ?? (() => `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
     this.createWebSocket = options.createWebSocket ?? ((url) => new WebSocket(url));
     this.now = options.now ?? (() => Date.now());
+    this.maxBatchSize = options.maxBatchSize ?? 20;
     this.redactionEngine = options.redactionEngine ?? new RedactionEngine();
     this.handleCaptureCommand = options.handleCaptureCommand;
   }
@@ -321,6 +337,7 @@ export class SessionManager {
     if (this.buffer.length >= this.maxBufferSize) {
       this.buffer.shift();
       this.droppedEvents += 1;
+      console.warn(`[mcpdbg] dropped oldest queued event; total dropped=${this.droppedEvents}`);
     }
 
     this.buffer.push(sanitizedMessage);
@@ -338,10 +355,53 @@ export class SessionManager {
     }
 
     while (this.buffer.length > 0) {
-      const next = this.buffer.shift();
+      const next = this.buffer[0];
       if (!next) {
         return;
       }
+
+      if (next.type === 'event') {
+        const eventBatch: OutboundEventPayload[] = [];
+        while (this.buffer.length > 0 && eventBatch.length < this.maxBatchSize) {
+          const candidate = this.buffer[0];
+          if (!candidate || candidate.type !== 'event' || !candidate.eventType || !candidate.data) {
+            break;
+          }
+
+          this.buffer.shift();
+          eventBatch.push({
+            eventType: candidate.eventType,
+            data: candidate.data,
+            timestamp: candidate.timestamp,
+          });
+        }
+
+        if (eventBatch.length >= 2) {
+          const batchMessage: EventBatchMessage = {
+            type: 'event_batch',
+            sessionId: next.sessionId,
+            timestamp: this.now(),
+            events: eventBatch,
+          };
+          this.ws.send(JSON.stringify(batchMessage));
+          console.debug(`[mcpdbg] sent batch size=${eventBatch.length} dropped=${this.droppedEvents}`);
+          continue;
+        }
+
+        const single = eventBatch[0];
+        if (single) {
+          this.ws.send(JSON.stringify({
+            type: 'event',
+            sessionId: next.sessionId,
+            eventType: single.eventType,
+            data: single.data,
+            timestamp: single.timestamp,
+          }));
+          continue;
+        }
+      }
+
+      this.buffer.shift();
       this.ws.send(JSON.stringify(next));
     }
   }

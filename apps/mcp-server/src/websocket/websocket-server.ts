@@ -7,6 +7,7 @@ import {
   createCaptureCommandMessage,
   CaptureCommand,
   CaptureResultMessage,
+  EventBatchMessage,
 } from './messages';
 import { EventsRepository } from '../db/events-repository';
 import { getConnection } from '../db/connection';
@@ -201,6 +202,14 @@ export class WebSocketManager {
           this.getRepository().insertEvent(message);
           break;
 
+        case 'event_batch':
+          if (!this.getRepository().sessionExists(message.sessionId)) {
+            ws.send(JSON.stringify(createErrorMessage('Session not found', 'SESSION_NOT_FOUND')));
+            return;
+          }
+          this.getRepository().insertEventsBatch(this.toEventMessages(message));
+          break;
+
         case 'capture_result':
           this.resolvePendingCapture(message);
           break;
@@ -239,6 +248,16 @@ export class WebSocketManager {
       },
       '[MCPServer][WebSocket] Connection closed',
     );
+  }
+
+  private toEventMessages(message: EventBatchMessage) {
+    return message.events.map((event) => ({
+      type: 'event' as const,
+      sessionId: message.sessionId,
+      eventType: event.eventType,
+      data: event.data,
+      timestamp: event.timestamp ?? message.timestamp ?? Date.now(),
+    }));
   }
 
   private resolvePendingCapture(message: CaptureResultMessage): void {
