@@ -217,3 +217,13 @@
   - Added `docs/TROUBLESHOOTING.md` with startup, connection, testing, and diagnostics guidance
   - Added `docs/ARCHITECTURE_DECISIONS.md` to record key architectural decisions and tradeoffs
   - Added unit tests in `libs/shared/src/lib/documentation.spec.ts` to verify required docs exist and contain expected content
+
+### Completed: 2026-02-08
+- [Build full and comprehensive documentation platform with Docusaurus using a GitHub Docs-style structure] - COMPLETED
+  - Added Nx `docs` application in `apps/docs` with serve/build/lint/ci targets
+  - Added Docusaurus configuration with generated sidebars, local full-text search, and custom theming
+  - Added structured docs sections: Getting Started, Architecture, MCP Tools, Extension, Server, Security & Privacy, Testing, Troubleshooting, FAQ, and Contributing
+  - Migrated project and tool guidance into docs pages and linked troubleshooting plus workflow playbooks
+  - Added reusable MDX components for note, warning, and limit callouts
+  - Added docs quality gates with markdown linting, internal link checking, and CI docs verification target
+  - Added documentation unit test coverage for Docusaurus platform presence and core page content

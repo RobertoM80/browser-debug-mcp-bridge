@@ -53,4 +53,26 @@ describe('project documentation', () => {
     expect(troubleshootingContent).toContain('## Extension cannot connect to server');
     expect(architectureDecisionsContent).toContain('## AD-003: Light telemetry always-on, heavy capture on-demand');
   });
+
+  it('should include a Docusaurus documentation platform with core sections', () => {
+    const docsProject = resolve(root, 'apps/docs/project.json');
+    const docsConfig = resolve(root, 'apps/docs/docusaurus.config.ts');
+    const docsIntro = resolve(root, 'apps/docs/docs/intro.md');
+    const docsTools = resolve(root, 'apps/docs/docs/mcp-tools/overview.md');
+    const docsSecurity = resolve(root, 'apps/docs/docs/security-privacy/controls.md');
+
+    expect(existsSync(docsProject)).toBe(true);
+    expect(existsSync(docsConfig)).toBe(true);
+    expect(existsSync(docsIntro)).toBe(true);
+    expect(existsSync(docsTools)).toBe(true);
+    expect(existsSync(docsSecurity)).toBe(true);
+
+    const introContent = read('apps/docs/docs/intro.md');
+    const toolsContent = read('apps/docs/docs/mcp-tools/overview.md');
+    const securityContent = read('apps/docs/docs/security-privacy/controls.md');
+
+    expect(introContent).toContain('Browser Debug MCP Bridge Documentation');
+    expect(toolsContent).toContain('V1 query tools');
+    expect(securityContent).toContain('Safe mode is ON by default');
+  });
 });
