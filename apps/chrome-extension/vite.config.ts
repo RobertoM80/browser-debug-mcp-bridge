@@ -7,6 +7,8 @@ export default defineConfig({
   build: {
     outDir: '../../dist/apps/chrome-extension',
     emptyOutDir: true,
+    copyPublicDir: true,
+    manifest: false,
     rollupOptions: {
       input: {
         'content-script': path.resolve(__dirname, 'src/content-script.ts'),

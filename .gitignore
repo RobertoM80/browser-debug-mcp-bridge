@@ -45,3 +45,6 @@ thumbs.db
 
 # Backup
 .ralph_backup/
+
+# Docusaurus
+**/.docusaurus/
