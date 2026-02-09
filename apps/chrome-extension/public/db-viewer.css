@@ -1,0 +1,147 @@
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+  background: linear-gradient(180deg, #f5f8ff, #eef3f8);
+  color: #1d1d1d;
+}
+
+.page {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.panel {
+  width: min(1200px, 100%);
+  background: #fff;
+  border: 1px solid #d8deea;
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(20, 38, 70, 0.08);
+  padding: 16px;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.autorefresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #405274;
+}
+
+.panel-header h1 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.session-row {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: 8px;
+  align-items: center;
+}
+
+.status {
+  margin-top: 8px;
+  min-height: 18px;
+  font-size: 13px;
+  color: #4f5f7a;
+}
+
+.diag {
+  min-height: 18px;
+  font-size: 12px;
+  color: #6c7f9d;
+}
+
+.filter-bar {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.filter-btn {
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.filter-btn.is-active {
+  background: #e8f0ff;
+  border-color: #7f9ddb;
+}
+
+.table-wrap {
+  margin-top: 12px;
+  max-height: 70vh;
+  overflow: auto;
+  border: 1px solid #dde3ef;
+  border-radius: 8px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+th,
+td {
+  padding: 8px;
+  border-bottom: 1px solid #edf1f6;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  position: sticky;
+  top: 0;
+  background: #f8fbff;
+}
+
+.summary {
+  max-width: 560px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.expanded pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11px;
+}
+
+.actions {
+  margin-top: 10px;
+}
+
+button,
+select {
+  border: 1px solid #b6c0d3;
+  border-radius: 6px;
+  background: #fff;
+  padding: 8px;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

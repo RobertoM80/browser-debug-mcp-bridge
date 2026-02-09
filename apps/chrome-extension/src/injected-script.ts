@@ -1,10 +1,18 @@
-import { BRIDGE_KIND, BRIDGE_SOURCE, BridgePayload } from './content-script';
+const BRIDGE_SOURCE = 'browser-debug-mcp-bridge';
+const BRIDGE_KIND = 'bridge-event';
+
+interface BridgePayload {
+  source: string;
+  kind: string;
+  eventType: string;
+  data: Record<string, unknown>;
+}
 
 interface InjectedCaptureOptions {
   win?: Window;
 }
 
-type ConsoleLevel = 'warn' | 'error';
+type ConsoleLevel = 'log' | 'warn' | 'error';
 
 type NetworkErrorType = 'timeout' | 'cors' | 'dns' | 'blocked' | 'http_error';
 
@@ -139,6 +147,7 @@ function extractErrorDetails(reason: unknown): { message: string; stack?: string
 export function installInjectedCapture(options: InjectedCaptureOptions = {}): () => void {
   const win = options.win ?? window;
   const winWithXhr = win as Window & { XMLHttpRequest?: typeof XMLHttpRequest };
+  const originalLog = console.log;
   const originalWarn = console.warn;
   const originalError = console.error;
   const originalFetch = win.fetch ? win.fetch.bind(win) : undefined;
@@ -157,16 +166,20 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
     win.postMessage(payload, '*');
   };
 
-  const hookConsole = (level: ConsoleLevel, originalFn: typeof console.warn): typeof console.warn => {
-    return (...args: unknown[]): void => {
+  const hookConsole = <T extends (...args: unknown[]) => void>(
+    level: ConsoleLevel,
+    originalFn: T
+  ): T => {
+    const wrapped = (...args: unknown[]): void => {
       emit('console', {
         level,
         args: args.map(serializeArg),
         message: args.map((entry) => String(entry)).join(' '),
         timestamp: Date.now(),
       });
-      originalFn.apply(console, args as Parameters<typeof console.warn>);
+      originalFn.apply(console, args);
     };
+    return wrapped as T;
   };
 
   const onRuntimeError = (event: ErrorEvent): void => {
@@ -302,12 +315,20 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
     };
   }
 
+  console.log = hookConsole('log', originalLog);
   console.warn = hookConsole('warn', originalWarn);
   console.error = hookConsole('error', originalError);
   win.addEventListener('error', onRuntimeError);
   win.addEventListener('unhandledrejection', onUnhandledRejection);
 
+  emit('custom', {
+    marker: 'injected_script_loaded',
+    url: win.location.href,
+    timestamp: Date.now(),
+  });
+
   return () => {
+    console.log = originalLog;
     console.warn = originalWarn;
     console.error = originalError;
     if (originalFetch) {
@@ -323,6 +344,10 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
 }
 
 if (typeof window !== 'undefined') {
-  installInjectedCapture();
+  const guard = window as Window & { __BDMCP_INJECTED_CAPTURE_INSTALLED__?: boolean };
+  if (!guard.__BDMCP_INJECTED_CAPTURE_INSTALLED__) {
+    guard.__BDMCP_INJECTED_CAPTURE_INSTALLED__ = true;
+    installInjectedCapture();
+  }
   console.log('[BrowserDebug][InjectedScript] Loaded');
 }

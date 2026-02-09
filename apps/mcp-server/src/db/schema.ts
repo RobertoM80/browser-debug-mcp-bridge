@@ -1,6 +1,6 @@
 import { Database } from 'better-sqlite3';
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 export const CREATE_TABLES_SQL = `
 -- Sessions table
@@ -17,11 +17,34 @@ CREATE TABLE IF NOT EXISTS sessions (
   viewport_h INTEGER,
   dpr REAL,
   safe_mode INTEGER NOT NULL DEFAULT 0,
-  allowlist_hash TEXT
+  allowlist_hash TEXT,
+  pinned INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_ended_at ON sessions(ended_at);
+CREATE INDEX IF NOT EXISTS idx_sessions_pinned_created_at ON sessions(pinned, created_at);
+
+-- Server settings table
+CREATE TABLE IF NOT EXISTS server_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  retention_days INTEGER NOT NULL DEFAULT 30,
+  max_db_mb INTEGER NOT NULL DEFAULT 1024,
+  max_sessions INTEGER NOT NULL DEFAULT 10000,
+  cleanup_interval_minutes INTEGER NOT NULL DEFAULT 60,
+  last_cleanup_at INTEGER,
+  export_path_override TEXT
+);
+
+INSERT OR IGNORE INTO server_settings (
+  id,
+  retention_days,
+  max_db_mb,
+  max_sessions,
+  cleanup_interval_minutes,
+  last_cleanup_at,
+  export_path_override
+) VALUES (1, 30, 1024, 10000, 60, NULL, NULL);
 
 -- Events table
 CREATE TABLE IF NOT EXISTS events (
@@ -106,6 +129,7 @@ export function clearDatabase(db: Database): void {
     DELETE FROM network;
     DELETE FROM events;
     DELETE FROM sessions;
+    DELETE FROM server_settings;
     DELETE FROM schema_version;
   `);
 }

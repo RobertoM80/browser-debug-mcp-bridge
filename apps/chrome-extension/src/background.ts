@@ -14,11 +14,30 @@ type RuntimeRequest =
   | { type: 'SESSION_STOP' }
   | { type: 'SESSION_QUEUE_EVENT'; eventType: string; data: Record<string, unknown> }
   | { type: 'SESSION_GET_CONFIG' }
-  | { type: 'SESSION_UPDATE_CONFIG'; config: CaptureConfig };
+  | { type: 'SESSION_UPDATE_CONFIG'; config: CaptureConfig }
+  | { type: 'RETENTION_GET_SETTINGS' }
+  | {
+      type: 'RETENTION_UPDATE_SETTINGS';
+      settings: Partial<{
+        retentionDays: number;
+        maxDbMb: number;
+        maxSessions: number;
+        cleanupIntervalMinutes: number;
+        exportPathOverride: string | null;
+      }>;
+    }
+  | { type: 'RETENTION_RUN_CLEANUP' }
+  | { type: 'SESSION_PIN'; sessionId: string; pinned: boolean }
+  | { type: 'SESSION_EXPORT'; sessionId: string }
+  | { type: 'SESSION_GET_DB_ENTRIES'; sessionId: string; limit: number; offset: number }
+  | { type: 'SESSION_LIST_RECENT'; limit: number; offset: number }
+  | { type: 'SESSION_CAPTURE_DIAGNOSTICS' };
 
 type RuntimeResponse =
   | { ok: true; state: SessionState; accepted?: boolean }
   | { ok: true; config: CaptureConfig }
+  | { ok: true; retention: unknown; lastCleanup?: unknown }
+  | { ok: true; result: unknown }
   | { ok: false; error: string };
 
 interface CaptureTabResponse {
@@ -26,6 +45,11 @@ interface CaptureTabResponse {
   result?: Record<string, unknown>;
   truncated?: boolean;
   error?: string;
+}
+
+interface CapturePingResponse {
+  ok: boolean;
+  type?: 'CAPTURE_PONG';
 }
 
 async function executeCaptureCommand(
@@ -77,6 +101,20 @@ const sessionManager = new SessionManager({
 });
 const LOG_PREFIX = '[BrowserDebug][Background]';
 let captureConfig: CaptureConfig = { ...DEFAULT_CAPTURE_CONFIG };
+const SERVER_BASE_URL = 'http://127.0.0.1:3000';
+const captureDiagnostics = {
+  received: 0,
+  accepted: 0,
+  rejectedAllowlist: 0,
+  rejectedSafeMode: 0,
+  rejectedInactive: 0,
+  lastEventType: '',
+  lastSenderUrl: '',
+  lastUpdatedAt: 0,
+  contentScriptReady: false,
+  fallbackInjected: false,
+  lastInjectError: '',
+};
 
 void loadCaptureConfig(chrome.storage.local).then((loaded) => {
   captureConfig = loaded;
@@ -85,6 +123,70 @@ void loadCaptureConfig(chrome.storage.local).then((loaded) => {
 async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   return tabs[0];
+}
+
+async function pingContentScript(tabId: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    chrome.tabs.sendMessage(tabId, { type: 'CAPTURE_PING' }, (response?: CapturePingResponse) => {
+      if (chrome.runtime.lastError) {
+        resolve(false);
+        return;
+      }
+
+      resolve(Boolean(response?.ok));
+    });
+  });
+}
+
+async function injectContentScriptFallback(tabId: number): Promise<boolean> {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      files: ['content-script.js'],
+      world: 'ISOLATED',
+    });
+    captureDiagnostics.fallbackInjected = true;
+    captureDiagnostics.lastInjectError = '';
+    return true;
+  } catch (error) {
+    captureDiagnostics.lastInjectError = error instanceof Error ? error.message : String(error);
+    console.warn(`${LOG_PREFIX} Failed fallback content-script injection`, error);
+    return false;
+  }
+}
+
+async function ensureContentScriptReady(tabId: number): Promise<boolean> {
+  const initial = await pingContentScript(tabId);
+  if (initial) {
+    captureDiagnostics.contentScriptReady = true;
+    return true;
+  }
+
+  const injected = await injectContentScriptFallback(tabId);
+  if (!injected) {
+    captureDiagnostics.contentScriptReady = false;
+    return false;
+  }
+
+  const afterInject = await pingContentScript(tabId);
+  captureDiagnostics.contentScriptReady = afterInject;
+  return afterInject;
+}
+
+async function fetchServer(path: string, init?: RequestInit): Promise<Record<string, unknown>> {
+  const response = await fetch(`${SERVER_BASE_URL}${path}`, {
+    ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init?.headers ?? {}),
+    },
+  });
+
+  const payload = (await response.json()) as Record<string, unknown>;
+  if (!response.ok) {
+    throw new Error((payload.error as string) ?? `Server error (${response.status})`);
+  }
+  return payload;
 }
 
 function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSender): Promise<RuntimeResponse> {
@@ -108,7 +210,7 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
 
     case 'SESSION_START': {
       return getActiveTab()
-        .then((tab) => {
+        .then(async (tab) => {
           const screenWidth = tab?.width ?? globalThis.screen?.width ?? 0;
           const screenHeight = tab?.height ?? globalThis.screen?.height ?? 0;
           const devicePixelRatio = globalThis.devicePixelRatio ?? 1;
@@ -134,6 +236,17 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
             dpr: devicePixelRatio,
             safeMode: captureConfig.safeMode,
           });
+
+          if (typeof tab?.id === 'number') {
+            await ensureContentScriptReady(tab.id);
+          }
+
+          sessionManager.queueEvent('custom', {
+            marker: 'session_started',
+            url: activeUrl,
+            timestamp: Date.now(),
+          });
+
           return { ok: true as const, state: started };
         })
         .catch((error) => ({
@@ -147,9 +260,13 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
 
     case 'SESSION_QUEUE_EVENT': {
       const senderUrl = sender.tab?.url ?? sender.url ?? '';
-      const canCaptureSender = isUrlAllowed(senderUrl, captureConfig.allowlist);
-
-      if (!canCaptureSender) {
+      captureDiagnostics.received += 1;
+      captureDiagnostics.lastEventType = request.eventType;
+      captureDiagnostics.lastSenderUrl = senderUrl;
+      captureDiagnostics.lastUpdatedAt = Date.now();
+      const shouldValidateByAllowlist = senderUrl.startsWith('http://') || senderUrl.startsWith('https://');
+      if (shouldValidateByAllowlist && !isUrlAllowed(senderUrl, captureConfig.allowlist)) {
+        captureDiagnostics.rejectedAllowlist += 1;
         return Promise.resolve({ ok: true, state: sessionManager.getState(), accepted: false });
       }
 
@@ -157,14 +274,92 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
       if (captureConfig.safeMode) {
         const restricted = applySafeModeRestrictions(request.eventType, request.data);
         if (!restricted) {
+          captureDiagnostics.rejectedSafeMode += 1;
           return Promise.resolve({ ok: true, state: sessionManager.getState(), accepted: false });
         }
         payload = restricted;
       }
 
       const accepted = sessionManager.queueEvent(request.eventType, payload);
+      if (accepted) {
+        captureDiagnostics.accepted += 1;
+      } else {
+        captureDiagnostics.rejectedInactive += 1;
+      }
       return Promise.resolve({ ok: true, state: sessionManager.getState(), accepted });
     }
+
+    case 'SESSION_CAPTURE_DIAGNOSTICS':
+      return Promise.resolve({
+        ok: true,
+        result: {
+          ...captureDiagnostics,
+          sessionState: sessionManager.getState(),
+          allowlist: captureConfig.allowlist,
+          safeMode: captureConfig.safeMode,
+        },
+      });
+
+    case 'RETENTION_GET_SETTINGS':
+      return fetchServer('/retention/settings')
+        .then((response) => ({
+          ok: true as const,
+          retention: response.settings,
+          lastCleanup: response.lastCleanup,
+        }))
+        .catch((error) => ({ ok: false, error: error instanceof Error ? error.message : 'Failed to load settings' }));
+
+    case 'RETENTION_UPDATE_SETTINGS':
+      return fetchServer('/retention/settings', {
+        method: 'POST',
+        body: JSON.stringify(request.settings),
+      })
+        .then((response) => ({
+          ok: true as const,
+          retention: response.settings,
+        }))
+        .catch((error) => ({ ok: false, error: error instanceof Error ? error.message : 'Failed to update settings' }));
+
+    case 'RETENTION_RUN_CLEANUP':
+      return fetchServer('/retention/run-cleanup', {
+        method: 'POST',
+      })
+        .then((response) => ({ ok: true as const, result: response.result }))
+        .catch((error) => ({ ok: false, error: error instanceof Error ? error.message : 'Failed to run cleanup' }));
+
+    case 'SESSION_PIN':
+      return fetchServer(`/sessions/${encodeURIComponent(request.sessionId)}/pin`, {
+        method: 'POST',
+        body: JSON.stringify({ pinned: request.pinned }),
+      })
+        .then((response) => {
+          if (response.ok !== true) {
+            throw new Error((response.error as string) ?? 'Failed to pin session');
+          }
+          return { ok: true as const, result: response };
+        })
+        .catch((error) => ({ ok: false, error: error instanceof Error ? error.message : 'Failed to pin session' }));
+
+    case 'SESSION_EXPORT':
+      return fetchServer(`/sessions/${encodeURIComponent(request.sessionId)}/export`, {
+        method: 'POST',
+      })
+        .then((response) => ({ ok: true as const, result: response }))
+        .catch((error) => ({ ok: false, error: error instanceof Error ? error.message : 'Failed to export session' }));
+
+    case 'SESSION_GET_DB_ENTRIES':
+      return fetchServer(
+        `/sessions/${encodeURIComponent(request.sessionId)}/entries?limit=${encodeURIComponent(String(request.limit))}&offset=${encodeURIComponent(String(request.offset))}`
+      )
+        .then((response) => ({ ok: true as const, result: response }))
+        .catch((error) => ({ ok: false, error: error instanceof Error ? error.message : 'Failed to load DB entries' }));
+
+    case 'SESSION_LIST_RECENT':
+      return fetchServer(
+        `/sessions?limit=${encodeURIComponent(String(request.limit))}&offset=${encodeURIComponent(String(request.offset))}`
+      )
+        .then((response) => ({ ok: true as const, result: response }))
+        .catch((error) => ({ ok: false, error: error instanceof Error ? error.message : 'Failed to load sessions' }));
 
     default:
       return Promise.resolve({ ok: false, error: 'Unsupported message type' });

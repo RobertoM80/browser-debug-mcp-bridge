@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Session DB Entries</title>
+  <link rel="stylesheet" href="db-viewer.css">
+</head>
+<body>
+  <main class="page">
+    <section class="panel">
+      <header class="panel-header">
+        <h1>Session DB entries</h1>
+        <div class="header-actions">
+          <label class="autorefresh" for="auto-refresh">
+            <input id="auto-refresh" type="checkbox">
+            <span>Auto-refresh (2s)</span>
+          </label>
+          <button id="reload-entries" type="button">Reload</button>
+        </div>
+      </header>
+
+      <div class="session-row">
+        <label for="session-picker">Session</label>
+        <select id="session-picker"></select>
+      </div>
+
+      <div id="entries-status" class="status">Loading...</div>
+      <div id="entries-diag" class="diag"></div>
+
+      <div class="filter-bar" role="group" aria-label="Entry filter">
+        <button id="filter-all" class="filter-btn is-active" type="button" data-filter="all">All</button>
+        <button id="filter-events" class="filter-btn" type="button" data-filter="event">Events</button>
+        <button id="filter-network" class="filter-btn" type="button" data-filter="network">Network</button>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Source</th>
+              <th>Kind</th>
+              <th>Summary</th>
+              <th>Details</th>
+            </tr>
+          </thead>
+          <tbody id="entries-body"></tbody>
+        </table>
+      </div>
+
+      <div class="actions">
+        <button id="load-more" type="button">Load more</button>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="db-viewer.js"></script>
+</body>
+</html>

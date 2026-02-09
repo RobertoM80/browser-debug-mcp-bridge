@@ -246,6 +246,7 @@ interface SessionRow {
   viewport_h: number | null;
   dpr: number | null;
   safe_mode: number;
+  pinned: number;
 }
 
 interface EventRow {
@@ -583,7 +584,8 @@ export function createV1ToolHandlers(getDb: () => Database): Partial<Record<stri
           viewport_w,
           viewport_h,
           dpr,
-          safe_mode
+          safe_mode,
+          pinned
         FROM sessions
         ${whereClause}
         ORDER BY created_at DESC
@@ -610,6 +612,7 @@ export function createV1ToolHandlers(getDb: () => Database): Partial<Record<stri
             : undefined,
         dpr: row.dpr ?? undefined,
         safeMode: row.safe_mode === 1,
+        pinned: row.pinned === 1,
       }));
 
       return {
@@ -634,13 +637,14 @@ export function createV1ToolHandlers(getDb: () => Database): Partial<Record<stri
       }
 
       const session = db
-        .prepare('SELECT session_id, created_at, ended_at, url_last FROM sessions WHERE session_id = ?')
+        .prepare('SELECT session_id, created_at, ended_at, url_last, pinned FROM sessions WHERE session_id = ?')
         .get(sessionId) as
         | {
             session_id: string;
             created_at: number;
             ended_at: number | null;
             url_last: string | null;
+            pinned: number;
           }
         | undefined;
 
@@ -700,6 +704,7 @@ export function createV1ToolHandlers(getDb: () => Database): Partial<Record<stri
           start: eventRange.start_ts ?? session.created_at,
           end: eventRange.end_ts ?? session.ended_at ?? session.created_at,
         },
+        pinned: session.pinned === 1,
       };
     },
 

@@ -15,6 +15,7 @@ export default defineConfig({
         'injected-script': path.resolve(__dirname, 'src/injected-script.ts'),
         'background': path.resolve(__dirname, 'src/background.ts'),
         'popup': path.resolve(__dirname, 'src/popup.ts'),
+        'db-viewer': path.resolve(__dirname, 'src/db-viewer.ts'),
       },
       output: {
         entryFileNames: '[name].js',

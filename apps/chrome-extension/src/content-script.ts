@@ -20,6 +20,10 @@ interface CaptureCommandRequest {
   payload?: Record<string, unknown>;
 }
 
+interface CapturePingRequest {
+  type: 'CAPTURE_PING';
+}
+
 interface CaptureCommandResponse {
   ok: boolean;
   result?: Record<string, unknown>;
@@ -363,6 +367,44 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
 
   const onPopState = (): void => emitNavigation('popstate');
   const onHashChange = (): void => emitNavigation('hashchange');
+
+  const injectPageScript = (): void => {
+    if (!runtime || typeof chrome === 'undefined' || !chrome.runtime?.getURL) {
+      return;
+    }
+
+    try {
+      const root = win.document.documentElement;
+      if (!root) {
+        return;
+      }
+
+      if (root.dataset.bdmcpInjected === '1') {
+        return;
+      }
+
+      if (win.document.getElementById('__bdmcp_injected_script__')) {
+        root.dataset.bdmcpInjected = '1';
+        return;
+      }
+
+      root.dataset.bdmcpInjected = '1';
+      const script = win.document.createElement('script');
+      script.id = '__bdmcp_injected_script__';
+      script.src = chrome.runtime.getURL('injected-script.js');
+      script.async = false;
+      script.dataset.mcpBridge = 'injected';
+      script.onload = () => {
+        script.remove();
+      };
+      script.onerror = () => {
+        script.remove();
+      };
+      (win.document.documentElement || win.document.head || win.document.body)?.appendChild(script);
+    } catch {
+      // Ignore injection failures on restricted pages.
+    }
+  };
   const onMessage = (event: MessageEvent<unknown>): void => {
     if (event.source && event.source !== win) {
       return;
@@ -397,10 +439,15 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
   };
 
   const onRuntimeCommand = (
-    request: CaptureCommandRequest,
+    request: CaptureCommandRequest | CapturePingRequest,
     _sender: chrome.runtime.MessageSender,
-    sendResponse: (response: CaptureCommandResponse) => void
+    sendResponse: (response: CaptureCommandResponse | { ok: true; type: 'CAPTURE_PONG' }) => void
   ): boolean | void => {
+    if (request && request.type === 'CAPTURE_PING') {
+      sendResponse({ ok: true, type: 'CAPTURE_PONG' });
+      return;
+    }
+
     if (!request || request.type !== 'CAPTURE_EXECUTE') {
       return;
     }
@@ -436,6 +483,7 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
   win.addEventListener('hashchange', onHashChange);
   win.addEventListener('message', onMessage);
   win.addEventListener('click', onClick, true);
+  injectPageScript();
   if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
     chrome.runtime.onMessage.addListener(onRuntimeCommand);
   }
@@ -444,6 +492,12 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
     from: null,
     to: win.location.href,
     trigger: 'init',
+    timestamp: Date.now(),
+  });
+
+  sendToBackground(runtime, 'custom', {
+    marker: 'content_script_loaded',
+    url: win.location.href,
     timestamp: Date.now(),
   });
 
@@ -461,6 +515,10 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
 }
 
 if (typeof window !== 'undefined' && typeof chrome !== 'undefined' && !!chrome.runtime) {
-  installContentCapture();
+  const guard = window as Window & { __BDMCP_CONTENT_CAPTURE_INSTALLED__?: boolean };
+  if (!guard.__BDMCP_CONTENT_CAPTURE_INSTALLED__) {
+    guard.__BDMCP_CONTENT_CAPTURE_INSTALLED__ = true;
+    installContentCapture();
+  }
   console.log('[BrowserDebug][ContentScript] Loaded');
 }

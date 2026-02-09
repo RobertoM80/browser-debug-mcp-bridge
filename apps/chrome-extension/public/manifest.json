@@ -5,7 +5,8 @@
   "description": "Capture browser events and errors for debugging via MCP",
   "permissions": [
     "storage",
-    "activeTab"
+    "activeTab",
+    "scripting"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -17,7 +18,7 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["injected-script.js", "content-script.js"],
+      "js": ["content-script.js"],
       "run_at": "document_start",
       "all_frames": true
     }
@@ -25,5 +26,11 @@
   "action": {
     "default_popup": "popup.html",
     "default_title": "Browser Debug MCP Bridge"
-  }
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["injected-script.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
 }
