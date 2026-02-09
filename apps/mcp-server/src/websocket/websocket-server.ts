@@ -42,6 +42,7 @@ interface ConnectionInfo {
   connectedAt: number;
   lastPingAt: number;
   messageCount: number;
+  disconnectReason?: 'manual_stop' | 'network_error' | 'stale_timeout' | 'normal_closure' | 'abnormal_close' | 'unknown';
 }
 
 interface PendingCaptureRequest {
@@ -132,8 +133,8 @@ export class WebSocketManager {
       this.handleMessage(ws, data.toString());
     });
 
-    ws.on('close', () => {
-      this.handleDisconnect(ws);
+    ws.on('close', (code: number, reason: Buffer) => {
+      this.handleDisconnect(ws, code, reason);
     });
 
     ws.on('error', (error: Error) => {
@@ -145,6 +146,7 @@ export class WebSocketManager {
         },
         '[MCPServer][WebSocket] Connection error',
       );
+      connectionInfo.disconnectReason = 'network_error';
       this.handleDisconnect(ws);
     });
   }
@@ -161,6 +163,8 @@ export class WebSocketManager {
       ws.send(JSON.stringify(createErrorMessage('Invalid message format', 'INVALID_MESSAGE')));
       return;
     }
+
+    connectionInfo.lastPingAt = Date.now();
 
     this.logger.debug(
       {
@@ -192,6 +196,7 @@ export class WebSocketManager {
           if (connectionInfo.sessionId === message.sessionId) {
             connectionInfo.sessionId = undefined;
           }
+          connectionInfo.disconnectReason = 'manual_stop';
           break;
 
         case 'event':
@@ -233,17 +238,26 @@ export class WebSocketManager {
     }
   }
 
-  private handleDisconnect(ws: WebSocket): void {
+  private handleDisconnect(ws: WebSocket, closeCode?: number, closeReasonRaw?: Buffer): void {
     const connection = this.connections.get(ws);
     if (connection?.sessionId) {
       this.rejectPendingForSession(connection.sessionId, 'Connection closed before capture completed');
     }
+
+    const closeReason = closeReasonRaw && closeReasonRaw.length > 0 ? closeReasonRaw.toString('utf8') : undefined;
+    const disconnectReason =
+      connection?.disconnectReason
+      ?? (closeCode === 1000 ? 'normal_closure' : closeCode ? 'abnormal_close' : 'unknown');
+
     this.connections.delete(ws);
     this.logger.info(
       {
         component: 'websocket',
         event: 'connection_closed',
         sessionId: connection?.sessionId,
+        reason: disconnectReason,
+        closeCode,
+        closeReason,
         connections: this.connections.size,
       },
       '[MCPServer][WebSocket] Connection closed',
@@ -354,6 +368,7 @@ export class WebSocketManager {
       
       for (const [ws, info] of this.connections) {
         if (now - info.lastPingAt > this.PING_INTERVAL_MS + this.PONG_TIMEOUT_MS) {
+          info.disconnectReason = 'stale_timeout';
           this.logger.warn(
             {
               component: 'websocket',

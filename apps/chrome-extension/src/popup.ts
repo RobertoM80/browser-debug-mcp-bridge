@@ -1,9 +1,10 @@
 type SessionState = {
   isActive: boolean;
   sessionId: string | null;
-  connectionStatus: 'disconnected' | 'connecting' | 'connected';
+  connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
   queuedEvents: number;
   droppedEvents: number;
+  reconnectAttempts: number;
 };
 
 type CaptureConfig = {
@@ -39,9 +40,12 @@ function renderSessionState(state: SessionState): void {
   const stopButton = document.getElementById('stop-session') as HTMLButtonElement | null;
 
   if (statusEl) {
+    const statusLabel = state.connectionStatus === 'reconnecting'
+      ? `reconnecting, attempt ${state.reconnectAttempts}`
+      : state.connectionStatus;
     statusEl.textContent = state.isActive
-      ? `Session active (${state.connectionStatus})`
-      : `No active session (${state.connectionStatus})`;
+      ? `Session active (${statusLabel})`
+      : `No active session (${statusLabel})`;
   }
   if (sessionIdEl) {
     sessionIdEl.textContent = state.sessionId ?? '-';

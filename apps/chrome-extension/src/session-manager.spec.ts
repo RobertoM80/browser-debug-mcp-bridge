@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { SessionManager } from './session-manager';
 
 type Listener = (event: unknown) => void;
@@ -226,5 +226,64 @@ describe('SessionManager', () => {
     expect(response.ok).toBe(true);
     expect(response.payload.selector).toBe('#app');
     expect(response.payload.command).toBe('CAPTURE_DOM_SUBTREE');
+  });
+
+  it('uses readable default session ids with date hints', () => {
+    const manager = new SessionManager({
+      createWebSocket: () => new MockWebSocket(),
+    });
+
+    const startState = manager.startSession({ url: 'https://example.com' });
+    const sessionId = startState.sessionId ?? '';
+
+    expect(sessionId).toMatch(/^sess-[a-z]+-[a-z]+-\d{8}-[a-z0-9]{6}$/);
+    expect(sessionId).not.toMatch(/\d{13,}/);
+  });
+
+  it('sends heartbeat ping while an active session is connected', () => {
+    vi.useFakeTimers();
+    const ws = new MockWebSocket();
+    const manager = new SessionManager({
+      createSessionId: () => 'session-heartbeat',
+      createWebSocket: () => ws,
+      now: () => 1700000000000,
+    });
+
+    manager.startSession({ url: 'https://example.com' });
+    ws.open();
+    ws.sentMessages.length = 0;
+
+    vi.advanceTimersByTime(15000);
+
+    expect(ws.sentMessages).toHaveLength(1);
+    expect(JSON.parse(ws.sentMessages[0])).toMatchObject({ type: 'ping' });
+    vi.useRealTimers();
+  });
+
+  it('auto-reconnects when a connected session drops unexpectedly', () => {
+    vi.useFakeTimers();
+    const sockets: MockWebSocket[] = [];
+    const manager = new SessionManager({
+      createSessionId: () => 'session-reconnect',
+      createWebSocket: () => {
+        const ws = new MockWebSocket();
+        sockets.push(ws);
+        return ws;
+      },
+      now: () => Date.now(),
+    });
+
+    manager.startSession({ url: 'https://example.com' });
+    const first = sockets[0];
+    expect(first).toBeDefined();
+    first?.open();
+    first?.close();
+
+    expect(manager.getState().connectionStatus).toBe('reconnecting');
+    vi.advanceTimersByTime(1000);
+
+    expect(sockets).toHaveLength(2);
+    expect(manager.getState().connectionStatus).toBe('connecting');
+    vi.useRealTimers();
   });
 });

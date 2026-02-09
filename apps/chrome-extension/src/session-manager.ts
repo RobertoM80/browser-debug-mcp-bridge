@@ -1,6 +1,6 @@
 import { RedactionEngine } from '../../../libs/redaction/src';
 
-export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected';
+export type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
 
 export interface SessionStartContext {
   url: string;
@@ -21,6 +21,7 @@ export interface SessionState {
   connectionStatus: ConnectionStatus;
   queuedEvents: number;
   droppedEvents: number;
+  reconnectAttempts: number;
 }
 
 type WsEventType = 'open' | 'close' | 'error' | 'message';
@@ -100,6 +101,61 @@ interface SessionManagerOptions {
 
 const WS_CONNECTING = 0;
 const WS_OPEN = 1;
+const HEARTBEAT_INTERVAL_MS = 15000;
+const RECONNECT_BUDGET_MS = 10 * 60 * 1000;
+const RECONNECT_DELAYS_MS = [1000, 2000, 5000];
+
+const SESSION_ADJECTIVES = [
+  'brisk',
+  'calm',
+  'curious',
+  'eager',
+  'fuzzy',
+  'gentle',
+  'nimble',
+  'rapid',
+  'steady',
+  'sunny',
+];
+
+const SESSION_ANIMALS = [
+  'otter',
+  'falcon',
+  'lynx',
+  'badger',
+  'fox',
+  'koala',
+  'panda',
+  'heron',
+  'tiger',
+  'yak',
+];
+
+function randomInt(maxExclusive: number): number {
+  const safeMax = Math.max(1, Math.floor(maxExclusive));
+  if (globalThis.crypto?.getRandomValues) {
+    const values = new Uint32Array(1);
+    globalThis.crypto.getRandomValues(values);
+    return (values[0] ?? 0) % safeMax;
+  }
+  return Math.floor(Math.random() * safeMax);
+}
+
+function getUtcDateStamp(): string {
+  const now = new Date();
+  const year = String(now.getUTCFullYear());
+  const month = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(now.getUTCDate()).padStart(2, '0');
+  return `${year}${month}${day}`;
+}
+
+function createDefaultSessionId(): string {
+  const adjective = SESSION_ADJECTIVES[randomInt(SESSION_ADJECTIVES.length)] ?? 'calm';
+  const animal = SESSION_ANIMALS[randomInt(SESSION_ANIMALS.length)] ?? 'otter';
+  const dateStamp = getUtcDateStamp();
+  const suffix = randomInt(36 ** 6).toString(36).padStart(6, '0');
+  return `sess-${adjective}-${animal}-${dateStamp}-${suffix}`;
+}
 
 export class SessionManager {
   private readonly wsUrl: string;
@@ -117,11 +173,17 @@ export class SessionManager {
   private sessionId: string | null = null;
   private connectionStatus: ConnectionStatus = 'disconnected';
   private droppedEvents = 0;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectAttempts = 0;
+  private reconnectEligible = false;
+  private reconnectStartedAt: number | null = null;
+  private manualStopRequested = false;
 
   constructor(options: SessionManagerOptions = {}) {
     this.wsUrl = options.wsUrl ?? 'ws://127.0.0.1:3000/ws';
     this.maxBufferSize = options.maxBufferSize ?? 200;
-    this.createSessionId = options.createSessionId ?? (() => `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`);
+    this.createSessionId = options.createSessionId ?? createDefaultSessionId;
     this.createWebSocket = options.createWebSocket ?? ((url) => new WebSocket(url));
     this.now = options.now ?? (() => Date.now());
     this.maxBatchSize = options.maxBatchSize ?? 20;
@@ -134,9 +196,15 @@ export class SessionManager {
       return this.getState();
     }
 
+    this.manualStopRequested = false;
+    this.reconnectAttempts = 0;
+    this.reconnectEligible = false;
+    this.reconnectStartedAt = null;
+    this.clearReconnectTimer();
     this.sessionId = this.createSessionId();
     this.isActive = true;
     this.ensureConnection();
+    this.startHeartbeat();
 
     this.enqueueMessage({
       type: 'session_start',
@@ -158,6 +226,13 @@ export class SessionManager {
     if (!this.isActive || !this.sessionId) {
       return this.getState();
     }
+
+    this.manualStopRequested = true;
+    this.reconnectEligible = false;
+    this.reconnectStartedAt = null;
+    this.reconnectAttempts = 0;
+    this.clearReconnectTimer();
+    this.stopHeartbeat();
 
     this.enqueueMessage({
       type: 'session_end',
@@ -193,6 +268,7 @@ export class SessionManager {
       connectionStatus: this.connectionStatus,
       queuedEvents: this.buffer.length,
       droppedEvents: this.droppedEvents,
+      reconnectAttempts: this.reconnectAttempts,
     };
   }
 
@@ -206,16 +282,31 @@ export class SessionManager {
 
     this.ws.addEventListener('open', () => {
       this.connectionStatus = 'connected';
+      this.reconnectAttempts = 0;
+      this.reconnectEligible = false;
+      this.reconnectStartedAt = null;
+      this.clearReconnectTimer();
+      this.startHeartbeat();
       this.flushBuffer();
     });
 
     this.ws.addEventListener('close', () => {
-      this.connectionStatus = 'disconnected';
+      this.stopHeartbeat();
+      if (this.connectionStatus === 'connected' && this.isActive && !this.manualStopRequested) {
+        this.reconnectEligible = true;
+        this.reconnectStartedAt = this.reconnectStartedAt ?? this.now();
+      }
+
       this.ws = null;
+      if (this.shouldReconnect()) {
+        this.scheduleReconnect();
+      } else {
+        this.connectionStatus = 'disconnected';
+      }
     });
 
     this.ws.addEventListener('error', () => {
-      this.connectionStatus = 'disconnected';
+      this.stopHeartbeat();
     });
 
     this.ws.addEventListener('message', (event) => {
@@ -404,5 +495,73 @@ export class SessionManager {
       this.buffer.shift();
       this.ws.send(JSON.stringify(next));
     }
+  }
+
+  private shouldReconnect(): boolean {
+    if (!this.isActive || this.manualStopRequested || !this.reconnectEligible) {
+      return false;
+    }
+
+    if (this.reconnectStartedAt === null) {
+      return false;
+    }
+
+    return this.now() - this.reconnectStartedAt <= RECONNECT_BUDGET_MS;
+  }
+
+  private scheduleReconnect(): void {
+    if (this.reconnectTimer) {
+      return;
+    }
+
+    this.connectionStatus = 'reconnecting';
+    const delay = RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempts, RECONNECT_DELAYS_MS.length - 1)] ?? 5000;
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (!this.shouldReconnect()) {
+        this.connectionStatus = 'disconnected';
+        return;
+      }
+
+      this.reconnectAttempts += 1;
+      this.ensureConnection();
+    }, delay);
+  }
+
+  private clearReconnectTimer(): void {
+    if (!this.reconnectTimer) {
+      return;
+    }
+
+    clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+  }
+
+  private startHeartbeat(): void {
+    if (!this.isActive || this.heartbeatTimer) {
+      return;
+    }
+
+    this.heartbeatTimer = setInterval(() => {
+      if (!this.ws || this.ws.readyState !== WS_OPEN) {
+        return;
+      }
+
+      try {
+        this.ws.send(JSON.stringify({ type: 'ping', timestamp: this.now() }));
+      } catch {
+        // no-op, close handler will manage reconnect state
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (!this.heartbeatTimer) {
+      return;
+    }
+
+    clearInterval(this.heartbeatTimer);
+    this.heartbeatTimer = null;
   }
 }
