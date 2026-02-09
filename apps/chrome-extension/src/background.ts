@@ -109,6 +109,9 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
     case 'SESSION_START': {
       return getActiveTab()
         .then((tab) => {
+          const screenWidth = tab?.width ?? globalThis.screen?.width ?? 0;
+          const screenHeight = tab?.height ?? globalThis.screen?.height ?? 0;
+          const devicePixelRatio = globalThis.devicePixelRatio ?? 1;
           const activeUrl = tab?.url ?? 'about:blank';
           const canCaptureActiveTab = isUrlAllowed(activeUrl, captureConfig.allowlist);
 
@@ -125,10 +128,10 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
             windowId: tab?.windowId,
             userAgent: navigator.userAgent,
             viewport: {
-              width: window.screen.width,
-              height: window.screen.height,
+              width: screenWidth,
+              height: screenHeight,
             },
-            dpr: window.devicePixelRatio,
+            dpr: devicePixelRatio,
             safeMode: captureConfig.safeMode,
           });
           return { ok: true as const, state: started };

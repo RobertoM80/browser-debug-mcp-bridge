@@ -16,6 +16,8 @@ type SessionResponse =
   | { ok: true; config: CaptureConfig }
   | { ok: false; error: string };
 
+let statePollTimer: number | null = null;
+
 function sendRuntimeMessage(message: unknown): Promise<SessionResponse> {
   return new Promise((resolve) => {
     chrome.runtime.sendMessage(message, (response: SessionResponse) => {
@@ -93,6 +95,25 @@ function setConfigStatus(message: string): void {
   }
 }
 
+function startStatePolling(): void {
+  if (statePollTimer !== null) {
+    return;
+  }
+
+  statePollTimer = window.setInterval(() => {
+    void refreshState();
+  }, 1000);
+}
+
+function stopStatePolling(): void {
+  if (statePollTimer === null) {
+    return;
+  }
+
+  window.clearInterval(statePollTimer);
+  statePollTimer = null;
+}
+
 async function refreshState(): Promise<void> {
   const result = await sendRuntimeMessage({ type: 'SESSION_GET_STATE' });
   if (result.ok && 'state' in result) {
@@ -160,4 +181,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   refreshState();
   refreshConfig();
+  startStatePolling();
+
+  window.addEventListener('unload', () => {
+    stopStatePolling();
+  });
 });

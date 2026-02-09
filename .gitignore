@@ -46,5 +46,13 @@ thumbs.db
 # Backup
 .ralph_backup/
 
+# Databases
+*.db
+*.db-shm
+*.db-wal
+*.db-journal
+*.sqlite
+*.sqlite3
+
 # Docusaurus
 **/.docusaurus/

@@ -1,6 +1,7 @@
 import Fastify from 'fastify';
 import { mkdirSync } from 'fs';
 import { dirname } from 'path';
+import { pathToFileURL } from 'url';
 import { WebSocketManager } from './websocket/websocket-server';
 import { initializeDatabase, getConnection, getDatabasePath } from './db';
 
@@ -99,6 +100,8 @@ export function stopServer(): void {
 
 export { fastify, wsManager };
 
-if (import.meta.url === `file://${process.argv[1]}`) {
-  startServer();
+const entryUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
+
+if (entryUrl && import.meta.url === entryUrl) {
+  void startServer();
 }
