@@ -5,13 +5,13 @@
 - Confirm Node 20+ and pnpm are installed
 - Run `pnpm install`
 - Run `pnpm nx serve mcp-server`
-- Check for port collisions on `3000`
+- Check for port collisions on `8065`
 
 ## Extension cannot connect to server
 
 - Ensure server is running locally before starting a session
 - Verify background logs in extension service worker console
-- Confirm WebSocket endpoint is reachable at `ws://127.0.0.1:3000/ws`
+- Confirm WebSocket endpoint is reachable at `ws://127.0.0.1:8065/ws`
 
 ## No events appear in MCP responses
 

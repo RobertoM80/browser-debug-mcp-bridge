@@ -29,9 +29,11 @@ type RuntimeRequest =
   | { type: 'RETENTION_RUN_CLEANUP' }
   | { type: 'SESSION_PIN'; sessionId: string; pinned: boolean }
   | { type: 'SESSION_EXPORT'; sessionId: string }
+  | { type: 'SESSION_IMPORT'; payload: Record<string, unknown> }
   | { type: 'SESSION_GET_DB_ENTRIES'; sessionId: string; limit: number; offset: number }
   | { type: 'SESSION_LIST_RECENT'; limit: number; offset: number }
-  | { type: 'SESSION_CAPTURE_DIAGNOSTICS' };
+  | { type: 'SESSION_CAPTURE_DIAGNOSTICS' }
+  | { type: 'DB_RESET' };
 
 type RuntimeResponse =
   | { ok: true; state: SessionState; accepted?: boolean }
@@ -101,7 +103,7 @@ const sessionManager = new SessionManager({
 });
 const LOG_PREFIX = '[BrowserDebug][Background]';
 let captureConfig: CaptureConfig = { ...DEFAULT_CAPTURE_CONFIG };
-const SERVER_BASE_URL = 'http://127.0.0.1:3000';
+const SERVER_BASE_URL = 'http://127.0.0.1:8065';
 const captureDiagnostics = {
   received: 0,
   accepted: 0,
@@ -174,12 +176,14 @@ async function ensureContentScriptReady(tabId: number): Promise<boolean> {
 }
 
 async function fetchServer(path: string, init?: RequestInit): Promise<Record<string, unknown>> {
+  const headers = new Headers(init?.headers ?? {});
+  if (init?.body !== undefined && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+
   const response = await fetch(`${SERVER_BASE_URL}${path}`, {
     ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
+    headers,
   });
 
   const payload = (await response.json()) as Record<string, unknown>;
@@ -347,6 +351,14 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
         .then((response) => ({ ok: true as const, result: response }))
         .catch((error) => ({ ok: false, error: error instanceof Error ? error.message : 'Failed to export session' }));
 
+    case 'SESSION_IMPORT':
+      return fetchServer('/sessions/import', {
+        method: 'POST',
+        body: JSON.stringify(request.payload),
+      })
+        .then((response) => ({ ok: true as const, result: response }))
+        .catch((error) => ({ ok: false, error: error instanceof Error ? error.message : 'Failed to import session' }));
+
     case 'SESSION_GET_DB_ENTRIES':
       return fetchServer(
         `/sessions/${encodeURIComponent(request.sessionId)}/entries?limit=${encodeURIComponent(String(request.limit))}&offset=${encodeURIComponent(String(request.offset))}`
@@ -360,6 +372,11 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
       )
         .then((response) => ({ ok: true as const, result: response }))
         .catch((error) => ({ ok: false, error: error instanceof Error ? error.message : 'Failed to load sessions' }));
+
+    case 'DB_RESET':
+      return fetchServer('/db/reset', { method: 'POST' })
+        .then((response) => ({ ok: true as const, result: response }))
+        .catch((error) => ({ ok: false, error: error instanceof Error ? error.message : 'Failed to reset database' }));
 
     default:
       return Promise.resolve({ ok: false, error: 'Unsupported message type' });

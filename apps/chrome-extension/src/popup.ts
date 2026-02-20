@@ -55,12 +55,22 @@ type DbEntriesResult = {
 
 type DbFilter = 'all' | 'event' | 'network';
 
+type SessionImportResult = {
+  sessionId: string;
+  requestedSessionId: string;
+  remappedSessionId: boolean;
+  events: number;
+  network: number;
+  fingerprints: number;
+};
+
 let statePollTimer: number | null = null;
 let dbEntriesOffset = 0;
 let dbEntriesHasMore = false;
 let dbEntriesRows: DbEntryRow[] = [];
 let dbEntriesFilter: DbFilter = 'all';
 const expandedDbRows = new Set<string>();
+const MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024;
 
 function sendRuntimeMessage(message: unknown): Promise<SessionResponse> {
   return new Promise((resolve) => {
@@ -196,6 +206,26 @@ function parseDbEntriesResult(result: unknown): DbEntriesResult | null {
     nextOffset: typeof candidate.nextOffset === 'number' ? candidate.nextOffset : null,
     totalApprox: Number(candidate.totalApprox ?? candidate.rows.length),
     rows: candidate.rows as DbEntryRow[],
+  };
+}
+
+function parseSessionImportResult(result: unknown): SessionImportResult | null {
+  if (!result || typeof result !== 'object') {
+    return null;
+  }
+
+  const candidate = result as Partial<SessionImportResult>;
+  if (typeof candidate.sessionId !== 'string' || typeof candidate.requestedSessionId !== 'string') {
+    return null;
+  }
+
+  return {
+    sessionId: candidate.sessionId,
+    requestedSessionId: candidate.requestedSessionId,
+    remappedSessionId: candidate.remappedSessionId === true,
+    events: Number(candidate.events ?? 0),
+    network: Number(candidate.network ?? 0),
+    fingerprints: Number(candidate.fingerprints ?? 0),
   };
 }
 
@@ -439,6 +469,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const pinSessionButton = document.getElementById('pin-session');
   const unpinSessionButton = document.getElementById('unpin-session');
   const exportSessionButton = document.getElementById('export-session');
+  const importSessionButton = document.getElementById('import-session');
+  const importSessionInput = document.getElementById('import-session-file') as HTMLInputElement | null;
   const showDbEntriesButton = document.getElementById('show-db-entries');
   const closeDbEntriesButton = document.getElementById('close-db-entries');
   const loadMoreDbEntriesButton = document.getElementById('load-more-db-entries');
@@ -543,6 +575,60 @@ document.addEventListener('DOMContentLoaded', () => {
     setRetentionStatus(result.ok ? 'Unable to export session' : result.error);
   });
 
+  importSessionButton?.addEventListener('click', async () => {
+    const file = importSessionInput?.files?.[0];
+    if (!file) {
+      setRetentionStatus('Choose an exported JSON file first.');
+      return;
+    }
+
+    if (file.size > MAX_IMPORT_FILE_BYTES) {
+      setRetentionStatus(`Import file too large. Max ${Math.floor(MAX_IMPORT_FILE_BYTES / (1024 * 1024))} MB.`);
+      return;
+    }
+
+    setRetentionStatus('Importing session...');
+
+    let payload: unknown;
+    try {
+      payload = JSON.parse(await file.text());
+    } catch {
+      setRetentionStatus('Invalid JSON file.');
+      return;
+    }
+
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      setRetentionStatus('Invalid import payload.');
+      return;
+    }
+
+    const result = await sendRuntimeMessage({
+      type: 'SESSION_IMPORT',
+      payload: payload as Record<string, unknown>,
+    });
+
+    if (result.ok && 'result' in result) {
+      const parsed = parseSessionImportResult(result.result);
+      if (!parsed) {
+        setRetentionStatus('Imported, but server response was invalid.');
+        return;
+      }
+
+      const remapNote = parsed.remappedSessionId
+        ? ` (saved as ${parsed.sessionId})`
+        : '';
+      setRetentionStatus(
+        `Imported ${parsed.events} events, ${parsed.network} network rows, ${parsed.fingerprints} fingerprints${remapNote}.`
+      );
+      if (importSessionInput) {
+        importSessionInput.value = '';
+      }
+      return;
+    }
+
+    setRetentionStatus(result.ok ? 'Unable to import session' : result.error);
+  });
+
   showDbEntriesButton?.addEventListener('click', async () => {
     const sessionId = getDbEntriesSessionId();
     const baseUrl = chrome.runtime.getURL('db-viewer.html');
@@ -613,6 +699,69 @@ document.addEventListener('DOMContentLoaded', () => {
     updateDbFilterButtons();
     renderDbRows(dbEntriesRows, false);
     updateDbEntriesStatusText();
+  });
+
+  const resetDbButton = document.getElementById('reset-db');
+  const resetConfirmModal = document.getElementById('reset-confirm-modal') as HTMLDialogElement | null;
+  const resetConfirmCancel = document.getElementById('reset-confirm-cancel');
+  const resetConfirmYes = document.getElementById('reset-confirm-yes');
+  const resetDbStatus = document.getElementById('reset-db-status');
+
+  function setResetDbStatus(message: string): void {
+    if (resetDbStatus) {
+      resetDbStatus.textContent = message;
+    }
+  }
+
+  resetDbButton?.addEventListener('click', () => {
+    const confirmed = window.confirm('Reset database? This will permanently delete ALL sessions, events, and network data.');
+    if (!confirmed) {
+      return;
+    }
+
+    void (async () => {
+      setResetDbStatus('Resetting database...');
+      const result = await sendRuntimeMessage({ type: 'DB_RESET' });
+
+      if (result.ok && 'result' in result && result.result && typeof result.result === 'object') {
+        const response = result.result as { ok?: boolean; message?: string; error?: string };
+        if (response.ok === false) {
+          setResetDbStatus(response.error ?? 'Unable to reset database');
+          return;
+        }
+
+        setResetDbStatus(response.message ?? 'Database reset successfully.');
+        await refreshState();
+        return;
+      }
+
+      setResetDbStatus(result.ok ? 'Unable to reset database' : result.error);
+    })();
+  });
+
+  resetConfirmCancel?.addEventListener('click', () => {
+    resetConfirmModal?.close();
+  });
+
+  resetConfirmYes?.addEventListener('click', async () => {
+    resetConfirmModal?.close();
+    setResetDbStatus('Resetting database...');
+
+    const result = await sendRuntimeMessage({ type: 'DB_RESET' });
+
+    if (result.ok && 'result' in result && result.result && typeof result.result === 'object') {
+      const response = result.result as { ok?: boolean; message?: string; error?: string };
+      if (response.ok === false) {
+        setResetDbStatus(response.error ?? 'Unable to reset database');
+        return;
+      }
+
+      setResetDbStatus(response.message ?? 'Database reset successfully.');
+      await refreshState();
+      return;
+    }
+
+    setResetDbStatus(result.ok ? 'Unable to reset database' : result.error);
   });
 
   refreshState();

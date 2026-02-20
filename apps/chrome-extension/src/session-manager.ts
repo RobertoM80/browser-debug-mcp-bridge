@@ -181,7 +181,7 @@ export class SessionManager {
   private manualStopRequested = false;
 
   constructor(options: SessionManagerOptions = {}) {
-    this.wsUrl = options.wsUrl ?? 'ws://127.0.0.1:3000/ws';
+    this.wsUrl = options.wsUrl ?? 'ws://127.0.0.1:8065/ws';
     this.maxBufferSize = options.maxBufferSize ?? 200;
     this.createSessionId = options.createSessionId ?? createDefaultSessionId;
     this.createWebSocket = options.createWebSocket ?? ((url) => new WebSocket(url));

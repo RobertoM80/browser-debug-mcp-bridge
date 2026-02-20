@@ -2,7 +2,7 @@
 
 ## Extension cannot connect to server
 
-- Confirm server is running on `127.0.0.1:3000`
+- Confirm server is running on `127.0.0.1:8065`
 - Check popup connection state and background logs
 - Verify extension has active allowlisted domain
 

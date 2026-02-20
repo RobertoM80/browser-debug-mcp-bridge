@@ -53,8 +53,33 @@
         <button id="unpin-session" type="button">Unpin session <span class="hint" title="Allow current session to be removed by retention cleanup." aria-label="Unpin session help">!</span></button>
       </div>
       <button id="export-session" type="button">Export current session <span class="hint" title="Export current session to JSON in exports path." aria-label="Export session help">!</span></button>
+      <label for="import-session-file">Import session JSON</label>
+      <input id="import-session-file" type="file" accept=".json,application/json">
+      <button id="import-session" type="button">Import session <span class="hint" title="Load an exported JSON session into local DB for inspection." aria-label="Import session help">!</span></button>
       <div id="cleanup-info" class="config-status"></div>
       <div id="retention-status" class="config-status"></div>
+    </details>
+
+    <details class="settings danger-zone">
+      <summary>Danger Zone</summary>
+      <div class="danger-warning">
+        <strong>Warning:</strong> These actions cannot be undone.
+      </div>
+      <div class="danger-actions">
+        <button id="reset-db" type="button" class="danger-button">Reset Database</button>
+      </div>
+      <div id="reset-db-status" class="config-status"></div>
+      <dialog id="reset-confirm-modal" class="danger-modal">
+        <div class="danger-modal-content">
+          <h3>Reset Database?</h3>
+          <p>This will permanently delete <strong>ALL sessions, events, and network data</strong> from the database.</p>
+          <p>This action cannot be undone.</p>
+          <div class="danger-modal-actions">
+            <button id="reset-confirm-cancel" type="button">Cancel</button>
+            <button id="reset-confirm-yes" type="button" class="danger-button">Yes, Reset Everything</button>
+          </div>
+        </div>
+      </dialog>
     </details>
   </div>
 

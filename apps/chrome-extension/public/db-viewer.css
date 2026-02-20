@@ -145,3 +145,19 @@ button:disabled {
   opacity: 0.6;
   cursor: not-allowed;
 }
+
+.export-btn {
+  background: #e8f0ff;
+  border-color: #7f9ddb;
+}
+
+.export-btn:hover:not(:disabled) {
+  background: #d4e3ff;
+}
+
+.export-status {
+  margin-top: 6px;
+  min-height: 16px;
+  font-size: 12px;
+  color: #2d6a4f;
+}

@@ -75,7 +75,8 @@ textarea {
 }
 
 input[type='number'],
-input[type='text'] {
+input[type='text'],
+input[type='file'] {
   width: 100%;
   box-sizing: border-box;
   border: 1px solid #bbb;
@@ -232,4 +233,72 @@ button:disabled {
 
 .db-modal-actions {
   margin-top: 8px;
+}
+
+.danger-zone {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 2px solid #dc3545;
+}
+
+.danger-zone summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: #dc3545;
+}
+
+.danger-warning {
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 4px;
+  padding: 8px;
+  margin: 8px 0;
+  font-size: 12px;
+  color: #856404;
+}
+
+.danger-button {
+  background: #dc3545;
+  color: white;
+  border-color: #dc3545;
+}
+
+.danger-button:hover:not(:disabled) {
+  background: #c82333;
+  border-color: #bd2130;
+}
+
+.danger-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.danger-modal {
+  border: 2px solid #dc3545;
+  border-radius: 8px;
+  padding: 16px;
+  max-width: 400px;
+}
+
+.danger-modal::backdrop {
+  background: rgba(0, 0, 0, 0.5);
+}
+
+.danger-modal-content h3 {
+  margin: 0 0 12px 0;
+  color: #dc3545;
+}
+
+.danger-modal-content p {
+  margin: 8px 0;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.danger-modal-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  justify-content: flex-end;
 }

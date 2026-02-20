@@ -23,8 +23,8 @@ pnpm nx build chrome-extension --watch
 
 ## Verify baseline health
 
-- Server endpoint: `GET http://127.0.0.1:3000/health`
-- Optional stats endpoint: `GET http://127.0.0.1:3000/stats`
+- Server endpoint: `GET http://127.0.0.1:8065/health`
+- Optional stats endpoint: `GET http://127.0.0.1:8065/stats`
 - Confirm popup shows connected status after session start
 
 ## Next steps

@@ -4,9 +4,11 @@ import { dirname } from 'path';
 import { pathToFileURL } from 'url';
 import { WebSocketManager } from './websocket/websocket-server';
 import { initializeDatabase, getConnection, getDatabasePath } from './db';
+import { resetDatabase } from './db/migrations';
 import {
   exportSessionToJson,
   getRetentionSettings,
+  importSessionFromJson,
   runRetentionCleanup,
   setSessionPinned,
   shouldRunCleanup,
@@ -17,11 +19,12 @@ const fastify = Fastify({
   logger: true
 });
 
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8065;
 let wsManager: WebSocketManager | null = null;
 const startedAt = Date.now();
 let cleanupInterval: NodeJS.Timeout | null = null;
 let lastCleanupResult: ReturnType<typeof runRetentionCleanup> | null = null;
+const MAX_SESSION_IMPORT_BYTES = 10 * 1024 * 1024;
 
 function getDbStats(): { status: 'connected' | 'disconnected'; sessions: number; events: number; network: number; fingerprints: number } {
   try {
@@ -146,6 +149,51 @@ fastify.post('/sessions/:sessionId/export', async (request) => {
   const settings = getRetentionSettings(getConnection().db);
   const result = exportSessionToJson(getConnection().db, params.sessionId, process.cwd(), settings.exportPathOverride);
   return { ok: true, sessionId: params.sessionId, ...result };
+});
+
+fastify.post('/sessions/import', async (request) => {
+  const body = request.body;
+
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return { ok: false, error: 'Invalid import payload: expected JSON object.' };
+  }
+
+  const payloadSize = Buffer.byteLength(JSON.stringify(body), 'utf-8');
+  if (payloadSize > MAX_SESSION_IMPORT_BYTES) {
+    return {
+      ok: false,
+      error: `Import payload too large (${payloadSize} bytes). Max is ${MAX_SESSION_IMPORT_BYTES} bytes.`,
+    };
+  }
+
+  try {
+    const result = importSessionFromJson(getConnection().db, body);
+    return { ok: true, ...result };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : 'Failed to import session',
+    };
+  }
+});
+
+fastify.post('/db/reset', async (_request, reply) => {
+  try {
+    resetDatabase(getConnection().db);
+    fastify.log.warn(
+      {
+        component: 'db',
+        event: 'database_reset',
+      },
+      'Database has been reset completely',
+    );
+    return { ok: true, message: 'Database reset successfully. All sessions deleted.' };
+  } catch (error) {
+    return reply.code(500).send({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Failed to reset database',
+    });
+  }
 });
 
 fastify.get('/sessions', async (request) => {

@@ -38,6 +38,7 @@ let offset = 0;
 let hasMore = false;
 let filter: EntryFilter = 'all';
 let totalApprox = 0;
+let preferredLoadedCount = 0;
 let autoRefreshTimer: number | null = null;
 const expanded = new Set<string>();
 let lastDiagnosticsSummary = '';
@@ -212,24 +213,28 @@ function renderRows(): void {
   }
 }
 
-async function loadEntries(append: boolean): Promise<boolean> {
+async function loadEntries(append: boolean, preserveLoadedCount = false): Promise<boolean> {
   if (!currentSessionId) {
     setStatus('No session selected.');
     return false;
   }
 
+  const basePageSize = getPageSize();
   const nextOffset = append ? offset : 0;
+  const limit = append
+    ? basePageSize
+    : (preserveLoadedCount ? Math.max(basePageSize, preferredLoadedCount || rows.length) : basePageSize);
   setStatus('Loading entries...');
   const response = await sendRuntimeMessage({
     type: 'SESSION_GET_DB_ENTRIES',
     sessionId: currentSessionId,
-    limit: getPageSize(),
+    limit,
     offset: nextOffset,
   });
 
   if (!response.ok) {
     if (isNotFoundError(response.error)) {
-      setStatus('Server API route for DB entries is missing. Restart mcp-server from latest code on port 3000.');
+      setStatus('Server API route for DB entries is missing. Restart mcp-server from latest code on port 8065.');
       return false;
     }
     setStatus(`Error: ${response.error}`);
@@ -251,6 +256,7 @@ async function loadEntries(append: boolean): Promise<boolean> {
   hasMore = parsed.hasMore;
   offset = parsed.nextOffset ?? nextOffset + parsed.rows.length;
   totalApprox = parsed.totalApprox;
+  preferredLoadedCount = rows.length;
   await refreshDiagnostics();
   renderRows();
   return true;
@@ -268,12 +274,23 @@ function renderSessionPicker(sessions: SessionItem[]): void {
   }
 
   picker.replaceChildren();
+  let hasCurrentSession = false;
   for (const session of sessions) {
     const option = document.createElement('option');
     option.value = session.sessionId;
     const pin = session.pinned ? ' [PIN]' : '';
     option.textContent = `${session.sessionId}${pin} - ${new Date(session.createdAt).toLocaleString()}`;
+    if (session.sessionId === currentSessionId) {
+      hasCurrentSession = true;
+    }
     picker.append(option);
+  }
+
+  if (currentSessionId && !hasCurrentSession) {
+    const option = document.createElement('option');
+    option.value = currentSessionId;
+    option.textContent = `${currentSessionId} - selected from URL`;
+    picker.prepend(option);
   }
 
   if (!currentSessionId && sessions[0]) {
@@ -284,21 +301,6 @@ function renderSessionPicker(sessions: SessionItem[]): void {
 
 async function initializeSessions(): Promise<void> {
   currentSessionId = getSessionIdFromQuery();
-
-  if (currentSessionId) {
-    const loaded = await loadEntries(false);
-    if (loaded) {
-      const picker = document.getElementById('session-picker') as HTMLSelectElement | null;
-      if (picker) {
-        const option = document.createElement('option');
-        option.value = currentSessionId;
-        option.textContent = currentSessionId;
-        picker.replaceChildren(option);
-        picker.value = currentSessionId;
-      }
-      return;
-    }
-  }
 
   const response = await sendRuntimeMessage({ type: 'SESSION_LIST_RECENT', limit: 50, offset: 0 });
   if (!response.ok) {
@@ -342,6 +344,41 @@ document.addEventListener('DOMContentLoaded', () => {
   const reload = document.getElementById('reload-entries');
   const picker = document.getElementById('session-picker') as HTMLSelectElement | null;
   const autoRefresh = document.getElementById('auto-refresh') as HTMLInputElement | null;
+  const exportBtn = document.getElementById('export-session') as HTMLButtonElement | null;
+
+  function setExportStatus(message: string): void {
+    const el = document.getElementById('export-status');
+    if (el) {
+      el.textContent = message;
+    }
+  }
+
+  exportBtn?.addEventListener('click', async () => {
+    if (!currentSessionId) {
+      setExportStatus('No session selected.');
+      return;
+    }
+    setExportStatus('Exporting...');
+    exportBtn.disabled = true;
+    const response = await sendRuntimeMessage({ type: 'SESSION_EXPORT', sessionId: currentSessionId });
+    exportBtn.disabled = false;
+    if (response.ok && 'result' in response && response.result && typeof response.result === 'object') {
+      const payload = response.result as { ok?: boolean; filePath?: string; events?: number; network?: number; error?: string };
+      if (payload.ok === false) {
+        setExportStatus(payload.error ?? 'Export failed.');
+        return;
+      }
+
+      const filePath = payload.filePath;
+      const events = payload.events;
+      const network = payload.network;
+      if (filePath) {
+        setExportStatus(`Exported to: ${filePath} (${events ?? 0} events, ${network ?? 0} network)`);
+        return;
+      }
+    }
+    setExportStatus(response.ok ? 'Export failed.' : `Export error: ${response.error}`);
+  });
 
   body?.addEventListener('click', (event) => {
     const target = event.target;
@@ -391,7 +428,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   reload?.addEventListener('click', async () => {
     expanded.clear();
-    await loadEntries(false);
+    await loadEntries(false, true);
   });
 
   picker?.addEventListener('change', async () => {
@@ -399,6 +436,7 @@ document.addEventListener('DOMContentLoaded', () => {
     rows = [];
     offset = 0;
     hasMore = false;
+    preferredLoadedCount = 0;
     expanded.clear();
     await loadEntries(false);
   });
@@ -409,7 +447,7 @@ document.addEventListener('DOMContentLoaded', () => {
         window.clearInterval(autoRefreshTimer);
       }
       autoRefreshTimer = window.setInterval(() => {
-        void loadEntries(false);
+        void loadEntries(false, true);
       }, 2000);
       return;
     }

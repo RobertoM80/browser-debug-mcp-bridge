@@ -56,3 +56,4 @@ thumbs.db
 
 # Docusaurus
 **/.docusaurus/
+**/*/exports
