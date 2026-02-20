@@ -1,6 +1,8 @@
 import { Database } from 'better-sqlite3';
 import type { EventMessage, SessionStartMessage, SessionEndMessage } from '../websocket/messages';
 import { resolveErrorFingerprint } from './error-fingerprints';
+import { getDatabasePath } from './connection';
+import { writeSnapshot } from '../retention';
 
 export interface SessionRecord {
   sessionId: string;
@@ -76,6 +78,10 @@ export class EventsRepository {
         if (message.eventType === 'network') {
           this.insertNetworkEventPrepared(insertNetwork, message.sessionId, message.data);
         }
+
+        if (message.eventType === 'ui_snapshot') {
+          this.insertSnapshotPrepared(message.sessionId, eventId, message.data);
+        }
       }
     });
 
@@ -128,6 +134,7 @@ export class EventsRepository {
       'error': 'error',
       'network': 'network',
       'click': 'ui',
+      'ui_snapshot': 'ui',
       'custom': 'ui',
     };
     return mapping[eventType] || 'ui';
@@ -170,6 +177,20 @@ export class EventsRepository {
       data.initiator as string ?? 'other',
       data.errorType as string ?? null,
       data.responseSize as number ?? null
+    );
+  }
+
+  private insertSnapshotPrepared(
+    sessionId: string,
+    triggerEventId: string,
+    data: Record<string, unknown>
+  ): void {
+    writeSnapshot(
+      this.db,
+      getDatabasePath(),
+      sessionId,
+      data,
+      triggerEventId,
     );
   }
 

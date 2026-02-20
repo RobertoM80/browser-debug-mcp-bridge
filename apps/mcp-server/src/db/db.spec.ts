@@ -130,6 +130,12 @@ describe('Database Schema', () => {
       expect(result).toBeDefined();
     });
 
+    it('should create snapshots table', () => {
+      initializeSchema(db);
+      const result = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='snapshots'").get();
+      expect(result).toBeDefined();
+    });
+
     it('should create schema_version table', () => {
       initializeSchema(db);
       const result = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'").get();
@@ -172,6 +178,15 @@ describe('Database Schema', () => {
       expect(indexNames).toContain('idx_error_fingerprints_session_id');
       expect(indexNames).toContain('idx_error_fingerprints_count');
       expect(indexNames).toContain('idx_error_fingerprints_last_seen');
+    });
+
+    it('should create indexes on snapshots table', () => {
+      initializeSchema(db);
+      const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='snapshots'").all() as { name: string }[];
+      const indexNames = indexes.map(i => i.name);
+      expect(indexNames).toContain('idx_snapshots_session_ts');
+      expect(indexNames).toContain('idx_snapshots_session_trigger_ts');
+      expect(indexNames).toContain('idx_snapshots_png_path');
     });
 
     it('should record schema version when using migrations', () => {
@@ -248,6 +263,7 @@ describe('Database Migrations', () => {
       expect(tableNames).toContain('events');
       expect(tableNames).toContain('network');
       expect(tableNames).toContain('error_fingerprints');
+      expect(tableNames).toContain('snapshots');
       expect(tableNames).toContain('schema_version');
     });
   });
@@ -325,6 +341,15 @@ describe('Database Integration', () => {
         db.prepare(`
           INSERT INTO error_fingerprints (fingerprint, session_id, count, sample_message, first_seen_at, last_seen_at)
           VALUES ('fp-1', 'non-existent', 1, 'error', 123456789, 123456789)
+        `).run();
+      }).toThrow();
+    });
+
+    it('should enforce foreign key on snapshots.session_id', () => {
+      expect(() => {
+        db.prepare(`
+          INSERT INTO snapshots (snapshot_id, session_id, ts, trigger, mode, created_at)
+          VALUES ('snap-1', 'non-existent', 123456789, 'manual', 'dom', 123456789)
         `).run();
       }).toThrow();
     });

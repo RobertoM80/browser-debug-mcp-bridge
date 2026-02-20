@@ -88,4 +88,107 @@ describe('MCP Server', () => {
     expect(body.ok).toBe(false);
     expect(body.error).toContain('session_id');
   });
+
+  it('should persist and list snapshots through HTTP APIs', async () => {
+    initializeDatabase(getConnection().db);
+
+    await fastify.inject({
+      method: 'POST',
+      url: '/sessions/import',
+      payload: {
+        session: {
+          session_id: 'snapshot-api-test',
+          created_at: 1700000000000,
+          safe_mode: 0,
+        },
+        events: [],
+        network: [],
+        fingerprints: [],
+      },
+    });
+
+    const writeResponse = await fastify.inject({
+      method: 'POST',
+      url: '/sessions/snapshot-api-test/snapshots',
+      payload: {
+        timestamp: 1700000000500,
+        trigger: 'click',
+        selector: '#buy',
+        url: 'https://example.test/cart',
+        mode: {
+          dom: true,
+          png: false,
+          styleMode: 'computed-lite',
+        },
+        snapshot: {
+          dom: { mode: 'html', html: '<button id="buy">Buy</button>' },
+          styles: { nodes: [{ tag: 'BUTTON', css: { display: 'inline-block' } }] },
+        },
+        truncation: {
+          dom: false,
+          styles: false,
+          png: false,
+        },
+      },
+    });
+
+    const writeBody = JSON.parse(writeResponse.body);
+    expect(writeResponse.statusCode).toBe(200);
+    expect(writeBody.ok).toBe(true);
+    expect(writeBody.snapshotId).toBeDefined();
+
+    const listResponse = await fastify.inject({
+      method: 'GET',
+      url: '/sessions/snapshot-api-test/snapshots?limit=10&offset=0',
+    });
+    const listBody = JSON.parse(listResponse.body);
+
+    expect(listResponse.statusCode).toBe(200);
+    expect(listBody.ok).toBe(true);
+    expect(listBody.snapshots.length).toBe(1);
+    expect(listBody.snapshots[0].trigger).toBe('click');
+    expect(listBody.snapshots[0].selector).toBe('#buy');
+  });
+
+  it('should reject oversized snapshot dom payloads', async () => {
+    initializeDatabase(getConnection().db);
+
+    await fastify.inject({
+      method: 'POST',
+      url: '/sessions/import',
+      payload: {
+        session: {
+          session_id: 'snapshot-api-limit-test',
+          created_at: 1700000000000,
+          safe_mode: 0,
+        },
+        events: [],
+        network: [],
+        fingerprints: [],
+      },
+    });
+
+    const oversizedHtml = 'x'.repeat(600 * 1024);
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/sessions/snapshot-api-limit-test/snapshots',
+      payload: {
+        timestamp: 1700000000600,
+        trigger: 'manual',
+        mode: {
+          dom: true,
+          png: false,
+          styleMode: 'computed-lite',
+        },
+        snapshot: {
+          dom: { mode: 'html', html: oversizedHtml },
+        },
+      },
+    });
+
+    const body = JSON.parse(response.body);
+    expect(response.statusCode).toBe(200);
+    expect(body.ok).toBe(false);
+    expect(body.error).toContain('Snapshot dom payload exceeds max bytes');
+  });
 });

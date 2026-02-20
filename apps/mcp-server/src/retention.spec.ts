@@ -1,19 +1,31 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { initializeDatabase } from './db/migrations';
-import { importSessionFromJson } from './retention';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { existsSync, rmSync } from 'fs';
+import { importSessionFromJson, pruneOrphanedSnapshotAssets, writeSnapshot } from './retention';
 
 describe('session import', () => {
   let db: Database.Database;
+  let dbPath: string;
 
   beforeEach(() => {
-    db = new Database(':memory:');
+    dbPath = join(tmpdir(), `retention-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
+    db = new Database(dbPath);
     db.pragma('foreign_keys = ON');
     initializeDatabase(db);
   });
 
   afterEach(() => {
     db.close();
+    if (existsSync(dbPath)) {
+      rmSync(dbPath, { force: true });
+    }
+    const assetDir = join(tmpdir(), 'snapshot-assets');
+    if (existsSync(assetDir)) {
+      rmSync(assetDir, { recursive: true, force: true });
+    }
   });
 
   it('imports an exported session payload', () => {
@@ -97,5 +109,83 @@ describe('session import', () => {
     expect(() => importSessionFromJson(db, { session: {}, events: [], network: [], fingerprints: [] })).toThrow(
       'Import payload missing session_id'
     );
+  });
+
+  it('writes snapshot metadata and png assets', () => {
+    importSessionFromJson(db, {
+      session: {
+        session_id: 'snapshot-persist-1',
+        created_at: 1700000000000,
+        safe_mode: 0,
+      },
+      events: [],
+      network: [],
+      fingerprints: [],
+    });
+
+    const result = writeSnapshot(db, dbPath, 'snapshot-persist-1', {
+      timestamp: 1700000001111,
+      trigger: 'manual',
+      selector: '#app',
+      mode: { dom: true, png: true, styleMode: 'computed-lite' },
+      snapshot: {
+        dom: { mode: 'html', html: '<div id="app">ok</div>' },
+        styles: { nodes: [{ tag: 'DIV' }] },
+      },
+      png: {
+        captured: true,
+        format: 'png',
+        dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z2akAAAAASUVORK5CYII=',
+      },
+      truncation: { dom: false, styles: false, png: false },
+    });
+
+    expect(result.snapshotId).toContain('snapshot-persist-1-snapshot-');
+
+    const row = db.prepare('SELECT png_path, png_bytes, mode FROM snapshots WHERE snapshot_id = ?').get(result.snapshotId) as {
+      png_path: string | null;
+      png_bytes: number | null;
+      mode: string;
+    };
+
+    expect(row.mode).toBe('both');
+    expect(row.png_path).toBeTruthy();
+    expect((row.png_bytes ?? 0) > 0).toBe(true);
+    expect(existsSync(join(tmpdir(), row.png_path!))).toBe(true);
+  });
+
+  it('prunes orphaned snapshot png assets', () => {
+    importSessionFromJson(db, {
+      session: {
+        session_id: 'snapshot-persist-2',
+        created_at: 1700000000000,
+        safe_mode: 0,
+      },
+      events: [],
+      network: [],
+      fingerprints: [],
+    });
+
+    const result = writeSnapshot(db, dbPath, 'snapshot-persist-2', {
+      timestamp: 1700000002222,
+      trigger: 'manual',
+      mode: { dom: true, png: true, styleMode: 'computed-lite' },
+      snapshot: { dom: { mode: 'html', html: '<div>ok</div>' } },
+      png: {
+        captured: true,
+        format: 'png',
+        dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z2akAAAAASUVORK5CYII=',
+      },
+    });
+
+    const pngPath = (db.prepare('SELECT png_path FROM snapshots WHERE snapshot_id = ?').get(result.snapshotId) as { png_path: string }).png_path;
+    const absolute = join(tmpdir(), pngPath);
+    expect(existsSync(absolute)).toBe(true);
+
+    db.prepare('DELETE FROM snapshots WHERE snapshot_id = ?').run(result.snapshotId);
+    const removed = pruneOrphanedSnapshotAssets(db, dbPath);
+
+    expect(removed).toBe(1);
+    expect(existsSync(absolute)).toBe(false);
   });
 });

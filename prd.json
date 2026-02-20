@@ -386,7 +386,7 @@
       "PNG assets are stored as files with valid references and are removed by retention when no longer needed.",
       "Snapshot APIs enforce payload limits and return deterministic validation errors."
     ],
-    "passes": false,
+    "passes": true,
     "id": "PRD-103",
     "depends_on": [
       "PRD-102"

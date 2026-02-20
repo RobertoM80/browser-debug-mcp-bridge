@@ -6,6 +6,7 @@ export const EventTypeSchema = z.enum([
   'error',
   'network',
   'click',
+  'ui_snapshot',
   'custom',
 ]);
 

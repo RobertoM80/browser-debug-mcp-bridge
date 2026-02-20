@@ -1,5 +1,5 @@
-import { mkdirSync, statSync, writeFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
+import { dirname, join, resolve } from 'path';
 import type { Database } from 'better-sqlite3';
 
 export interface RetentionSettings {
@@ -33,6 +33,57 @@ export interface SessionImportResult {
   fingerprints: number;
 }
 
+export interface SnapshotWriteInput {
+  timestamp?: number;
+  trigger?: string;
+  selector?: string | null;
+  url?: string | null;
+  mode?: unknown;
+  truncation?: {
+    dom?: unknown;
+    styles?: unknown;
+    png?: unknown;
+  };
+  snapshot?: {
+    dom?: unknown;
+    styles?: unknown;
+  };
+  png?: {
+    captured?: unknown;
+    format?: unknown;
+    byteLength?: unknown;
+    dataUrl?: unknown;
+  };
+}
+
+export interface SnapshotListResult {
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+  nextOffset: number | null;
+  snapshots: Array<{
+    snapshotId: string;
+    sessionId: string;
+    timestamp: number;
+    trigger: string;
+    selector: string | null;
+    url: string | null;
+    mode: string;
+    styleMode: string | null;
+    dom: unknown;
+    styles: unknown;
+    pngPath: string | null;
+    pngMime: string | null;
+    pngBytes: number | null;
+    truncation: {
+      dom: boolean;
+      styles: boolean;
+      png: boolean;
+    };
+    createdAt: number;
+  }>;
+}
+
 const DEFAULT_SETTINGS: RetentionSettings = {
   retentionDays: 30,
   maxDbMb: 1024,
@@ -41,6 +92,11 @@ const DEFAULT_SETTINGS: RetentionSettings = {
   lastCleanupAt: null,
   exportPathOverride: null,
 };
+
+const MAX_SNAPSHOT_DOM_BYTES = 512 * 1024;
+const MAX_SNAPSHOT_STYLES_BYTES = 512 * 1024;
+const MAX_SNAPSHOT_PNG_BYTES = 5 * 1024 * 1024;
+const SNAPSHOT_ASSET_DIR = 'snapshot-assets';
 
 export function getRetentionSettings(db: Database): RetentionSettings {
   let row:
@@ -168,6 +224,8 @@ export function runRetentionCleanup(
     db.exec('VACUUM');
   }
 
+  pruneOrphanedSnapshotAssets(db, dbPath);
+
   const ranAt = Date.now();
   db.prepare('UPDATE server_settings SET last_cleanup_at = ? WHERE id = 1').run(ranAt);
 
@@ -184,6 +242,165 @@ export function runRetentionCleanup(
     warning,
     ranAt,
   };
+}
+
+export function writeSnapshot(
+  db: Database,
+  dbPath: string,
+  sessionId: string,
+  input: SnapshotWriteInput,
+  triggerEventId: string | null = null,
+): { snapshotId: string } {
+  const session = db.prepare('SELECT 1 FROM sessions WHERE session_id = ?').get(sessionId);
+  if (!session) {
+    throw new Error(`Session not found: ${sessionId}`);
+  }
+
+  const timestamp = asTimestamp(input.timestamp, Date.now());
+  const createdAt = Date.now();
+  const snapshotId = `${sessionId}-snapshot-${timestamp}-${Math.random().toString(36).slice(2, 10)}`;
+
+  const trigger = normalizeSnapshotTrigger(input.trigger);
+  const selector = typeof input.selector === 'string' ? input.selector : null;
+  const url = typeof input.url === 'string' ? input.url : null;
+
+  const mode = normalizeSnapshotMode(input.mode);
+  const styleMode = normalizeStyleMode(input.mode);
+
+  const domJson = serializeBounded(input.snapshot?.dom, MAX_SNAPSHOT_DOM_BYTES, 'dom');
+  const stylesJson = serializeBounded(input.snapshot?.styles, MAX_SNAPSHOT_STYLES_BYTES, 'styles');
+
+  const domTruncated = Boolean(input.truncation?.dom);
+  const stylesTruncated = Boolean(input.truncation?.styles);
+  const pngTruncated = Boolean(input.truncation?.png);
+
+  const pngWrite = maybePersistPng(dbPath, sessionId, snapshotId, input.png);
+
+  db.prepare(
+    `INSERT INTO snapshots (
+      snapshot_id, session_id, trigger_event_id, ts, trigger, selector, url, mode, style_mode,
+      dom_json, styles_json, png_path, png_mime, png_bytes,
+      dom_truncated, styles_truncated, png_truncated, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    snapshotId,
+    sessionId,
+    triggerEventId,
+    timestamp,
+    trigger,
+    selector,
+    url,
+    mode,
+    styleMode,
+    domJson,
+    stylesJson,
+    pngWrite.relativePath,
+    pngWrite.mime,
+    pngWrite.byteLength,
+    domTruncated ? 1 : 0,
+    stylesTruncated ? 1 : 0,
+    pngTruncated ? 1 : 0,
+    createdAt,
+  );
+
+  return { snapshotId };
+}
+
+export function listSnapshots(
+  db: Database,
+  sessionId: string,
+  limitInput?: number,
+  offsetInput?: number,
+): SnapshotListResult {
+  const limit = normalizePositiveInt(limitInput, 50, 1, 200);
+  const offset = normalizePositiveInt(offsetInput, 0, 0, 1_000_000);
+
+  type SnapshotRow = {
+    snapshot_id: string;
+    session_id: string;
+    ts: number;
+    trigger: string;
+    selector: string | null;
+    url: string | null;
+    mode: string;
+    style_mode: string | null;
+    dom_json: string | null;
+    styles_json: string | null;
+    png_path: string | null;
+    png_mime: string | null;
+    png_bytes: number | null;
+    dom_truncated: number;
+    styles_truncated: number;
+    png_truncated: number;
+    created_at: number;
+  };
+
+  const rows = db.prepare(
+    `SELECT
+      snapshot_id, session_id, ts, trigger, selector, url, mode, style_mode,
+      dom_json, styles_json, png_path, png_mime, png_bytes,
+      dom_truncated, styles_truncated, png_truncated, created_at
+     FROM snapshots
+     WHERE session_id = ?
+     ORDER BY ts DESC
+     LIMIT ? OFFSET ?`
+  ).all(sessionId, limit + 1, offset) as SnapshotRow[];
+
+  const hasMore = rows.length > limit;
+  const page = rows.slice(0, limit);
+
+  return {
+    limit,
+    offset,
+    hasMore,
+    nextOffset: hasMore ? offset + limit : null,
+    snapshots: page.map((row) => ({
+      snapshotId: row.snapshot_id,
+      sessionId: row.session_id,
+      timestamp: row.ts,
+      trigger: row.trigger,
+      selector: row.selector,
+      url: row.url,
+      mode: row.mode,
+      styleMode: row.style_mode,
+      dom: parseJsonOrNull(row.dom_json),
+      styles: parseJsonOrNull(row.styles_json),
+      pngPath: row.png_path,
+      pngMime: row.png_mime,
+      pngBytes: row.png_bytes,
+      truncation: {
+        dom: row.dom_truncated === 1,
+        styles: row.styles_truncated === 1,
+        png: row.png_truncated === 1,
+      },
+      createdAt: row.created_at,
+    })),
+  };
+}
+
+export function pruneOrphanedSnapshotAssets(db: Database, dbPath: string): number {
+  const assetRoot = getSnapshotAssetsRoot(dbPath);
+  if (!existsSync(assetRoot)) {
+    return 0;
+  }
+
+  const referencedPaths = new Set(
+    (db.prepare('SELECT png_path FROM snapshots WHERE png_path IS NOT NULL').all() as Array<{ png_path: string }>).map((row) =>
+      normalizeAssetPath(row.png_path)
+    )
+  );
+
+  const files = collectFiles(assetRoot);
+  let removed = 0;
+  for (const filePath of files) {
+    const relativePath = normalizeAssetPath(filePath.slice(assetRoot.length + 1));
+    if (referencedPaths.has(relativePath)) {
+      continue;
+    }
+    rmSync(filePath, { force: true });
+    removed += 1;
+  }
+  return removed;
 }
 
 export function setSessionPinned(db: Database, sessionId: string, pinned: boolean): boolean {
@@ -351,6 +568,114 @@ function normalizePositiveInt(value: unknown, fallback: number, min: number, max
     return max;
   }
   return num;
+}
+
+function normalizeSnapshotTrigger(value: unknown): string {
+  if (value === 'click' || value === 'manual' || value === 'navigation' || value === 'error') {
+    return value;
+  }
+  return 'manual';
+}
+
+function normalizeSnapshotMode(value: unknown): string {
+  const mode = value as { dom?: unknown; png?: unknown } | undefined;
+  const dom = Boolean(mode?.dom);
+  const png = Boolean(mode?.png);
+  if (dom && png) {
+    return 'both';
+  }
+  if (png) {
+    return 'png';
+  }
+  return 'dom';
+}
+
+function normalizeStyleMode(value: unknown): string {
+  const mode = value as { styleMode?: unknown } | undefined;
+  return mode?.styleMode === 'computed-full' ? 'computed-full' : 'computed-lite';
+}
+
+function serializeBounded(value: unknown, maxBytes: number, label: 'dom' | 'styles'): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  const text = JSON.stringify(value);
+  const bytes = Buffer.byteLength(text, 'utf-8');
+  if (bytes > maxBytes) {
+    throw new Error(`Snapshot ${label} payload exceeds max bytes (${bytes} > ${maxBytes}).`);
+  }
+  return text;
+}
+
+function maybePersistPng(
+  dbPath: string,
+  sessionId: string,
+  snapshotId: string,
+  input: SnapshotWriteInput['png'],
+): { relativePath: string | null; mime: string | null; byteLength: number | null } {
+  if (!input || input.captured !== true || typeof input.dataUrl !== 'string') {
+    return { relativePath: null, mime: null, byteLength: null };
+  }
+
+  const match = /^data:(image\/png);base64,(.+)$/u.exec(input.dataUrl);
+  if (!match) {
+    throw new Error('Snapshot png payload must be a PNG data URL.');
+  }
+
+  const mime = match[1] ?? 'image/png';
+  const base64 = match[2] ?? '';
+  const buffer = Buffer.from(base64, 'base64');
+  if (buffer.byteLength > MAX_SNAPSHOT_PNG_BYTES) {
+    throw new Error(
+      `Snapshot png payload exceeds max bytes (${buffer.byteLength} > ${MAX_SNAPSHOT_PNG_BYTES}).`
+    );
+  }
+
+  const safeSession = sessionId.replace(/[^a-zA-Z0-9-_]/g, '_');
+  const relativePath = normalizeAssetPath(join(SNAPSHOT_ASSET_DIR, safeSession, `${snapshotId}.png`));
+  const absolutePath = resolve(join(resolve(dbPath, '..'), relativePath));
+  mkdirSync(dirname(absolutePath), { recursive: true });
+  writeFileSync(absolutePath, buffer);
+
+  return {
+    relativePath,
+    mime,
+    byteLength: buffer.byteLength,
+  };
+}
+
+function parseJsonOrNull(value: string | null): unknown {
+  if (!value) {
+    return null;
+  }
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function getSnapshotAssetsRoot(dbPath: string): string {
+  return resolve(join(resolve(dbPath, '..'), SNAPSHOT_ASSET_DIR));
+}
+
+function normalizeAssetPath(pathValue: string): string {
+  return pathValue.replace(/\\/g, '/');
+}
+
+function collectFiles(root: string): string[] {
+  const entries = readdirSync(root, { withFileTypes: true });
+  const files: string[] = [];
+  for (const entry of entries) {
+    const fullPath = join(root, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...collectFiles(fullPath));
+      continue;
+    }
+    files.push(fullPath);
+  }
+  return files;
 }
 
 function normalizeExportPath(value: unknown, fallback: string | null): string | null {

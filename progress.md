@@ -245,3 +245,12 @@
   - Emitted `ui_snapshot` records with timestamp, trigger, selector/url, mode, command/session IDs, and truncation metadata
   - Added/updated unit tests in `content-script.spec.ts` and `session-manager.spec.ts`
   - Verified with `pnpm test` (all projects passing)
+
+### Completed: 2026-02-20
+- [Persist snapshots in server storage with DB metadata and asset references] - COMPLETED
+  - Added snapshot persistence schema (`snapshots` table + indexes) and migration v3 in `apps/mcp-server/src/db/schema.ts` and `apps/mcp-server/src/db/migrations.ts`
+  - Implemented bounded snapshot write/list utilities with explicit payload limit errors and PNG asset file persistence in `apps/mcp-server/src/retention.ts`
+  - Added server ingestion/read APIs `POST /sessions/:sessionId/snapshots` and `GET /sessions/:sessionId/snapshots` in `apps/mcp-server/src/main.ts`
+  - Integrated retention cleanup with orphan snapshot asset pruning and added WebSocket `ui_snapshot` ingestion path to persist captured snapshots
+  - Added unit/integration tests for schema/migration coverage, snapshot API behavior, payload limit validation, and orphan asset cleanup in `db.spec.ts`, `main.spec.ts`, and `retention.spec.ts`
+  - Verified with `pnpm test` (all 6 projects passing)

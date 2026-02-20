@@ -9,10 +9,12 @@ import {
   exportSessionToJson,
   getRetentionSettings,
   importSessionFromJson,
+  listSnapshots,
   runRetentionCleanup,
   setSessionPinned,
   shouldRunCleanup,
   updateRetentionSettings,
+  writeSnapshot,
 } from './retention';
 
 const fastify = Fastify({
@@ -26,7 +28,7 @@ let cleanupInterval: NodeJS.Timeout | null = null;
 let lastCleanupResult: ReturnType<typeof runRetentionCleanup> | null = null;
 const MAX_SESSION_IMPORT_BYTES = 10 * 1024 * 1024;
 
-function getDbStats(): { status: 'connected' | 'disconnected'; sessions: number; events: number; network: number; fingerprints: number } {
+function getDbStats(): { status: 'connected' | 'disconnected'; sessions: number; events: number; network: number; fingerprints: number; snapshots: number } {
   try {
     const db = getConnection().db;
     return {
@@ -35,6 +37,7 @@ function getDbStats(): { status: 'connected' | 'disconnected'; sessions: number;
       events: (db.prepare('SELECT COUNT(*) as count FROM events').get() as { count: number }).count,
       network: (db.prepare('SELECT COUNT(*) as count FROM network').get() as { count: number }).count,
       fingerprints: (db.prepare('SELECT COUNT(*) as count FROM error_fingerprints').get() as { count: number }).count,
+      snapshots: (db.prepare('SELECT COUNT(*) as count FROM snapshots').get() as { count: number }).count,
     };
   } catch {
     return {
@@ -43,6 +46,7 @@ function getDbStats(): { status: 'connected' | 'disconnected'; sessions: number;
       events: 0,
       network: 0,
       fingerprints: 0,
+      snapshots: 0,
     };
   }
 }
@@ -149,6 +153,40 @@ fastify.post('/sessions/:sessionId/export', async (request) => {
   const settings = getRetentionSettings(getConnection().db);
   const result = exportSessionToJson(getConnection().db, params.sessionId, process.cwd(), settings.exportPathOverride);
   return { ok: true, sessionId: params.sessionId, ...result };
+});
+
+fastify.post('/sessions/:sessionId/snapshots', async (request) => {
+  const params = request.params as { sessionId: string };
+  const body = (request.body ?? {}) as Record<string, unknown>;
+  try {
+    const result = writeSnapshot(
+      getConnection().db,
+      getDatabasePath(),
+      params.sessionId,
+      body,
+      typeof body.triggerEventId === 'string' ? body.triggerEventId : null,
+    );
+    return { ok: true, sessionId: params.sessionId, ...result };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : 'Failed to persist snapshot',
+    };
+  }
+});
+
+fastify.get('/sessions/:sessionId/snapshots', async (request) => {
+  const params = request.params as { sessionId: string };
+  const query = (request.query ?? {}) as { limit?: string | number; offset?: string | number };
+  const rawLimit = typeof query.limit === 'number' ? query.limit : Number(query.limit ?? 50);
+  const rawOffset = typeof query.offset === 'number' ? query.offset : Number(query.offset ?? 0);
+
+  const result = listSnapshots(getConnection().db, params.sessionId, rawLimit, rawOffset);
+  return {
+    ok: true,
+    sessionId: params.sessionId,
+    ...result,
+  };
 });
 
 fastify.post('/sessions/import', async (request) => {
