@@ -76,7 +76,8 @@ textarea {
 
 input[type='number'],
 input[type='text'],
-input[type='file'] {
+input[type='file'],
+select {
   width: 100%;
   box-sizing: border-box;
   border: 1px solid #bbb;
@@ -125,6 +126,40 @@ input[type='file'] {
   min-height: 16px;
   font-size: 12px;
   color: #555;
+}
+
+.snapshot-settings {
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.snapshot-settings summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.snapshot-settings[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.snapshot-triggers {
+  border: 1px dashed #d8d8d8;
+  border-radius: 6px;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.snapshot-policy-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
 }
 
 button {

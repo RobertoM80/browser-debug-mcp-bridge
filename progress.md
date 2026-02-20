@@ -227,3 +227,11 @@
   - Added reusable MDX components for note, warning, and limit callouts
   - Added docs quality gates with markdown linting, internal link checking, and CI docs verification target
   - Added documentation unit test coverage for Docusaurus platform presence and core page content
+
+### Completed: 2026-02-20
+- [Add snapshot capture controls with opt-in policy and recommended defaults] - COMPLETED
+  - Extended extension capture configuration with snapshot settings (manual enable toggle, request opt-in gate, mode/style selectors, trigger list, PNG policy limits)
+  - Added normalization and validation for snapshot settings with safe defaults (DOM + computed-lite, click/manual triggers, PNG off by default)
+  - Added popup UI controls for snapshot settings in `popup.html` and `popup.css`, with persistence through existing save flow
+  - Added unit tests for snapshot config normalization, bounds enforcement, and opt-in gating in `capture-controls.spec.ts`
+  - Verified with `pnpm test` (all projects passing)

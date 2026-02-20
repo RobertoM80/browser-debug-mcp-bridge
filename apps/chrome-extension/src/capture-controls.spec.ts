@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   applySafeModeRestrictions,
+  canCaptureSnapshot,
+  DEFAULT_CAPTURE_CONFIG,
   isUrlAllowed,
   loadCaptureConfig,
   normalizeCaptureConfig,
@@ -82,11 +84,35 @@ describe('capture controls', () => {
     const saved = await saveCaptureConfig(storage, {
       safeMode: false,
       allowlist: ['  Example.com  ', '*.Sub.Example.com'],
+      snapshots: {
+        enabled: true,
+        requireOptIn: false,
+        mode: 'png',
+        styleMode: 'computed-full',
+        triggers: ['manual', 'error', 'manual'],
+        pngPolicy: {
+          maxImagesPerSession: 20,
+          maxBytesPerImage: 512000,
+          minCaptureIntervalMs: 4000,
+        },
+      },
     });
 
     expect(saved).toEqual({
       safeMode: false,
       allowlist: ['example.com', '*.sub.example.com'],
+      snapshots: {
+        enabled: true,
+        requireOptIn: false,
+        mode: 'png',
+        styleMode: 'computed-full',
+        triggers: ['manual', 'error'],
+        pngPolicy: {
+          maxImagesPerSession: 20,
+          maxBytesPerImage: 512000,
+          minCaptureIntervalMs: 4000,
+        },
+      },
     });
 
     const loaded = await loadCaptureConfig(storage);
@@ -97,6 +123,102 @@ describe('capture controls', () => {
     expect(normalizeCaptureConfig(null)).toEqual({
       safeMode: true,
       allowlist: [],
+      snapshots: DEFAULT_CAPTURE_CONFIG.snapshots,
     });
+  });
+
+  it('normalizes snapshot defaults and bounds invalid values', () => {
+    const normalized = normalizeCaptureConfig({
+      safeMode: true,
+      allowlist: ['example.com'],
+      snapshots: {
+        enabled: true,
+        requireOptIn: true,
+        mode: 'unknown',
+        styleMode: 'unknown',
+        triggers: ['invalid'],
+        pngPolicy: {
+          maxImagesPerSession: -4,
+          maxBytesPerImage: 999999999,
+          minCaptureIntervalMs: 10,
+        },
+      },
+    });
+
+    expect(normalized.snapshots).toEqual({
+      enabled: true,
+      requireOptIn: true,
+      mode: 'dom',
+      styleMode: 'computed-lite',
+      triggers: ['click', 'manual'],
+      pngPolicy: {
+        maxImagesPerSession: 0,
+        maxBytesPerImage: 10485760,
+        minCaptureIntervalMs: 250,
+      },
+    });
+  });
+
+  it('enforces manual toggle and opt-in gate for snapshot capture', () => {
+    expect(
+      canCaptureSnapshot(
+        {
+          ...DEFAULT_CAPTURE_CONFIG,
+          snapshots: {
+            ...DEFAULT_CAPTURE_CONFIG.snapshots,
+            enabled: false,
+          },
+        },
+        { llmRequested: true }
+      )
+    ).toBe(false);
+
+    expect(
+      canCaptureSnapshot(
+        {
+          ...DEFAULT_CAPTURE_CONFIG,
+          snapshots: {
+            ...DEFAULT_CAPTURE_CONFIG.snapshots,
+            enabled: true,
+            requireOptIn: true,
+          },
+        },
+        { llmRequested: false }
+      )
+    ).toBe(false);
+
+    expect(
+      canCaptureSnapshot(
+        {
+          ...DEFAULT_CAPTURE_CONFIG,
+          snapshots: {
+            ...DEFAULT_CAPTURE_CONFIG.snapshots,
+            enabled: true,
+            requireOptIn: false,
+          },
+        },
+        { llmRequested: false }
+      )
+    ).toBe(true);
+  });
+
+  it('keeps computed-full only when explicitly selected', () => {
+    const normalized = normalizeCaptureConfig({
+      snapshots: {
+        ...DEFAULT_CAPTURE_CONFIG.snapshots,
+        styleMode: 'computed-full',
+      },
+    });
+
+    expect(normalized.snapshots.styleMode).toBe('computed-full');
+
+    const fallback = normalizeCaptureConfig({
+      snapshots: {
+        ...DEFAULT_CAPTURE_CONFIG.snapshots,
+        styleMode: 'something-else',
+      },
+    });
+
+    expect(fallback.snapshots.styleMode).toBe('computed-lite');
   });
 });

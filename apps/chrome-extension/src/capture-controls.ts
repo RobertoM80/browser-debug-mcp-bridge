@@ -1,6 +1,24 @@
 export interface CaptureConfig {
   safeMode: boolean;
   allowlist: string[];
+  snapshots: SnapshotCaptureConfig;
+}
+
+export type SnapshotMode = 'dom' | 'png' | 'both';
+export type SnapshotStyleMode = 'computed-lite' | 'computed-full';
+export type SnapshotTrigger = 'click' | 'manual' | 'navigation' | 'error';
+
+export interface SnapshotCaptureConfig {
+  enabled: boolean;
+  requireOptIn: boolean;
+  mode: SnapshotMode;
+  styleMode: SnapshotStyleMode;
+  triggers: SnapshotTrigger[];
+  pngPolicy: {
+    maxImagesPerSession: number;
+    maxBytesPerImage: number;
+    minCaptureIntervalMs: number;
+  };
 }
 
 export interface StorageAreaLike {
@@ -29,6 +47,18 @@ const COOKIE_VALUE_PATTERN = /(^|\s)(cookie|set-cookie)\s*:/i;
 export const DEFAULT_CAPTURE_CONFIG: CaptureConfig = {
   safeMode: true,
   allowlist: [],
+  snapshots: {
+    enabled: false,
+    requireOptIn: true,
+    mode: 'dom',
+    styleMode: 'computed-lite',
+    triggers: ['click', 'manual'],
+    pngPolicy: {
+      maxImagesPerSession: 8,
+      maxBytesPerImage: 262144,
+      minCaptureIntervalMs: 5000,
+    },
+  },
 };
 
 export function normalizeCaptureConfig(value: unknown): CaptureConfig {
@@ -40,7 +70,107 @@ export function normalizeCaptureConfig(value: unknown): CaptureConfig {
   return {
     safeMode: config.safeMode ?? DEFAULT_CAPTURE_CONFIG.safeMode,
     allowlist: normalizeAllowlist(config.allowlist ?? DEFAULT_CAPTURE_CONFIG.allowlist),
+    snapshots: normalizeSnapshotCaptureConfig(config.snapshots),
   };
+}
+
+export function canCaptureSnapshot(
+  config: CaptureConfig,
+  context: {
+    llmRequested: boolean;
+  }
+): boolean {
+  if (!config.snapshots.enabled) {
+    return false;
+  }
+
+  if (config.snapshots.requireOptIn && !context.llmRequested) {
+    return false;
+  }
+
+  return true;
+}
+
+function normalizeSnapshotCaptureConfig(value: unknown): SnapshotCaptureConfig {
+  const input = value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Partial<SnapshotCaptureConfig>)
+    : {};
+
+  return {
+    enabled: input.enabled ?? DEFAULT_CAPTURE_CONFIG.snapshots.enabled,
+    requireOptIn: input.requireOptIn ?? DEFAULT_CAPTURE_CONFIG.snapshots.requireOptIn,
+    mode: normalizeSnapshotMode(input.mode),
+    styleMode: normalizeStyleMode(input.styleMode),
+    triggers: normalizeTriggers(input.triggers),
+    pngPolicy: normalizePngPolicy(input.pngPolicy),
+  };
+}
+
+function normalizeSnapshotMode(value: unknown): SnapshotMode {
+  if (value === 'dom' || value === 'png' || value === 'both') {
+    return value;
+  }
+  return DEFAULT_CAPTURE_CONFIG.snapshots.mode;
+}
+
+function normalizeStyleMode(value: unknown): SnapshotStyleMode {
+  if (value === 'computed-lite' || value === 'computed-full') {
+    return value;
+  }
+  return DEFAULT_CAPTURE_CONFIG.snapshots.styleMode;
+}
+
+function normalizeTriggers(value: unknown): SnapshotTrigger[] {
+  if (!Array.isArray(value)) {
+    return [...DEFAULT_CAPTURE_CONFIG.snapshots.triggers];
+  }
+
+  const allowed = new Set<SnapshotTrigger>();
+  for (const trigger of value) {
+    if (trigger === 'click' || trigger === 'manual' || trigger === 'navigation' || trigger === 'error') {
+      allowed.add(trigger);
+    }
+  }
+
+  if (allowed.size === 0) {
+    return [...DEFAULT_CAPTURE_CONFIG.snapshots.triggers];
+  }
+
+  return Array.from(allowed);
+}
+
+function normalizePngPolicy(value: unknown): SnapshotCaptureConfig['pngPolicy'] {
+  const input = value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Partial<SnapshotCaptureConfig['pngPolicy']>)
+    : {};
+
+  return {
+    maxImagesPerSession: normalizeBoundedNumber(
+      input.maxImagesPerSession,
+      DEFAULT_CAPTURE_CONFIG.snapshots.pngPolicy.maxImagesPerSession,
+      0,
+      200
+    ),
+    maxBytesPerImage: normalizeBoundedNumber(
+      input.maxBytesPerImage,
+      DEFAULT_CAPTURE_CONFIG.snapshots.pngPolicy.maxBytesPerImage,
+      32768,
+      10485760
+    ),
+    minCaptureIntervalMs: normalizeBoundedNumber(
+      input.minCaptureIntervalMs,
+      DEFAULT_CAPTURE_CONFIG.snapshots.pngPolicy.minCaptureIntervalMs,
+      250,
+      300000
+    ),
+  };
+}
+
+function normalizeBoundedNumber(value: unknown, fallback: number, min: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.floor(value)));
 }
 
 export function normalizeAllowlist(values: string[]): string[] {

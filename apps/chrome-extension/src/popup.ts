@@ -10,6 +10,18 @@ type SessionState = {
 type CaptureConfig = {
   safeMode: boolean;
   allowlist: string[];
+  snapshots: {
+    enabled: boolean;
+    requireOptIn: boolean;
+    mode: 'dom' | 'png' | 'both';
+    styleMode: 'computed-lite' | 'computed-full';
+    triggers: Array<'click' | 'manual' | 'navigation' | 'error'>;
+    pngPolicy: {
+      maxImagesPerSession: number;
+      maxBytesPerImage: number;
+      minCaptureIntervalMs: number;
+    };
+  };
 };
 
 type SessionResponse =
@@ -120,6 +132,17 @@ function renderSessionState(state: SessionState): void {
 function renderConfig(config: CaptureConfig): void {
   const safeModeCheckbox = document.getElementById('safe-mode') as HTMLInputElement | null;
   const allowlistInput = document.getElementById('allowlist-domains') as HTMLTextAreaElement | null;
+  const snapshotsEnabled = document.getElementById('snapshots-enabled') as HTMLInputElement | null;
+  const snapshotsOptIn = document.getElementById('snapshots-opt-in') as HTMLInputElement | null;
+  const snapshotMode = document.getElementById('snapshot-mode') as HTMLSelectElement | null;
+  const snapshotStyleMode = document.getElementById('snapshot-style-mode') as HTMLSelectElement | null;
+  const triggerClick = document.getElementById('snapshot-trigger-click') as HTMLInputElement | null;
+  const triggerManual = document.getElementById('snapshot-trigger-manual') as HTMLInputElement | null;
+  const triggerNavigation = document.getElementById('snapshot-trigger-navigation') as HTMLInputElement | null;
+  const triggerError = document.getElementById('snapshot-trigger-error') as HTMLInputElement | null;
+  const maxImagesPerSession = document.getElementById('snapshot-max-images') as HTMLInputElement | null;
+  const maxBytesPerImage = document.getElementById('snapshot-max-bytes') as HTMLInputElement | null;
+  const minCaptureIntervalMs = document.getElementById('snapshot-min-interval') as HTMLInputElement | null;
 
   if (safeModeCheckbox) {
     safeModeCheckbox.checked = config.safeMode;
@@ -128,20 +151,70 @@ function renderConfig(config: CaptureConfig): void {
   if (allowlistInput) {
     allowlistInput.value = config.allowlist.join('\n');
   }
+
+  if (snapshotsEnabled) snapshotsEnabled.checked = config.snapshots.enabled;
+  if (snapshotsOptIn) snapshotsOptIn.checked = config.snapshots.requireOptIn;
+  if (snapshotMode) snapshotMode.value = config.snapshots.mode;
+  if (snapshotStyleMode) snapshotStyleMode.value = config.snapshots.styleMode;
+  if (triggerClick) triggerClick.checked = config.snapshots.triggers.includes('click');
+  if (triggerManual) triggerManual.checked = config.snapshots.triggers.includes('manual');
+  if (triggerNavigation) triggerNavigation.checked = config.snapshots.triggers.includes('navigation');
+  if (triggerError) triggerError.checked = config.snapshots.triggers.includes('error');
+  if (maxImagesPerSession) maxImagesPerSession.value = String(config.snapshots.pngPolicy.maxImagesPerSession);
+  if (maxBytesPerImage) maxBytesPerImage.value = String(config.snapshots.pngPolicy.maxBytesPerImage);
+  if (minCaptureIntervalMs) minCaptureIntervalMs.value = String(config.snapshots.pngPolicy.minCaptureIntervalMs);
 }
 
 function getConfigFromForm(): CaptureConfig {
   const safeModeCheckbox = document.getElementById('safe-mode') as HTMLInputElement | null;
   const allowlistInput = document.getElementById('allowlist-domains') as HTMLTextAreaElement | null;
+  const snapshotsEnabled = document.getElementById('snapshots-enabled') as HTMLInputElement | null;
+  const snapshotsOptIn = document.getElementById('snapshots-opt-in') as HTMLInputElement | null;
+  const snapshotMode = document.getElementById('snapshot-mode') as HTMLSelectElement | null;
+  const snapshotStyleMode = document.getElementById('snapshot-style-mode') as HTMLSelectElement | null;
+  const triggerClick = document.getElementById('snapshot-trigger-click') as HTMLInputElement | null;
+  const triggerManual = document.getElementById('snapshot-trigger-manual') as HTMLInputElement | null;
+  const triggerNavigation = document.getElementById('snapshot-trigger-navigation') as HTMLInputElement | null;
+  const triggerError = document.getElementById('snapshot-trigger-error') as HTMLInputElement | null;
+  const maxImagesPerSession = document.getElementById('snapshot-max-images') as HTMLInputElement | null;
+  const maxBytesPerImage = document.getElementById('snapshot-max-bytes') as HTMLInputElement | null;
+  const minCaptureIntervalMs = document.getElementById('snapshot-min-interval') as HTMLInputElement | null;
 
   const allowlist = (allowlistInput?.value ?? '')
     .split(/[\n,]+/g)
     .map((entry) => entry.trim())
     .filter(Boolean);
 
+  const triggers: Array<'click' | 'manual' | 'navigation' | 'error'> = [];
+  if (triggerClick?.checked) triggers.push('click');
+  if (triggerManual?.checked) triggers.push('manual');
+  if (triggerNavigation?.checked) triggers.push('navigation');
+  if (triggerError?.checked) triggers.push('error');
+
+  const mode = snapshotMode?.value;
+  const safeSnapshotMode = mode === 'png' || mode === 'both' || mode === 'dom' ? mode : 'dom';
+  const styleMode = snapshotStyleMode?.value;
+  const safeStyleMode = styleMode === 'computed-full' || styleMode === 'computed-lite'
+    ? styleMode
+    : 'computed-lite';
+
+  const pngPolicy = {
+    maxImagesPerSession: Number(maxImagesPerSession?.value ?? 8),
+    maxBytesPerImage: Number(maxBytesPerImage?.value ?? 262144),
+    minCaptureIntervalMs: Number(minCaptureIntervalMs?.value ?? 5000),
+  };
+
   return {
     safeMode: safeModeCheckbox?.checked ?? true,
     allowlist,
+    snapshots: {
+      enabled: snapshotsEnabled?.checked ?? false,
+      requireOptIn: snapshotsOptIn?.checked ?? true,
+      mode: safeSnapshotMode,
+      styleMode: safeStyleMode,
+      triggers,
+      pngPolicy,
+    },
   };
 }
 

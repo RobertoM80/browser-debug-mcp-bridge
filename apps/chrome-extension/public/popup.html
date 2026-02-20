@@ -26,6 +26,63 @@
       </label>
       <label class="allowlist" for="allowlist-domains">Domain allowlist</label>
       <textarea id="allowlist-domains" rows="4" placeholder="example.com&#10;*.staging.example.com"></textarea>
+
+      <details class="snapshot-settings" open>
+        <summary>Snapshot capture</summary>
+        <label class="toggle" for="snapshots-enabled">
+          <input id="snapshots-enabled" type="checkbox">
+          <span>Enable snapshots (manual)</span>
+        </label>
+        <label class="toggle" for="snapshots-opt-in">
+          <input id="snapshots-opt-in" type="checkbox" checked>
+          <span>Require LLM request opt-in</span>
+        </label>
+
+        <label for="snapshot-mode">Snapshot mode</label>
+        <select id="snapshot-mode">
+          <option value="dom" selected>DOM only (default)</option>
+          <option value="png">PNG only</option>
+          <option value="both">DOM + PNG</option>
+        </select>
+
+        <label for="snapshot-style-mode">Style mode</label>
+        <select id="snapshot-style-mode">
+          <option value="computed-lite" selected>computed-lite (default)</option>
+          <option value="computed-full">computed-full (explicit)</option>
+        </select>
+
+        <div class="snapshot-triggers">
+          <span class="allowlist">Triggers</span>
+          <label class="toggle" for="snapshot-trigger-click">
+            <input id="snapshot-trigger-click" type="checkbox" checked>
+            <span>click</span>
+          </label>
+          <label class="toggle" for="snapshot-trigger-manual">
+            <input id="snapshot-trigger-manual" type="checkbox" checked>
+            <span>manual</span>
+          </label>
+          <label class="toggle" for="snapshot-trigger-navigation">
+            <input id="snapshot-trigger-navigation" type="checkbox">
+            <span>navigation</span>
+          </label>
+          <label class="toggle" for="snapshot-trigger-error">
+            <input id="snapshot-trigger-error" type="checkbox">
+            <span>error</span>
+          </label>
+        </div>
+
+        <div class="snapshot-policy-grid">
+          <label for="snapshot-max-images">Max images/session</label>
+          <input id="snapshot-max-images" type="number" min="0" step="1" value="8">
+
+          <label for="snapshot-max-bytes">Max bytes/image</label>
+          <input id="snapshot-max-bytes" type="number" min="32768" step="1024" value="262144">
+
+          <label for="snapshot-min-interval">Min interval (ms)</label>
+          <input id="snapshot-min-interval" type="number" min="250" step="50" value="5000">
+        </div>
+      </details>
+
       <button id="save-config" type="button">Save Settings</button>
       <div id="config-status" class="config-status"></div>
     </div>

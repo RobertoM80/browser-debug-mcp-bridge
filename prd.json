@@ -319,5 +319,181 @@
       "Document contribution workflow for docs: authoring standards, templates, review checklist, and release update process"
     ],
     "passes": true
+  },
+  {
+    "category": "UI flows",
+    "description": "Add snapshot capture controls with opt-in policy and recommended defaults",
+    "owner": "extension",
+    "priority": "high",
+    "steps": [
+      "Add extension settings for snapshot capture with manual toggle and LLM-request opt-in gate.",
+      "Add snapshot mode selector with defaults: `dom` enabled, `png` disabled, `both` available.",
+      "Add style mode selector with defaults: `computed-lite`; allow `computed-full` only when explicitly requested.",
+      "Add trigger settings with defaults: `click` and `manual`; keep `navigation` and `error` optional.",
+      "Add PNG policy settings with recommended defaults (max images per session, max bytes per image, min capture interval).",
+      "Implementation sequence (file-level): 1) apps/chrome-extension/src/capture-controls.ts, 2) apps/chrome-extension/src/popup.ts, 3) apps/chrome-extension/public/popup.html, 4) apps/chrome-extension/public/popup.css."
+    ],
+    "acceptance_criteria": [
+      "Snapshots are disabled unless manual toggle and request conditions are satisfied.",
+      "Default settings prioritize low risk and small payloads (DOM + computed-lite, click/manual triggers, PNG off).",
+      "Users can override defaults safely from extension UI with validation and persistence."
+    ],
+    "passes": true,
+    "id": "PRD-101",
+    "depends_on": [],
+    "estimate": "M"
+  },
+  {
+    "category": "domain core",
+    "description": "Capture timestamped UI snapshots in extension for DOM, CSS, and optional PNG",
+    "owner": "extension",
+    "priority": "high",
+    "steps": [
+      "Implement `CAPTURE_UI_SNAPSHOT` command flow reusing existing capture infrastructure for DOM and style extraction.",
+      "Capture DOM snapshot payloads with byte limits and truncation markers to prevent oversized events.",
+      "Capture computed styles for clicked element and ancestor chain in `computed-lite` mode; allow deeper mode only on explicit request.",
+      "Add optional PNG capture path with strict throttle and per-session quota enforcement.",
+      "Emit snapshot records with `timestamp`, `trigger`, `selector/url`, `mode`, and truncation metadata.",
+      "Implementation sequence (file-level): 1) apps/chrome-extension/src/content-script.ts, 2) apps/chrome-extension/src/background.ts, 3) apps/chrome-extension/src/session-manager.ts, 4) apps/chrome-extension/src/injected-script.ts."
+    ],
+    "acceptance_criteria": [
+      "Every stored snapshot has a precise timestamp and trigger context to support click -> snapshot flow analysis.",
+      "DOM/CSS snapshots succeed under normal limits and degrade gracefully with truncation when limits are exceeded.",
+      "PNG capture never bypasses configured throttles or byte/quantity limits."
+    ],
+    "passes": false,
+    "id": "PRD-102",
+    "depends_on": [
+      "PRD-101"
+    ],
+    "estimate": "M"
+  },
+  {
+    "category": "data/persistence",
+    "description": "Persist snapshots in server storage with DB metadata and asset references",
+    "owner": "backend-server",
+    "priority": "high",
+    "steps": [
+      "Create `snapshots` table and indexes with migration support (session linkage, trigger linkage, mode, timestamps, truncation flags).",
+      "Store DOM and style payloads as JSON text with size validation and explicit limit errors.",
+      "Store PNG as asset files on disk and persist metadata/path references in SQLite instead of raw blobs.",
+      "Add ingestion APIs for snapshot writes and snapshot list reads per session.",
+      "Add retention integration to prune old snapshot rows and orphaned PNG assets safely.",
+      "Implementation sequence (file-level): 1) apps/mcp-server/src/db/schema.ts, 2) apps/mcp-server/src/db/migrations.ts, 3) apps/mcp-server/src/main.ts, 4) apps/mcp-server/src/retention.ts."
+    ],
+    "acceptance_criteria": [
+      "Server persists snapshot metadata and payloads with session and timestamp integrity.",
+      "PNG assets are stored as files with valid references and are removed by retention when no longer needed.",
+      "Snapshot APIs enforce payload limits and return deterministic validation errors."
+    ],
+    "passes": false,
+    "id": "PRD-103",
+    "depends_on": [
+      "PRD-102"
+    ],
+    "estimate": "L"
+  },
+  {
+    "category": "data/persistence",
+    "description": "Support snapshot export/import with single-file packaging and compatibility mode",
+    "owner": "backend-server",
+    "priority": "medium",
+    "steps": [
+      "Extend export manifest to include snapshots with timestamped metadata and trigger context.",
+      "Add single-file export format as `.zip` containing JSON manifest plus PNG assets.",
+      "Keep JSON-only compatibility mode for DOM/CSS snapshots and optional base64 PNG embedding when explicitly requested.",
+      "Extend import flow to restore snapshots and remap IDs while preserving time ordering.",
+      "Add integrity checks for missing/corrupt assets and clear operator-facing errors.",
+      "Implementation sequence (file-level): 1) apps/mcp-server/src/retention.ts, 2) apps/mcp-server/src/main.ts, 3) apps/chrome-extension/src/db-viewer.ts, 4) apps/chrome-extension/src/popup.ts."
+    ],
+    "acceptance_criteria": [
+      "Single-file export/import round-trips snapshots without timestamp drift or broken references.",
+      "Compatibility mode can produce JSON-only exports and optional base64 image payloads when requested.",
+      "Export and import failures are explicit and actionable."
+    ],
+    "passes": false,
+    "id": "PRD-104",
+    "depends_on": [
+      "PRD-103"
+    ],
+    "estimate": "L"
+  },
+  {
+    "category": "MCP tools",
+    "description": "Expose snapshot timeline and binary asset retrieval through MCP with safe limits",
+    "owner": "backend-mcp",
+    "priority": "high",
+    "steps": [
+      "Add MCP tools for snapshot discovery by session/time/trigger (`list_snapshots`, `get_snapshot_for_event`).",
+      "Return metadata-first responses by default (no large binary payloads in standard queries).",
+      "Add dedicated asset retrieval tool (`get_snapshot_asset`) supporting chunked reads and optional base64 encoding.",
+      "Add strict maxBytes and pagination controls to avoid oversized MCP responses.",
+      "Document tool contract for LLM workflows (POST ingest path vs MCP read path).",
+      "Implementation sequence (file-level): 1) apps/mcp-server/src/mcp/server.ts, 2) libs/mcp-contracts/src, 3) apps/docs/docs/mcp-tools/."
+    ],
+    "acceptance_criteria": [
+      "MCP can reconstruct click -> snapshot -> subsequent events using timestamps and trigger links.",
+      "Binary asset retrieval is explicit, bounded, and does not destabilize normal tool responses.",
+      "Contracts clearly separate ingestion APIs from MCP read APIs."
+    ],
+    "passes": false,
+    "id": "PRD-105",
+    "depends_on": [
+      "PRD-103"
+    ],
+    "estimate": "M"
+  },
+  {
+    "category": "domain utilities",
+    "description": "Apply snapshot-specific privacy and redaction policy for DOM, CSS, and PNG",
+    "owner": "security/privacy",
+    "priority": "high",
+    "steps": [
+      "Define snapshot redaction policy extending safe mode with selector- and attribute-based masking.",
+      "Mask or drop sensitive fields (password, payment, tokens, emails, input values) in DOM/style snapshots.",
+      "Apply PNG privacy policy (skip/blur sensitive regions or block image capture under strict safe mode).",
+      "Record redaction metadata in snapshot records for auditability.",
+      "Add configuration switches for strict/standard profile with secure defaults.",
+      "Implementation sequence (file-level): 1) apps/chrome-extension/src/capture-controls.ts, 2) apps/chrome-extension/src/content-script.ts, 3) apps/chrome-extension/src/injected-script.ts, 4) libs/redaction/src."
+    ],
+    "acceptance_criteria": [
+      "Sensitive user data is not persisted in snapshots under default safe settings.",
+      "Redaction behavior is deterministic and testable for DOM, CSS, and PNG paths.",
+      "Each snapshot indicates whether redaction was applied and at what profile level."
+    ],
+    "passes": false,
+    "id": "PRD-106",
+    "depends_on": [
+      "PRD-102",
+      "PRD-103"
+    ],
+    "estimate": "M"
+  },
+  {
+    "category": "testing/verification",
+    "description": "Validate snapshot feature end-to-end with quotas, privacy, export, and MCP retrieval",
+    "owner": "qa/backend",
+    "priority": "high",
+    "steps": [
+      "Add unit tests for DOM/style snapshot generation, truncation, and redaction behavior.",
+      "Add extension integration tests for trigger handling, throttling, and mode selection.",
+      "Add server tests for snapshot APIs, migrations, retention cleanup, and asset lifecycle.",
+      "Add export/import tests for zip package and JSON compatibility mode including base64 path.",
+      "Add MCP tool tests for metadata queries and chunked asset retrieval.",
+      "Implementation sequence (file-level): 1) apps/chrome-extension/src/*.spec.ts, 2) apps/mcp-server/src/main.spec.ts, 3) apps/mcp-server/src/retention.spec.ts, 4) apps/mcp-server/src/mcp/server.spec.ts, 5) docs/TROUBLESHOOTING.md."
+    ],
+    "acceptance_criteria": [
+      "End-to-end flow confirms reliable click -> snapshot -> analysis timeline.",
+      "Load tests show quotas/throttles prevent unbounded payload growth.",
+      "Privacy tests prove snapshot redaction policy is enforced before persistence and export."
+    ],
+    "passes": false,
+    "id": "PRD-107",
+    "depends_on": [
+      "PRD-104",
+      "PRD-105",
+      "PRD-106"
+    ],
+    "estimate": "L"
   }
 ]
