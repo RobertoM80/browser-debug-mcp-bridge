@@ -45,28 +45,6 @@ type CleanupResult = {
   warning: string | null;
 };
 
-type DbEntryRow = {
-  id: string;
-  source: 'event' | 'network';
-  timestamp: number;
-  kind: string;
-  summary: string;
-  raw: unknown;
-};
-
-type DbEntriesResult = {
-  ok: true;
-  sessionId: string;
-  limit: number;
-  offset: number;
-  hasMore: boolean;
-  nextOffset: number | null;
-  totalApprox: number;
-  rows: DbEntryRow[];
-};
-
-type DbFilter = 'all' | 'event' | 'network';
-
 type SessionImportResult = {
   sessionId: string;
   requestedSessionId: string;
@@ -78,11 +56,6 @@ type SessionImportResult = {
 };
 
 let statePollTimer: number | null = null;
-let dbEntriesOffset = 0;
-let dbEntriesHasMore = false;
-let dbEntriesRows: DbEntryRow[] = [];
-let dbEntriesFilter: DbFilter = 'all';
-const expandedDbRows = new Set<string>();
 const MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024;
 
 function sendRuntimeMessage(message: unknown): Promise<SessionResponse> {
@@ -233,54 +206,12 @@ function setRetentionStatus(message: string): void {
   }
 }
 
-function setDbEntriesStatus(message: string): void {
-  const status = document.getElementById('db-entries-status');
-  if (status) {
-    status.textContent = message;
-  }
-}
-
-function getDbEntriesSessionId(): string | null {
+function getCurrentSessionId(): string | null {
   const sessionId = (document.getElementById('session-id')?.textContent ?? '').trim();
   if (!sessionId || sessionId === '-') {
     return null;
   }
   return sessionId;
-}
-
-function formatEntryTime(timestamp: number): string {
-  if (!Number.isFinite(timestamp)) {
-    return '-';
-  }
-  return new Date(timestamp).toLocaleTimeString();
-}
-
-function getDbPageSize(): number {
-  const height = window.innerHeight;
-  const estimated = Math.floor((height - 230) / 30);
-  return Math.min(Math.max(estimated, 12), 80);
-}
-
-function parseDbEntriesResult(result: unknown): DbEntriesResult | null {
-  if (!result || typeof result !== 'object') {
-    return null;
-  }
-
-  const candidate = result as Partial<DbEntriesResult>;
-  if (!Array.isArray(candidate.rows) || typeof candidate.hasMore !== 'boolean') {
-    return null;
-  }
-
-  return {
-    ok: true,
-    sessionId: String(candidate.sessionId ?? ''),
-    limit: Number(candidate.limit ?? 0),
-    offset: Number(candidate.offset ?? 0),
-    hasMore: candidate.hasMore,
-    nextOffset: typeof candidate.nextOffset === 'number' ? candidate.nextOffset : null,
-    totalApprox: Number(candidate.totalApprox ?? candidate.rows.length),
-    rows: candidate.rows as DbEntryRow[],
-  };
 }
 
 function parseSessionImportResult(result: unknown): SessionImportResult | null {
@@ -311,148 +242,6 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
     binary += String.fromCharCode(bytes[i] ?? 0);
   }
   return btoa(binary);
-}
-
-function getVisibleDbRows(rows: DbEntryRow[]): DbEntryRow[] {
-  if (dbEntriesFilter === 'all') {
-    return rows;
-  }
-  return rows.filter((row) => row.source === dbEntriesFilter);
-}
-
-function updateDbFilterButtons(): void {
-  const buttons = document.querySelectorAll<HTMLButtonElement>('button[data-db-filter]');
-  for (const button of buttons) {
-    const value = button.dataset.dbFilter;
-    if (value === dbEntriesFilter) {
-      button.classList.add('is-active');
-    } else {
-      button.classList.remove('is-active');
-    }
-  }
-}
-
-function updateDbEntriesStatusText(totalApprox?: number): void {
-  const visibleRows = getVisibleDbRows(dbEntriesRows).length;
-  const suffix = dbEntriesFilter === 'all' ? 'all rows' : `${dbEntriesFilter} rows`;
-  if (dbEntriesRows.length === 0) {
-    setDbEntriesStatus('No DB entries for this session yet.');
-    return;
-  }
-
-  if (dbEntriesHasMore && typeof totalApprox === 'number' && Number.isFinite(totalApprox)) {
-    setDbEntriesStatus(`Showing ${visibleRows} loaded ${suffix} (${dbEntriesRows.length} loaded of about ${totalApprox} total).`);
-    return;
-  }
-
-  setDbEntriesStatus(`Showing ${visibleRows} ${suffix} (${dbEntriesRows.length} loaded).`);
-}
-
-function renderDbRows(rows: DbEntryRow[], append = false): void {
-  const tbody = document.getElementById('db-entries-body') as HTMLTableSectionElement | null;
-  if (!tbody) {
-    return;
-  }
-
-  if (!append) {
-    tbody.replaceChildren();
-  }
-
-  const visibleRows = getVisibleDbRows(rows);
-
-  for (const row of visibleRows) {
-    const dataRow = document.createElement('tr');
-    dataRow.dataset.rowId = row.id;
-
-    const timeCell = document.createElement('td');
-    timeCell.textContent = formatEntryTime(row.timestamp);
-
-    const sourceCell = document.createElement('td');
-    sourceCell.textContent = row.source;
-
-    const kindCell = document.createElement('td');
-    kindCell.textContent = row.kind;
-
-    const summaryCell = document.createElement('td');
-    summaryCell.className = 'db-summary';
-    summaryCell.title = row.summary;
-    summaryCell.textContent = row.summary;
-
-    const detailsCell = document.createElement('td');
-    const toggleButton = document.createElement('button');
-    toggleButton.type = 'button';
-    toggleButton.dataset.toggleRowId = row.id;
-    toggleButton.textContent = expandedDbRows.has(row.id) ? 'Hide' : 'Show';
-    detailsCell.append(toggleButton);
-
-    dataRow.append(timeCell, sourceCell, kindCell, summaryCell, detailsCell);
-    tbody.append(dataRow);
-
-    if (expandedDbRows.has(row.id)) {
-      const expandedRow = document.createElement('tr');
-      expandedRow.className = 'db-expanded';
-      expandedRow.dataset.expandedRowId = row.id;
-      const expandedCell = document.createElement('td');
-      expandedCell.colSpan = 5;
-      const pre = document.createElement('pre');
-      pre.textContent = JSON.stringify(row.raw, null, 2);
-      expandedCell.append(pre);
-      expandedRow.append(expandedCell);
-      tbody.append(expandedRow);
-    }
-  }
-}
-
-async function loadDbEntries(options: { append: boolean }): Promise<void> {
-  const sessionId = getDbEntriesSessionId();
-  if (!sessionId) {
-    setDbEntriesStatus('No active session available.');
-    return;
-  }
-
-  const sessionIdLabel = document.getElementById('db-entries-session-id');
-  if (sessionIdLabel) {
-    sessionIdLabel.textContent = sessionId;
-  }
-
-  const offset = options.append ? dbEntriesOffset : 0;
-  const limit = getDbPageSize();
-  setDbEntriesStatus('Loading DB entries...');
-
-  const response = await sendRuntimeMessage({
-    type: 'SESSION_GET_DB_ENTRIES',
-    sessionId,
-    limit,
-    offset,
-  });
-
-  if (!response.ok) {
-    setDbEntriesStatus(`Error: ${response.error}`);
-    return;
-  }
-
-  if (!('result' in response)) {
-    setDbEntriesStatus('Unexpected response while loading entries.');
-    return;
-  }
-
-  const parsed = parseDbEntriesResult(response.result);
-  if (!parsed) {
-    setDbEntriesStatus('Invalid entries payload received.');
-    return;
-  }
-
-  dbEntriesRows = options.append ? [...dbEntriesRows, ...parsed.rows] : parsed.rows;
-  renderDbRows(dbEntriesRows, false);
-  dbEntriesHasMore = parsed.hasMore;
-  dbEntriesOffset = parsed.nextOffset ?? parsed.offset + parsed.rows.length;
-
-  const loadMoreButton = document.getElementById('load-more-db-entries') as HTMLButtonElement | null;
-  if (loadMoreButton) {
-    loadMoreButton.disabled = !dbEntriesHasMore;
-  }
-
-  updateDbEntriesStatusText(parsed.totalApprox);
 }
 
 function renderRetention(settings: RetentionSettings, lastCleanup?: CleanupResult): void {
@@ -556,11 +345,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const importSessionButton = document.getElementById('import-session');
   const importSessionInput = document.getElementById('import-session-file') as HTMLInputElement | null;
   const showDbEntriesButton = document.getElementById('show-db-entries');
-  const closeDbEntriesButton = document.getElementById('close-db-entries');
-  const loadMoreDbEntriesButton = document.getElementById('load-more-db-entries');
-  const dbEntriesModal = document.getElementById('db-entries-modal') as HTMLDialogElement | null;
-  const dbEntriesBody = document.getElementById('db-entries-body');
-  const dbFilterBar = dbEntriesModal?.querySelector('.db-filter-bar');
 
   startButton?.addEventListener('click', async () => {
     const result = await sendRuntimeMessage({ type: 'SESSION_START' });
@@ -623,8 +407,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   pinSessionButton?.addEventListener('click', async () => {
-    const sessionId = (document.getElementById('session-id')?.textContent ?? '').trim();
-    if (!sessionId || sessionId === '-') {
+    const sessionId = getCurrentSessionId();
+    if (!sessionId) {
       setRetentionStatus('No active session to pin.');
       return;
     }
@@ -634,8 +418,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   unpinSessionButton?.addEventListener('click', async () => {
-    const sessionId = (document.getElementById('session-id')?.textContent ?? '').trim();
-    if (!sessionId || sessionId === '-') {
+    const sessionId = getCurrentSessionId();
+    if (!sessionId) {
       setRetentionStatus('No active session to unpin.');
       return;
     }
@@ -645,8 +429,8 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   exportSessionButton?.addEventListener('click', async () => {
-    const sessionId = (document.getElementById('session-id')?.textContent ?? '').trim();
-    if (!sessionId || sessionId === '-') {
+    const sessionId = getCurrentSessionId();
+    if (!sessionId) {
       setRetentionStatus('No active session to export.');
       return;
     }
@@ -730,7 +514,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   showDbEntriesButton?.addEventListener('click', async () => {
-    const sessionId = getDbEntriesSessionId();
+    const sessionId = getCurrentSessionId();
     const baseUrl = chrome.runtime.getURL('db-viewer.html');
     const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : '';
     const url = `${baseUrl}${query}`;
@@ -740,65 +524,6 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch {
       window.open(url, '_blank');
     }
-  });
-
-  closeDbEntriesButton?.addEventListener('click', () => {
-    dbEntriesModal?.close();
-  });
-
-  loadMoreDbEntriesButton?.addEventListener('click', async () => {
-    if (!dbEntriesHasMore) {
-      return;
-    }
-    await loadDbEntries({ append: true });
-  });
-
-  dbEntriesBody?.addEventListener('click', (event) => {
-    const target = event.target;
-    if (!(target instanceof HTMLElement)) {
-      return;
-    }
-
-    const button = target.closest('button[data-toggle-row-id]') as HTMLButtonElement | null;
-    if (!button) {
-      return;
-    }
-
-    const rowId = button.dataset.toggleRowId;
-    if (!rowId) {
-      return;
-    }
-
-    if (expandedDbRows.has(rowId)) {
-      expandedDbRows.delete(rowId);
-    } else {
-      expandedDbRows.add(rowId);
-    }
-
-    renderDbRows(dbEntriesRows, false);
-    updateDbEntriesStatusText();
-  });
-
-  dbFilterBar?.addEventListener('click', (event) => {
-    const target = event.target;
-    if (!(target instanceof HTMLElement)) {
-      return;
-    }
-
-    const button = target.closest('button[data-db-filter]') as HTMLButtonElement | null;
-    if (!button) {
-      return;
-    }
-
-    const filter = button.dataset.dbFilter;
-    if (filter !== 'all' && filter !== 'event' && filter !== 'network') {
-      return;
-    }
-
-    dbEntriesFilter = filter;
-    updateDbFilterButtons();
-    renderDbRows(dbEntriesRows, false);
-    updateDbEntriesStatusText();
   });
 
   const resetDbButton = document.getElementById('reset-db');
@@ -813,42 +538,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  resetDbButton?.addEventListener('click', () => {
-    const confirmed = window.confirm('Reset database? This will permanently delete ALL sessions, events, and network data.');
-    if (!confirmed) {
-      return;
-    }
-
-    void (async () => {
-      setResetDbStatus('Resetting database...');
-      const result = await sendRuntimeMessage({ type: 'DB_RESET' });
-
-      if (result.ok && 'result' in result && result.result && typeof result.result === 'object') {
-        const response = result.result as { ok?: boolean; message?: string; error?: string };
-        if (response.ok === false) {
-          setResetDbStatus(response.error ?? 'Unable to reset database');
-          return;
-        }
-
-        setResetDbStatus(response.message ?? 'Database reset successfully.');
-        await refreshState();
-        return;
-      }
-
-      setResetDbStatus(result.ok ? 'Unable to reset database' : result.error);
-    })();
-  });
-
-  resetConfirmCancel?.addEventListener('click', () => {
-    resetConfirmModal?.close();
-  });
-
-  resetConfirmYes?.addEventListener('click', async () => {
-    resetConfirmModal?.close();
+  async function performDbReset(): Promise<void> {
     setResetDbStatus('Resetting database...');
 
     const result = await sendRuntimeMessage({ type: 'DB_RESET' });
-
     if (result.ok && 'result' in result && result.result && typeof result.result === 'object') {
       const response = result.result as { ok?: boolean; message?: string; error?: string };
       if (response.ok === false) {
@@ -862,6 +555,19 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     setResetDbStatus(result.ok ? 'Unable to reset database' : result.error);
+  }
+
+  resetDbButton?.addEventListener('click', () => {
+    resetConfirmModal?.showModal();
+  });
+
+  resetConfirmCancel?.addEventListener('click', () => {
+    resetConfirmModal?.close();
+  });
+
+  resetConfirmYes?.addEventListener('click', async () => {
+    resetConfirmModal?.close();
+    await performDbReset();
   });
 
   refreshState();

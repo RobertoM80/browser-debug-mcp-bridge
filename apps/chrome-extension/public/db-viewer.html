@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <title>Session DB Entries</title>
@@ -25,9 +25,9 @@
         <select id="session-picker"></select>
       </div>
 
-      <div id="export-status" class="export-status"></div>
-      <div id="entries-status" class="status">Loading...</div>
-      <div id="entries-diag" class="diag"></div>
+      <div id="export-status" class="export-status" aria-live="polite"></div>
+      <div id="entries-status" class="status" aria-live="polite">Loading...</div>
+      <div id="entries-diag" class="diag" aria-live="polite"></div>
 
       <div class="filter-bar" role="group" aria-label="Entry filter">
         <button id="filter-all" class="filter-btn is-active" type="button" data-filter="all">All</button>

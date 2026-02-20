@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <title>Browser Debug MCP Bridge</title>
@@ -7,8 +7,11 @@
 </head>
 <body>
   <div class="container">
-    <h1>Browser Debug MCP Bridge</h1>
-    <div id="status" class="status">Loading...</div>
+    <header class="app-header">
+      <h1>Browser Debug MCP Bridge</h1>
+      <p class="subtitle">Live browser session control panel</p>
+    </header>
+    <div id="status" class="status" aria-live="polite">Loading...</div>
     <div class="session-meta">
       <div><strong>Session:</strong> <span id="session-id">-</span></div>
       <div><strong>Queue:</strong> <span id="queue-size">0</span></div>
@@ -18,7 +21,7 @@
       <button id="start-session" type="button">Start Session</button>
       <button id="stop-session" type="button">Stop Session</button>
     </div>
-    <button id="show-db-entries" type="button">Open DB entries</button>
+    <button id="show-db-entries" type="button" class="open-db-btn">Open DB entries</button>
     <div class="settings">
       <label class="toggle" for="safe-mode">
         <input id="safe-mode" type="checkbox">
@@ -84,37 +87,45 @@
       </details>
 
       <button id="save-config" type="button">Save Settings</button>
-      <div id="config-status" class="config-status"></div>
+      <div id="config-status" class="config-status" aria-live="polite"></div>
     </div>
     <details class="settings retention-settings">
       <summary>Data retention</summary>
-      <label for="retention-days">Keep sessions (days)</label>
-      <input id="retention-days" type="number" min="1" step="1" value="30">
+      <div class="ret-group">
+        <h3 class="ret-title">Limits</h3>
+        <label for="retention-days">Keep sessions (days)</label>
+        <input id="retention-days" type="number" min="1" step="1" value="30">
 
-      <label for="max-db-mb">Max DB size (MB)</label>
-      <input id="max-db-mb" type="number" min="50" step="1" value="1024">
+        <label for="max-db-mb">Max DB size (MB)</label>
+        <input id="max-db-mb" type="number" min="50" step="1" value="1024">
 
-      <label for="max-sessions">Max sessions</label>
-      <input id="max-sessions" type="number" min="100" step="1" value="10000">
+        <label for="max-sessions">Max sessions</label>
+        <input id="max-sessions" type="number" min="100" step="1" value="10000">
 
-      <label for="export-path">Export path override (optional)</label>
-      <input id="export-path" type="text" placeholder="C:\\path\\to\\exports">
+        <label for="export-path">Export path override (optional)</label>
+        <input id="export-path" type="text" placeholder="C:\\path\\to\\exports">
 
-      <div class="controls retention-actions">
         <button id="save-retention" type="button">Save retention <span class="hint" title="Save retention settings to the server." aria-label="Save retention help">!</span></button>
-        <button id="run-cleanup-now" type="button">Run cleanup now <span class="hint" title="Immediately remove old sessions using current limits." aria-label="Run cleanup help">!</span></button>
       </div>
 
-      <div class="controls retention-actions">
-        <button id="pin-session" type="button">Pin session <span class="hint" title="Protect current session from automatic cleanup." aria-label="Pin session help">!</span></button>
-        <button id="unpin-session" type="button">Unpin session <span class="hint" title="Allow current session to be removed by retention cleanup." aria-label="Unpin session help">!</span></button>
+      <div class="ret-group">
+        <h3 class="ret-title">Maintenance</h3>
+        <div class="controls retention-actions">
+          <button id="run-cleanup-now" type="button">Run cleanup now <span class="hint" title="Immediately remove old sessions using current limits." aria-label="Run cleanup help">!</span></button>
+          <button id="pin-session" type="button">Pin session <span class="hint" title="Protect current session from automatic cleanup." aria-label="Pin session help">!</span></button>
+          <button id="unpin-session" type="button">Unpin session <span class="hint" title="Allow current session to be removed by retention cleanup." aria-label="Unpin session help">!</span></button>
+        </div>
+        <div id="cleanup-info" class="config-status" aria-live="polite"></div>
       </div>
-      <button id="export-session" type="button">Export current session <span class="hint" title="Export current session as zip package with snapshots." aria-label="Export session help">!</span></button>
-      <label for="import-session-file">Import session (zip/json)</label>
-      <input id="import-session-file" type="file" accept=".zip,.json,application/json,application/zip">
-      <button id="import-session" type="button">Import session <span class="hint" title="Load an exported zip/json session into local DB for inspection." aria-label="Import session help">!</span></button>
-      <div id="cleanup-info" class="config-status"></div>
-      <div id="retention-status" class="config-status"></div>
+
+      <div class="ret-group">
+        <h3 class="ret-title">Transfer</h3>
+        <button id="export-session" type="button">Export current session <span class="hint" title="Export current session as zip package with snapshots." aria-label="Export session help">!</span></button>
+        <label for="import-session-file">Import session (zip/json)</label>
+        <input id="import-session-file" type="file" accept=".zip,.json,application/json,application/zip">
+        <button id="import-session" type="button">Import session <span class="hint" title="Load an exported zip/json session into local DB for inspection." aria-label="Import session help">!</span></button>
+        <div id="retention-status" class="config-status" aria-live="polite"></div>
+      </div>
     </details>
 
     <details class="settings danger-zone">
@@ -125,7 +136,7 @@
       <div class="danger-actions">
         <button id="reset-db" type="button" class="danger-button">Reset Database</button>
       </div>
-      <div id="reset-db-status" class="config-status"></div>
+      <div id="reset-db-status" class="config-status" aria-live="polite"></div>
       <dialog id="reset-confirm-modal" class="danger-modal">
         <div class="danger-modal-content">
           <h3>Reset Database?</h3>
@@ -140,36 +151,6 @@
     </details>
   </div>
 
-  <dialog id="db-entries-modal" class="db-modal">
-    <div class="db-modal-header">
-      <h2>Session DB entries</h2>
-      <button id="close-db-entries" type="button">Close</button>
-    </div>
-    <div class="db-modal-subtitle">Session: <span id="db-entries-session-id">-</span></div>
-    <div id="db-entries-status" class="config-status"></div>
-    <div class="db-filter-bar" role="group" aria-label="Entry filter">
-      <button id="db-filter-all" class="db-filter-btn is-active" type="button" data-db-filter="all">All</button>
-      <button id="db-filter-events" class="db-filter-btn" type="button" data-db-filter="event">Events</button>
-      <button id="db-filter-network" class="db-filter-btn" type="button" data-db-filter="network">Network</button>
-    </div>
-    <div class="db-table-wrap">
-      <table class="db-table">
-        <thead>
-          <tr>
-            <th>Time</th>
-            <th>Source</th>
-            <th>Kind</th>
-            <th>Summary</th>
-            <th>Details</th>
-          </tr>
-        </thead>
-        <tbody id="db-entries-body"></tbody>
-      </table>
-    </div>
-    <div class="controls db-modal-actions">
-      <button id="load-more-db-entries" type="button">Load more</button>
-    </div>
-  </dialog>
   <script type="module" src="popup.js"></script>
 </body>
 </html>
