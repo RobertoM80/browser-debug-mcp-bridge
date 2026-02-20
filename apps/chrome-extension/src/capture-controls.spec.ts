@@ -95,6 +95,9 @@ describe('capture controls', () => {
           maxBytesPerImage: 512000,
           minCaptureIntervalMs: 4000,
         },
+        privacy: {
+          profile: 'standard',
+        },
       },
     });
 
@@ -111,6 +114,9 @@ describe('capture controls', () => {
           maxImagesPerSession: 20,
           maxBytesPerImage: 512000,
           minCaptureIntervalMs: 4000,
+        },
+        privacy: {
+          profile: 'standard',
         },
       },
     });
@@ -156,7 +162,30 @@ describe('capture controls', () => {
         maxBytesPerImage: 10485760,
         minCaptureIntervalMs: 250,
       },
+      privacy: {
+        profile: 'strict',
+      },
     });
+  });
+
+  it('defaults snapshot privacy profile to strict and supports standard mode', () => {
+    const defaults = normalizeCaptureConfig({
+      snapshots: {
+        ...DEFAULT_CAPTURE_CONFIG.snapshots,
+        privacy: { profile: 'invalid' },
+      },
+    });
+
+    expect(defaults.snapshots.privacy.profile).toBe('strict');
+
+    const standard = normalizeCaptureConfig({
+      snapshots: {
+        ...DEFAULT_CAPTURE_CONFIG.snapshots,
+        privacy: { profile: 'standard' },
+      },
+    });
+
+    expect(standard.snapshots.privacy.profile).toBe('standard');
   });
 
   it('enforces manual toggle and opt-in gate for snapshot capture', () => {

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { RedactionEngine, redact, redactObject } from './redaction-engine';
+import { redactSnapshotRecord } from './snapshot-redaction';
 
 describe('redaction-engine', () => {
   describe('RedactionEngine', () => {
@@ -72,6 +73,72 @@ describe('redaction-engine', () => {
       const { result, summary } = redactObject({ key: 'Authorization: Bearer abc' });
       expect(result.key).toBe('Authorization: Bearer [REDACTED]');
       expect(summary.redactedFields).toBe(1);
+    });
+  });
+
+  describe('snapshot redaction', () => {
+    it('masks sensitive snapshot html and style values', () => {
+      const { record, metadata } = redactSnapshotRecord(
+        {
+          selector: '#checkout-email',
+          snapshot: {
+            dom: {
+              mode: 'html',
+              html: '<input id="checkout-email" value="user@example.com" data-token="abc123" />',
+            },
+            styles: {
+              chain: [
+                {
+                  selector: '#checkout-email',
+                  properties: {
+                    content: 'token: secret-token-value',
+                  },
+                },
+              ],
+            },
+          },
+          truncation: { png: false },
+        },
+        {
+          safeMode: true,
+          profile: 'standard',
+        }
+      );
+
+      const html = (record.snapshot as { dom: { html: string } }).dom.html;
+      const styleValue = (record.snapshot as { styles: { chain: Array<{ properties: Record<string, string> }> } })
+        .styles.chain[0]?.properties.content;
+
+      expect(html).toContain('[REDACTED_SNAPSHOT]');
+      expect(styleValue).toBe('[REDACTED_SNAPSHOT]');
+      expect(metadata.applied).toBe(true);
+      expect(metadata.profile).toBe('standard');
+    });
+
+    it('blocks png capture in strict safe mode and records metadata', () => {
+      const { record, metadata } = redactSnapshotRecord(
+        {
+          png: {
+            captured: true,
+            dataUrl: 'data:image/png;base64,AAA=',
+          },
+          truncation: {
+            png: false,
+          },
+        },
+        {
+          safeMode: true,
+          profile: 'strict',
+        }
+      );
+
+      const png = record.png as { captured: boolean; reason: string; dataUrl?: string };
+      expect(png.captured).toBe(false);
+      expect(png.reason).toBe('blocked_by_privacy_profile');
+      expect(png.dataUrl).toBeUndefined();
+      expect((record.truncation as { png: boolean }).png).toBe(true);
+      expect(metadata.blockedPng).toBe(true);
+      expect(metadata.reasons).toContain('strict_safe_mode_png_blocked');
     });
   });
 });

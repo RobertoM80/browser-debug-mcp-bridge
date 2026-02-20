@@ -78,6 +78,10 @@ function getElementSelector(target: Element): string {
   return getClickSelector(target) ?? target.tagName.toLowerCase();
 }
 
+function isSensitiveSelector(selector: string): boolean {
+  return /(password|passwd|pwd|token|secret|auth|session|email|card|cvv|cvc|ssn|iban|payment)/i.test(selector);
+}
+
 interface ContentCaptureOptions {
   win?: Window;
   runtime?: RuntimeMessenger;
@@ -448,6 +452,7 @@ export function executeCaptureCommand(
     }
 
     const domHtml = target.outerHTML;
+    const resolvedSelector = selector || getElementSelector(target);
     let domSnapshot: Record<string, unknown>;
     let domTruncated = false;
 
@@ -477,7 +482,7 @@ export function executeCaptureCommand(
       result: {
         timestamp: Date.now(),
         trigger,
-        selector: selector || getElementSelector(target),
+        selector: resolvedSelector,
         url: win.location.href,
         mode: {
           dom: true,
@@ -486,6 +491,10 @@ export function executeCaptureCommand(
         snapshot: {
           dom: domSnapshot,
           styles: styleSnapshot,
+        },
+        sensitivityHint: {
+          selectorSensitive: isSensitiveSelector(resolvedSelector),
+          containsSensitiveInputs: /<input\b[^>]*(type=("|')?(password|email|tel|number)\2)?[^>]*>/i.test(domHtml),
         },
         truncation: {
           dom: domTruncated,

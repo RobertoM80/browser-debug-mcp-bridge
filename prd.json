@@ -461,7 +461,7 @@
       "Redaction behavior is deterministic and testable for DOM, CSS, and PNG paths.",
       "Each snapshot indicates whether redaction was applied and at what profile level."
     ],
-    "passes": false,
+    "passes": true,
     "id": "PRD-106",
     "depends_on": [
       "PRD-102",

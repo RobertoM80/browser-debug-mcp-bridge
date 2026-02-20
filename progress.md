@@ -272,3 +272,12 @@
   - Implemented explicit bounded PNG asset retrieval with chunking, offset paging, and optional base64 output in `apps/mcp-server/src/mcp/server.ts`
   - Added unit/integration MCP tests for snapshot listing, event correlation lookup, and chunked asset retrieval in `apps/mcp-server/src/mcp/server.spec.ts`
   - Documented ingestion-vs-read contract and V4 snapshot MCP workflow in `apps/docs/docs/mcp-tools/v4-snapshot-tools.md` and `apps/docs/docs/mcp-tools/overview.md`
+
+### Completed: 2026-02-20
+- [Apply snapshot-specific privacy and redaction policy for DOM, CSS, and PNG] - COMPLETED
+  - Added snapshot privacy configuration profile (`strict`/`standard`) with secure strict defaults in `apps/chrome-extension/src/capture-controls.ts`
+  - Added selector- and attribute-aware snapshot redaction utility in `libs/redaction/src/lib/snapshot-redaction.ts` and exported it via `libs/redaction/src/index.ts`
+  - Applied snapshot redaction before enqueueing `ui_snapshot` events and enforced strict safe-mode PNG blocking with redaction metadata in `apps/chrome-extension/src/background.ts`
+  - Added snapshot sensitivity hints in `apps/chrome-extension/src/content-script.ts` to support deterministic selector-based masking decisions
+  - Added/updated unit tests for privacy profile normalization and snapshot DOM/style/PNG redaction paths in `apps/chrome-extension/src/capture-controls.spec.ts` and `libs/redaction/src/lib/redaction-engine.spec.ts`
+  - Verified with `pnpm test` (all 6 projects passing)

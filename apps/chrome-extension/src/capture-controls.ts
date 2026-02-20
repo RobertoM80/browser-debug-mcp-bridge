@@ -7,6 +7,7 @@ export interface CaptureConfig {
 export type SnapshotMode = 'dom' | 'png' | 'both';
 export type SnapshotStyleMode = 'computed-lite' | 'computed-full';
 export type SnapshotTrigger = 'click' | 'manual' | 'navigation' | 'error';
+export type SnapshotPrivacyProfile = 'strict' | 'standard';
 
 export interface SnapshotCaptureConfig {
   enabled: boolean;
@@ -18,6 +19,9 @@ export interface SnapshotCaptureConfig {
     maxImagesPerSession: number;
     maxBytesPerImage: number;
     minCaptureIntervalMs: number;
+  };
+  privacy: {
+    profile: SnapshotPrivacyProfile;
   };
 }
 
@@ -57,6 +61,9 @@ export const DEFAULT_CAPTURE_CONFIG: CaptureConfig = {
       maxImagesPerSession: 8,
       maxBytesPerImage: 262144,
       minCaptureIntervalMs: 5000,
+    },
+    privacy: {
+      profile: 'strict',
     },
   },
 };
@@ -103,7 +110,25 @@ function normalizeSnapshotCaptureConfig(value: unknown): SnapshotCaptureConfig {
     styleMode: normalizeStyleMode(input.styleMode),
     triggers: normalizeTriggers(input.triggers),
     pngPolicy: normalizePngPolicy(input.pngPolicy),
+    privacy: normalizePrivacyPolicy(input.privacy),
   };
+}
+
+function normalizePrivacyPolicy(value: unknown): SnapshotCaptureConfig['privacy'] {
+  const input = value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Partial<SnapshotCaptureConfig['privacy']>)
+    : {};
+
+  return {
+    profile: normalizePrivacyProfile(input.profile),
+  };
+}
+
+function normalizePrivacyProfile(value: unknown): SnapshotPrivacyProfile {
+  if (value === 'strict' || value === 'standard') {
+    return value;
+  }
+  return DEFAULT_CAPTURE_CONFIG.snapshots.privacy.profile;
 }
 
 function normalizeSnapshotMode(value: unknown): SnapshotMode {

@@ -11,6 +11,7 @@ import {
   SnapshotTrigger,
   saveCaptureConfig,
 } from './capture-controls';
+import { redactSnapshotRecord } from '../../../libs/redaction/src';
 
 type RuntimeRequest =
   | { type: 'SESSION_GET_STATE' }
@@ -288,10 +289,15 @@ async function executeCaptureCommand(
       || Boolean((snapshotRecord.truncation as Record<string, unknown>).styles)
       || Boolean((snapshotRecord.truncation as Record<string, unknown>).png);
 
-    sessionManager.queueEvent('ui_snapshot', snapshotRecord);
+    const redactedSnapshot = redactSnapshotRecord(snapshotRecord, {
+      safeMode: captureConfig.safeMode,
+      profile: captureConfig.snapshots.privacy.profile,
+    });
+
+    sessionManager.queueEvent('ui_snapshot', redactedSnapshot.record);
     return {
-      payload: snapshotRecord,
-      truncated,
+      payload: redactedSnapshot.record,
+      truncated: truncated || redactedSnapshot.metadata.blockedPng,
     };
   }
 
