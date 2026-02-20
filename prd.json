@@ -436,7 +436,7 @@
       "Binary asset retrieval is explicit, bounded, and does not destabilize normal tool responses.",
       "Contracts clearly separate ingestion APIs from MCP read APIs."
     ],
-    "passes": false,
+    "passes": true,
     "id": "PRD-105",
     "depends_on": [
       "PRD-103"

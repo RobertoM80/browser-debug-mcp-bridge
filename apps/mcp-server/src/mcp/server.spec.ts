@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { initializeDatabase } from '../db/migrations';
 import {
   createMCPServer,
@@ -440,6 +443,167 @@ describe('mcp/server V1 query tools', () => {
     expect((response.correlatedEvents as Array<{ relationship: string }>)[0]?.relationship).toBe('possible_consequence');
 
     db.close();
+  });
+
+  it('lists snapshots with metadata-first pagination and filters', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-1', 1000, 0)
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO snapshots (
+          snapshot_id, session_id, trigger_event_id, ts, trigger, selector, url, mode, style_mode,
+          dom_json, styles_json, png_path, png_mime, png_bytes,
+          dom_truncated, styles_truncated, png_truncated, created_at
+        ) VALUES
+          ('snap-1', 'session-1', NULL, 2000, 'click', '#buy', 'https://example.dev', 'dom', 'computed-lite',
+           '{"outline":true}', '{"display":"block"}', 'snapshot-assets/s1/snap-1.png', 'image/png', 128,
+           0, 0, 0, 2010),
+          ('snap-2', 'session-1', NULL, 3000, 'manual', '#save', 'https://example.dev/account', 'dom', 'computed-lite',
+           '{"outline":true}', '{"display":"inline"}', NULL, NULL, NULL,
+           1, 0, 0, 3010)
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'list_snapshots', {
+      sessionId: 'session-1',
+      trigger: 'manual',
+      sinceTimestamp: 2500,
+      limit: 5,
+    });
+
+    expect(response.sessionId).toBe('session-1');
+    expect(response.limitsApplied).toEqual({ maxResults: 5, truncated: false });
+    expect(response.snapshots).toHaveLength(1);
+    expect((response.snapshots as Array<{ snapshotId: string; hasDom: boolean; hasPng: boolean }>)[0]).toMatchObject({
+      snapshotId: 'snap-2',
+      hasDom: true,
+      hasPng: false,
+    });
+
+    db.close();
+  });
+
+  it('finds snapshots for an event via trigger link and timestamp fallback', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-1', 1000, 0)
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO events (event_id, session_id, ts, type, payload_json)
+        VALUES
+          ('evt-click', 'session-1', 4000, 'ui', '{"eventType":"click"}'),
+          ('evt-manual', 'session-1', 8000, 'ui', '{"eventType":"manual"}')
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO snapshots (
+          snapshot_id, session_id, trigger_event_id, ts, trigger, selector, url, mode, style_mode,
+          dom_json, styles_json, png_path, png_mime, png_bytes,
+          dom_truncated, styles_truncated, png_truncated, created_at
+        ) VALUES
+          ('snap-direct', 'session-1', 'evt-click', 4010, 'click', '#buy', NULL, 'dom', 'computed-lite',
+           '{}', '{}', NULL, NULL, NULL, 0, 0, 0, 4011),
+          ('snap-nearby', 'session-1', NULL, 8200, 'manual', '#manual', NULL, 'dom', 'computed-lite',
+           '{}', '{}', NULL, NULL, NULL, 0, 0, 0, 8201)
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const direct = await routeToolCall(tools, 'get_snapshot_for_event', {
+      sessionId: 'session-1',
+      eventId: 'evt-click',
+    });
+    const fallback = await routeToolCall(tools, 'get_snapshot_for_event', {
+      sessionId: 'session-1',
+      eventId: 'evt-manual',
+      maxDeltaMs: 500,
+    });
+
+    expect(direct.matchReason).toBe('trigger_event_id');
+    expect((direct.snapshot as { snapshotId: string }).snapshotId).toBe('snap-direct');
+
+    expect(fallback.matchReason).toBe('nearest_timestamp');
+    expect((fallback.snapshot as { snapshotId: string }).snapshotId).toBe('snap-nearby');
+
+    db.close();
+  });
+
+  it('returns chunked snapshot asset payloads with raw and base64 encoding', async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-snapshot-asset-'));
+    const dbPath = join(tempRoot, 'data', 'debug.sqlite');
+    mkdirSync(join(tempRoot, 'data'), { recursive: true });
+    const db = new Database(dbPath);
+    initializeDatabase(db);
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-asset', 1000, 0)
+      `
+    ).run();
+
+    const pngRelativePath = 'snapshot-assets/session-asset/snap-asset.png';
+    mkdirSync(join(tempRoot, 'data', 'snapshot-assets', 'session-asset'), { recursive: true });
+    const pngBuffer = Buffer.from('89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de', 'hex');
+    writeFileSync(join(tempRoot, 'data', pngRelativePath), pngBuffer);
+
+    db.prepare(
+      `
+        INSERT INTO snapshots (
+          snapshot_id, session_id, trigger_event_id, ts, trigger, selector, url, mode, style_mode,
+          dom_json, styles_json, png_path, png_mime, png_bytes,
+          dom_truncated, styles_truncated, png_truncated, created_at
+        ) VALUES
+          ('snap-asset', 'session-asset', NULL, 2000, 'manual', '#asset', NULL, 'png', 'computed-lite',
+           NULL, NULL, ?, 'image/png', ?,
+           0, 0, 0, 2010)
+      `
+    ).run(pngRelativePath, pngBuffer.byteLength);
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const rawChunk = await routeToolCall(tools, 'get_snapshot_asset', {
+      sessionId: 'session-asset',
+      snapshotId: 'snap-asset',
+      maxBytes: 8,
+      offset: 0,
+      encoding: 'raw',
+    });
+
+    expect(rawChunk.encoding).toBe('raw');
+    expect(rawChunk.returnedBytes).toBe(8);
+    expect(rawChunk.hasMore).toBe(true);
+    expect((rawChunk.chunk as number[]).length).toBe(8);
+
+    const base64Chunk = await routeToolCall(tools, 'get_snapshot_asset', {
+      sessionId: 'session-asset',
+      snapshotId: 'snap-asset',
+      maxBytes: 8,
+      offset: 8,
+      encoding: 'base64',
+    });
+
+    expect(base64Chunk.encoding).toBe('base64');
+    expect(base64Chunk.returnedBytes).toBe(8);
+    expect(typeof base64Chunk.chunkBase64).toBe('string');
+
+    db.close();
+    rmSync(tempRoot, { recursive: true, force: true });
   });
 });
 

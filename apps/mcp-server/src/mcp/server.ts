@@ -2,6 +2,8 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Database } from 'better-sqlite3';
+import { existsSync, readFileSync } from 'fs';
+import { dirname, resolve } from 'path';
 import { getConnection } from '../db/connection';
 
 type ToolInput = Record<string, unknown>;
@@ -190,6 +192,39 @@ const TOOL_SCHEMAS: Record<string, object> = {
       windowSeconds: { type: 'number' },
     },
   },
+  list_snapshots: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      trigger: { type: 'string' },
+      sinceTimestamp: { type: 'number' },
+      untilTimestamp: { type: 'number' },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
+    },
+  },
+  get_snapshot_for_event: {
+    type: 'object',
+    required: ['sessionId', 'eventId'],
+    properties: {
+      sessionId: { type: 'string' },
+      eventId: { type: 'string' },
+      maxDeltaMs: { type: 'number' },
+    },
+  },
+  get_snapshot_asset: {
+    type: 'object',
+    required: ['sessionId', 'snapshotId'],
+    properties: {
+      sessionId: { type: 'string' },
+      snapshotId: { type: 'string' },
+      asset: { type: 'string' },
+      offset: { type: 'number' },
+      maxBytes: { type: 'number' },
+      encoding: { type: 'string' },
+    },
+  },
 };
 
 const TOOL_DESCRIPTIONS: Record<string, string> = {
@@ -207,6 +242,9 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_layout_metrics: 'Read viewport and element layout metrics',
   explain_last_failure: 'Explain the latest failure timeline',
   get_event_correlation: 'Correlate related events by window',
+  list_snapshots: 'List snapshot metadata by session/time/trigger',
+  get_snapshot_for_event: 'Find snapshot most related to an event',
+  get_snapshot_asset: 'Read bounded binary chunks for snapshot assets',
 };
 
 const ALL_TOOLS = Object.keys(TOOL_SCHEMAS);
@@ -220,6 +258,8 @@ const DEFAULT_REDACTION_SUMMARY: RedactionSummary = {
 const DEFAULT_LIST_LIMIT = 25;
 const DEFAULT_EVENT_LIMIT = 50;
 const MAX_LIMIT = 200;
+const DEFAULT_SNAPSHOT_ASSET_CHUNK_BYTES = 64 * 1024;
+const MAX_SNAPSHOT_ASSET_CHUNK_BYTES = 256 * 1024;
 
 const NETWORK_DOMAIN_GROUP_SQL = `
   CASE
@@ -284,6 +324,27 @@ interface GroupedNetworkFailureRow {
   count: number;
   first_ts: number;
   last_ts: number;
+}
+
+interface SnapshotRow {
+  snapshot_id: string;
+  session_id: string;
+  trigger_event_id: string | null;
+  ts: number;
+  trigger: string;
+  selector: string | null;
+  url: string | null;
+  mode: string;
+  style_mode: string | null;
+  dom_json: string | null;
+  styles_json: string | null;
+  png_path: string | null;
+  png_mime: string | null;
+  png_bytes: number | null;
+  dom_truncated: number;
+  styles_truncated: number;
+  png_truncated: number;
+  created_at: number;
 }
 
 interface CorrelationCandidate {
@@ -427,6 +488,89 @@ function resolveWindowSeconds(value: unknown, fallback: number, maxValue: number
   }
 
   return Math.min(floored, maxValue);
+}
+
+function resolveOptionalTimestamp(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined;
+  }
+
+  const floored = Math.floor(value);
+  return floored < 0 ? undefined : floored;
+}
+
+function resolveChunkBytes(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  const floored = Math.floor(value);
+  if (floored < 1) {
+    return fallback;
+  }
+
+  return Math.min(floored, MAX_SNAPSHOT_ASSET_CHUNK_BYTES);
+}
+
+function resolveDurationMs(value: unknown, fallback: number, maxValue: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  const floored = Math.floor(value);
+  if (floored < 1) {
+    return fallback;
+  }
+
+  return Math.min(floored, maxValue);
+}
+
+function normalizeAssetPath(pathValue: string): string {
+  return pathValue.replace(/\\/gu, '/').replace(/^\/+|\/+$/gu, '');
+}
+
+function getMainDbPath(db: Database): string {
+  const entries = db.prepare('PRAGMA database_list').all() as Array<{ name: string; file: string }>;
+  const main = entries.find((entry) => entry.name === 'main');
+  if (!main || !main.file) {
+    throw new Error('Snapshot asset retrieval is unavailable for in-memory databases.');
+  }
+  return main.file;
+}
+
+function resolveSnapshotAbsolutePath(dbPath: string, relativeAssetPath: string): string {
+  const baseDir = resolve(dirname(dbPath));
+  const normalized = normalizeAssetPath(relativeAssetPath);
+  const absolutePath = resolve(baseDir, normalized);
+  const inBaseDir = absolutePath === baseDir || absolutePath.startsWith(`${baseDir}\\`) || absolutePath.startsWith(`${baseDir}/`);
+  if (!inBaseDir) {
+    throw new Error('Snapshot asset path is invalid.');
+  }
+  return absolutePath;
+}
+
+function mapSnapshotMetadata(row: SnapshotRow): Record<string, unknown> {
+  return {
+    snapshotId: row.snapshot_id,
+    sessionId: row.session_id,
+    triggerEventId: row.trigger_event_id ?? undefined,
+    timestamp: row.ts,
+    trigger: row.trigger,
+    selector: row.selector ?? undefined,
+    url: row.url ?? undefined,
+    mode: row.mode,
+    styleMode: row.style_mode ?? undefined,
+    hasDom: row.dom_json !== null,
+    hasStyles: row.styles_json !== null,
+    hasPng: row.png_path !== null,
+    pngBytes: row.png_bytes ?? undefined,
+    truncation: {
+      dom: row.dom_truncated === 1,
+      styles: row.styles_truncated === 1,
+      png: row.png_truncated === 1,
+    },
+    createdAt: row.created_at,
+  };
 }
 
 function formatUrlPath(url: string): string {
@@ -1282,6 +1426,235 @@ export function createV1ToolHandlers(getDb: () => Database): Partial<Record<stri
         },
         windowSeconds,
         correlatedEvents: correlations,
+      };
+    },
+
+    list_snapshots: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const trigger = typeof input.trigger === 'string' && input.trigger.length > 0 ? input.trigger : undefined;
+      const sinceTimestamp = resolveOptionalTimestamp(input.sinceTimestamp);
+      const untilTimestamp = resolveOptionalTimestamp(input.untilTimestamp);
+      const limit = resolveLimit(input.limit, DEFAULT_LIST_LIMIT);
+      const offset = resolveOffset(input.offset);
+
+      const where: string[] = ['session_id = ?'];
+      const params: unknown[] = [sessionId];
+      if (trigger) {
+        where.push('trigger = ?');
+        params.push(trigger);
+      }
+      if (sinceTimestamp !== undefined) {
+        where.push('ts >= ?');
+        params.push(sinceTimestamp);
+      }
+      if (untilTimestamp !== undefined) {
+        where.push('ts <= ?');
+        params.push(untilTimestamp);
+      }
+
+      const rows = db
+        .prepare(
+          `SELECT
+            snapshot_id, session_id, trigger_event_id, ts, trigger, selector, url, mode, style_mode,
+            dom_json, styles_json, png_path, png_mime, png_bytes,
+            dom_truncated, styles_truncated, png_truncated, created_at
+           FROM snapshots
+           WHERE ${where.join(' AND ')}
+           ORDER BY ts DESC
+           LIMIT ? OFFSET ?`
+        )
+        .all(...params, limit + 1, offset) as SnapshotRow[];
+
+      const truncated = rows.length > limit;
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: limit,
+          truncated,
+        },
+        pagination: {
+          offset,
+          returned: Math.min(rows.length, limit),
+        },
+        snapshots: rows.slice(0, limit).map((row) => mapSnapshotMetadata(row)),
+      };
+    },
+
+    get_snapshot_for_event: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const eventId = typeof input.eventId === 'string' ? input.eventId : '';
+      if (!eventId) {
+        throw new Error('eventId is required');
+      }
+
+      const maxDeltaMs = resolveDurationMs(input.maxDeltaMs, 10_000, 60_000);
+      const event = db
+        .prepare('SELECT event_id, ts, type FROM events WHERE session_id = ? AND event_id = ? LIMIT 1')
+        .get(sessionId, eventId) as { event_id: string; ts: number; type: string } | undefined;
+
+      if (!event) {
+        throw new Error(`Event not found: ${eventId}`);
+      }
+
+      const byTriggerLink = db
+        .prepare(
+          `SELECT
+            snapshot_id, session_id, trigger_event_id, ts, trigger, selector, url, mode, style_mode,
+            dom_json, styles_json, png_path, png_mime, png_bytes,
+            dom_truncated, styles_truncated, png_truncated, created_at
+           FROM snapshots
+           WHERE session_id = ? AND trigger_event_id = ?
+           ORDER BY ts ASC
+           LIMIT 1`
+        )
+        .get(sessionId, eventId) as SnapshotRow | undefined;
+
+      if (byTriggerLink) {
+        return {
+          ...createBaseResponse(sessionId),
+          limitsApplied: {
+            maxResults: 1,
+            truncated: false,
+          },
+          event: {
+            eventId: event.event_id,
+            timestamp: event.ts,
+            type: event.type,
+          },
+          matchReason: 'trigger_event_id',
+          snapshot: mapSnapshotMetadata(byTriggerLink),
+        };
+      }
+
+      const byTimestamp = db
+        .prepare(
+          `SELECT
+            snapshot_id, session_id, trigger_event_id, ts, trigger, selector, url, mode, style_mode,
+            dom_json, styles_json, png_path, png_mime, png_bytes,
+            dom_truncated, styles_truncated, png_truncated, created_at
+           FROM snapshots
+           WHERE session_id = ? AND ts BETWEEN ? AND ?
+           ORDER BY ABS(ts - ?) ASC, ts ASC
+           LIMIT 1`
+        )
+        .get(sessionId, event.ts, event.ts + maxDeltaMs, event.ts) as SnapshotRow | undefined;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        event: {
+          eventId: event.event_id,
+          timestamp: event.ts,
+          type: event.type,
+        },
+        matchReason: byTimestamp ? 'nearest_timestamp' : 'none',
+        snapshot: byTimestamp ? mapSnapshotMetadata(byTimestamp) : null,
+      };
+    },
+
+    get_snapshot_asset: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const snapshotId = typeof input.snapshotId === 'string' ? input.snapshotId : '';
+      if (!snapshotId) {
+        throw new Error('snapshotId is required');
+      }
+
+      const assetType = input.asset === 'png' ? 'png' : 'png';
+      const encoding = input.encoding === 'base64' ? 'base64' : 'raw';
+      const offset = resolveOffset(input.offset);
+      const maxBytes = resolveChunkBytes(input.maxBytes, DEFAULT_SNAPSHOT_ASSET_CHUNK_BYTES);
+
+      const snapshot = db
+        .prepare(
+          `SELECT snapshot_id, session_id, png_path, png_mime, png_bytes
+           FROM snapshots
+           WHERE session_id = ? AND snapshot_id = ?
+           LIMIT 1`
+        )
+        .get(sessionId, snapshotId) as {
+        snapshot_id: string;
+        session_id: string;
+        png_path: string | null;
+        png_mime: string | null;
+        png_bytes: number | null;
+      } | undefined;
+
+      if (!snapshot) {
+        throw new Error(`Snapshot not found: ${snapshotId}`);
+      }
+
+      if (assetType !== 'png' || !snapshot.png_path) {
+        throw new Error('Requested snapshot asset is not available.');
+      }
+
+      const dbPath = getMainDbPath(db);
+      const absolutePath = resolveSnapshotAbsolutePath(dbPath, snapshot.png_path);
+      if (!existsSync(absolutePath)) {
+        throw new Error(`Snapshot asset is missing on disk: ${snapshot.png_path}`);
+      }
+
+      const fullBuffer = readFileSync(absolutePath);
+      if (offset >= fullBuffer.byteLength) {
+        return {
+          ...createBaseResponse(sessionId),
+          limitsApplied: {
+            maxResults: maxBytes,
+            truncated: false,
+          },
+          snapshotId,
+          asset: assetType,
+          mime: snapshot.png_mime ?? 'image/png',
+          totalBytes: fullBuffer.byteLength,
+          offset,
+          returnedBytes: 0,
+          hasMore: false,
+          nextOffset: null,
+          encoding,
+          chunk: encoding === 'raw' ? [] : undefined,
+          chunkBase64: encoding === 'base64' ? '' : undefined,
+        };
+      }
+
+      const chunkBuffer = fullBuffer.subarray(offset, Math.min(offset + maxBytes, fullBuffer.byteLength));
+      const returnedBytes = chunkBuffer.byteLength;
+      const nextOffset = offset + returnedBytes;
+      const hasMore = nextOffset < fullBuffer.byteLength;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: maxBytes,
+          truncated: hasMore,
+        },
+        snapshotId,
+        asset: assetType,
+        mime: snapshot.png_mime ?? 'image/png',
+        totalBytes: fullBuffer.byteLength,
+        offset,
+        returnedBytes,
+        hasMore,
+        nextOffset: hasMore ? nextOffset : null,
+        encoding,
+        chunk: encoding === 'raw' ? Array.from(chunkBuffer.values()) : undefined,
+        chunkBase64: encoding === 'base64' ? chunkBuffer.toString('base64') : undefined,
       };
     },
   };

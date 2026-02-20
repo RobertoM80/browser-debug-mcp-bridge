@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { fastify } from './main.js';
-import { getConnection, initializeDatabase } from './db';
+import { clearDatabase, getConnection, initializeDatabase } from './db';
 import { readFileSync } from 'fs';
 
 describe('MCP Server', () => {
@@ -92,6 +92,7 @@ describe('MCP Server', () => {
 
   it('should persist and list snapshots through HTTP APIs', async () => {
     initializeDatabase(getConnection().db);
+    clearDatabase(getConnection().db);
 
     await fastify.inject({
       method: 'POST',
@@ -153,6 +154,7 @@ describe('MCP Server', () => {
 
   it('should reject oversized snapshot dom payloads', async () => {
     initializeDatabase(getConnection().db);
+    clearDatabase(getConnection().db);
 
     await fastify.inject({
       method: 'POST',
@@ -195,6 +197,7 @@ describe('MCP Server', () => {
 
   it('should export zip package and import it back', async () => {
     initializeDatabase(getConnection().db);
+    clearDatabase(getConnection().db);
 
     await fastify.inject({
       method: 'POST',

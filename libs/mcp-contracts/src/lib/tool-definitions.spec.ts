@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { ALL_TOOLS, SESSION_TOOLS, ERROR_TOOLS, QUERY_TOOLS, CAPTURE_TOOLS, CORRELATION_TOOLS } from './tool-definitions';
+import {
+  ALL_TOOLS,
+  SESSION_TOOLS,
+  ERROR_TOOLS,
+  QUERY_TOOLS,
+  CAPTURE_TOOLS,
+  CORRELATION_TOOLS,
+  SNAPSHOT_TOOLS,
+} from './tool-definitions';
 
 describe('tool-definitions', () => {
   it('should have unique tool names', () => {
@@ -34,5 +42,11 @@ describe('tool-definitions', () => {
   it('should define correlation tools', () => {
     expect(CORRELATION_TOOLS.EXPLAIN_LAST_FAILURE).toBe('explain_last_failure');
     expect(CORRELATION_TOOLS.GET_EVENT_CORRELATION).toBe('get_event_correlation');
+  });
+
+  it('should define snapshot tools', () => {
+    expect(SNAPSHOT_TOOLS.LIST_SNAPSHOTS).toBe('list_snapshots');
+    expect(SNAPSHOT_TOOLS.GET_SNAPSHOT_FOR_EVENT).toBe('get_snapshot_for_event');
+    expect(SNAPSHOT_TOOLS.GET_SNAPSHOT_ASSET).toBe('get_snapshot_asset');
   });
 });

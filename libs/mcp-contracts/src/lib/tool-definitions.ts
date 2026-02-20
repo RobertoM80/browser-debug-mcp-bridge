@@ -39,10 +39,17 @@ export const CORRELATION_TOOLS = {
   GET_EVENT_CORRELATION: 'get_event_correlation',
 } as const;
 
+export const SNAPSHOT_TOOLS = {
+  LIST_SNAPSHOTS: 'list_snapshots',
+  GET_SNAPSHOT_FOR_EVENT: 'get_snapshot_for_event',
+  GET_SNAPSHOT_ASSET: 'get_snapshot_asset',
+} as const;
+
 export const ALL_TOOLS = [
   ...Object.values(SESSION_TOOLS),
   ...Object.values(ERROR_TOOLS),
   ...Object.values(QUERY_TOOLS),
   ...Object.values(CAPTURE_TOOLS),
   ...Object.values(CORRELATION_TOOLS),
+  ...Object.values(SNAPSHOT_TOOLS),
 ];

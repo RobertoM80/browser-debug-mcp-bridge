@@ -263,3 +263,12 @@
   - Updated extension export/import UX and messaging to handle zip packages in `apps/chrome-extension/src/popup.ts`, `apps/chrome-extension/src/db-viewer.ts`, and `apps/chrome-extension/public/popup.html`
   - Added unit/integration coverage for JSON compatibility export, zip roundtrip import/export, and missing-asset failures in `apps/mcp-server/src/retention.spec.ts` and `apps/mcp-server/src/main.spec.ts`
   - Verified with `pnpm test` (all 6 projects passing)
+
+### Completed: 2026-02-20
+- [Expose snapshot timeline and binary asset retrieval through MCP with safe limits] - COMPLETED
+  - Added MCP tool contracts and schemas for `list_snapshots`, `get_snapshot_for_event`, and `get_snapshot_asset` in `libs/mcp-contracts/src/lib/tool-definitions.ts` and `libs/mcp-contracts/src/lib/tool-schemas.ts`
+  - Implemented metadata-first snapshot timeline queries with trigger/time filters and pagination limits in `apps/mcp-server/src/mcp/server.ts`
+  - Implemented event-to-snapshot correlation (`trigger_event_id` first, nearest timestamp fallback) in `apps/mcp-server/src/mcp/server.ts`
+  - Implemented explicit bounded PNG asset retrieval with chunking, offset paging, and optional base64 output in `apps/mcp-server/src/mcp/server.ts`
+  - Added unit/integration MCP tests for snapshot listing, event correlation lookup, and chunked asset retrieval in `apps/mcp-server/src/mcp/server.spec.ts`
+  - Documented ingestion-vs-read contract and V4 snapshot MCP workflow in `apps/docs/docs/mcp-tools/v4-snapshot-tools.md` and `apps/docs/docs/mcp-tools/overview.md`

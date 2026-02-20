@@ -112,3 +112,37 @@ export const GetEventCorrelationSchema = z.object({
   windowSeconds: z.number().int().min(1).max(60).default(5)
     .describe('Time window for correlation'),
 });
+
+export const ListSnapshotsSchema = z.object({
+  sessionId: z.string().describe('Unique session identifier'),
+  trigger: z.enum(['click', 'manual', 'navigation', 'error']).optional()
+    .describe('Filter by snapshot trigger type'),
+  sinceTimestamp: z.number().int().min(0).optional()
+    .describe('Only include snapshots at or after this timestamp (ms)'),
+  untilTimestamp: z.number().int().min(0).optional()
+    .describe('Only include snapshots at or before this timestamp (ms)'),
+  limit: z.number().int().min(1).max(200).optional()
+    .describe('Maximum number of snapshots to return'),
+  offset: z.number().int().min(0).optional()
+    .describe('Pagination offset for result set'),
+});
+
+export const GetSnapshotForEventSchema = z.object({
+  sessionId: z.string().describe('Unique session identifier'),
+  eventId: z.string().describe('Anchor event ID'),
+  maxDeltaMs: z.number().int().min(100).max(60000).default(10000)
+    .describe('Max allowed distance from event timestamp when no direct trigger link exists'),
+});
+
+export const GetSnapshotAssetSchema = z.object({
+  sessionId: z.string().describe('Unique session identifier'),
+  snapshotId: z.string().describe('Snapshot identifier'),
+  asset: z.enum(['png']).default('png')
+    .describe('Snapshot binary asset kind to retrieve'),
+  offset: z.number().int().min(0).optional()
+    .describe('Starting byte offset for chunked retrieval'),
+  maxBytes: z.number().int().min(1).max(262144).default(65536)
+    .describe('Maximum chunk size to return in bytes'),
+  encoding: z.enum(['raw', 'base64']).default('raw')
+    .describe('Chunk encoding mode'),
+});
