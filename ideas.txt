@@ -1,0 +1,5 @@
+I also have an idea I want you to audit:
+Would it be possible and not to complex to create a functionality to control the overrides in chrome developer tool?
+My idea is being able to modify the code in the local project. Than build it. This build will probably be the same as the build in production. For example next js creates chunks. This chunks are deployed and runned on server and they will be on the chrome browser.
+If we can identify the chunks we could replace them with the modified code for debugging that is cerated locally. and test directly on production url. 
+Do you understand my vision? can you analyze the doability? the challenges? 
