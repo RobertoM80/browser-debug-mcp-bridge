@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { fastify } from './main.js';
 import { getConnection, initializeDatabase } from './db';
+import { readFileSync } from 'fs';
 
 describe('MCP Server', () => {
   it('should have fastify instance', () => {
@@ -190,5 +191,65 @@ describe('MCP Server', () => {
     expect(response.statusCode).toBe(200);
     expect(body.ok).toBe(false);
     expect(body.error).toContain('Snapshot dom payload exceeds max bytes');
+  });
+
+  it('should export zip package and import it back', async () => {
+    initializeDatabase(getConnection().db);
+
+    await fastify.inject({
+      method: 'POST',
+      url: '/sessions/import',
+      payload: {
+        session: {
+          session_id: 'snapshot-zip-api-test',
+          created_at: 1700000000000,
+          safe_mode: 0,
+        },
+        events: [],
+        network: [],
+        fingerprints: [],
+      },
+    });
+
+    await fastify.inject({
+      method: 'POST',
+      url: '/sessions/snapshot-zip-api-test/snapshots',
+      payload: {
+        timestamp: 1700000000700,
+        trigger: 'manual',
+        mode: { dom: true, png: false, styleMode: 'computed-lite' },
+        snapshot: {
+          dom: { mode: 'html', html: '<div>zip-api</div>' },
+        },
+      },
+    });
+
+    const exportResponse = await fastify.inject({
+      method: 'POST',
+      url: '/sessions/snapshot-zip-api-test/export',
+      payload: { format: 'zip' },
+    });
+    const exportBody = JSON.parse(exportResponse.body) as { ok: boolean; format: string; snapshots: number; filePath: string };
+
+    expect(exportResponse.statusCode).toBe(200);
+    expect(exportBody.ok).toBe(true);
+    expect(exportBody.format).toBe('zip');
+    expect(exportBody.snapshots).toBe(1);
+
+    const zipBase64 = readFileSync(exportBody.filePath).toString('base64');
+
+    const importResponse = await fastify.inject({
+      method: 'POST',
+      url: '/sessions/import',
+      payload: {
+        format: 'zip',
+        archiveBase64: zipBase64,
+      },
+    });
+
+    const importBody = JSON.parse(importResponse.body);
+    expect(importResponse.statusCode).toBe(200);
+    expect(importBody.ok).toBe(true);
+    expect(importBody.snapshots).toBe(1);
   });
 });

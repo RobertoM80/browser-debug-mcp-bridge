@@ -411,7 +411,7 @@
       "Compatibility mode can produce JSON-only exports and optional base64 image payloads when requested.",
       "Export and import failures are explicit and actionable."
     ],
-    "passes": false,
+    "passes": true,
     "id": "PRD-104",
     "depends_on": [
       "PRD-103"

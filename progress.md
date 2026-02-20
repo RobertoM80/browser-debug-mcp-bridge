@@ -254,3 +254,12 @@
   - Integrated retention cleanup with orphan snapshot asset pruning and added WebSocket `ui_snapshot` ingestion path to persist captured snapshots
   - Added unit/integration tests for schema/migration coverage, snapshot API behavior, payload limit validation, and orphan asset cleanup in `db.spec.ts`, `main.spec.ts`, and `retention.spec.ts`
   - Verified with `pnpm test` (all 6 projects passing)
+
+### Completed: 2026-02-20
+- [Support snapshot export/import with single-file packaging and compatibility mode] - COMPLETED
+  - Added snapshot-aware export payloads and compatibility JSON mode with optional base64 PNG embedding in `apps/mcp-server/src/retention.ts`
+  - Added zip package export/import (`manifest.json` + PNG assets), asset integrity checks, and deterministic snapshot import ordering in `apps/mcp-server/src/retention.ts`
+  - Updated server routes to support format-aware export and zip import payloads in `apps/mcp-server/src/main.ts`
+  - Updated extension export/import UX and messaging to handle zip packages in `apps/chrome-extension/src/popup.ts`, `apps/chrome-extension/src/db-viewer.ts`, and `apps/chrome-extension/public/popup.html`
+  - Added unit/integration coverage for JSON compatibility export, zip roundtrip import/export, and missing-asset failures in `apps/mcp-server/src/retention.spec.ts` and `apps/mcp-server/src/main.spec.ts`
+  - Verified with `pnpm test` (all 6 projects passing)

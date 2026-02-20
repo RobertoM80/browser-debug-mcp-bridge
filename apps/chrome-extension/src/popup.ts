@@ -74,6 +74,7 @@ type SessionImportResult = {
   events: number;
   network: number;
   fingerprints: number;
+  snapshots: number;
 };
 
 let statePollTimer: number | null = null;
@@ -299,7 +300,17 @@ function parseSessionImportResult(result: unknown): SessionImportResult | null {
     events: Number(candidate.events ?? 0),
     network: Number(candidate.network ?? 0),
     fingerprints: Number(candidate.fingerprints ?? 0),
+    snapshots: Number(candidate.snapshots ?? 0),
   };
+}
+
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  for (let i = 0; i < bytes.length; i += 1) {
+    binary += String.fromCharCode(bytes[i] ?? 0);
+  }
+  return btoa(binary);
 }
 
 function getVisibleDbRows(rows: DbEntryRow[]): DbEntryRow[] {
@@ -640,9 +651,12 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    const result = await sendRuntimeMessage({ type: 'SESSION_EXPORT', sessionId });
+    const result = await sendRuntimeMessage({ type: 'SESSION_EXPORT', sessionId, format: 'zip' });
     if (result.ok && 'result' in result && result.result && typeof result.result === 'object' && 'filePath' in result.result) {
-      setRetentionStatus(`Exported: ${(result.result as { filePath: string }).filePath}`);
+      const payload = result.result as { filePath: string; snapshots?: number; format?: string };
+      setRetentionStatus(
+        `Exported ${payload.format ?? 'session'}: ${payload.filePath}${typeof payload.snapshots === 'number' ? ` (${payload.snapshots} snapshots)` : ''}`
+      );
       return;
     }
     setRetentionStatus(result.ok ? 'Unable to export session' : result.error);
@@ -662,23 +676,36 @@ document.addEventListener('DOMContentLoaded', () => {
 
     setRetentionStatus('Importing session...');
 
-    let payload: unknown;
-    try {
-      payload = JSON.parse(await file.text());
-    } catch {
-      setRetentionStatus('Invalid JSON file.');
-      return;
-    }
+    const isZip = file.name.toLowerCase().endsWith('.zip');
+    let result: SessionResponse;
 
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-      setRetentionStatus('Invalid import payload.');
-      return;
-    }
+    if (isZip) {
+      const archiveBuffer = await file.arrayBuffer();
+      result = await sendRuntimeMessage({
+        type: 'SESSION_IMPORT',
+        format: 'zip',
+        payload: {},
+        archiveBase64: arrayBufferToBase64(archiveBuffer),
+      });
+    } else {
+      let payload: unknown;
+      try {
+        payload = JSON.parse(await file.text());
+      } catch {
+        setRetentionStatus('Invalid JSON file.');
+        return;
+      }
 
-    const result = await sendRuntimeMessage({
-      type: 'SESSION_IMPORT',
-      payload: payload as Record<string, unknown>,
-    });
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+        setRetentionStatus('Invalid import payload.');
+        return;
+      }
+
+      result = await sendRuntimeMessage({
+        type: 'SESSION_IMPORT',
+        payload: payload as Record<string, unknown>,
+      });
+    }
 
     if (result.ok && 'result' in result) {
       const parsed = parseSessionImportResult(result.result);
@@ -691,7 +718,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ? ` (saved as ${parsed.sessionId})`
         : '';
       setRetentionStatus(
-        `Imported ${parsed.events} events, ${parsed.network} network rows, ${parsed.fingerprints} fingerprints${remapNote}.`
+        `Imported ${parsed.events} events, ${parsed.network} network rows, ${parsed.fingerprints} fingerprints, ${parsed.snapshots} snapshots${remapNote}.`
       );
       if (importSessionInput) {
         importSessionInput.value = '';

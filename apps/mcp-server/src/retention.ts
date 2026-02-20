@@ -1,6 +1,7 @@
-import { existsSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
 import type { Database } from 'better-sqlite3';
+import JSZip from 'jszip';
 
 export interface RetentionSettings {
   retentionDays: number;
@@ -31,7 +32,60 @@ export interface SessionImportResult {
   events: number;
   network: number;
   fingerprints: number;
+  snapshots: number;
 }
+
+export interface ExportSessionOptions {
+  format?: 'json' | 'zip';
+  compatibilityMode?: boolean;
+  includePngBase64?: boolean;
+}
+
+export interface ExportSessionResult {
+  filePath: string;
+  format: 'json' | 'zip';
+  compatibilityMode: boolean;
+  events: number;
+  network: number;
+  fingerprints: number;
+  snapshots: number;
+}
+
+type SnapshotExportRecord = {
+  snapshotId: string;
+  sessionId: string;
+  triggerEventId: string | null;
+  timestamp: number;
+  trigger: string;
+  selector: string | null;
+  url: string | null;
+  mode: string;
+  styleMode: string | null;
+  dom: unknown;
+  styles: unknown;
+  truncation: {
+    dom: boolean;
+    styles: boolean;
+    png: boolean;
+  };
+  createdAt: number;
+  png: {
+    path: string | null;
+    mime: string | null;
+    bytes: number | null;
+    base64?: string;
+    assetPath?: string;
+  };
+};
+
+type SessionExportPayload = {
+  exportedAt: string;
+  session: Record<string, unknown>;
+  events: Record<string, unknown>[];
+  network: Record<string, unknown>[];
+  fingerprints: Record<string, unknown>[];
+  snapshots: SnapshotExportRecord[];
+};
 
 export interface SnapshotWriteInput {
   timestamp?: number;
@@ -410,20 +464,17 @@ export function setSessionPinned(db: Database, sessionId: string, pinned: boolea
 
 export function exportSessionToJson(
   db: Database,
+  dbPath: string,
   sessionId: string,
   projectRoot: string,
   exportPathOverride: string | null,
-): { filePath: string; events: number; network: number; fingerprints: number } {
-  const session = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(sessionId) as Record<string, unknown> | undefined;
-  if (!session) {
-    throw new Error(`Session not found: ${sessionId}`);
-  }
-
-  const events = db.prepare('SELECT * FROM events WHERE session_id = ? ORDER BY ts ASC').all(sessionId) as Record<string, unknown>[];
-  const network = db.prepare('SELECT * FROM network WHERE session_id = ? ORDER BY ts_start ASC').all(sessionId) as Record<string, unknown>[];
-  const fingerprints = db
-    .prepare('SELECT * FROM error_fingerprints WHERE session_id = ? ORDER BY count DESC, last_seen_at DESC')
-    .all(sessionId) as Record<string, unknown>[];
+  options: ExportSessionOptions = {},
+): ExportSessionResult {
+  const compatibilityMode = options.compatibilityMode !== false;
+  const payload = buildSessionExportPayload(db, sessionId, dbPath, {
+    compatibilityMode,
+    includePngBase64: options.includePngBase64 === true,
+  });
 
   const baseDir = exportPathOverride && exportPathOverride.trim().length > 0
     ? resolve(exportPathOverride)
@@ -432,32 +483,131 @@ export function exportSessionToJson(
 
   const safeSessionId = sessionId.replace(/[^a-zA-Z0-9-_]/g, '_');
   const filePath = join(baseDir, `${safeSessionId}.json`);
-
-  writeFileSync(
-    filePath,
-    JSON.stringify(
-      {
-        exportedAt: new Date().toISOString(),
-        session,
-        events,
-        network,
-        fingerprints,
-      },
-      null,
-      2,
-    ),
-    'utf-8',
-  );
+  writeFileSync(filePath, JSON.stringify(payload, null, 2), 'utf-8');
 
   return {
     filePath,
-    events: events.length,
-    network: network.length,
-    fingerprints: fingerprints.length,
+    format: 'json',
+    compatibilityMode,
+    events: payload.events.length,
+    network: payload.network.length,
+    fingerprints: payload.fingerprints.length,
+    snapshots: payload.snapshots.length,
   };
 }
 
-export function importSessionFromJson(db: Database, payload: unknown): SessionImportResult {
+export async function exportSessionToZip(
+  db: Database,
+  dbPath: string,
+  sessionId: string,
+  projectRoot: string,
+  exportPathOverride: string | null,
+): Promise<ExportSessionResult> {
+  const payload = buildSessionExportPayload(db, sessionId, dbPath, {
+    compatibilityMode: false,
+    includePngBase64: false,
+  });
+
+  const zip = new JSZip();
+  zip.file('manifest.json', JSON.stringify(payload, null, 2));
+
+  for (const snapshot of payload.snapshots) {
+    const assetPath = snapshot.png.assetPath;
+    if (!assetPath) {
+      continue;
+    }
+
+    const absolutePath = resolve(join(resolve(dbPath, '..'), assetPath));
+    if (!existsSync(absolutePath)) {
+      throw new Error(`Snapshot export failed: missing asset file ${assetPath}.`);
+    }
+
+    const buffer = readFileSync(absolutePath);
+    assertPngBuffer(buffer, `Snapshot export failed: corrupt PNG asset ${assetPath}.`);
+    zip.file(assetPath, buffer);
+  }
+
+  const baseDir = exportPathOverride && exportPathOverride.trim().length > 0
+    ? resolve(exportPathOverride)
+    : resolve(join(projectRoot, 'exports'));
+  mkdirSync(baseDir, { recursive: true });
+
+  const safeSessionId = sessionId.replace(/[^a-zA-Z0-9-_]/g, '_');
+  const filePath = join(baseDir, `${safeSessionId}.zip`);
+  const zipBuffer = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' });
+  writeFileSync(filePath, zipBuffer);
+
+  return {
+    filePath,
+    format: 'zip',
+    compatibilityMode: false,
+    events: payload.events.length,
+    network: payload.network.length,
+    fingerprints: payload.fingerprints.length,
+    snapshots: payload.snapshots.length,
+  };
+}
+
+export async function importSessionFromZipBase64(
+  db: Database,
+  dbPath: string,
+  archiveBase64: string,
+): Promise<SessionImportResult> {
+  const archive = Buffer.from(archiveBase64, 'base64');
+  if (archive.byteLength === 0) {
+    throw new Error('Import archive is empty or invalid base64.');
+  }
+
+  const zip = await JSZip.loadAsync(archive);
+  const manifestEntry = zip.file('manifest.json');
+  if (!manifestEntry) {
+    throw new Error('Import archive missing manifest.json.');
+  }
+
+  const manifestText = await manifestEntry.async('text');
+  let payload: unknown;
+  try {
+    payload = JSON.parse(manifestText);
+  } catch {
+    throw new Error('Import archive manifest.json is invalid JSON.');
+  }
+
+  const snapshotAssets = new Map<string, Buffer>();
+  const root = asObject(payload, 'Import payload must be an object');
+  const snapshotsValue = root.snapshots;
+  if (Array.isArray(snapshotsValue)) {
+    for (let i = 0; i < snapshotsValue.length; i += 1) {
+      const snapshot = asObject(snapshotsValue[i], `Snapshot at index ${i} must be an object`);
+      const png = snapshot.png;
+      if (!png || typeof png !== 'object' || Array.isArray(png)) {
+        continue;
+      }
+
+      const assetPath = asNullableString((png as Record<string, unknown>).assetPath);
+      if (!assetPath) {
+        continue;
+      }
+
+      const normalizedPath = normalizeAssetPath(assetPath);
+      const assetEntry = zip.file(normalizedPath);
+      if (!assetEntry) {
+        throw new Error(`Import archive missing PNG asset ${normalizedPath}.`);
+      }
+
+      const buffer = await assetEntry.async('nodebuffer');
+      assertPngBuffer(buffer, `Import archive contains corrupt PNG asset ${normalizedPath}.`);
+      snapshotAssets.set(normalizedPath, buffer);
+    }
+  }
+
+  return importSessionFromJson(db, payload, { dbPath, snapshotAssets });
+}
+
+export function importSessionFromJson(
+  db: Database,
+  payload: unknown,
+  options: { dbPath?: string; snapshotAssets?: Map<string, Buffer> } = {},
+): SessionImportResult {
   const parsed = normalizeImportPayload(payload);
   const requestedSessionId = parsed.requestedSessionId;
   const sessionId = resolveImportedSessionId(db, requestedSessionId);
@@ -486,6 +636,14 @@ export function importSessionFromJson(db: Database, payload: unknown): SessionIm
     `INSERT INTO error_fingerprints (
       fingerprint, session_id, count, sample_message, sample_stack, first_seen_at, last_seen_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const insertSnapshot = db.prepare(
+    `INSERT INTO snapshots (
+      snapshot_id, session_id, trigger_event_id, ts, trigger, selector, url, mode, style_mode,
+      dom_json, styles_json, png_path, png_mime, png_bytes,
+      dom_truncated, styles_truncated, png_truncated, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   const runImport = db.transaction(() => {
@@ -542,6 +700,64 @@ export function importSessionFromJson(db: Database, payload: unknown): SessionIm
         row.lastSeenAt,
       );
     }
+
+    const sortedSnapshots = [...parsed.snapshots].sort((a, b) => a.timestamp - b.timestamp);
+    for (let i = 0; i < sortedSnapshots.length; i += 1) {
+      const row = sortedSnapshots[i];
+      const snapshotId = `${sessionId}-import-snapshot-${importedAt}-${i}`;
+
+      let pngPath: string | null = null;
+      let pngMime: string | null = null;
+      let pngBytes: number | null = null;
+
+      if (row.png.assetPath || row.png.base64) {
+        if (!options.dbPath) {
+          throw new Error('Snapshot import requires dbPath when snapshot PNG data is present.');
+        }
+
+        let pngBuffer: Buffer | null = null;
+        if (row.png.assetPath) {
+          const normalizedPath = normalizeAssetPath(row.png.assetPath);
+          const fromArchive = options.snapshotAssets?.get(normalizedPath);
+          if (!fromArchive) {
+            throw new Error(`Import payload references missing PNG asset ${normalizedPath}.`);
+          }
+          pngBuffer = fromArchive;
+        } else if (row.png.base64) {
+          pngBuffer = Buffer.from(row.png.base64, 'base64');
+        }
+
+        if (!pngBuffer || pngBuffer.byteLength === 0) {
+          throw new Error('Snapshot PNG payload is missing or invalid.');
+        }
+        assertPngBuffer(pngBuffer, 'Snapshot PNG payload is corrupt.');
+        const persisted = persistSnapshotPngBuffer(options.dbPath, sessionId, snapshotId, pngBuffer);
+        pngPath = persisted.relativePath;
+        pngMime = persisted.mime;
+        pngBytes = persisted.byteLength;
+      }
+
+      insertSnapshot.run(
+        snapshotId,
+        sessionId,
+        null,
+        row.timestamp,
+        row.trigger,
+        row.selector,
+        row.url,
+        row.mode,
+        row.styleMode,
+        row.domJson,
+        row.stylesJson,
+        pngPath,
+        pngMime,
+        pngBytes,
+        row.truncation.dom ? 1 : 0,
+        row.truncation.styles ? 1 : 0,
+        row.truncation.png ? 1 : 0,
+        row.createdAt,
+      );
+    }
   });
 
   runImport();
@@ -553,6 +769,149 @@ export function importSessionFromJson(db: Database, payload: unknown): SessionIm
     events: parsed.events.length,
     network: parsed.network.length,
     fingerprints: parsed.fingerprints.length,
+    snapshots: parsed.snapshots.length,
+  };
+}
+
+function buildSessionExportPayload(
+  db: Database,
+  sessionId: string,
+  dbPath: string,
+  options: { compatibilityMode: boolean; includePngBase64: boolean },
+): SessionExportPayload {
+  const session = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get(sessionId) as Record<string, unknown> | undefined;
+  if (!session) {
+    throw new Error(`Session not found: ${sessionId}`);
+  }
+
+  const events = db.prepare('SELECT * FROM events WHERE session_id = ? ORDER BY ts ASC').all(sessionId) as Record<string, unknown>[];
+  const network = db.prepare('SELECT * FROM network WHERE session_id = ? ORDER BY ts_start ASC').all(sessionId) as Record<string, unknown>[];
+  const fingerprints = db
+    .prepare('SELECT * FROM error_fingerprints WHERE session_id = ? ORDER BY count DESC, last_seen_at DESC')
+    .all(sessionId) as Record<string, unknown>[];
+
+  type SnapshotRow = {
+    snapshot_id: string;
+    session_id: string;
+    trigger_event_id: string | null;
+    ts: number;
+    trigger: string;
+    selector: string | null;
+    url: string | null;
+    mode: string;
+    style_mode: string | null;
+    dom_json: string | null;
+    styles_json: string | null;
+    png_path: string | null;
+    png_mime: string | null;
+    png_bytes: number | null;
+    dom_truncated: number;
+    styles_truncated: number;
+    png_truncated: number;
+    created_at: number;
+  };
+
+  const rows = db.prepare(
+    `SELECT
+      snapshot_id, session_id, trigger_event_id, ts, trigger, selector, url, mode, style_mode,
+      dom_json, styles_json, png_path, png_mime, png_bytes,
+      dom_truncated, styles_truncated, png_truncated, created_at
+     FROM snapshots
+     WHERE session_id = ?
+     ORDER BY ts ASC, created_at ASC`
+  ).all(sessionId) as SnapshotRow[];
+
+  const snapshots = rows.map((row) => {
+    let pngBase64: string | undefined;
+    if (options.includePngBase64 && row.png_path) {
+      const absolutePath = resolve(join(resolve(dbPath, '..'), row.png_path));
+      if (!existsSync(absolutePath)) {
+        throw new Error(`Snapshot export failed: missing asset file ${row.png_path}.`);
+      }
+      const pngBuffer = readFileSync(absolutePath);
+      assertPngBuffer(pngBuffer, `Snapshot export failed: corrupt PNG asset ${row.png_path}.`);
+      pngBase64 = pngBuffer.toString('base64');
+    }
+
+    const png: SnapshotExportRecord['png'] = {
+      path: row.png_path,
+      mime: row.png_mime,
+      bytes: row.png_bytes,
+    };
+
+    if (options.compatibilityMode) {
+      if (pngBase64) {
+        png.base64 = pngBase64;
+      }
+    } else if (row.png_path) {
+      png.assetPath = normalizeAssetPath(row.png_path);
+    }
+
+    return {
+      snapshotId: row.snapshot_id,
+      sessionId: row.session_id,
+      triggerEventId: row.trigger_event_id,
+      timestamp: row.ts,
+      trigger: row.trigger,
+      selector: row.selector,
+      url: row.url,
+      mode: row.mode,
+      styleMode: row.style_mode,
+      dom: parseJsonOrNull(row.dom_json),
+      styles: parseJsonOrNull(row.styles_json),
+      truncation: {
+        dom: row.dom_truncated === 1,
+        styles: row.styles_truncated === 1,
+        png: row.png_truncated === 1,
+      },
+      createdAt: row.created_at,
+      png,
+    };
+  });
+
+  return {
+    exportedAt: new Date().toISOString(),
+    session,
+    events,
+    network,
+    fingerprints,
+    snapshots,
+  };
+}
+
+function assertPngBuffer(buffer: Buffer, errorPrefix: string): void {
+  if (buffer.byteLength === 0) {
+    throw new Error(errorPrefix);
+  }
+  if (buffer.byteLength > MAX_SNAPSHOT_PNG_BYTES) {
+    throw new Error(`${errorPrefix} PNG exceeds ${MAX_SNAPSHOT_PNG_BYTES} bytes.`);
+  }
+  const pngSignature = '89504e470d0a1a0a';
+  if (buffer.subarray(0, 8).toString('hex') !== pngSignature) {
+    throw new Error(errorPrefix);
+  }
+}
+
+function persistSnapshotPngBuffer(
+  dbPath: string,
+  sessionId: string,
+  snapshotId: string,
+  buffer: Buffer,
+): { relativePath: string; mime: string; byteLength: number } {
+  if (buffer.byteLength > MAX_SNAPSHOT_PNG_BYTES) {
+    throw new Error(`Snapshot png payload exceeds max bytes (${buffer.byteLength} > ${MAX_SNAPSHOT_PNG_BYTES}).`);
+  }
+
+  const safeSession = sessionId.replace(/[^a-zA-Z0-9-_]/g, '_');
+  const relativePath = normalizeAssetPath(join(SNAPSHOT_ASSET_DIR, safeSession, `${snapshotId}.png`));
+  const absolutePath = resolve(join(resolve(dbPath, '..'), relativePath));
+  mkdirSync(dirname(absolutePath), { recursive: true });
+  writeFileSync(absolutePath, buffer);
+
+  return {
+    relativePath,
+    mime: 'image/png',
+    byteLength: buffer.byteLength,
   };
 }
 
@@ -725,6 +1084,26 @@ function normalizeImportPayload(payload: unknown): {
     firstSeenAt: number;
     lastSeenAt: number;
   }>;
+  snapshots: Array<{
+    timestamp: number;
+    trigger: string;
+    selector: string | null;
+    url: string | null;
+    mode: string;
+    styleMode: string;
+    domJson: string | null;
+    stylesJson: string | null;
+    truncation: {
+      dom: boolean;
+      styles: boolean;
+      png: boolean;
+    };
+    createdAt: number;
+    png: {
+      assetPath: string | null;
+      base64: string | null;
+    };
+  }>;
 } {
   const root = asObject(payload, 'Import payload must be an object');
   const sessionRoot = asObject(root.session, 'Import payload must include a session object');
@@ -739,6 +1118,7 @@ function normalizeImportPayload(payload: unknown): {
   const rawEvents = asArray(root.events, 'Import payload events must be an array');
   const rawNetwork = asArray(root.network, 'Import payload network must be an array');
   const rawFingerprints = asArray(root.fingerprints, 'Import payload fingerprints must be an array');
+  const rawSnapshots = root.snapshots === undefined ? [] : asArray(root.snapshots, 'Import payload snapshots must be an array');
 
   if (rawEvents.length > 100_000 || rawNetwork.length > 100_000 || rawFingerprints.length > 100_000) {
     throw new Error('Import payload exceeds record limit (100000 per section)');
@@ -790,6 +1170,46 @@ function normalizeImportPayload(payload: unknown): {
     };
   });
 
+  const snapshots = rawSnapshots.map((entry, index) => {
+    const row = asObject(entry, `Snapshot at index ${index} must be an object`);
+    const timestamp = asTimestamp(row.ts ?? row.timestamp, createdAt);
+    const trigger = normalizeSnapshotTrigger(row.trigger);
+    const selector = asNullableString(row.selector);
+    const url = asNullableString(row.url);
+    const mode = normalizeSnapshotMode(row.mode);
+    const styleMode = normalizeStyleMode({ styleMode: row.style_mode ?? row.styleMode });
+    const domJson = toNullableJsonString(row.dom_json ?? row.dom);
+    const stylesJson = toNullableJsonString(row.styles_json ?? row.styles);
+
+    const pngRoot = row.png && typeof row.png === 'object' && !Array.isArray(row.png)
+      ? row.png as Record<string, unknown>
+      : {};
+
+    const assetPath = asNullableString(pngRoot.assetPath ?? row.png_asset_path);
+    const base64 = asNullableString(pngRoot.base64 ?? row.png_base64);
+
+    return {
+      timestamp,
+      trigger,
+      selector,
+      url,
+      mode,
+      styleMode,
+      domJson,
+      stylesJson,
+      truncation: {
+        dom: Boolean(row.dom_truncated ?? (row.truncation as Record<string, unknown> | undefined)?.dom),
+        styles: Boolean(row.styles_truncated ?? (row.truncation as Record<string, unknown> | undefined)?.styles),
+        png: Boolean(row.png_truncated ?? (row.truncation as Record<string, unknown> | undefined)?.png),
+      },
+      createdAt: asTimestamp(row.created_at ?? row.createdAt, createdAt),
+      png: {
+        assetPath,
+        base64,
+      },
+    };
+  });
+
   return {
     requestedSessionId,
     session: {
@@ -810,6 +1230,7 @@ function normalizeImportPayload(payload: unknown): {
     events,
     network,
     fingerprints,
+    snapshots,
   };
 }
 
@@ -915,6 +1336,13 @@ function toJsonString(value: unknown): string {
   } catch {
     return '{}';
   }
+}
+
+function toNullableJsonString(value: unknown): string | null {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  return toJsonString(value);
 }
 
 function getDbSizeMb(dbPath: string): number {

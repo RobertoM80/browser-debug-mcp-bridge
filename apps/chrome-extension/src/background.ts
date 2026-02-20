@@ -32,8 +32,14 @@ type RuntimeRequest =
     }
   | { type: 'RETENTION_RUN_CLEANUP' }
   | { type: 'SESSION_PIN'; sessionId: string; pinned: boolean }
-  | { type: 'SESSION_EXPORT'; sessionId: string }
-  | { type: 'SESSION_IMPORT'; payload: Record<string, unknown> }
+  | {
+      type: 'SESSION_EXPORT';
+      sessionId: string;
+      format?: 'json' | 'zip';
+      compatibilityMode?: boolean;
+      includePngBase64?: boolean;
+    }
+  | { type: 'SESSION_IMPORT'; payload: Record<string, unknown>; format?: 'json' | 'zip'; archiveBase64?: string }
   | { type: 'SESSION_GET_DB_ENTRIES'; sessionId: string; limit: number; offset: number }
   | { type: 'SESSION_LIST_RECENT'; limit: number; offset: number }
   | { type: 'SESSION_CAPTURE_DIAGNOSTICS' }
@@ -582,6 +588,11 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
     case 'SESSION_EXPORT':
       return fetchServer(`/sessions/${encodeURIComponent(request.sessionId)}/export`, {
         method: 'POST',
+        body: JSON.stringify({
+          format: request.format,
+          compatibilityMode: request.compatibilityMode,
+          includePngBase64: request.includePngBase64,
+        }),
       })
         .then((response) => ({ ok: true as const, result: response }))
         .catch((error) => ({ ok: false, error: error instanceof Error ? error.message : 'Failed to export session' }));
@@ -589,7 +600,11 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
     case 'SESSION_IMPORT':
       return fetchServer('/sessions/import', {
         method: 'POST',
-        body: JSON.stringify(request.payload),
+        body: JSON.stringify(
+          request.format === 'zip'
+            ? { format: 'zip', archiveBase64: request.archiveBase64 ?? '' }
+            : request.payload
+        ),
       })
         .then((response) => ({ ok: true as const, result: response }))
         .catch((error) => ({ ok: false, error: error instanceof Error ? error.message : 'Failed to import session' }));

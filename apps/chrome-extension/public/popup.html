@@ -109,10 +109,10 @@
         <button id="pin-session" type="button">Pin session <span class="hint" title="Protect current session from automatic cleanup." aria-label="Pin session help">!</span></button>
         <button id="unpin-session" type="button">Unpin session <span class="hint" title="Allow current session to be removed by retention cleanup." aria-label="Unpin session help">!</span></button>
       </div>
-      <button id="export-session" type="button">Export current session <span class="hint" title="Export current session to JSON in exports path." aria-label="Export session help">!</span></button>
-      <label for="import-session-file">Import session JSON</label>
-      <input id="import-session-file" type="file" accept=".json,application/json">
-      <button id="import-session" type="button">Import session <span class="hint" title="Load an exported JSON session into local DB for inspection." aria-label="Import session help">!</span></button>
+      <button id="export-session" type="button">Export current session <span class="hint" title="Export current session as zip package with snapshots." aria-label="Export session help">!</span></button>
+      <label for="import-session-file">Import session (zip/json)</label>
+      <input id="import-session-file" type="file" accept=".zip,.json,application/json,application/zip">
+      <button id="import-session" type="button">Import session <span class="hint" title="Load an exported zip/json session into local DB for inspection." aria-label="Import session help">!</span></button>
       <div id="cleanup-info" class="config-status"></div>
       <div id="retention-status" class="config-status"></div>
     </details>

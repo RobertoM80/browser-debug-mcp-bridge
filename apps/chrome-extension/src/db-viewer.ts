@@ -360,10 +360,18 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     setExportStatus('Exporting...');
     exportBtn.disabled = true;
-    const response = await sendRuntimeMessage({ type: 'SESSION_EXPORT', sessionId: currentSessionId });
+    const response = await sendRuntimeMessage({ type: 'SESSION_EXPORT', sessionId: currentSessionId, format: 'zip' });
     exportBtn.disabled = false;
     if (response.ok && 'result' in response && response.result && typeof response.result === 'object') {
-      const payload = response.result as { ok?: boolean; filePath?: string; events?: number; network?: number; error?: string };
+      const payload = response.result as {
+        ok?: boolean;
+        filePath?: string;
+        events?: number;
+        network?: number;
+        snapshots?: number;
+        format?: string;
+        error?: string;
+      };
       if (payload.ok === false) {
         setExportStatus(payload.error ?? 'Export failed.');
         return;
@@ -372,8 +380,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const filePath = payload.filePath;
       const events = payload.events;
       const network = payload.network;
+      const snapshots = payload.snapshots;
       if (filePath) {
-        setExportStatus(`Exported to: ${filePath} (${events ?? 0} events, ${network ?? 0} network)`);
+        setExportStatus(
+          `Exported ${payload.format ?? 'session'} to: ${filePath} (${events ?? 0} events, ${network ?? 0} network, ${snapshots ?? 0} snapshots)`
+        );
         return;
       }
     }

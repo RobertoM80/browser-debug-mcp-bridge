@@ -3,8 +3,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { initializeDatabase } from './db/migrations';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { existsSync, rmSync } from 'fs';
-import { importSessionFromJson, pruneOrphanedSnapshotAssets, writeSnapshot } from './retention';
+import { existsSync, readFileSync, rmSync } from 'fs';
+import JSZip from 'jszip';
+import {
+  exportSessionToJson,
+  exportSessionToZip,
+  importSessionFromJson,
+  importSessionFromZipBase64,
+  pruneOrphanedSnapshotAssets,
+  writeSnapshot,
+} from './retention';
 
 describe('session import', () => {
   let db: Database.Database;
@@ -187,5 +195,104 @@ describe('session import', () => {
 
     expect(removed).toBe(1);
     expect(existsSync(absolute)).toBe(false);
+  });
+
+  it('exports snapshots in json compatibility mode with optional png base64', () => {
+    importSessionFromJson(db, {
+      session: {
+        session_id: 'snapshot-export-json',
+        created_at: 1700000000000,
+        safe_mode: 0,
+      },
+      events: [],
+      network: [],
+      fingerprints: [],
+    });
+
+    writeSnapshot(db, dbPath, 'snapshot-export-json', {
+      timestamp: 1700000003333,
+      trigger: 'manual',
+      mode: { dom: true, png: true, styleMode: 'computed-lite' },
+      snapshot: { dom: { mode: 'html', html: '<div>json</div>' } },
+      png: {
+        captured: true,
+        format: 'png',
+        dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z2akAAAAASUVORK5CYII=',
+      },
+    });
+
+    const result = exportSessionToJson(db, dbPath, 'snapshot-export-json', process.cwd(), null, {
+      compatibilityMode: true,
+      includePngBase64: true,
+    });
+
+    expect(result.format).toBe('json');
+    expect(result.snapshots).toBe(1);
+
+    const payload = JSON.parse(readFileSync(result.filePath, 'utf-8')) as {
+      snapshots: Array<{ png: { base64?: string } }>;
+    };
+    expect(payload.snapshots.length).toBe(1);
+    expect(typeof payload.snapshots[0]?.png.base64).toBe('string');
+  });
+
+  it('exports and imports zip package with snapshot assets', async () => {
+    importSessionFromJson(db, {
+      session: {
+        session_id: 'snapshot-zip-roundtrip',
+        created_at: 1700000000000,
+        safe_mode: 0,
+      },
+      events: [{ ts: 1700000000001, type: 'ui', payload_json: '{"eventType":"click"}' }],
+      network: [],
+      fingerprints: [],
+    });
+
+    writeSnapshot(db, dbPath, 'snapshot-zip-roundtrip', {
+      timestamp: 1700000004444,
+      trigger: 'click',
+      selector: '#checkout',
+      mode: { dom: true, png: true, styleMode: 'computed-lite' },
+      snapshot: { dom: { mode: 'html', html: '<button id="checkout">Checkout</button>' } },
+      png: {
+        captured: true,
+        format: 'png',
+        dataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7Z2akAAAAASUVORK5CYII=',
+      },
+    });
+
+    const exported = await exportSessionToZip(db, dbPath, 'snapshot-zip-roundtrip', process.cwd(), null);
+    const archiveBase64 = readFileSync(exported.filePath).toString('base64');
+    const imported = await importSessionFromZipBase64(db, dbPath, archiveBase64);
+
+    expect(exported.format).toBe('zip');
+    expect(exported.snapshots).toBe(1);
+    expect(imported.snapshots).toBe(1);
+    expect(imported.remappedSessionId).toBe(true);
+  });
+
+  it('fails zip import when snapshot asset is missing', async () => {
+    const zip = new JSZip();
+    zip.file('manifest.json', JSON.stringify({
+      session: { session_id: 'zip-missing-asset', created_at: 1700000000000, safe_mode: 0 },
+      events: [],
+      network: [],
+      fingerprints: [],
+      snapshots: [
+        {
+          timestamp: 1700000005555,
+          trigger: 'manual',
+          mode: 'dom',
+          styleMode: 'computed-lite',
+          dom: { mode: 'html', html: '<div>x</div>' },
+          truncation: { dom: false, styles: false, png: false },
+          createdAt: 1700000005555,
+          png: { assetPath: 'assets/missing.png' },
+        },
+      ],
+    }));
+    const archiveBase64 = (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64');
+
+    await expect(importSessionFromZipBase64(db, dbPath, archiveBase64)).rejects.toThrow('missing PNG asset');
   });
 });

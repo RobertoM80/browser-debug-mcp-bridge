@@ -7,8 +7,10 @@ import { initializeDatabase, getConnection, getDatabasePath } from './db';
 import { resetDatabase } from './db/migrations';
 import {
   exportSessionToJson,
+  exportSessionToZip,
   getRetentionSettings,
   importSessionFromJson,
+  importSessionFromZipBase64,
   listSnapshots,
   runRetentionCleanup,
   setSessionPinned,
@@ -150,8 +152,19 @@ fastify.post('/sessions/:sessionId/pin', async (request) => {
 
 fastify.post('/sessions/:sessionId/export', async (request) => {
   const params = request.params as { sessionId: string };
+  const body = (request.body ?? {}) as {
+    format?: 'json' | 'zip';
+    compatibilityMode?: boolean;
+    includePngBase64?: boolean;
+  };
   const settings = getRetentionSettings(getConnection().db);
-  const result = exportSessionToJson(getConnection().db, params.sessionId, process.cwd(), settings.exportPathOverride);
+  const format = body.format === 'zip' || body.format === 'json' ? body.format : 'zip';
+  const result = format === 'zip'
+    ? await exportSessionToZip(getConnection().db, getDatabasePath(), params.sessionId, process.cwd(), settings.exportPathOverride)
+    : exportSessionToJson(getConnection().db, getDatabasePath(), params.sessionId, process.cwd(), settings.exportPathOverride, {
+      compatibilityMode: body.compatibilityMode,
+      includePngBase64: body.includePngBase64,
+    });
   return { ok: true, sessionId: params.sessionId, ...result };
 });
 
@@ -205,7 +218,10 @@ fastify.post('/sessions/import', async (request) => {
   }
 
   try {
-    const result = importSessionFromJson(getConnection().db, body);
+    const importBody = body as Record<string, unknown>;
+    const result = importBody.format === 'zip' && typeof importBody.archiveBase64 === 'string'
+      ? await importSessionFromZipBase64(getConnection().db, getDatabasePath(), importBody.archiveBase64)
+      : importSessionFromJson(getConnection().db, body, { dbPath: getDatabasePath() });
     return { ok: true, ...result };
   } catch (error) {
     return {
