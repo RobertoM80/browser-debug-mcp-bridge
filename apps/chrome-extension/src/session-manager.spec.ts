@@ -188,10 +188,11 @@ describe('SessionManager', () => {
       createSessionId: () => 'session-5',
       createWebSocket: () => ws,
       now: () => 1700000000000,
-      handleCaptureCommand: async (command, payload) => ({
+      handleCaptureCommand: async (command, payload, context) => ({
         payload: {
           command,
           selector: payload.selector,
+          sessionId: context.sessionId,
           ok: true,
         },
         truncated: false,
@@ -207,7 +208,7 @@ describe('SessionManager', () => {
         type: 'capture_command',
         commandId: 'cmd-1',
         sessionId: 'session-5',
-        command: 'CAPTURE_DOM_SUBTREE',
+        command: 'CAPTURE_UI_SNAPSHOT',
         payload: { selector: '#app' },
       })
     );
@@ -219,13 +220,14 @@ describe('SessionManager', () => {
       type: string;
       commandId: string;
       ok: boolean;
-      payload: { selector: string; command: string };
+      payload: { selector: string; command: string; sessionId: string };
     };
     expect(response.type).toBe('capture_result');
     expect(response.commandId).toBe('cmd-1');
     expect(response.ok).toBe(true);
     expect(response.payload.selector).toBe('#app');
-    expect(response.payload.command).toBe('CAPTURE_DOM_SUBTREE');
+    expect(response.payload.command).toBe('CAPTURE_UI_SNAPSHOT');
+    expect(response.payload.sessionId).toBe('session-5');
   });
 
   it('uses readable default session ids with date hints', () => {

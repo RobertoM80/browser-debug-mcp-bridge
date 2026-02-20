@@ -235,3 +235,13 @@
   - Added popup UI controls for snapshot settings in `popup.html` and `popup.css`, with persistence through existing save flow
   - Added unit tests for snapshot config normalization, bounds enforcement, and opt-in gating in `capture-controls.spec.ts`
   - Verified with `pnpm test` (all projects passing)
+
+### Completed: 2026-02-20
+- [Capture timestamped UI snapshots in extension for DOM, CSS, and optional PNG] - COMPLETED
+  - Added `CAPTURE_UI_SNAPSHOT` command handling in content script and session manager command parsing
+  - Implemented DOM snapshot capture with max byte limits, outline fallback, and truncation metadata
+  - Added computed style chain capture for target plus ancestors with `computed-lite` default and explicit `computed-full` gating
+  - Implemented optional PNG capture in background with throttle, per-session quota, and max-bytes enforcement
+  - Emitted `ui_snapshot` records with timestamp, trigger, selector/url, mode, command/session IDs, and truncation metadata
+  - Added/updated unit tests in `content-script.spec.ts` and `session-manager.spec.ts`
+  - Verified with `pnpm test` (all projects passing)

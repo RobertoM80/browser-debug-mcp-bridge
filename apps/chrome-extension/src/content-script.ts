@@ -12,7 +12,10 @@ type CaptureCommandType =
   | 'CAPTURE_DOM_SUBTREE'
   | 'CAPTURE_DOM_DOCUMENT'
   | 'CAPTURE_COMPUTED_STYLES'
-  | 'CAPTURE_LAYOUT_METRICS';
+  | 'CAPTURE_LAYOUT_METRICS'
+  | 'CAPTURE_UI_SNAPSHOT';
+
+type SnapshotStyleMode = 'computed-lite' | 'computed-full';
 
 interface CaptureCommandRequest {
   type: 'CAPTURE_EXECUTE';
@@ -69,6 +72,10 @@ function getClickSelector(target: Element): string | null {
 
   const tagName = target.tagName.toLowerCase();
   return tagName || null;
+}
+
+function getElementSelector(target: Element): string {
+  return getClickSelector(target) ?? target.tagName.toLowerCase();
 }
 
 interface ContentCaptureOptions {
@@ -139,6 +146,84 @@ function serializeWithinLimit(value: unknown, maxBytes: number): { text: string;
 
   const limited = serialized.slice(0, Math.max(maxBytes - 40, 20));
   return { text: `${limited}...[TRUNCATED]`, truncated: true };
+}
+
+function clampMaxAncestors(value: unknown, fallback = 4): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  const normalized = Math.floor(value);
+  if (normalized < 0) {
+    return fallback;
+  }
+
+  return Math.min(normalized, 8);
+}
+
+function captureComputedStyleChain(
+  win: Window,
+  target: Element,
+  mode: SnapshotStyleMode,
+  maxAncestors: number
+): { mode: SnapshotStyleMode; chain: Array<Record<string, unknown>>; truncated: boolean } {
+  const liteProperties = [
+    'display',
+    'position',
+    'visibility',
+    'opacity',
+    'width',
+    'height',
+    'z-index',
+    'overflow',
+    'color',
+    'background-color',
+    'font-size',
+    'font-weight',
+    'line-height',
+  ];
+
+  const chain: Array<Record<string, unknown>> = [];
+  let current: Element | null = target;
+  let depth = 0;
+  let truncated = false;
+
+  while (current && depth <= maxAncestors) {
+    const computed = win.getComputedStyle(current);
+    const properties: Record<string, string> = {};
+
+    if (mode === 'computed-full') {
+      const maxProperties = 256;
+      const propertyCount = Math.min(computed.length, maxProperties);
+      truncated = truncated || computed.length > maxProperties;
+      for (let index = 0; index < propertyCount; index += 1) {
+        const property = computed.item(index);
+        if (property) {
+          properties[property] = computed.getPropertyValue(property);
+        }
+      }
+    } else {
+      for (const property of liteProperties) {
+        properties[property] = computed.getPropertyValue(property);
+      }
+    }
+
+    chain.push({
+      depth,
+      tagName: current.tagName.toLowerCase(),
+      selector: getElementSelector(current),
+      properties,
+    });
+
+    current = current.parentElement;
+    depth += 1;
+  }
+
+  return {
+    mode,
+    chain,
+    truncated,
+  };
 }
 
 function buildDomOutline(root: Element, maxDepth: number, maxNodes = 400): Record<string, unknown> {
@@ -339,6 +424,72 @@ export function executeCaptureCommand(
           right: rect.right,
           bottom: rect.bottom,
           left: rect.left,
+        },
+      },
+    };
+  }
+
+  if (command === 'CAPTURE_UI_SNAPSHOT') {
+    const selector = typeof payload.selector === 'string' ? payload.selector : '';
+    const trigger = typeof payload.trigger === 'string' ? payload.trigger : 'manual';
+    const styleMode: SnapshotStyleMode =
+      payload.styleMode === 'computed-full' && payload.explicitStyleMode === true
+        ? 'computed-full'
+        : 'computed-lite';
+    const maxAncestors = clampMaxAncestors(payload.maxAncestors);
+
+    const selectedElement = selector ? win.document.querySelector(selector) : null;
+    const target = selectedElement ?? (win.document.activeElement instanceof Element ? win.document.activeElement : null)
+      ?? win.document.body
+      ?? win.document.documentElement;
+
+    if (!target) {
+      throw new Error('No capture target available for UI snapshot');
+    }
+
+    const domHtml = target.outerHTML;
+    let domSnapshot: Record<string, unknown>;
+    let domTruncated = false;
+
+    if (byteSize(domHtml) <= maxBytes) {
+      domSnapshot = {
+        mode: 'html',
+        html: domHtml,
+        maxBytes,
+      };
+    } else {
+      const outline = buildDomOutline(target, maxDepth);
+      const serialized = serializeWithinLimit(outline, maxBytes);
+      domTruncated = true;
+      domSnapshot = {
+        mode: 'outline',
+        outline: serialized.text,
+        maxDepth,
+        maxBytes,
+        fallbackReason: 'maxBytes',
+      };
+    }
+
+    const styleSnapshot = captureComputedStyleChain(win, target, styleMode, maxAncestors);
+
+    return {
+      truncated: domTruncated || styleSnapshot.truncated,
+      result: {
+        timestamp: Date.now(),
+        trigger,
+        selector: selector || getElementSelector(target),
+        url: win.location.href,
+        mode: {
+          dom: true,
+          png: false,
+        },
+        snapshot: {
+          dom: domSnapshot,
+          styles: styleSnapshot,
+        },
+        truncation: {
+          dom: domTruncated,
+          styles: styleSnapshot.truncated,
         },
       },
     };

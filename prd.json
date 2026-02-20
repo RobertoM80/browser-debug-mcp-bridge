@@ -361,7 +361,7 @@
       "DOM/CSS snapshots succeed under normal limits and degrade gracefully with truncation when limits are exceeded.",
       "PNG capture never bypasses configured throttles or byte/quantity limits."
     ],
-    "passes": false,
+    "passes": true,
     "id": "PRD-102",
     "depends_on": [
       "PRD-101"

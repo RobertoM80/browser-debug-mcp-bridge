@@ -30,7 +30,8 @@ export type CaptureCommandType =
   | 'CAPTURE_DOM_SUBTREE'
   | 'CAPTURE_DOM_DOCUMENT'
   | 'CAPTURE_COMPUTED_STYLES'
-  | 'CAPTURE_LAYOUT_METRICS';
+  | 'CAPTURE_LAYOUT_METRICS'
+  | 'CAPTURE_UI_SNAPSHOT';
 
 interface CaptureCommandMessage {
   type: 'capture_command';
@@ -47,7 +48,8 @@ interface CaptureCommandResponse {
 
 type CaptureCommandHandler = (
   command: CaptureCommandType,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  context: { sessionId: string; commandId: string }
 ) => Promise<CaptureCommandResponse>;
 
 interface WebSocketLike {
@@ -340,7 +342,10 @@ export class SessionManager {
     }
 
     try {
-      const response = await this.handleCaptureCommand(parsed.command, parsed.payload ?? {});
+      const response = await this.handleCaptureCommand(parsed.command, parsed.payload ?? {}, {
+        sessionId: parsed.sessionId,
+        commandId: parsed.commandId,
+      });
       this.ws.send(
         JSON.stringify({
           type: 'capture_result',
@@ -403,6 +408,7 @@ export class SessionManager {
         && message.command !== 'CAPTURE_DOM_DOCUMENT'
         && message.command !== 'CAPTURE_COMPUTED_STYLES'
         && message.command !== 'CAPTURE_LAYOUT_METRICS'
+        && message.command !== 'CAPTURE_UI_SNAPSHOT'
       ) {
         return null;
       }

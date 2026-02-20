@@ -1,10 +1,14 @@
 import { SessionManager, SessionState, CaptureCommandType } from './session-manager';
 import {
   applySafeModeRestrictions,
+  canCaptureSnapshot,
   CaptureConfig,
   DEFAULT_CAPTURE_CONFIG,
   isUrlAllowed,
   loadCaptureConfig,
+  SnapshotMode,
+  SnapshotStyleMode,
+  SnapshotTrigger,
   saveCaptureConfig,
 } from './capture-controls';
 
@@ -54,14 +58,235 @@ interface CapturePingResponse {
   type?: 'CAPTURE_PONG';
 }
 
+interface SnapshotPngUsage {
+  imageCount: number;
+  lastCaptureAt: number;
+}
+
+const snapshotPngUsageBySession = new Map<string, SnapshotPngUsage>();
+
+function getSnapshotPngUsage(sessionId: string): SnapshotPngUsage {
+  const existing = snapshotPngUsageBySession.get(sessionId);
+  if (existing) {
+    return existing;
+  }
+
+  const created: SnapshotPngUsage = {
+    imageCount: 0,
+    lastCaptureAt: 0,
+  };
+  snapshotPngUsageBySession.set(sessionId, created);
+  return created;
+}
+
+function normalizeSnapshotTrigger(value: unknown): SnapshotTrigger {
+  if (value === 'click' || value === 'manual' || value === 'navigation' || value === 'error') {
+    return value;
+  }
+  return 'manual';
+}
+
+function normalizeSnapshotMode(value: unknown, fallback: SnapshotMode): SnapshotMode {
+  if (value === 'dom' || value === 'png' || value === 'both') {
+    return value;
+  }
+  return fallback;
+}
+
+function normalizeSnapshotStyleMode(value: unknown, fallback: SnapshotStyleMode): SnapshotStyleMode {
+  if (value === 'computed-lite' || value === 'computed-full') {
+    return value;
+  }
+  return fallback;
+}
+
+function shouldCapturePng(mode: SnapshotMode): boolean {
+  return mode === 'png' || mode === 'both';
+}
+
+function estimateDataUrlBytes(dataUrl: string): number {
+  const commaIndex = dataUrl.indexOf(',');
+  if (commaIndex === -1) {
+    return dataUrl.length;
+  }
+
+  const encoded = dataUrl.slice(commaIndex + 1);
+  const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((encoded.length * 3) / 4) - padding);
+}
+
+async function captureVisibleTabPng(windowId?: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const callback = (dataUrl?: string) => {
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError) {
+        reject(new Error(runtimeError.message));
+        return;
+      }
+
+      if (!dataUrl) {
+        reject(new Error('captureVisibleTab returned empty data'));
+        return;
+      }
+
+      resolve(dataUrl);
+    };
+
+    if (typeof windowId === 'number') {
+      chrome.tabs.captureVisibleTab(windowId, { format: 'png' }, callback);
+      return;
+    }
+
+    chrome.tabs.captureVisibleTab({ format: 'png' }, callback);
+  });
+}
+
 async function executeCaptureCommand(
   command: CaptureCommandType,
-  payload: Record<string, unknown>
+  payload: Record<string, unknown>,
+  context: { sessionId: string; commandId: string }
 ): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
   const tab = await getActiveTab();
-  const tabId = tab?.id;
-  if (tabId === undefined) {
+  if (!tab || tab.id === undefined) {
     throw new Error('No active tab available for capture');
+  }
+  const tabId = tab.id;
+
+  if (command === 'CAPTURE_UI_SNAPSHOT') {
+    const llmRequested = payload.llmRequested === true;
+    if (!canCaptureSnapshot(captureConfig, { llmRequested })) {
+      throw new Error('Snapshot capture is disabled or requires request opt-in');
+    }
+
+    const trigger = normalizeSnapshotTrigger(payload.trigger);
+    if (!captureConfig.snapshots.triggers.includes(trigger)) {
+      throw new Error(`Snapshot trigger "${trigger}" is disabled in extension settings`);
+    }
+
+    const mode = normalizeSnapshotMode(payload.mode, captureConfig.snapshots.mode);
+    const requestedStyleMode = normalizeSnapshotStyleMode(payload.styleMode, captureConfig.snapshots.styleMode);
+    const explicitStyleMode = payload.explicitStyleMode === true;
+    const styleMode: SnapshotStyleMode =
+      requestedStyleMode === 'computed-full' && explicitStyleMode ? 'computed-full' : 'computed-lite';
+
+    const contentPayload: Record<string, unknown> = {
+      ...payload,
+      trigger,
+      styleMode,
+      explicitStyleMode,
+    };
+
+    const captured = await new Promise<{ payload: Record<string, unknown>; truncated?: boolean }>((resolve, reject) => {
+      chrome.tabs.sendMessage(
+        tabId,
+        {
+          type: 'CAPTURE_EXECUTE',
+          command: 'CAPTURE_UI_SNAPSHOT',
+          payload: contentPayload,
+        },
+        (response?: CaptureTabResponse) => {
+          const runtimeError = chrome.runtime.lastError;
+          if (runtimeError) {
+            reject(new Error(runtimeError.message));
+            return;
+          }
+
+          if (!response) {
+            reject(new Error('No capture response from content script'));
+            return;
+          }
+
+          if (!response.ok) {
+            reject(new Error(response.error ?? 'Capture command failed'));
+            return;
+          }
+
+          resolve({
+            payload: response.result ?? {},
+            truncated: response.truncated,
+          });
+        }
+      );
+    });
+
+    const basePayload = captured.payload;
+    const now = Date.now();
+    const snapshotRecord: Record<string, unknown> = {
+      ...basePayload,
+      commandId: context.commandId,
+      sessionId: context.sessionId,
+      timestamp: typeof basePayload.timestamp === 'number' ? basePayload.timestamp : now,
+      trigger,
+      selector: typeof basePayload.selector === 'string' ? basePayload.selector : null,
+      url: typeof basePayload.url === 'string' ? basePayload.url : tab.url ?? '',
+      mode: {
+        dom: mode === 'dom' || mode === 'both',
+        png: shouldCapturePng(mode),
+        styleMode,
+      },
+      truncation: {
+        dom: Boolean((basePayload as { truncation?: { dom?: unknown } }).truncation?.dom),
+        styles: Boolean((basePayload as { truncation?: { styles?: unknown } }).truncation?.styles),
+        png: false,
+      },
+    };
+
+    if (shouldCapturePng(mode)) {
+      const usage = getSnapshotPngUsage(context.sessionId);
+      const policy = captureConfig.snapshots.pngPolicy;
+      const elapsedMs = now - usage.lastCaptureAt;
+      let png: Record<string, unknown>;
+
+      if (usage.imageCount >= policy.maxImagesPerSession) {
+        png = {
+          captured: false,
+          reason: 'quota_exceeded',
+          maxImagesPerSession: policy.maxImagesPerSession,
+        };
+      } else if (usage.lastCaptureAt > 0 && elapsedMs < policy.minCaptureIntervalMs) {
+        png = {
+          captured: false,
+          reason: 'throttled',
+          minCaptureIntervalMs: policy.minCaptureIntervalMs,
+          retryAfterMs: policy.minCaptureIntervalMs - elapsedMs,
+        };
+      } else {
+        const dataUrl = await captureVisibleTabPng(tab.windowId);
+        const byteLength = estimateDataUrlBytes(dataUrl);
+
+        if (byteLength > policy.maxBytesPerImage) {
+          png = {
+            captured: false,
+            reason: 'max_bytes_exceeded',
+            byteLength,
+            maxBytesPerImage: policy.maxBytesPerImage,
+          };
+          (snapshotRecord.truncation as Record<string, unknown>).png = true;
+        } else {
+          usage.imageCount += 1;
+          usage.lastCaptureAt = now;
+          png = {
+            captured: true,
+            format: 'png',
+            byteLength,
+            dataUrl,
+          };
+        }
+      }
+
+      snapshotRecord.png = png;
+    }
+
+    const truncated =
+      Boolean((snapshotRecord.truncation as Record<string, unknown>).dom)
+      || Boolean((snapshotRecord.truncation as Record<string, unknown>).styles)
+      || Boolean((snapshotRecord.truncation as Record<string, unknown>).png);
+
+    sessionManager.queueEvent('ui_snapshot', snapshotRecord);
+    return {
+      payload: snapshotRecord,
+      truncated,
+    };
   }
 
   return new Promise((resolve, reject) => {
@@ -251,6 +476,10 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
             timestamp: Date.now(),
           });
 
+          if (started.sessionId) {
+            snapshotPngUsageBySession.delete(started.sessionId);
+          }
+
           return { ok: true as const, state: started };
         })
         .catch((error) => ({
@@ -260,7 +489,13 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
     }
 
     case 'SESSION_STOP':
-      return Promise.resolve({ ok: true, state: sessionManager.stopSession() });
+      return Promise.resolve().then(() => {
+        const activeSessionId = sessionManager.getState().sessionId;
+        if (activeSessionId) {
+          snapshotPngUsageBySession.delete(activeSessionId);
+        }
+        return { ok: true as const, state: sessionManager.stopSession() };
+      });
 
     case 'SESSION_QUEUE_EVENT': {
       const senderUrl = sender.tab?.url ?? sender.url ?? '';

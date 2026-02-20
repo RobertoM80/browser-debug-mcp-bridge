@@ -141,4 +141,50 @@ describe('content-script capture', () => {
       visibility: 'visible',
     });
   });
+
+  it('captures UI snapshot with timestamp, trigger, and selector context', () => {
+    document.body.innerHTML = '<main><button id="buy-now">Buy</button></main>';
+
+    const output = executeCaptureCommand(window, 'CAPTURE_UI_SNAPSHOT', {
+      selector: '#buy-now',
+      trigger: 'click',
+      maxBytes: 10000,
+    });
+
+    expect(output.result.trigger).toBe('click');
+    expect(output.result.selector).toBe('#buy-now');
+    expect(output.result.url).toBe(window.location.href);
+    expect(typeof output.result.timestamp).toBe('number');
+    expect(output.result.mode).toMatchObject({ dom: true, png: false });
+    expect(output.result.snapshot).toBeDefined();
+    expect(output.result.truncation).toMatchObject({ dom: false });
+  });
+
+  it('enforces explicit request for computed-full snapshot styles', () => {
+    document.body.innerHTML = '<div id="snapshot-target" style="display: block; color: rgb(0, 0, 0)"></div>';
+
+    const downgraded = executeCaptureCommand(window, 'CAPTURE_UI_SNAPSHOT', {
+      selector: '#snapshot-target',
+      styleMode: 'computed-full',
+      explicitStyleMode: false,
+    });
+    const full = executeCaptureCommand(window, 'CAPTURE_UI_SNAPSHOT', {
+      selector: '#snapshot-target',
+      styleMode: 'computed-full',
+      explicitStyleMode: true,
+    });
+
+    const downgradedStyles = downgraded.result.snapshot as {
+      styles: { mode: string; chain: Array<{ properties: Record<string, string> }> };
+    };
+    const fullStyles = full.result.snapshot as {
+      styles: { mode: string; chain: Array<{ properties: Record<string, string> }> };
+    };
+
+    expect(downgradedStyles.styles.mode).toBe('computed-lite');
+    expect(fullStyles.styles.mode).toBe('computed-full');
+    expect(Object.keys(fullStyles.styles.chain[0].properties).length).toBeGreaterThanOrEqual(
+      Object.keys(downgradedStyles.styles.chain[0].properties).length
+    );
+  });
 });
