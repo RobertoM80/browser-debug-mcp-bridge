@@ -544,6 +544,65 @@ describe('mcp/server V1 query tools', () => {
     db.close();
   });
 
+  it('reconstructs click to snapshot to failure analysis flow', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-flow', 1000, 0)
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO events (event_id, session_id, ts, type, payload_json)
+        VALUES
+          ('evt-click', 'session-flow', 5000, 'ui', '{"eventType":"click","selector":"#checkout"}'),
+          ('evt-error', 'session-flow', 5600, 'error', '{"message":"checkout failed"}')
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO network (request_id, session_id, ts_start, duration_ms, method, url, status, initiator, error_class)
+        VALUES ('req-fail', 'session-flow', 5450, 40, 'POST', 'https://api.example/checkout', 500, 'fetch', NULL)
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO snapshots (
+          snapshot_id, session_id, trigger_event_id, ts, trigger, selector, url, mode, style_mode,
+          dom_json, styles_json, png_path, png_mime, png_bytes,
+          dom_truncated, styles_truncated, png_truncated, created_at
+        ) VALUES
+          ('snap-checkout', 'session-flow', 'evt-click', 5050, 'click', '#checkout', 'https://example.dev/cart', 'dom', 'computed-lite',
+           '{}', '{}', NULL, NULL, NULL, 0, 0, 0, 5060)
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const snapshotForClick = await routeToolCall(tools, 'get_snapshot_for_event', {
+      sessionId: 'session-flow',
+      eventId: 'evt-click',
+    });
+    const failureTimeline = await routeToolCall(tools, 'explain_last_failure', {
+      sessionId: 'session-flow',
+      lookbackSeconds: 10,
+    });
+
+    expect(snapshotForClick.matchReason).toBe('trigger_event_id');
+    expect((snapshotForClick.snapshot as { snapshotId: string }).snapshotId).toBe('snap-checkout');
+    expect((failureTimeline.timeline as Array<{ eventId: string }>).map((entry) => entry.eventId)).toEqual([
+      'evt-click',
+      'req-fail',
+      'evt-error',
+    ]);
+
+    db.close();
+  });
+
   it('returns chunked snapshot asset payloads with raw and base64 encoding', async () => {
     const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-snapshot-asset-'));
     const dbPath = join(tempRoot, 'data', 'debug.sqlite');

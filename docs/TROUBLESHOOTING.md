@@ -38,3 +38,11 @@
 - Check `GET /health` for service and DB status
 - Check `GET /stats` for event/session counts and connection activity
 - Inspect structured logs for WebSocket and MCP tool activity
+
+## Snapshot capture not behaving as expected
+
+- Confirm snapshot settings in extension popup: snapshots enabled, required triggers active, and opt-in requirement satisfied
+- If PNG capture is skipped, check `maxImagesPerSession` quota and `minCaptureIntervalMs` throttle policy in snapshot settings
+- If snapshots look incomplete, verify DOM/style truncation flags and configured payload limits
+- For strict safe mode, PNG can be blocked by privacy profile and DOM/style values may be redacted before persistence/export
+- Verify timeline flow with MCP: `get_snapshot_for_event` for click link, then `explain_last_failure` for downstream analysis

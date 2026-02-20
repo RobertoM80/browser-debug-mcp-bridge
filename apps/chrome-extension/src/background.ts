@@ -6,11 +6,19 @@ import {
   DEFAULT_CAPTURE_CONFIG,
   isUrlAllowed,
   loadCaptureConfig,
-  SnapshotMode,
   SnapshotStyleMode,
-  SnapshotTrigger,
   saveCaptureConfig,
 } from './capture-controls';
+import {
+  evaluatePngCapturePolicy,
+  normalizeSnapshotMode,
+  normalizeSnapshotStyleMode,
+  normalizeSnapshotTrigger,
+  resolveSnapshotStyleMode,
+  registerPngCaptureSuccess,
+  shouldCapturePng,
+  SnapshotPngUsage,
+} from './snapshot-capture';
 import { redactSnapshotRecord } from '../../../libs/redaction/src';
 
 type RuntimeRequest =
@@ -65,11 +73,6 @@ interface CapturePingResponse {
   type?: 'CAPTURE_PONG';
 }
 
-interface SnapshotPngUsage {
-  imageCount: number;
-  lastCaptureAt: number;
-}
-
 const snapshotPngUsageBySession = new Map<string, SnapshotPngUsage>();
 
 function getSnapshotPngUsage(sessionId: string): SnapshotPngUsage {
@@ -84,31 +87,6 @@ function getSnapshotPngUsage(sessionId: string): SnapshotPngUsage {
   };
   snapshotPngUsageBySession.set(sessionId, created);
   return created;
-}
-
-function normalizeSnapshotTrigger(value: unknown): SnapshotTrigger {
-  if (value === 'click' || value === 'manual' || value === 'navigation' || value === 'error') {
-    return value;
-  }
-  return 'manual';
-}
-
-function normalizeSnapshotMode(value: unknown, fallback: SnapshotMode): SnapshotMode {
-  if (value === 'dom' || value === 'png' || value === 'both') {
-    return value;
-  }
-  return fallback;
-}
-
-function normalizeSnapshotStyleMode(value: unknown, fallback: SnapshotStyleMode): SnapshotStyleMode {
-  if (value === 'computed-lite' || value === 'computed-full') {
-    return value;
-  }
-  return fallback;
-}
-
-function shouldCapturePng(mode: SnapshotMode): boolean {
-  return mode === 'png' || mode === 'both';
 }
 
 function estimateDataUrlBytes(dataUrl: string): number {
@@ -173,8 +151,7 @@ async function executeCaptureCommand(
     const mode = normalizeSnapshotMode(payload.mode, captureConfig.snapshots.mode);
     const requestedStyleMode = normalizeSnapshotStyleMode(payload.styleMode, captureConfig.snapshots.styleMode);
     const explicitStyleMode = payload.explicitStyleMode === true;
-    const styleMode: SnapshotStyleMode =
-      requestedStyleMode === 'computed-full' && explicitStyleMode ? 'computed-full' : 'computed-lite';
+    const styleMode: SnapshotStyleMode = resolveSnapshotStyleMode(requestedStyleMode, explicitStyleMode);
 
     const contentPayload: Record<string, unknown> = {
       ...payload,
@@ -241,21 +218,21 @@ async function executeCaptureCommand(
     if (shouldCapturePng(mode)) {
       const usage = getSnapshotPngUsage(context.sessionId);
       const policy = captureConfig.snapshots.pngPolicy;
-      const elapsedMs = now - usage.lastCaptureAt;
       let png: Record<string, unknown>;
+      const captureDecision = evaluatePngCapturePolicy(usage, policy, now);
 
-      if (usage.imageCount >= policy.maxImagesPerSession) {
+      if (!captureDecision.allowed && captureDecision.reason === 'quota_exceeded') {
         png = {
           captured: false,
           reason: 'quota_exceeded',
           maxImagesPerSession: policy.maxImagesPerSession,
         };
-      } else if (usage.lastCaptureAt > 0 && elapsedMs < policy.minCaptureIntervalMs) {
+      } else if (!captureDecision.allowed && captureDecision.reason === 'throttled') {
         png = {
           captured: false,
           reason: 'throttled',
           minCaptureIntervalMs: policy.minCaptureIntervalMs,
-          retryAfterMs: policy.minCaptureIntervalMs - elapsedMs,
+          retryAfterMs: captureDecision.retryAfterMs,
         };
       } else {
         const dataUrl = await captureVisibleTabPng(tab.windowId);
@@ -270,8 +247,7 @@ async function executeCaptureCommand(
           };
           (snapshotRecord.truncation as Record<string, unknown>).png = true;
         } else {
-          usage.imageCount += 1;
-          usage.lastCaptureAt = now;
+          registerPngCaptureSuccess(usage, now);
           png = {
             captured: true,
             format: 'png',

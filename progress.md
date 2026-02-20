@@ -281,3 +281,11 @@
   - Added snapshot sensitivity hints in `apps/chrome-extension/src/content-script.ts` to support deterministic selector-based masking decisions
   - Added/updated unit tests for privacy profile normalization and snapshot DOM/style/PNG redaction paths in `apps/chrome-extension/src/capture-controls.spec.ts` and `libs/redaction/src/lib/redaction-engine.spec.ts`
   - Verified with `pnpm test` (all 6 projects passing)
+
+### Completed: 2026-02-20
+- [Validate snapshot feature end-to-end with quotas, privacy, export, and MCP retrieval] - COMPLETED
+  - Added snapshot capture policy helper module in `apps/chrome-extension/src/snapshot-capture.ts` and covered trigger/mode normalization, computed-full gating, PNG throttle, and quota behavior in `apps/chrome-extension/src/snapshot-capture.spec.ts`
+  - Kept extension background capture flow aligned by reusing helper logic for trigger/mode resolution and PNG throttle/quota enforcement in `apps/chrome-extension/src/background.ts`
+  - Added MCP integration test to validate click -> snapshot lookup -> failure timeline reconstruction in `apps/mcp-server/src/mcp/server.spec.ts`
+  - Extended `docs/TROUBLESHOOTING.md` with snapshot-specific diagnosis guidance for opt-in, throttle/quota, truncation, privacy redaction, and MCP verification flow
+  - Marked `PRD-107` as passing in `prd.json`

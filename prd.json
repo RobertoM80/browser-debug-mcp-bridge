@@ -487,7 +487,7 @@
       "Load tests show quotas/throttles prevent unbounded payload growth.",
       "Privacy tests prove snapshot redaction policy is enforced before persistence and export."
     ],
-    "passes": false,
+    "passes": true,
     "id": "PRD-107",
     "depends_on": [
       "PRD-104",
