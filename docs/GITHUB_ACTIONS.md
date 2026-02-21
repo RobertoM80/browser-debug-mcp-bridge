@@ -122,6 +122,15 @@ Why it exists:
 
 Everything else is automated by workflows.
 
+Tag creation shortcut:
+
+1. Run `pnpm release:tag`
+2. The script suggests the next `vX.Y.Z` tag, asks confirmation, then runs:
+   - `git checkout main`
+   - `git pull --ff-only origin main`
+   - `git tag <tag>`
+   - `git push origin <tag>`
+
 ## 9. Run workflows locally with `act`
 
 Install prerequisites:

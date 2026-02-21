@@ -23,6 +23,9 @@
     "gha:release": "act workflow_dispatch -W .github/workflows/release.yml -P ubuntu-latest=catthehacker/ubuntu:full-latest",
     "gha:release-please": "act workflow_dispatch -W .github/workflows/release-please.yml -P ubuntu-latest=catthehacker/ubuntu:full-latest",
     "gha:dependency-update": "act workflow_dispatch -W .github/workflows/dependency-update.yml -P ubuntu-latest=catthehacker/ubuntu:full-latest",
+    "release:tag": "node tools/release/create-tag.mjs",
+    "release:tag:dry": "node tools/release/create-tag.mjs --dry-run --yes",
+    "release:tag:yes": "node tools/release/create-tag.mjs --yes",
     "mcp:print-config": "node tools/mcp/print-client-config.mjs",
     "mcp:check-stdio-guard": "node tools/mcp/check-stdio-guard.mjs",
     "hooks:install": "git config core.hooksPath .githooks && git config commit.template .gitmessage.txt"
