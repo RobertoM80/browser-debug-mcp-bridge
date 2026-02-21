@@ -32,6 +32,8 @@ type SessionItem = {
   pinned: boolean;
 };
 
+type StatusTone = 'info' | 'success' | 'warning' | 'error';
+
 let currentSessionId = '';
 let rows: DbEntryRow[] = [];
 let offset = 0;
@@ -42,6 +44,31 @@ let preferredLoadedCount = 0;
 let autoRefreshTimer: number | null = null;
 const expanded = new Set<string>();
 let lastDiagnosticsSummary = '';
+const STATUS_LABELS: Record<StatusTone, string> = {
+  info: 'INFO',
+  success: 'OK',
+  warning: 'NOTE',
+  error: 'ERROR',
+};
+
+function setStatusMessage(element: HTMLElement | null, message: string, tone: StatusTone): void {
+  if (!element) {
+    return;
+  }
+
+  const trimmed = message.trim();
+  element.textContent = trimmed;
+  if (!trimmed) {
+    delete element.dataset.status;
+    delete element.dataset.statusLabel;
+    element.removeAttribute('aria-label');
+    return;
+  }
+
+  element.dataset.status = tone;
+  element.dataset.statusLabel = STATUS_LABELS[tone];
+  element.setAttribute('aria-label', `${STATUS_LABELS[tone]}: ${trimmed}`);
+}
 
 function sendRuntimeMessage(message: unknown): Promise<RuntimeResponse> {
   return new Promise((resolve) => {
@@ -55,18 +82,14 @@ function sendRuntimeMessage(message: unknown): Promise<RuntimeResponse> {
   });
 }
 
-function setStatus(message: string): void {
+function setStatus(message: string, tone: StatusTone = 'info'): void {
   const el = document.getElementById('entries-status');
-  if (el) {
-    el.textContent = message;
-  }
+  setStatusMessage(el, message, tone);
 }
 
-function setDiag(message: string): void {
+function setDiag(message: string, tone: StatusTone = 'info'): void {
   const el = document.getElementById('entries-diag');
-  if (el) {
-    el.textContent = message;
-  }
+  setStatusMessage(el, message, tone);
 }
 
 async function refreshDiagnostics(): Promise<void> {
@@ -205,17 +228,17 @@ function renderRows(): void {
   const visibleCount = visibleRows().length;
   const updatedAt = new Date().toLocaleTimeString();
   if (rows.length === 0) {
-    setStatus(`No DB entries yet. Refreshed ${updatedAt}.`);
+    setStatus(`No DB entries yet. Refreshed ${updatedAt}.`, 'info');
   } else if (hasMore) {
-    setStatus(`Showing ${visibleCount} rows (${rows.length} loaded of about ${totalApprox}). Refreshed ${updatedAt}.`);
+    setStatus(`Showing ${visibleCount} rows (${rows.length} loaded of about ${totalApprox}). Refreshed ${updatedAt}.`, 'success');
   } else {
-    setStatus(`Showing ${visibleCount} rows (${rows.length} loaded). Refreshed ${updatedAt}.`);
+    setStatus(`Showing ${visibleCount} rows (${rows.length} loaded). Refreshed ${updatedAt}.`, 'success');
   }
 }
 
 async function loadEntries(append: boolean, preserveLoadedCount = false): Promise<boolean> {
   if (!currentSessionId) {
-    setStatus('No session selected.');
+    setStatus('No session selected.', 'warning');
     return false;
   }
 
@@ -224,7 +247,7 @@ async function loadEntries(append: boolean, preserveLoadedCount = false): Promis
   const limit = append
     ? basePageSize
     : (preserveLoadedCount ? Math.max(basePageSize, preferredLoadedCount || rows.length) : basePageSize);
-  setStatus('Loading entries...');
+  setStatus('Loading entries...', 'info');
   const response = await sendRuntimeMessage({
     type: 'SESSION_GET_DB_ENTRIES',
     sessionId: currentSessionId,
@@ -234,21 +257,21 @@ async function loadEntries(append: boolean, preserveLoadedCount = false): Promis
 
   if (!response.ok) {
     if (isNotFoundError(response.error)) {
-      setStatus('Server API route for DB entries is missing. Restart mcp-server from latest code on port 8065.');
+      setStatus('Server API route for DB entries is missing. Restart mcp-server from latest code on port 8065.', 'error');
       return false;
     }
-    setStatus(`Error: ${response.error}`);
+    setStatus(`Error: ${response.error}`, 'error');
     return false;
   }
 
   if (!('result' in response)) {
-    setStatus('Unexpected entries response.');
+    setStatus('Unexpected entries response.', 'error');
     return false;
   }
 
   const parsed = parseEntriesResponse(response.result);
   if (!parsed) {
-    setStatus('Invalid entries response.');
+    setStatus('Invalid entries response.', 'error');
     return false;
   }
 
@@ -305,15 +328,15 @@ async function initializeSessions(): Promise<void> {
   const response = await sendRuntimeMessage({ type: 'SESSION_LIST_RECENT', limit: 50, offset: 0 });
   if (!response.ok) {
     if (isNotFoundError(response.error)) {
-      setStatus('Server API route /sessions is missing. You are running an older mcp-server. Restart with: pnpm nx serve mcp-server');
+      setStatus('Server API route /sessions is missing. You are running an older mcp-server. Restart with: pnpm nx serve mcp-server', 'error');
       return;
     }
-    setStatus(`Error loading sessions: ${response.error}`);
+    setStatus(`Error loading sessions: ${response.error}`, 'error');
     return;
   }
 
   if (!('result' in response)) {
-    setStatus('Unexpected sessions response.');
+    setStatus('Unexpected sessions response.', 'error');
     return;
   }
 
@@ -327,10 +350,10 @@ async function initializeSessions(): Promise<void> {
   if (!currentSessionId) {
     const config = await sendRuntimeMessage({ type: 'SESSION_GET_CONFIG' });
     if (config.ok && 'config' in config && config.config.allowlist.length === 0) {
-      setStatus('No sessions found. Add your domain to allowlist in popup, start session, then reload this page.');
+      setStatus('No sessions found. Add your domain to allowlist in popup, start session, then reload this page.', 'warning');
       return;
     }
-    setStatus('No sessions found. Start a capture session from popup first, then reload this page.');
+    setStatus('No sessions found. Start a capture session from popup first, then reload this page.', 'warning');
     return;
   }
 
@@ -346,19 +369,17 @@ document.addEventListener('DOMContentLoaded', () => {
   const autoRefresh = document.getElementById('auto-refresh') as HTMLInputElement | null;
   const exportBtn = document.getElementById('export-session') as HTMLButtonElement | null;
 
-  function setExportStatus(message: string): void {
+  function setExportStatus(message: string, tone: StatusTone = 'info'): void {
     const el = document.getElementById('export-status');
-    if (el) {
-      el.textContent = message;
-    }
+    setStatusMessage(el, message, tone);
   }
 
   exportBtn?.addEventListener('click', async () => {
     if (!currentSessionId) {
-      setExportStatus('No session selected.');
+      setExportStatus('No session selected.', 'warning');
       return;
     }
-    setExportStatus('Exporting...');
+    setExportStatus('Exporting...', 'info');
     exportBtn.disabled = true;
     const response = await sendRuntimeMessage({ type: 'SESSION_EXPORT', sessionId: currentSessionId, format: 'zip' });
     exportBtn.disabled = false;
@@ -373,7 +394,7 @@ document.addEventListener('DOMContentLoaded', () => {
         error?: string;
       };
       if (payload.ok === false) {
-        setExportStatus(payload.error ?? 'Export failed.');
+        setExportStatus(payload.error ?? 'Export failed.', 'error');
         return;
       }
 
@@ -383,12 +404,13 @@ document.addEventListener('DOMContentLoaded', () => {
       const snapshots = payload.snapshots;
       if (filePath) {
         setExportStatus(
-          `Exported ${payload.format ?? 'session'} to: ${filePath} (${events ?? 0} events, ${network ?? 0} network, ${snapshots ?? 0} snapshots)`
+          `Exported ${payload.format ?? 'session'} to: ${filePath} (${events ?? 0} events, ${network ?? 0} network, ${snapshots ?? 0} snapshots)`,
+          'success'
         );
         return;
       }
     }
-    setExportStatus(response.ok ? 'Export failed.' : `Export error: ${response.error}`);
+    setExportStatus(response.ok ? 'Export failed.' : `Export error: ${response.error}`, 'error');
   });
 
   body?.addEventListener('click', (event) => {

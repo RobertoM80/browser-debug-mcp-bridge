@@ -55,8 +55,48 @@ type SessionImportResult = {
   snapshots: number;
 };
 
+type StatusTone = 'info' | 'success' | 'warning' | 'error';
+
 let statePollTimer: number | null = null;
 const MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024;
+const STATUS_LABELS: Record<StatusTone, string> = {
+  info: 'INFO',
+  success: 'OK',
+  warning: 'NOTE',
+  error: 'ERROR',
+};
+
+function setStatusMessage(element: HTMLElement | null, message: string, tone: StatusTone): void {
+  if (!element) {
+    return;
+  }
+
+  const trimmed = message.trim();
+  element.textContent = trimmed;
+  if (!trimmed) {
+    delete element.dataset.status;
+    delete element.dataset.statusLabel;
+    element.removeAttribute('aria-label');
+    return;
+  }
+
+  element.dataset.status = tone;
+  element.dataset.statusLabel = STATUS_LABELS[tone];
+  element.setAttribute('aria-label', `${STATUS_LABELS[tone]}: ${trimmed}`);
+}
+
+function toneForSessionState(state: SessionState): StatusTone {
+  if (state.isActive && state.connectionStatus === 'connected') {
+    return 'success';
+  }
+  if (state.connectionStatus === 'connecting' || state.connectionStatus === 'reconnecting') {
+    return 'warning';
+  }
+  if (state.isActive && state.connectionStatus === 'disconnected') {
+    return 'error';
+  }
+  return 'info';
+}
 
 function sendRuntimeMessage(message: unknown): Promise<SessionResponse> {
   return new Promise((resolve) => {
@@ -82,9 +122,10 @@ function renderSessionState(state: SessionState): void {
     const statusLabel = state.connectionStatus === 'reconnecting'
       ? `reconnecting, attempt ${state.reconnectAttempts}`
       : state.connectionStatus;
-    statusEl.textContent = state.isActive
+    const message = state.isActive
       ? `Session active (${statusLabel})`
       : `No active session (${statusLabel})`;
+    setStatusMessage(statusEl, message, toneForSessionState(state));
   }
   if (sessionIdEl) {
     sessionIdEl.textContent = state.sessionId ?? '-';
@@ -192,18 +233,14 @@ function getConfigFromForm(): CaptureConfig {
   };
 }
 
-function setConfigStatus(message: string): void {
+function setConfigStatus(message: string, tone: StatusTone = 'info'): void {
   const status = document.getElementById('config-status');
-  if (status) {
-    status.textContent = message;
-  }
+  setStatusMessage(status, message, tone);
 }
 
-function setRetentionStatus(message: string): void {
+function setRetentionStatus(message: string, tone: StatusTone = 'info'): void {
   const status = document.getElementById('retention-status');
-  if (status) {
-    status.textContent = message;
-  }
+  setStatusMessage(status, message, tone);
 }
 
 function getCurrentSessionId(): string | null {
@@ -257,9 +294,17 @@ function renderRetention(settings: RetentionSettings, lastCleanup?: CleanupResul
   if (exportPath) exportPath.value = settings.exportPathOverride ?? '';
 
   if (cleanupInfo) {
-    cleanupInfo.textContent = lastCleanup
-      ? `Last cleanup deleted ${lastCleanup.deletedSessions} session(s).`
-      : 'No cleanup run yet.';
+    if (!lastCleanup) {
+      setStatusMessage(cleanupInfo, 'No cleanup run yet.', 'info');
+      return;
+    }
+
+    const warningText = lastCleanup.warning ? ` Warning: ${lastCleanup.warning}` : '';
+    setStatusMessage(
+      cleanupInfo,
+      `Last cleanup deleted ${lastCleanup.deletedSessions} session(s).${warningText}`,
+      lastCleanup.warning ? 'warning' : 'success'
+    );
   }
 }
 
@@ -305,7 +350,7 @@ async function refreshState(): Promise<void> {
 
   const statusEl = document.getElementById('status');
   if (statusEl && !result.ok) {
-    statusEl.textContent = `Error: ${result.error}`;
+    setStatusMessage(statusEl, `Error: ${result.error}`, 'error');
   }
 }
 
@@ -316,10 +361,10 @@ async function refreshConfig(): Promise<void> {
     return;
   }
   if (!result.ok) {
-    setConfigStatus(`Error: ${result.error}`);
+    setConfigStatus(`Error: ${result.error}`, 'error');
     return;
   }
-  setConfigStatus('Unknown configuration error');
+  setConfigStatus('Unknown configuration error', 'error');
 }
 
 async function refreshRetention(): Promise<void> {
@@ -329,7 +374,7 @@ async function refreshRetention(): Promise<void> {
     return;
   }
   if (!result.ok) {
-    setRetentionStatus(`Error: ${result.error}`);
+    setRetentionStatus(`Error: ${result.error}`, 'error');
   }
 }
 
@@ -352,7 +397,7 @@ document.addEventListener('DOMContentLoaded', () => {
       renderSessionState(result.state);
       return;
     }
-    setConfigStatus(result.ok ? 'Unable to start session' : result.error);
+    setConfigStatus(result.ok ? 'Unable to start session' : result.error, 'error');
   });
 
   stopButton?.addEventListener('click', async () => {
@@ -361,11 +406,11 @@ document.addEventListener('DOMContentLoaded', () => {
       renderSessionState(result.state);
       return;
     }
-    setConfigStatus(result.ok ? 'Unable to stop session' : result.error);
+    setConfigStatus(result.ok ? 'Unable to stop session' : result.error, 'error');
   });
 
   saveConfigButton?.addEventListener('click', async () => {
-    setConfigStatus('Saving...');
+    setConfigStatus('Saving...', 'info');
     const result = await sendRuntimeMessage({
       type: 'SESSION_UPDATE_CONFIG',
       config: getConfigFromForm(),
@@ -373,15 +418,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (result.ok && 'config' in result) {
       renderConfig(result.config);
-      setConfigStatus('Settings saved');
+      setConfigStatus('Settings saved', 'success');
       return;
     }
 
-    setConfigStatus(result.ok ? 'Unable to save settings' : result.error);
+    setConfigStatus(result.ok ? 'Unable to save settings' : result.error, 'error');
   });
 
   saveRetentionButton?.addEventListener('click', async () => {
-    setRetentionStatus('Saving...');
+    setRetentionStatus('Saving...', 'info');
     const result = await sendRuntimeMessage({
       type: 'RETENTION_UPDATE_SETTINGS',
       settings: getRetentionFromForm(),
@@ -389,49 +434,49 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (result.ok && 'retention' in result) {
       renderRetention(result.retention);
-      setRetentionStatus('Retention settings saved.');
+      setRetentionStatus('Retention settings saved.', 'success');
       return;
     }
-    setRetentionStatus(result.ok ? 'Unable to save retention settings' : result.error);
+    setRetentionStatus(result.ok ? 'Unable to save retention settings' : result.error, 'error');
   });
 
   runCleanupButton?.addEventListener('click', async () => {
-    setRetentionStatus('Running cleanup...');
+    setRetentionStatus('Running cleanup...', 'info');
     const result = await sendRuntimeMessage({ type: 'RETENTION_RUN_CLEANUP' });
     if (result.ok && 'result' in result) {
-      setRetentionStatus('Auto cleanup removed old sessions to enforce limits.');
+      setRetentionStatus('Auto cleanup removed old sessions to enforce limits.', 'success');
       void refreshRetention();
       return;
     }
-    setRetentionStatus(result.ok ? 'Unable to run cleanup' : result.error);
+    setRetentionStatus(result.ok ? 'Unable to run cleanup' : result.error, 'error');
   });
 
   pinSessionButton?.addEventListener('click', async () => {
     const sessionId = getCurrentSessionId();
     if (!sessionId) {
-      setRetentionStatus('No active session to pin.');
+      setRetentionStatus('No active session to pin.', 'warning');
       return;
     }
 
     const result = await sendRuntimeMessage({ type: 'SESSION_PIN', sessionId, pinned: true });
-    setRetentionStatus(result.ok ? 'Session pinned.' : result.error);
+    setRetentionStatus(result.ok ? 'Session pinned.' : result.error, result.ok ? 'success' : 'error');
   });
 
   unpinSessionButton?.addEventListener('click', async () => {
     const sessionId = getCurrentSessionId();
     if (!sessionId) {
-      setRetentionStatus('No active session to unpin.');
+      setRetentionStatus('No active session to unpin.', 'warning');
       return;
     }
 
     const result = await sendRuntimeMessage({ type: 'SESSION_PIN', sessionId, pinned: false });
-    setRetentionStatus(result.ok ? 'Session unpinned.' : result.error);
+    setRetentionStatus(result.ok ? 'Session unpinned.' : result.error, result.ok ? 'success' : 'error');
   });
 
   exportSessionButton?.addEventListener('click', async () => {
     const sessionId = getCurrentSessionId();
     if (!sessionId) {
-      setRetentionStatus('No active session to export.');
+      setRetentionStatus('No active session to export.', 'warning');
       return;
     }
 
@@ -439,26 +484,27 @@ document.addEventListener('DOMContentLoaded', () => {
     if (result.ok && 'result' in result && result.result && typeof result.result === 'object' && 'filePath' in result.result) {
       const payload = result.result as { filePath: string; snapshots?: number; format?: string };
       setRetentionStatus(
-        `Exported ${payload.format ?? 'session'}: ${payload.filePath}${typeof payload.snapshots === 'number' ? ` (${payload.snapshots} snapshots)` : ''}`
+        `Exported ${payload.format ?? 'session'}: ${payload.filePath}${typeof payload.snapshots === 'number' ? ` (${payload.snapshots} snapshots)` : ''}`,
+        'success'
       );
       return;
     }
-    setRetentionStatus(result.ok ? 'Unable to export session' : result.error);
+    setRetentionStatus(result.ok ? 'Unable to export session' : result.error, 'error');
   });
 
   importSessionButton?.addEventListener('click', async () => {
     const file = importSessionInput?.files?.[0];
     if (!file) {
-      setRetentionStatus('Choose an exported JSON file first.');
+      setRetentionStatus('Choose an exported JSON file first.', 'warning');
       return;
     }
 
     if (file.size > MAX_IMPORT_FILE_BYTES) {
-      setRetentionStatus(`Import file too large. Max ${Math.floor(MAX_IMPORT_FILE_BYTES / (1024 * 1024))} MB.`);
+      setRetentionStatus(`Import file too large. Max ${Math.floor(MAX_IMPORT_FILE_BYTES / (1024 * 1024))} MB.`, 'warning');
       return;
     }
 
-    setRetentionStatus('Importing session...');
+    setRetentionStatus('Importing session...', 'info');
 
     const isZip = file.name.toLowerCase().endsWith('.zip');
     let result: SessionResponse;
@@ -476,12 +522,12 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         payload = JSON.parse(await file.text());
       } catch {
-        setRetentionStatus('Invalid JSON file.');
+        setRetentionStatus('Invalid JSON file.', 'error');
         return;
       }
 
       if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-        setRetentionStatus('Invalid import payload.');
+        setRetentionStatus('Invalid import payload.', 'error');
         return;
       }
 
@@ -494,7 +540,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (result.ok && 'result' in result) {
       const parsed = parseSessionImportResult(result.result);
       if (!parsed) {
-        setRetentionStatus('Imported, but server response was invalid.');
+        setRetentionStatus('Imported, but server response was invalid.', 'warning');
         return;
       }
 
@@ -502,7 +548,8 @@ document.addEventListener('DOMContentLoaded', () => {
         ? ` (saved as ${parsed.sessionId})`
         : '';
       setRetentionStatus(
-        `Imported ${parsed.events} events, ${parsed.network} network rows, ${parsed.fingerprints} fingerprints, ${parsed.snapshots} snapshots${remapNote}.`
+        `Imported ${parsed.events} events, ${parsed.network} network rows, ${parsed.fingerprints} fingerprints, ${parsed.snapshots} snapshots${remapNote}.`,
+        'success'
       );
       if (importSessionInput) {
         importSessionInput.value = '';
@@ -510,7 +557,7 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    setRetentionStatus(result.ok ? 'Unable to import session' : result.error);
+    setRetentionStatus(result.ok ? 'Unable to import session' : result.error, 'error');
   });
 
   showDbEntriesButton?.addEventListener('click', async () => {
@@ -532,29 +579,27 @@ document.addEventListener('DOMContentLoaded', () => {
   const resetConfirmYes = document.getElementById('reset-confirm-yes');
   const resetDbStatus = document.getElementById('reset-db-status');
 
-  function setResetDbStatus(message: string): void {
-    if (resetDbStatus) {
-      resetDbStatus.textContent = message;
-    }
+  function setResetDbStatus(message: string, tone: StatusTone = 'info'): void {
+    setStatusMessage(resetDbStatus, message, tone);
   }
 
   async function performDbReset(): Promise<void> {
-    setResetDbStatus('Resetting database...');
+    setResetDbStatus('Resetting database...', 'info');
 
     const result = await sendRuntimeMessage({ type: 'DB_RESET' });
     if (result.ok && 'result' in result && result.result && typeof result.result === 'object') {
       const response = result.result as { ok?: boolean; message?: string; error?: string };
       if (response.ok === false) {
-        setResetDbStatus(response.error ?? 'Unable to reset database');
+        setResetDbStatus(response.error ?? 'Unable to reset database', 'error');
         return;
       }
 
-      setResetDbStatus(response.message ?? 'Database reset successfully.');
+      setResetDbStatus(response.message ?? 'Database reset successfully.', 'success');
       await refreshState();
       return;
     }
 
-    setResetDbStatus(result.ok ? 'Unable to reset database' : result.error);
+    setResetDbStatus(result.ok ? 'Unable to reset database' : result.error, 'error');
   }
 
   resetDbButton?.addEventListener('click', () => {

@@ -1,15 +1,17 @@
 :root {
-  --ifm-color-primary: #005a7a;
-  --ifm-color-primary-dark: #004f6b;
-  --ifm-color-primary-darker: #004a64;
-  --ifm-color-primary-darkest: #003d53;
-  --ifm-color-primary-light: #00658a;
-  --ifm-color-primary-lighter: #006b91;
-  --ifm-color-primary-lightest: #007aa5;
-  --ifm-background-color: #fbfdff;
+  --ifm-color-primary: #36454f;
+  --ifm-color-primary-dark: #2f3b44;
+  --ifm-color-primary-darker: #2b363e;
+  --ifm-color-primary-darkest: #222b31;
+  --ifm-color-primary-light: #42525d;
+  --ifm-color-primary-lighter: #4b5d69;
+  --ifm-color-primary-lightest: #5c6b76;
+  --ifm-background-color: #ffffff;
+  --ifm-font-family-base: "DejaVu Sans", "Segoe UI", Tahoma, sans-serif;
+  --ifm-heading-font-family: "DejaVu Sans", "Segoe UI", Tahoma, sans-serif;
   --ifm-code-font-size: 92%;
 }
 
 .hero {
-  background: linear-gradient(120deg, #edf6fb 0%, #fff8ef 100%);
+  background: linear-gradient(120deg, #ffffff 0%, #f1f3f5 100%);
 }

@@ -1,18 +1,18 @@
 :root {
-  --bg-a: #fff7ee;
-  --bg-b: #eef4ff;
-  --surface: rgba(255, 255, 255, 0.9);
+  --bg-a: #ffffff;
+  --bg-b: #f3f4f5;
+  --surface: rgba(255, 255, 255, 0.96);
   --surface-solid: #ffffff;
-  --line-soft: #d9e0ef;
-  --line-mid: #b8c6e1;
-  --text-main: #1d2536;
-  --text-muted: #5c6882;
-  --brand: #135a93;
-  --brand-strong: #0d497a;
-  --accent: #c75d2a;
-  --ok: #1e7055;
-  --shadow-lg: 0 22px 44px rgba(24, 40, 74, 0.16);
-  --shadow-sm: 0 7px 18px rgba(24, 40, 74, 0.1);
+  --line-soft: #d3d3d3;
+  --line-mid: #bcc2c6;
+  --text-main: #36454f;
+  --text-muted: #5c6b76;
+  --brand: #36454f;
+  --brand-strong: #2b373f;
+  --accent: #4b5d69;
+  --ok: #42525d;
+  --shadow-lg: 0 22px 44px rgba(18, 24, 28, 0.16);
+  --shadow-sm: 0 7px 18px rgba(18, 24, 28, 0.1);
   --radius-xl: 18px;
   --radius-lg: 14px;
   --radius-md: 10px;
@@ -27,10 +27,10 @@
 body {
   margin: 0;
   color: var(--text-main);
-  font-family: "Trebuchet MS", "Gill Sans", Candara, sans-serif;
+  font-family: "DejaVu Sans", "Segoe UI", Tahoma, sans-serif;
   background:
-    radial-gradient(circle at 9% 9%, rgba(255, 167, 117, 0.2), transparent 28%),
-    radial-gradient(circle at 90% 2%, rgba(89, 154, 225, 0.24), transparent 33%),
+    radial-gradient(circle at 9% 9%, rgba(112, 128, 144, 0.14), transparent 28%),
+    radial-gradient(circle at 90% 2%, rgba(211, 211, 211, 0.32), transparent 33%),
     linear-gradient(160deg, var(--bg-a), var(--bg-b));
 }
 
@@ -59,10 +59,11 @@ body {
 
 .panel-header h1 {
   margin: 0;
-  font-family: Rockwell, "Bookman Old Style", Georgia, serif;
+  font-family: "DejaVu Sans", "Segoe UI", Tahoma, sans-serif;
+  font-weight: 700;
   font-size: clamp(20px, 2.7vw, 28px);
   letter-spacing: 0.3px;
-  color: #1d3959;
+  color: var(--text-main);
 }
 
 .header-actions {
@@ -77,10 +78,10 @@ body {
   align-items: center;
   gap: 7px;
   padding: 6px 10px;
-  border: 1px solid #d5e0f2;
+  border: 1px solid var(--line-soft);
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.72);
-  color: #2f4a6c;
+  color: var(--text-main);
   font-size: 12px;
 }
 
@@ -93,10 +94,10 @@ body {
 }
 
 .session-row label {
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 0.22px;
   text-transform: uppercase;
-  color: #3f4e69;
+  color: var(--text-main);
   font-weight: 700;
 }
 
@@ -115,14 +116,58 @@ body {
 
 .status {
   margin-top: 5px;
-  color: #334563;
+  color: var(--text-main);
   font-size: 13px;
   font-weight: 700;
 }
 
 .diag {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 12px;
+}
+
+.export-status[data-status],
+.status[data-status],
+.diag[data-status] {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 7px 9px;
+  border: 1px solid var(--line-soft);
+  border-left: 4px solid var(--line-mid);
+  border-radius: var(--radius-md);
+  background: linear-gradient(140deg, #ffffff, #f5f6f7);
+}
+
+.export-status[data-status]::before,
+.status[data-status]::before,
+.diag[data-status]::before {
+  content: "[" attr(data-status-label) "]";
+  flex: 0 0 auto;
+  margin-top: 1px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.28px;
+  color: var(--text-main);
+}
+
+.export-status[data-status="success"],
+.status[data-status="success"],
+.diag[data-status="success"] {
+  border-left-style: double;
+}
+
+.export-status[data-status="warning"],
+.status[data-status="warning"],
+.diag[data-status="warning"] {
+  border-left-style: dashed;
+}
+
+.export-status[data-status="error"],
+.status[data-status="error"],
+.diag[data-status="error"] {
+  border-left-width: 6px;
+  border-left-style: solid;
 }
 
 .filter-bar {
@@ -140,9 +185,9 @@ body {
 }
 
 .filter-btn.is-active {
-  background: linear-gradient(165deg, #ecf4ff, #dcecff);
-  border-color: #7fa1cd;
-  color: #153f6a;
+  background: linear-gradient(165deg, #ffffff, #eef1f3);
+  border-color: var(--line-mid);
+  color: var(--text-main);
 }
 
 .table-wrap {
@@ -163,7 +208,7 @@ table {
 th,
 td {
   padding: 9px 10px;
-  border-bottom: 1px solid #ecf0f7;
+  border-bottom: 1px solid #ebedf0;
   text-align: left;
   vertical-align: top;
 }
@@ -172,19 +217,19 @@ th {
   position: sticky;
   top: 0;
   z-index: 1;
-  background: linear-gradient(180deg, #f4f8ff, #edf4ff);
-  color: #25415f;
-  font-size: 11px;
+  background: linear-gradient(180deg, #f8f9fa, #f1f3f5);
+  color: var(--text-main);
+  font-size: 12px;
   letter-spacing: 0.2px;
   text-transform: uppercase;
 }
 
 tbody tr:nth-child(odd) {
-  background: #fbfdff;
+  background: #fbfcfc;
 }
 
 tbody tr:hover {
-  background: #f4f8ff;
+  background: #f2f4f5;
 }
 
 .summary {
@@ -198,9 +243,9 @@ tbody tr:hover {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  font-size: 11px;
+  font-size: 12px;
   line-height: 1.45;
-  color: #2f3d56;
+  color: var(--text-main);
 }
 
 .actions {
@@ -211,8 +256,8 @@ button,
 select {
   border: 1px solid var(--line-mid);
   border-radius: var(--radius-md);
-  background: linear-gradient(170deg, #ffffff, #f1f6ff);
-  color: #21324f;
+  background: linear-gradient(170deg, #ffffff, #f4f5f6);
+  color: var(--text-main);
   padding: 8px 11px;
   font-size: 12px;
   font-weight: 700;
@@ -228,7 +273,7 @@ select {
 
 button:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 10px 20px rgba(26, 47, 85, 0.14);
+  box-shadow: 0 10px 20px rgba(18, 24, 28, 0.14);
 }
 
 button:disabled {
@@ -241,15 +286,15 @@ button:disabled {
 #reload-entries,
 #load-more,
 .export-btn {
-  background: linear-gradient(166deg, #1b6cae, #12568e);
-  border-color: #114a7b;
+  background: linear-gradient(166deg, #36454f, #2b373f);
+  border-color: #253038;
   color: #fff;
 }
 
 #reload-entries:hover:not(:disabled),
 #load-more:hover:not(:disabled),
 .export-btn:hover:not(:disabled) {
-  background: linear-gradient(166deg, #2074bb, #165d98);
+  background: linear-gradient(166deg, #42525d, #313f49);
 }
 
 input[type="checkbox"] {
@@ -259,8 +304,9 @@ input[type="checkbox"] {
 input:focus-visible,
 select:focus-visible,
 button:focus-visible {
-  outline: 2px solid #2f7abd;
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.9);
 }
 
 @media (max-width: 900px) {
