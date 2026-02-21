@@ -14,6 +14,8 @@ jobs:
     name: Nightly Health Checks
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      NX_VERBOSE_LOGGING: "true"
 
     steps:
       - name: Checkout
@@ -31,13 +33,18 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: |
+          set -euxo pipefail
+          pnpm install --frozen-lockfile --reporter=append-only --loglevel=debug
 
       - name: Verify
-        run: pnpm verify
+        run: |
+          set -euxo pipefail
+          pnpm run verify
 
       - name: Runtime health endpoint smoke test
         run: |
+          set -euxo pipefail
           pnpm nx serve mcp-server > mcp-server.log 2>&1 &
           SERVER_PID=$!
           sleep 10

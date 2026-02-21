@@ -18,6 +18,8 @@ jobs:
     name: Build And Publish Release
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      NX_VERBOSE_LOGGING: "true"
 
     steps:
       - name: Checkout
@@ -35,13 +37,18 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: |
+          set -euxo pipefail
+          pnpm install --frozen-lockfile --reporter=append-only --loglevel=debug
 
       - name: Run release validations
-        run: pnpm verify
+        run: |
+          set -euxo pipefail
+          pnpm run verify
 
       - name: Package release artifacts
         run: |
+          set -euxo pipefail
           mkdir -p release-assets
           tar -czf release-assets/mcp-server-dist.tgz apps/mcp-server/dist
           tar -czf release-assets/chrome-extension-dist.tgz dist/apps/chrome-extension
