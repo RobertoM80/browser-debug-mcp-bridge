@@ -68,8 +68,16 @@ jobs:
           if [ "$STATUS_CODE" = "200" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
+            echo "GitHub Pages API returned status $STATUS_CODE"
             echo "enabled=false" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Require Pages to be enabled
+        if: ${{ github.actor != 'nektos/act' && steps.pages-status.outputs.enabled != 'true' }}
+        run: |
+          echo "GitHub Pages is not enabled for this repository."
+          echo "Go to Settings -> Pages and set Source to GitHub Actions, then re-run this workflow."
+          exit 1
 
       - name: Setup Pages
         if: ${{ steps.pages-status.outputs.enabled == 'true' }}

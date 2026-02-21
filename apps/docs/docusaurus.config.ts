@@ -1,11 +1,17 @@
 import type { Config } from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
+const repositoryOwner = process.env.GITHUB_REPOSITORY_OWNER || 'robertom80';
+const repositoryName = process.env.GITHUB_REPOSITORY?.split('/')[1] || 'browser-debug-mcp-bridge';
+const isLocalDev = process.env.NODE_ENV === 'development' && !process.env.CI;
+const siteUrl = process.env.DOCS_SITE_URL || `https://${repositoryOwner}.github.io`;
+const baseUrl = process.env.DOCS_BASE_URL || (isLocalDev ? '/' : `/${repositoryName}/`);
+
 const config: Config = {
   title: 'Browser Debug MCP Bridge Docs',
   tagline: 'Privacy-first browser debugging with MCP',
-  url: 'https://example.invalid',
-  baseUrl: '/',
+  url: siteUrl,
+  baseUrl,
   onBrokenLinks: 'throw',
   markdown: {
     hooks: {
