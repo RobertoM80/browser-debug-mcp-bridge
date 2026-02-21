@@ -122,3 +122,33 @@ Why it exists:
 
 Everything else is automated by workflows.
 
+## 9. Run workflows locally with `act`
+
+Install prerequisites:
+
+1. Docker Desktop
+2. `act` CLI
+
+Quick commands from repo root:
+
+1. List jobs:
+   - `pnpm gha:list`
+2. Dry run:
+   - `pnpm gha:dry-run`
+3. Run CI workflow locally:
+   - `pnpm gha:ci`
+4. Run docs workflow locally:
+   - `pnpm gha:docs`
+5. Run nightly workflow locally:
+   - `pnpm gha:nightly`
+6. Run release validation workflow locally:
+   - `pnpm gha:release`
+7. Run release-please workflow locally:
+   - `pnpm gha:release-please`
+8. Run dependency update workflow locally:
+   - `pnpm gha:dependency-update`
+
+Notes:
+
+1. These use `catthehacker/ubuntu:full-latest` for local `act` compatibility.
+2. Some GitHub-only operations (Pages deploy, release publish, PR/release API calls) are skipped in local `act` runs.

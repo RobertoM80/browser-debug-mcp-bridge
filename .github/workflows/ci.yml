@@ -16,6 +16,8 @@ jobs:
     name: Lint, Test, Build, Docs
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      NX_VERBOSE_LOGGING: "true"
 
     steps:
       - name: Checkout
@@ -33,7 +35,18 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: |
+          set -euxo pipefail
+          pnpm install --frozen-lockfile --force --reporter=append-only --loglevel=debug
+
+      - name: Build native modules
+        run: |
+          set -euxo pipefail
+          pnpm --filter mcp-server rebuild better-sqlite3 --reporter=append-only --loglevel=debug
+          find node_modules/.pnpm -name better_sqlite3.node -print
+          test -n "$(find node_modules/.pnpm -name better_sqlite3.node -print -quit)"
 
       - name: Verify
-        run: pnpm verify
+        run: |
+          set -euxo pipefail
+          pnpm run verify

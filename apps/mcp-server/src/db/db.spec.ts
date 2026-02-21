@@ -102,7 +102,9 @@ describe('Database Schema', () => {
   });
 
   afterEach(() => {
-    db.close();
+    if (db) {
+      db.close();
+    }
   });
 
   describe('initializeSchema', () => {
@@ -234,7 +236,9 @@ describe('Database Migrations', () => {
   });
 
   afterEach(() => {
-    db.close();
+    if (db) {
+      db.close();
+    }
   });
 
   describe('runMigrations', () => {
@@ -297,7 +301,9 @@ describe('Database Integration', () => {
   });
 
   afterEach(() => {
-    db.close();
+    if (db) {
+      db.close();
+    }
   });
 
   describe('Foreign Key Constraints', () => {

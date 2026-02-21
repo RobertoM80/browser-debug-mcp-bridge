@@ -19,10 +19,15 @@ jobs:
     name: Open/Update Release PR
     runs-on: ubuntu-latest
     steps:
+      - name: Skip in local act runs
+        if: ${{ github.actor == 'nektos/act' }}
+        run: |
+          echo "Skipping release-please API call in local act run."
+
       - name: Run release-please
+        if: ${{ github.actor != 'nektos/act' }}
         uses: googleapis/release-please-action@v4
         with:
           release-type: simple
           package-name: browser-debug-mcp-bridge
           token: ${{ secrets.GITHUB_TOKEN }}
-

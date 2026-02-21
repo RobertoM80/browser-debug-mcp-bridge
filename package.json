@@ -15,9 +15,17 @@
     "docs:build": "nx build docs",
     "docs:lint": "nx lint docs",
     "docs:ci": "nx run docs:ci",
+    "gha:list": "act -l",
+    "gha:dry-run": "act -n",
+    "gha:ci": "act push -W .github/workflows/ci.yml -P ubuntu-latest=catthehacker/ubuntu:full-latest",
+    "gha:docs": "act push -W .github/workflows/docs-pages.yml -P ubuntu-latest=catthehacker/ubuntu:full-latest",
+    "gha:nightly": "act schedule -W .github/workflows/nightly-health.yml -P ubuntu-latest=catthehacker/ubuntu:full-latest",
+    "gha:release": "act workflow_dispatch -W .github/workflows/release.yml -P ubuntu-latest=catthehacker/ubuntu:full-latest",
+    "gha:release-please": "act workflow_dispatch -W .github/workflows/release-please.yml -P ubuntu-latest=catthehacker/ubuntu:full-latest",
+    "gha:dependency-update": "act workflow_dispatch -W .github/workflows/dependency-update.yml -P ubuntu-latest=catthehacker/ubuntu:full-latest",
     "mcp:print-config": "node tools/mcp/print-client-config.mjs",
     "mcp:check-stdio-guard": "node tools/mcp/check-stdio-guard.mjs",
-    "hooks:install": "git config core.hooksPath .githooks"
+    "hooks:install": "git config core.hooksPath .githooks && git config commit.template .gitmessage.txt"
   },
   "keywords": [
     "mcp",
@@ -27,6 +35,10 @@
   "author": "",
   "license": "ISC",
   "packageManager": "pnpm@10.28.2",
+  "engines": {
+    "node": ">=20 <21",
+    "pnpm": ">=10 <11"
+  },
   "devDependencies": {
     "@nx/vite": "^22.4.5",
     "@types/chrome": "^0.1.36",

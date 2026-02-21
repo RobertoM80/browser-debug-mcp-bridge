@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+set -e
+
+MSG_FILE="$1"
+FIRST_LINE="$(sed -n '1p' "$MSG_FILE")"
+PATTERN='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9._/-]+\))?!?: .{1,72}$'
+
+if ! printf '%s' "$FIRST_LINE" | grep -Eq "$PATTERN"; then
+  echo "[commit-msg] Invalid commit message format."
+  echo ""
+  echo "Use Conventional Commits:"
+  echo "  <type>(optional-scope): <short description>"
+  echo ""
+  echo "Examples:"
+  echo "  feat(mcp): add snapshot timeline tool"
+  echo "  fix(extension): handle websocket reconnect race"
+  echo "  docs(actions): explain release workflow"
+  echo ""
+  echo "Allowed types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert"
+  exit 1
+fi
+
+echo "[commit-msg] OK"

@@ -20,6 +20,8 @@ jobs:
     name: Build Docs
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      NX_VERBOSE_LOGGING: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,20 +38,27 @@ jobs:
           cache: pnpm
 
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: |
+          set -euxo pipefail
+          pnpm install --frozen-lockfile --reporter=append-only --loglevel=debug
 
       - name: Build docs
-        run: pnpm docs:build
+        run: |
+          set -euxo pipefail
+          pnpm run docs:build
 
       - name: Setup Pages
+        if: ${{ github.actor != 'nektos/act' }}
         uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
+        if: ${{ github.actor != 'nektos/act' }}
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist/apps/docs
 
   deploy:
+    if: ${{ github.actor != 'nektos/act' }}
     name: Deploy Docs
     needs: build
     runs-on: ubuntu-latest
@@ -60,4 +69,3 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-
