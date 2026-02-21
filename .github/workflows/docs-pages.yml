@@ -20,6 +20,8 @@ jobs:
     name: Build Docs
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      pages_enabled: ${{ steps.pages-status.outputs.enabled }}
     env:
       NX_VERBOSE_LOGGING: "true"
     steps:
@@ -47,18 +49,40 @@ jobs:
           set -euxo pipefail
           pnpm run docs:build
 
+      - name: Detect Pages enablement
+        id: pages-status
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          if [ "${{ github.actor }}" = "nektos/act" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          STATUS_CODE=$(curl --silent --show-error --output /tmp/pages.json --write-out "%{http_code}" \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pages")
+
+          if [ "$STATUS_CODE" = "200" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup Pages
-        if: ${{ github.actor != 'nektos/act' }}
+        if: ${{ steps.pages-status.outputs.enabled == 'true' }}
         uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
-        if: ${{ github.actor != 'nektos/act' }}
+        if: ${{ steps.pages-status.outputs.enabled == 'true' }}
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist/apps/docs
 
   deploy:
-    if: ${{ github.actor != 'nektos/act' }}
+    if: ${{ needs.build.outputs.pages_enabled == 'true' }}
     name: Deploy Docs
     needs: build
     runs-on: ubuntu-latest
