@@ -51,8 +51,8 @@ function wait(ms: number): Promise<void> {
 }
 
 describe('WebSocket Server', () => {
-  let fastify: FastifyInstance;
-  let wsManager: WebSocketManager;
+  let fastify: FastifyInstance | undefined;
+  let wsManager: WebSocketManager | undefined;
   let testDbPath: string;
   let port: number;
 
@@ -81,7 +81,9 @@ describe('WebSocket Server', () => {
 
   afterEach(async () => {
     wsManager?.close();
-    await fastify.close();
+    if (fastify) {
+      await fastify.close();
+    }
     
     // Close the test database connection before deleting the file
     if (global.testDbConn) {

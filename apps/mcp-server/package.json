@@ -7,7 +7,7 @@
     "serve": "tsx src/main.ts",
     "serve:mcp": "tsx src/mcp-bridge.ts",
     "dev": "tsx watch src/main.ts",
-    "test": "vitest run",
+    "test": "vitest run --config vitest.config.ts",
     "lint": "tsc --noEmit -p tsconfig.app.json"
   },
   "dependencies": {

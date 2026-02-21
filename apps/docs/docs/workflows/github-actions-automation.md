@@ -105,3 +105,34 @@ pnpm hooks:install
    - `pnpm typecheck`
    - `pnpm lint`
    - `pnpm test`
+
+## Run workflows locally with `act`
+
+Prerequisites:
+
+1. Docker Desktop
+1. `act` installed locally
+
+Commands:
+
+1. List available workflow jobs:
+   - `pnpm gha:list`
+1. Dry-run workflows without execution:
+   - `pnpm gha:dry-run`
+1. Run CI workflow locally:
+   - `pnpm gha:ci`
+1. Run Docs Pages workflow locally:
+   - `pnpm gha:docs`
+1. Run Nightly Health workflow locally:
+   - `pnpm gha:nightly`
+1. Run Release workflow locally:
+   - `pnpm gha:release`
+1. Run Release Please workflow locally:
+   - `pnpm gha:release-please`
+1. Run Dependency Update workflow locally:
+   - `pnpm gha:dependency-update`
+
+Notes:
+
+1. Scripts use `catthehacker/ubuntu:full-latest` for local `act` compatibility.
+1. GitHub-hosted behavior (for example Pages deployment, release publishing, and PR/release API calls) is skipped in local `act` runs.

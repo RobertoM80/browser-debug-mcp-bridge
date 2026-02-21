@@ -1,5 +1,7 @@
 import Database from 'better-sqlite3';
 import { join } from 'path';
+import { dirname } from 'path';
+import { mkdirSync } from 'fs';
 
 export interface DatabaseConnection {
   db: Database.Database;
@@ -15,6 +17,9 @@ export function getDatabasePath(): string {
 
 export function createConnection(dbPath?: string): DatabaseConnection {
   const path = dbPath || getDatabasePath();
+  if (path !== ':memory:') {
+    mkdirSync(dirname(path), { recursive: true });
+  }
   const db = new Database(path);
   
   db.pragma('journal_mode = WAL');

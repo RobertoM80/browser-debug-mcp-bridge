@@ -48,14 +48,17 @@ jobs:
           pnpm run docs:build
 
       - name: Setup Pages
+        if: ${{ github.actor != 'nektos/act' }}
         uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
+        if: ${{ github.actor != 'nektos/act' }}
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist/apps/docs
 
   deploy:
+    if: ${{ github.actor != 'nektos/act' }}
     name: Deploy Docs
     needs: build
     runs-on: ubuntu-latest

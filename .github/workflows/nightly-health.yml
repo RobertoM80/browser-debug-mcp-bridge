@@ -35,7 +35,14 @@ jobs:
       - name: Install dependencies
         run: |
           set -euxo pipefail
-          pnpm install --frozen-lockfile --reporter=append-only --loglevel=debug
+          pnpm install --frozen-lockfile --force --reporter=append-only --loglevel=debug
+
+      - name: Build native modules
+        run: |
+          set -euxo pipefail
+          pnpm --filter mcp-server rebuild better-sqlite3 --reporter=append-only --loglevel=debug
+          find node_modules/.pnpm -name better_sqlite3.node -print
+          test -n "$(find node_modules/.pnpm -name better_sqlite3.node -print -quit)"
 
       - name: Verify
         run: |
