@@ -37,6 +37,7 @@ describe('tool-definitions', () => {
     expect(CAPTURE_TOOLS.GET_DOM_DOCUMENT).toBe('get_dom_document');
     expect(CAPTURE_TOOLS.GET_COMPUTED_STYLES).toBe('get_computed_styles');
     expect(CAPTURE_TOOLS.GET_LAYOUT_METRICS).toBe('get_layout_metrics');
+    expect(CAPTURE_TOOLS.CAPTURE_UI_SNAPSHOT).toBe('capture_ui_snapshot');
   });
 
   it('should define correlation tools', () => {

@@ -91,6 +91,16 @@ interface RuntimeMessenger {
   sendMessage(message: unknown, callback?: () => void): void;
 }
 
+interface FormFieldElement extends Element {
+  value?: string;
+  checked?: boolean;
+  files?: FileList | null;
+  multiple?: boolean;
+  selectedOptions?: { length: number };
+  type?: string;
+  tagName: string;
+}
+
 function sendToBackground(
   runtime: RuntimeMessenger,
   eventType: string,
@@ -163,6 +173,81 @@ function clampMaxAncestors(value: unknown, fallback = 4): number {
   }
 
   return Math.min(normalized, 8);
+}
+
+function getEventTargetElement(event: Event): Element | null {
+  const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+  const fromPath = path.find((entry) => entry instanceof Element);
+  if (fromPath instanceof Element) {
+    return fromPath;
+  }
+
+  if (event.target instanceof Element) {
+    return event.target;
+  }
+
+  return null;
+}
+
+function isEditableTarget(target: Element | null): boolean {
+  if (!target) {
+    return false;
+  }
+
+  if (target instanceof HTMLTextAreaElement) {
+    return true;
+  }
+
+  if (target instanceof HTMLInputElement) {
+    const inputType = target.type.toLowerCase();
+    return !['button', 'submit', 'reset', 'checkbox', 'radio', 'file', 'range', 'color'].includes(inputType);
+  }
+
+  return target instanceof HTMLElement && target.isContentEditable;
+}
+
+function classifyKey(event: KeyboardEvent): string {
+  if (event.key.length === 1) {
+    return 'character';
+  }
+  if (event.key.startsWith('Arrow')) {
+    return 'arrow';
+  }
+  if (event.key.startsWith('F') && /^F\d{1,2}$/.test(event.key)) {
+    return 'function';
+  }
+  if (event.key === 'Enter') return 'enter';
+  if (event.key === 'Escape') return 'escape';
+  if (event.key === 'Tab') return 'tab';
+  if (event.key === 'Backspace') return 'backspace';
+  if (event.key === 'Shift' || event.key === 'Control' || event.key === 'Alt' || event.key === 'Meta') {
+    return 'modifier';
+  }
+  return 'other';
+}
+
+function resolveFieldType(target: FormFieldElement): string {
+  const tag = target.tagName.toLowerCase();
+  if (tag === 'input') {
+    return (target.type ?? 'text').toLowerCase();
+  }
+  return tag;
+}
+
+function resolveValueLength(target: FormFieldElement): number {
+  const fieldType = resolveFieldType(target);
+  if (fieldType === 'checkbox' || fieldType === 'radio') {
+    return target.checked ? 1 : 0;
+  }
+  if (fieldType === 'file') {
+    return target.files?.length ?? 0;
+  }
+  if (fieldType === 'select' && target.multiple) {
+    return target.selectedOptions?.length ?? 0;
+  }
+
+  const value = typeof target.value === 'string' ? target.value : '';
+  return value.length;
 }
 
 function captureComputedStyleChain(
@@ -513,6 +598,10 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
   const originalPushState = win.history.pushState.bind(win.history);
   const originalReplaceState = win.history.replaceState.bind(win.history);
   let lastUrl = win.location.href;
+  let lastScrollEmitAt = 0;
+  let lastScrollX = win.scrollX;
+  let lastScrollY = win.scrollY;
+  let lastKeydownEmitAt = 0;
 
   const emitNavigation = (trigger: string): void => {
     const nextUrl = win.location.href;
@@ -593,9 +682,137 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
     }
 
     sendToBackground(runtime, 'click', {
+      eventType: 'click',
       selector,
       timestamp: Date.now(),
     });
+  };
+
+  const onScroll = (event: Event): void => {
+    const now = Date.now();
+    if (now - lastScrollEmitAt < 350) {
+      return;
+    }
+
+    const scrollX = win.scrollX;
+    const scrollY = win.scrollY;
+    const deltaX = scrollX - lastScrollX;
+    const deltaY = scrollY - lastScrollY;
+    if (Math.abs(deltaX) < 4 && Math.abs(deltaY) < 4) {
+      return;
+    }
+
+    const target = getEventTargetElement(event);
+    sendToBackground(runtime, 'scroll', {
+      eventType: 'scroll',
+      selector: target ? getElementSelector(target) : 'window',
+      scrollX,
+      scrollY,
+      deltaX,
+      deltaY,
+      timestamp: now,
+    });
+
+    lastScrollEmitAt = now;
+    lastScrollX = scrollX;
+    lastScrollY = scrollY;
+  };
+
+  const emitFormEvent = (eventType: 'input' | 'change', event: Event): void => {
+    const target = getEventTargetElement(event);
+    if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement)) {
+      return;
+    }
+
+    const field = target as FormFieldElement;
+    const payload: Record<string, unknown> = {
+      eventType,
+      selector: getElementSelector(target),
+      fieldType: resolveFieldType(field),
+      valueLength: resolveValueLength(field),
+      editable: isEditableTarget(target),
+      timestamp: Date.now(),
+    };
+
+    if (eventType === 'input' && event instanceof InputEvent && typeof event.inputType === 'string') {
+      payload.inputType = event.inputType;
+    }
+
+    sendToBackground(runtime, eventType, payload);
+  };
+
+  const onInputCapture = (event: Event): void => emitFormEvent('input', event);
+  const onChangeCapture = (event: Event): void => emitFormEvent('change', event);
+
+  const onSubmit = (event: SubmitEvent): void => {
+    const target = event.target;
+    if (!(target instanceof HTMLFormElement)) {
+      return;
+    }
+
+    sendToBackground(runtime, 'submit', {
+      eventType: 'submit',
+      selector: getElementSelector(target),
+      method: (target.method || 'get').toLowerCase(),
+      action: target.action || win.location.href,
+      timestamp: Date.now(),
+    });
+  };
+
+  const emitFocusEvent = (eventType: 'focus' | 'blur', event: FocusEvent): void => {
+    const target = getEventTargetElement(event);
+    if (!target) {
+      return;
+    }
+
+    const payload: Record<string, unknown> = {
+      eventType,
+      selector: getElementSelector(target),
+      tagName: target.tagName.toLowerCase(),
+      editable: isEditableTarget(target),
+      timestamp: Date.now(),
+    };
+
+    if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) {
+      payload.fieldType = resolveFieldType(target as FormFieldElement);
+    }
+
+    sendToBackground(runtime, eventType, payload);
+  };
+
+  const onFocusInCapture = (event: FocusEvent): void => emitFocusEvent('focus', event);
+  const onFocusOutCapture = (event: FocusEvent): void => emitFocusEvent('blur', event);
+
+  const onKeydown = (event: KeyboardEvent): void => {
+    const now = Date.now();
+    if (now - lastKeydownEmitAt < 120) {
+      return;
+    }
+
+    const target = getEventTargetElement(event);
+    const keyClass = classifyKey(event);
+    const payload: Record<string, unknown> = {
+      eventType: 'keydown',
+      selector: target ? getElementSelector(target) : 'window',
+      keyClass,
+      inEditable: isEditableTarget(target),
+      modifiers: {
+        alt: event.altKey,
+        ctrl: event.ctrlKey,
+        meta: event.metaKey,
+        shift: event.shiftKey,
+      },
+      repeat: event.repeat,
+      timestamp: now,
+    };
+
+    if (keyClass !== 'character') {
+      payload.key = event.key;
+      payload.code = event.code;
+    }
+
+    sendToBackground(runtime, 'keydown', payload);
+    lastKeydownEmitAt = now;
   };
 
   const onRuntimeCommand = (
@@ -643,6 +860,13 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
   win.addEventListener('hashchange', onHashChange);
   win.addEventListener('message', onMessage);
   win.addEventListener('click', onClick, true);
+  win.addEventListener('scroll', onScroll, { capture: true, passive: true });
+  win.addEventListener('input', onInputCapture, true);
+  win.addEventListener('change', onChangeCapture, true);
+  win.addEventListener('submit', onSubmit, true);
+  win.addEventListener('focusin', onFocusInCapture, true);
+  win.addEventListener('focusout', onFocusOutCapture, true);
+  win.addEventListener('keydown', onKeydown, true);
   injectPageScript();
   if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
     chrome.runtime.onMessage.addListener(onRuntimeCommand);
@@ -668,6 +892,13 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
     win.removeEventListener('hashchange', onHashChange);
     win.removeEventListener('message', onMessage);
     win.removeEventListener('click', onClick, true);
+    win.removeEventListener('scroll', onScroll, true);
+    win.removeEventListener('input', onInputCapture, true);
+    win.removeEventListener('change', onChangeCapture, true);
+    win.removeEventListener('submit', onSubmit, true);
+    win.removeEventListener('focusin', onFocusInCapture, true);
+    win.removeEventListener('focusout', onFocusOutCapture, true);
+    win.removeEventListener('keydown', onKeydown, true);
     if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
       chrome.runtime.onMessage.removeListener(onRuntimeCommand);
     }

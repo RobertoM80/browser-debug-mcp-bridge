@@ -760,4 +760,54 @@ describe('mcp/server V2 capture tools', () => {
     expect(response.selector).toBe('.target');
     expect(response.properties).toEqual({ display: 'block', visibility: 'visible' });
   });
+
+  it('captures ui snapshot through v2 capture command path', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          return {
+            ok: true,
+            payload: {
+              trigger: payload.trigger,
+              selector: payload.selector ?? 'body',
+              mode: { dom: true, png: false },
+              snapshot: {
+                dom: { mode: 'outline', outline: '{"tag":"button"}' },
+                styles: { mode: 'computed-lite', chain: [] },
+              },
+            },
+            truncated: false,
+          };
+        },
+      })
+    );
+
+    const response = await routeToolCall(tools, 'capture_ui_snapshot', {
+      sessionId: 'session-v2',
+      selector: '#checkout',
+      trigger: 'click',
+      mode: 'dom',
+      styleMode: 'computed-lite',
+      maxDepth: 2,
+      maxBytes: 16000,
+      maxAncestors: 2,
+    });
+
+    expect(captureCalls).toHaveLength(1);
+    expect(captureCalls[0]).toMatchObject({
+      command: 'CAPTURE_UI_SNAPSHOT',
+      payload: {
+        selector: '#checkout',
+        trigger: 'click',
+        mode: 'dom',
+        styleMode: 'computed-lite',
+        explicitStyleMode: true,
+        llmRequested: true,
+      },
+    });
+    expect(response.trigger).toBe('click');
+    expect(response.snapshot).toBeDefined();
+  });
 });

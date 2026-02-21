@@ -15,7 +15,9 @@ export const GetSessionSummarySchema = z.object({
 
 export const GetRecentEventsSchema = z.object({
   sessionId: z.string().describe('Unique session identifier'),
-  eventTypes: z.array(z.enum(['navigation', 'console', 'error', 'network', 'click'])).optional()
+  eventTypes: z.array(
+    z.enum(['navigation', 'console', 'error', 'network', 'click', 'scroll', 'input', 'change', 'submit', 'focus', 'blur', 'keydown'])
+  ).optional()
     .describe('Filter by event types'),
   limit: z.number().int().min(1).max(1000).default(100)
     .describe('Maximum number of events to return'),
@@ -98,6 +100,24 @@ export const GetLayoutMetricsSchema = z.object({
   sessionId: z.string().describe('Unique session identifier'),
   selector: z.string().optional()
     .describe('Element selector (viewport if omitted)'),
+});
+
+export const CaptureUISnapshotSchema = z.object({
+  sessionId: z.string().describe('Unique session identifier'),
+  selector: z.string().optional()
+    .describe('Optional selector; active element/body fallback is used when omitted'),
+  trigger: z.enum(['click', 'manual', 'navigation', 'error']).default('manual')
+    .describe('Snapshot trigger label used for filtering and attribution'),
+  mode: z.enum(['dom', 'png', 'both']).default('dom')
+    .describe('Capture mode: DOM only, PNG only, or both'),
+  styleMode: z.enum(['computed-lite', 'computed-full']).optional()
+    .describe('Computed style detail level; full mode must be explicitly requested'),
+  maxDepth: z.number().int().min(1).max(10).optional()
+    .describe('Maximum DOM outline depth when html capture is truncated'),
+  maxBytes: z.number().int().min(1000).max(1000000).optional()
+    .describe('Maximum bytes for DOM/style payload sections'),
+  maxAncestors: z.number().int().min(0).max(8).optional()
+    .describe('Maximum ancestor chain length for computed style capture'),
 });
 
 export const ExplainLastFailureSchema = z.object({

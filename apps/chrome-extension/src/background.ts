@@ -50,6 +50,7 @@ type RuntimeRequest =
     }
   | { type: 'SESSION_IMPORT'; payload: Record<string, unknown>; format?: 'json' | 'zip'; archiveBase64?: string }
   | { type: 'SESSION_GET_DB_ENTRIES'; sessionId: string; limit: number; offset: number }
+  | { type: 'SESSION_GET_SNAPSHOTS'; sessionId: string; limit: number; offset: number }
   | { type: 'SESSION_LIST_RECENT'; limit: number; offset: number }
   | { type: 'SESSION_CAPTURE_DIAGNOSTICS' }
   | { type: 'DB_RESET' };
@@ -597,6 +598,13 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
       )
         .then((response) => ({ ok: true as const, result: response }))
         .catch((error) => ({ ok: false, error: error instanceof Error ? error.message : 'Failed to load DB entries' }));
+
+    case 'SESSION_GET_SNAPSHOTS':
+      return fetchServer(
+        `/sessions/${encodeURIComponent(request.sessionId)}/snapshots?limit=${encodeURIComponent(String(request.limit))}&offset=${encodeURIComponent(String(request.offset))}`
+      )
+        .then((response) => ({ ok: true as const, result: response }))
+        .catch((error) => ({ ok: false, error: error instanceof Error ? error.message : 'Failed to load snapshots' }));
 
     case 'SESSION_LIST_RECENT':
       return fetchServer(

@@ -4,14 +4,20 @@
   "description": "Chrome Extension + Node.js MCP server for browser debugging",
   "private": true,
   "scripts": {
+    "typecheck": "nx run-many -t lint --projects mcp-server,chrome-extension,shared,redaction,selectors,mcp-contracts",
     "test": "nx run-many -t test",
     "lint": "nx run-many -t lint",
     "build": "nx run-many -t build",
+    "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm build && pnpm docs:ci && pnpm mcp:check-stdio-guard",
     "serve": "nx serve mcp-server",
+    "mcp:start": "node scripts/mcp-start.cjs",
     "docs:dev": "nx serve docs",
     "docs:build": "nx build docs",
     "docs:lint": "nx lint docs",
-    "docs:ci": "nx run docs:ci"
+    "docs:ci": "nx run docs:ci",
+    "mcp:print-config": "node tools/mcp/print-client-config.mjs",
+    "mcp:check-stdio-guard": "node tools/mcp/check-stdio-guard.mjs",
+    "hooks:install": "git config core.hooksPath .githooks"
   },
   "keywords": [
     "mcp",

@@ -24,6 +24,29 @@ type EntriesResponse = {
   totalApprox: number;
 };
 
+type SnapshotRow = {
+  snapshotId: string;
+  timestamp: number;
+  trigger: string;
+  selector: string | null;
+  url: string | null;
+  mode: string;
+  styleMode: string | null;
+  dom: unknown;
+  styles: unknown;
+  pngPath: string | null;
+  pngBytes: number | null;
+  truncation: {
+    dom: boolean;
+    styles: boolean;
+    png: boolean;
+  };
+};
+
+type SnapshotsResponse = {
+  snapshots: SnapshotRow[];
+};
+
 type SessionItem = {
   sessionId: string;
   createdAt: number;
@@ -43,7 +66,9 @@ let totalApprox = 0;
 let preferredLoadedCount = 0;
 let autoRefreshTimer: number | null = null;
 const expanded = new Set<string>();
+const expandedSnapshots = new Set<string>();
 let lastDiagnosticsSummary = '';
+let snapshotRows: SnapshotRow[] = [];
 const STATUS_LABELS: Record<StatusTone, string> = {
   info: 'INFO',
   success: 'OK',
@@ -89,6 +114,11 @@ function setStatus(message: string, tone: StatusTone = 'info'): void {
 
 function setDiag(message: string, tone: StatusTone = 'info'): void {
   const el = document.getElementById('entries-diag');
+  setStatusMessage(el, message, tone);
+}
+
+function setSnapshotsStatus(message: string, tone: StatusTone = 'info'): void {
+  const el = document.getElementById('snapshots-status');
   setStatusMessage(el, message, tone);
 }
 
@@ -141,6 +171,19 @@ function parseEntriesResponse(result: unknown): EntriesResponse | null {
     hasMore: data.hasMore,
     nextOffset: typeof data.nextOffset === 'number' ? data.nextOffset : null,
     totalApprox: typeof data.totalApprox === 'number' ? data.totalApprox : data.rows.length,
+  };
+}
+
+function parseSnapshotsResponse(result: unknown): SnapshotsResponse | null {
+  if (!result || typeof result !== 'object') {
+    return null;
+  }
+  const data = result as Partial<SnapshotsResponse>;
+  if (!Array.isArray(data.snapshots)) {
+    return null;
+  }
+  return {
+    snapshots: data.snapshots as SnapshotRow[],
   };
 }
 
@@ -236,6 +279,103 @@ function renderRows(): void {
   }
 }
 
+function renderSnapshots(): void {
+  const body = document.getElementById('snapshots-body') as HTMLTableSectionElement | null;
+  if (!body) {
+    return;
+  }
+
+  body.replaceChildren();
+  for (const row of snapshotRows) {
+    const tr = document.createElement('tr');
+    tr.dataset.snapshotId = row.snapshotId;
+
+    const time = document.createElement('td');
+    time.textContent = formatTime(row.timestamp);
+
+    const trigger = document.createElement('td');
+    trigger.textContent = row.trigger;
+
+    const selector = document.createElement('td');
+    selector.className = 'summary';
+    selector.title = row.selector ?? '-';
+    selector.textContent = row.selector ?? '-';
+
+    const mode = document.createElement('td');
+    mode.textContent = `${row.mode}${row.styleMode ? ` / ${row.styleMode}` : ''}`;
+
+    const assets = document.createElement('td');
+    const details: string[] = [];
+    details.push(row.dom ? 'dom' : 'no-dom');
+    details.push(row.styles ? 'styles' : 'no-styles');
+    details.push(row.pngPath ? `png:${row.pngBytes ?? 0}b` : 'no-png');
+    assets.textContent = details.join(', ');
+
+    const controls = document.createElement('td');
+    const toggle = document.createElement('button');
+    toggle.type = 'button';
+    toggle.dataset.snapshotToggle = row.snapshotId;
+    toggle.textContent = expandedSnapshots.has(row.snapshotId) ? 'Hide' : 'Show';
+    controls.append(toggle);
+
+    tr.append(time, trigger, selector, mode, assets, controls);
+    body.append(tr);
+
+    if (expandedSnapshots.has(row.snapshotId)) {
+      const expandedRow = document.createElement('tr');
+      expandedRow.className = 'expanded';
+      const cell = document.createElement('td');
+      cell.colSpan = 6;
+      const pre = document.createElement('pre');
+      pre.textContent = JSON.stringify(row, null, 2);
+      cell.append(pre);
+      expandedRow.append(cell);
+      body.append(expandedRow);
+    }
+  }
+
+  if (snapshotRows.length === 0) {
+    setSnapshotsStatus('No snapshots for this session yet.', 'info');
+  } else {
+    setSnapshotsStatus(`Showing ${snapshotRows.length} snapshots.`, 'success');
+  }
+}
+
+async function loadSnapshots(): Promise<boolean> {
+  if (!currentSessionId) {
+    snapshotRows = [];
+    renderSnapshots();
+    return false;
+  }
+
+  const response = await sendRuntimeMessage({
+    type: 'SESSION_GET_SNAPSHOTS',
+    sessionId: currentSessionId,
+    limit: 200,
+    offset: 0,
+  });
+
+  if (!response.ok) {
+    setSnapshotsStatus(`Error: ${response.error}`, 'error');
+    return false;
+  }
+
+  if (!('result' in response)) {
+    setSnapshotsStatus('Unexpected snapshots response.', 'error');
+    return false;
+  }
+
+  const parsed = parseSnapshotsResponse(response.result);
+  if (!parsed) {
+    setSnapshotsStatus('Invalid snapshots response.', 'error');
+    return false;
+  }
+
+  snapshotRows = parsed.snapshots;
+  renderSnapshots();
+  return true;
+}
+
 async function loadEntries(append: boolean, preserveLoadedCount = false): Promise<boolean> {
   if (!currentSessionId) {
     setStatus('No session selected.', 'warning');
@@ -283,6 +423,11 @@ async function loadEntries(append: boolean, preserveLoadedCount = false): Promis
   await refreshDiagnostics();
   renderRows();
   return true;
+}
+
+async function refreshCurrentSession(preserveLoadedCount = false): Promise<void> {
+  await loadEntries(false, preserveLoadedCount);
+  await loadSnapshots();
 }
 
 function getSessionIdFromQuery(): string {
@@ -357,7 +502,7 @@ async function initializeSessions(): Promise<void> {
     return;
   }
 
-  await loadEntries(false);
+  await refreshCurrentSession();
 }
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -434,6 +579,28 @@ document.addEventListener('DOMContentLoaded', () => {
     renderRows();
   });
 
+  const snapshotsBody = document.getElementById('snapshots-body');
+  snapshotsBody?.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    const button = target.closest('button[data-snapshot-toggle]') as HTMLButtonElement | null;
+    if (!button) {
+      return;
+    }
+    const id = button.dataset.snapshotToggle;
+    if (!id) {
+      return;
+    }
+    if (expandedSnapshots.has(id)) {
+      expandedSnapshots.delete(id);
+    } else {
+      expandedSnapshots.add(id);
+    }
+    renderSnapshots();
+  });
+
   filters?.addEventListener('click', (event) => {
     const target = event.target;
     if (!(target instanceof HTMLElement)) {
@@ -461,7 +628,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   reload?.addEventListener('click', async () => {
     expanded.clear();
-    await loadEntries(false, true);
+    expandedSnapshots.clear();
+    await refreshCurrentSession(true);
   });
 
   picker?.addEventListener('change', async () => {
@@ -471,7 +639,9 @@ document.addEventListener('DOMContentLoaded', () => {
     hasMore = false;
     preferredLoadedCount = 0;
     expanded.clear();
-    await loadEntries(false);
+    expandedSnapshots.clear();
+    snapshotRows = [];
+    await refreshCurrentSession();
   });
 
   autoRefresh?.addEventListener('change', () => {
@@ -480,7 +650,7 @@ document.addEventListener('DOMContentLoaded', () => {
         window.clearInterval(autoRefreshTimer);
       }
       autoRefreshTimer = window.setInterval(() => {
-        void loadEntries(false, true);
+        void refreshCurrentSession(true);
       }, 2000);
       return;
     }

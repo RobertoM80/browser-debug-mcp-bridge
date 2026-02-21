@@ -53,6 +53,26 @@
       <div class="actions">
         <button id="load-more" type="button">Load more</button>
       </div>
+
+      <section class="snapshots-panel" aria-label="Snapshots">
+        <h2>Snapshots</h2>
+        <div id="snapshots-status" class="status" aria-live="polite"></div>
+        <div class="table-wrap snapshots-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Trigger</th>
+                <th>Selector</th>
+                <th>Mode</th>
+                <th>Assets</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody id="snapshots-body"></tbody>
+          </table>
+        </div>
+      </section>
     </section>
   </main>
 

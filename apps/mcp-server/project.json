@@ -16,6 +16,12 @@
         "script": "serve"
       }
     },
+    "serve-mcp": {
+      "executor": "nx:run-script",
+      "options": {
+        "script": "serve:mcp"
+      }
+    },
     "test": {
       "executor": "nx:run-script",
       "options": {

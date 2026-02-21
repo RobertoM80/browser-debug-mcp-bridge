@@ -22,12 +22,36 @@ pnpm nx serve mcp-server
 pnpm nx build chrome-extension --watch
 ```
 
+Run unified ingest + MCP stdio runtime (for external MCP clients):
+
+```bash
+pnpm install
+node scripts/mcp-start.cjs
+```
+
+Optional one-step setup scripts:
+
+```bash
+# Windows (PowerShell)
+./install.ps1
+
+# macOS/Linux
+bash ./install.sh
+```
+
 Useful workspace commands:
 
 ```bash
+pnpm typecheck
 pnpm test
 pnpm nx run-many -t lint
 pnpm nx run-many -t build
+```
+
+Enable local pre-commit checks (typecheck + lint + test before each commit):
+
+```bash
+pnpm hooks:install
 ```
 
 ## Load the extension
@@ -41,7 +65,10 @@ pnpm nx run-many -t build
 ## Main docs
 
 - Project spec: `PROJECT_INFOS.md`
+- Full beginner setup guide: `HOW_TO_USE_BROWSER_DEBUG_MCP_BRIDGE.md`
 - MCP tools reference: `docs/MCP_TOOLS.md`
+- MCP client setup (Codex/Claude/Cursor/Windsurf): `docs/MCP_CLIENT_SETUP.md`
+- GitHub Actions explained: `docs/GITHUB_ACTIONS.md`
 - Security and privacy controls: `SECURITY.md`
 - Troubleshooting guide: `docs/TROUBLESHOOTING.md`
 - Architecture overview: `docs/ARCHITECTURE.md`

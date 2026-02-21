@@ -1,0 +1,46 @@
+name: Nightly Health
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: nightly-health
+  cancel-in-progress: true
+
+jobs:
+  health:
+    name: Nightly Health Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify
+        run: pnpm verify
+
+      - name: Runtime health endpoint smoke test
+        run: |
+          pnpm nx serve mcp-server > mcp-server.log 2>&1 &
+          SERVER_PID=$!
+          sleep 10
+          curl --fail --silent --show-error http://127.0.0.1:8065/health
+          kill $SERVER_PID
+          wait $SERVER_PID || true

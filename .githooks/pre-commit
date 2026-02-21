@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+set -e
+
+echo "[pre-commit] Running typecheck..."
+pnpm typecheck
+
+echo "[pre-commit] Running lint..."
+pnpm lint
+
+echo "[pre-commit] Running tests..."
+pnpm test
+
+echo "[pre-commit] OK"
+

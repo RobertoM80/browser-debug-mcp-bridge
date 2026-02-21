@@ -32,6 +32,7 @@ export const CAPTURE_TOOLS = {
   GET_DOM_DOCUMENT: 'get_dom_document',
   GET_COMPUTED_STYLES: 'get_computed_styles',
   GET_LAYOUT_METRICS: 'get_layout_metrics',
+  CAPTURE_UI_SNAPSHOT: 'capture_ui_snapshot',
 } as const;
 
 export const CORRELATION_TOOLS = {

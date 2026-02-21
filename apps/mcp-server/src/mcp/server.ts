@@ -53,15 +53,19 @@ export interface MCPLogger {
 }
 
 function createDefaultMcpLogger(): MCPLogger {
+  const write = (level: 'info' | 'error' | 'debug', message: string, payload: Record<string, unknown>): void => {
+    process.stderr.write(`${message} ${JSON.stringify({ level, ...payload })}\n`);
+  };
+
   return {
     info: (payload, message) => {
-      console.info(message ?? '[MCPServer][MCP][info]', payload);
+      write('info', message ?? '[MCPServer][MCP][info]', payload);
     },
     error: (payload, message) => {
-      console.error(message ?? '[MCPServer][MCP][error]', payload);
+      write('error', message ?? '[MCPServer][MCP][error]', payload);
     },
     debug: (payload, message) => {
-      console.debug(message ?? '[MCPServer][MCP][debug]', payload);
+      write('debug', message ?? '[MCPServer][MCP][debug]', payload);
     },
   };
 }
@@ -175,6 +179,20 @@ const TOOL_SCHEMAS: Record<string, object> = {
       selector: { type: 'string' },
     },
   },
+  capture_ui_snapshot: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      selector: { type: 'string' },
+      trigger: { type: 'string' },
+      mode: { type: 'string' },
+      styleMode: { type: 'string' },
+      maxDepth: { type: 'number' },
+      maxBytes: { type: 'number' },
+      maxAncestors: { type: 'number' },
+    },
+  },
   explain_last_failure: {
     type: 'object',
     required: ['sessionId'],
@@ -240,6 +258,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_dom_document: 'Capture full document as outline or html',
   get_computed_styles: 'Read computed CSS styles for an element',
   get_layout_metrics: 'Read viewport and element layout metrics',
+  capture_ui_snapshot: 'Capture redacted UI snapshot (DOM/styles/optional PNG) and persist it',
   explain_last_failure: 'Explain the latest failure timeline',
   get_event_correlation: 'Correlate related events by window',
   list_snapshots: 'List snapshot metadata by session/time/trigger',
@@ -367,7 +386,12 @@ export interface CaptureClientResult {
 export interface CaptureCommandClient {
   execute(
     sessionId: string,
-    command: 'CAPTURE_DOM_SUBTREE' | 'CAPTURE_DOM_DOCUMENT' | 'CAPTURE_COMPUTED_STYLES' | 'CAPTURE_LAYOUT_METRICS',
+    command:
+      | 'CAPTURE_DOM_SUBTREE'
+      | 'CAPTURE_DOM_DOCUMENT'
+      | 'CAPTURE_COMPUTED_STYLES'
+      | 'CAPTURE_LAYOUT_METRICS'
+      | 'CAPTURE_UI_SNAPSHOT',
     payload: Record<string, unknown>,
     timeoutMs?: number,
   ): Promise<CaptureClientResult>;
@@ -413,6 +437,13 @@ function mapRequestedEventType(type: string): string {
     case 'navigation':
       return 'nav';
     case 'click':
+    case 'scroll':
+    case 'input':
+    case 'change':
+    case 'submit':
+    case 'focus':
+    case 'blur':
+    case 'keydown':
     case 'custom':
       return 'ui';
     default:
@@ -678,6 +709,19 @@ function resolveCaptureDepth(value: unknown, fallback: number): number {
   }
 
   return Math.min(floored, 10);
+}
+
+function resolveCaptureAncestors(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  const floored = Math.floor(value);
+  if (floored < 0) {
+    return fallback;
+  }
+
+  return Math.min(floored, 8);
 }
 
 function asStringArray(value: unknown, maxItems: number): string[] {
@@ -1789,6 +1833,55 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
         ...createBaseResponse(sessionId),
         limitsApplied: {
           maxResults: 1,
+          truncated: capture.truncated ?? false,
+        },
+        ...ensureCaptureSuccess(capture),
+      };
+    },
+
+    capture_ui_snapshot: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const trigger =
+        input.trigger === 'click' || input.trigger === 'manual' || input.trigger === 'navigation' || input.trigger === 'error'
+          ? input.trigger
+          : 'manual';
+      const mode = input.mode === 'dom' || input.mode === 'png' || input.mode === 'both' ? input.mode : 'dom';
+      const styleMode = input.styleMode === 'computed-full' || input.styleMode === 'computed-lite'
+        ? input.styleMode
+        : 'computed-lite';
+      const explicitStyleMode = input.styleMode === 'computed-full' || input.styleMode === 'computed-lite';
+      const selector = typeof input.selector === 'string' && input.selector.trim().length > 0
+        ? input.selector.trim()
+        : undefined;
+      const maxDepth = resolveCaptureDepth(input.maxDepth, 3);
+      const maxBytes = resolveCaptureBytes(input.maxBytes, 50_000);
+      const maxAncestors = resolveCaptureAncestors(input.maxAncestors, 4);
+
+      const capture = await captureClient.execute(
+        sessionId,
+        'CAPTURE_UI_SNAPSHOT',
+        {
+          selector,
+          trigger,
+          mode,
+          styleMode,
+          explicitStyleMode,
+          maxDepth,
+          maxBytes,
+          maxAncestors,
+          llmRequested: true,
+        },
+        5_000,
+      );
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: maxBytes,
           truncated: capture.truncated ?? false,
         },
         ...ensureCaptureSuccess(capture),

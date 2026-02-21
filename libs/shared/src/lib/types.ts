@@ -20,6 +20,13 @@ export type EventType =
   | 'error' 
   | 'network' 
   | 'click' 
+  | 'scroll'
+  | 'input'
+  | 'change'
+  | 'submit'
+  | 'focus'
+  | 'blur'
+  | 'keydown'
   | 'custom';
 
 export interface NetworkEvent extends Event {

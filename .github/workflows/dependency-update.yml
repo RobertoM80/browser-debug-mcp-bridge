@@ -1,0 +1,64 @@
+name: Dependency Update
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: dependency-update
+  cancel-in-progress: true
+
+jobs:
+  update:
+    name: Update Dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Update dependency ranges and lockfile
+        run: |
+          pnpm up -r --latest
+          pnpm install
+
+      - name: Run quick validations
+        run: pnpm verify
+
+      - name: Create dependency update PR
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore(deps): automated dependency update"
+          title: "chore(deps): automated dependency update"
+          body: |
+            Automated dependency update workflow.
+
+            Changes:
+            - Updated workspace dependencies to latest compatible versions
+            - Refreshed lockfile
+            - Ran guard/build checks
+          branch: chore/dependency-update
+          delete-branch: true
+          labels: |
+            dependencies
+            automated

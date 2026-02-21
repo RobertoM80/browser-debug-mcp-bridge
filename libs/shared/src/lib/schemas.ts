@@ -14,6 +14,13 @@ export const EventTypeSchema = z.enum([
   'error',
   'network',
   'click',
+  'scroll',
+  'input',
+  'change',
+  'submit',
+  'focus',
+  'blur',
+  'keydown',
   'custom',
 ]);
 
@@ -78,6 +85,28 @@ export const ClickEventSchema = EventSchema.extend({
   type: z.literal('click'),
   data: z.object({
     selector: z.string(),
+    timestamp: z.number(),
+  }),
+});
+
+export const ScrollEventSchema = EventSchema.extend({
+  type: z.literal('scroll'),
+  data: z.object({
+    selector: z.string(),
+    scrollX: z.number(),
+    scrollY: z.number(),
+    deltaX: z.number().optional(),
+    deltaY: z.number().optional(),
+    timestamp: z.number(),
+  }),
+});
+
+export const InputEventSchema = EventSchema.extend({
+  type: z.literal('input'),
+  data: z.object({
+    selector: z.string(),
+    fieldType: z.string(),
+    valueLength: z.number(),
     timestamp: z.number(),
   }),
 });

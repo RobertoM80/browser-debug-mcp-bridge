@@ -20,7 +20,7 @@ import {
 } from './retention';
 
 const fastify = Fastify({
-  logger: true
+  logger: process.env.MCP_STDIO_MODE === '1' ? false : true
 });
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8065;

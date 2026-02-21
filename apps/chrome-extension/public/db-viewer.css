@@ -252,6 +252,26 @@ tbody tr:hover {
   margin-top: 12px;
 }
 
+.snapshots-panel {
+  margin-top: 16px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.95), rgba(250, 251, 252, 0.88));
+  padding: 12px;
+}
+
+.snapshots-panel h2 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  letter-spacing: 0.2px;
+  text-transform: uppercase;
+}
+
+.snapshots-wrap {
+  margin-top: 8px;
+  max-height: 38vh;
+}
+
 button,
 select {
   border: 1px solid var(--line-mid);

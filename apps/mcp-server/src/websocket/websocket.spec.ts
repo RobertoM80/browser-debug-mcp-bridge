@@ -387,6 +387,38 @@ describe('WebSocket Server', () => {
       ws.close();
     });
 
+    it('should store scroll events as user journey records', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      await new Promise<void>(resolve => ws.on('open', resolve));
+
+      const eventMessage: EventMessage = {
+        type: 'event',
+        sessionId: 'event-test-session',
+        eventType: 'scroll',
+        data: {
+          eventType: 'scroll',
+          selector: 'window',
+          scrollY: 240,
+          deltaY: 120,
+          timestamp: Date.now(),
+        },
+        timestamp: Date.now(),
+      };
+
+      ws.send(JSON.stringify(eventMessage));
+      await wait(100);
+
+      const { db } = global.testDbConn!;
+      const events = db.prepare('SELECT * FROM events WHERE session_id = ? AND type = ?').all('event-test-session', 'ui') as { payload_json: string }[];
+      expect(events.length).toBeGreaterThan(0);
+
+      const payload = JSON.parse(events[0].payload_json) as { eventType?: string; scrollY?: number };
+      expect(payload.eventType).toBe('scroll');
+      expect(payload.scrollY).toBe(240);
+
+      ws.close();
+    });
+
     it('should store error events and create fingerprint', async () => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
       await new Promise<void>(resolve => ws.on('open', resolve));
@@ -588,7 +620,21 @@ describe('WebSocket Server', () => {
       ws.send(JSON.stringify(sessionStart));
       await wait(100);
 
-      const validTypes = ['navigation', 'console', 'error', 'network', 'click', 'custom'];
+      const validTypes = [
+        'navigation',
+        'console',
+        'error',
+        'network',
+        'click',
+        'scroll',
+        'input',
+        'change',
+        'submit',
+        'focus',
+        'blur',
+        'keydown',
+        'custom',
+      ];
 
       for (const eventType of validTypes) {
         const eventMessage: EventMessage = {

@@ -87,6 +87,142 @@ describe('content-script capture', () => {
     cleanup();
   });
 
+  it('captures input and change events without exposing values', () => {
+    document.body.innerHTML = '<input id="email-field" type="email" value="" />';
+    const sendMessage = vi.fn((_message: unknown, callback?: () => void) => {
+      callback?.();
+    });
+    const cleanup = installContentCapture({ runtime: createRuntimeMock(sendMessage) });
+
+    const input = document.getElementById('email-field') as HTMLInputElement | null;
+    expect(input).toBeTruthy();
+    input!.value = 'secret@example.com';
+    input!.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+    input!.dispatchEvent(new Event('change', { bubbles: true }));
+
+    const inputCall = sendMessage.mock.calls.find((entry: unknown[]) => {
+      const message = entry[0] as { eventType?: string };
+      return message.eventType === 'input';
+    });
+    const changeCall = sendMessage.mock.calls.find((entry: unknown[]) => {
+      const message = entry[0] as { eventType?: string };
+      return message.eventType === 'change';
+    });
+
+    expect(inputCall).toBeDefined();
+    expect(changeCall).toBeDefined();
+    const inputPayload = inputCall![0] as { data: Record<string, unknown> };
+    expect(inputPayload.data.selector).toBe('#email-field');
+    expect(inputPayload.data.fieldType).toBe('email');
+    expect(inputPayload.data.valueLength).toBe('secret@example.com'.length);
+    expect(inputPayload.data.value).toBeUndefined();
+
+    cleanup();
+  });
+
+  it('captures submit events with form metadata', () => {
+    document.body.innerHTML = '<form id="checkout" method="post" action="/submit"><button type="submit">Go</button></form>';
+    const sendMessage = vi.fn((_message: unknown, callback?: () => void) => {
+      callback?.();
+    });
+    const cleanup = installContentCapture({ runtime: createRuntimeMock(sendMessage) });
+
+    const form = document.getElementById('checkout') as HTMLFormElement | null;
+    expect(form).toBeTruthy();
+    form!.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }));
+
+    const submitCall = sendMessage.mock.calls.find((entry: unknown[]) => {
+      const message = entry[0] as { eventType?: string };
+      return message.eventType === 'submit';
+    });
+
+    expect(submitCall).toBeDefined();
+    const payload = submitCall![0] as { data: Record<string, unknown> };
+    expect(payload.data.selector).toBe('#checkout');
+    expect(payload.data.method).toBe('post');
+
+    cleanup();
+  });
+
+  it('captures focus and blur transitions', () => {
+    document.body.innerHTML = '<input id="username" type="text" />';
+    const sendMessage = vi.fn((_message: unknown, callback?: () => void) => {
+      callback?.();
+    });
+    const cleanup = installContentCapture({ runtime: createRuntimeMock(sendMessage) });
+
+    const input = document.getElementById('username') as HTMLInputElement | null;
+    expect(input).toBeTruthy();
+    input!.dispatchEvent(new FocusEvent('focusin', { bubbles: true }));
+    input!.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+
+    const focusCall = sendMessage.mock.calls.find((entry: unknown[]) => {
+      const message = entry[0] as { eventType?: string };
+      return message.eventType === 'focus';
+    });
+    const blurCall = sendMessage.mock.calls.find((entry: unknown[]) => {
+      const message = entry[0] as { eventType?: string };
+      return message.eventType === 'blur';
+    });
+
+    expect(focusCall).toBeDefined();
+    expect(blurCall).toBeDefined();
+
+    cleanup();
+  });
+
+  it('captures keydown without raw character content', () => {
+    document.body.innerHTML = '<input id="note" type="text" />';
+    const sendMessage = vi.fn((_message: unknown, callback?: () => void) => {
+      callback?.();
+    });
+    const cleanup = installContentCapture({ runtime: createRuntimeMock(sendMessage) });
+
+    const input = document.getElementById('note') as HTMLInputElement | null;
+    expect(input).toBeTruthy();
+    input!.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'a', code: 'KeyA' }));
+    input!.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+
+    const keydownCalls = sendMessage.mock.calls.filter((entry: unknown[]) => {
+      const message = entry[0] as { eventType?: string };
+      return message.eventType === 'keydown';
+    });
+
+    expect(keydownCalls.length).toBeGreaterThanOrEqual(1);
+    const payload = keydownCalls[0]?.[0] as { data: Record<string, unknown> };
+    expect(payload.data.keyClass).toBeDefined();
+    if (payload.data.keyClass === 'character') {
+      expect(payload.data.key).toBeUndefined();
+      expect(payload.data.code).toBeUndefined();
+    }
+
+    cleanup();
+  });
+
+  it('captures scroll events with throttled position deltas', () => {
+    Object.defineProperty(window, 'scrollX', { value: 0, configurable: true });
+    Object.defineProperty(window, 'scrollY', { value: 120, configurable: true });
+    const sendMessage = vi.fn((_message: unknown, callback?: () => void) => {
+      callback?.();
+    });
+    const cleanup = installContentCapture({ runtime: createRuntimeMock(sendMessage) });
+
+    Object.defineProperty(window, 'scrollY', { value: 220, configurable: true });
+    window.dispatchEvent(new Event('scroll'));
+
+    const scrollCall = sendMessage.mock.calls.find((entry: unknown[]) => {
+      const message = entry[0] as { eventType?: string };
+      return message.eventType === 'scroll';
+    });
+
+    expect(scrollCall).toBeDefined();
+    const payload = scrollCall![0] as { data: Record<string, unknown> };
+    expect(payload.data.scrollY).toBe(220);
+    expect(typeof payload.data.deltaY).toBe('number');
+
+    cleanup();
+  });
+
   it('does not include typed text or values in click payload', () => {
     document.body.innerHTML = '<input id="secret-input" value="my-secret" />';
     const sendMessage = vi.fn((_message: unknown, callback?: () => void) => {

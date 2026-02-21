@@ -134,6 +134,13 @@ export class EventsRepository {
       'error': 'error',
       'network': 'network',
       'click': 'ui',
+      'scroll': 'ui',
+      'input': 'ui',
+      'change': 'ui',
+      'submit': 'ui',
+      'focus': 'ui',
+      'blur': 'ui',
+      'keydown': 'ui',
       'ui_snapshot': 'ui',
       'custom': 'ui',
     };
