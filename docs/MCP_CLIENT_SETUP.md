@@ -16,6 +16,15 @@ From any MCP host, use this command:
 - command: `node`
 - args: `["<ABSOLUTE_PATH_TO_REPO>\\scripts\\mcp-start.cjs"]`
 
+Quick no-clone option (GitHub via npx, slower cold start):
+
+- command: `npx`
+- args: `["-y", "github:RobertoM80/browser-debug-mcp-bridge"]`
+
+Important:
+- This only changes how the MCP server is started.
+- You still need the Chrome extension loaded and connected to `127.0.0.1:8065`.
+
 Example Windows path:
 - `C:\\Users\\your-user\\Documents\\progetti\\browser-debug-mcp-bridge`
 - full args example:
@@ -52,6 +61,14 @@ Quick checklist:
 2. Add block above to `.codex/config.toml`
 3. Restart Codex client
 4. Confirm tools like `list_sessions` are visible
+
+Optional Codex GitHub npx config:
+
+```toml
+[mcp_servers.browser_debug]
+command = "npx"
+args = ["-y", "github:RobertoM80/browser-debug-mcp-bridge"]
+```
 
 ## Claude Desktop
 

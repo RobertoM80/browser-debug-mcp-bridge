@@ -142,6 +142,13 @@ Key command for all clients:
 1. command: `node`
 2. args: `["<ABSOLUTE_PATH_TO_BROWSER_DEBUG_MCP_BRIDGE>\\scripts\\mcp-start.cjs"]`
 
+Optional no-clone MCP command (GitHub via npx):
+1. command: `npx`
+2. args: `["-y", "github:RobertoM80/browser-debug-mcp-bridge"]`
+
+Use this for quick tests. For regular use, prefer the local clone path command.
+You still need the Chrome extension loaded; this only changes how the MCP server process is launched.
+
 ## Step 6: Prepare a browser session
 
 In extension popup:
@@ -208,7 +215,7 @@ If MCP client shows no tools:
 Because MCP clients run a local command.
 
 You provide:
-1. `command = pnpm`
-2. `args` pointing to this cloned repo path
+1. `command = node` (recommended) or `command = npx` (quick GitHub mode)
+2. `args` pointing to this repo script path or GitHub repo spec
 
 So distribution can stay Git-based and public, with no package publication step.

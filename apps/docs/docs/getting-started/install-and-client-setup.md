@@ -36,6 +36,17 @@ This starts:
 1. Ingest API/WebSocket on `http://127.0.0.1:8065`
 2. MCP stdio tool runtime
 
+Alternative (no local clone path in MCP config, GitHub over npx):
+
+1. command: `npx`
+2. args: `["-y", "github:RobertoM80/browser-debug-mcp-bridge"]`
+
+Notes:
+
+1. First run is slower because dependencies are downloaded.
+2. For stable daily usage, prefer local clone + `node <repo>/scripts/mcp-start.cjs`.
+3. You still need the Chrome extension loaded; this option only changes server startup.
+
 ## 4) Generate client config snippets
 
 ```bash
