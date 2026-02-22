@@ -2,15 +2,26 @@
 const { spawn } = require('node:child_process');
 const { existsSync } = require('node:fs');
 const { join, resolve } = require('node:path');
+const { createRequire } = require('node:module');
 
 const repoRoot = resolve(__dirname, '..');
 const packageJson = join(repoRoot, 'package.json');
-const nxBin = join(repoRoot, 'node_modules', 'nx', 'bin', 'nx.js');
-const tsxCli = join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs');
 const mcpBridgeEntry = join(repoRoot, 'apps', 'mcp-server', 'src', 'mcp-bridge.ts');
 const args = process.argv.slice(2);
 const useTsx = args.includes('--mode=tsx');
 const dryRun = args.includes('--dry-run');
+const localRequire = createRequire(join(repoRoot, 'package.json'));
+
+function resolveRuntimePath(specifier) {
+  try {
+    return localRequire.resolve(specifier);
+  } catch {
+    return '';
+  }
+}
+
+const nxBin = resolveRuntimePath('nx/bin/nx.js');
+const tsxCli = resolveRuntimePath('tsx/dist/cli.mjs');
 
 if (!existsSync(packageJson)) {
   process.stderr.write(`[mcp-start] Invalid repository root: ${repoRoot}\n`);
