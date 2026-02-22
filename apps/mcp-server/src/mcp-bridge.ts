@@ -56,7 +56,11 @@ async function startBridge(): Promise<void> {
   );
 
   await runtime.start();
-  writeStderr('[MCPServer][Bridge] MCP stdio connected; HTTP/WebSocket ingest active.');
+  writeStderr('[MCPServer][Bridge] Ready: MCP stdio connected and HTTP/WebSocket ingest is active.');
+  writeStderr('[MCPServer][Bridge] Health check: http://127.0.0.1:8065/health');
+  writeStderr('[MCPServer][Bridge] Next steps:');
+  writeStderr('[MCPServer][Bridge] 1) Start a session in the Chrome extension');
+  writeStderr('[MCPServer][Bridge] 2) Ask your MCP client to call list_sessions');
 }
 
 process.on('SIGINT', () => shutdown(0));
