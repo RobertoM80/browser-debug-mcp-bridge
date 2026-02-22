@@ -32,7 +32,7 @@ node scripts/mcp-start.cjs
 Quick GitHub-only MCP launch (no local path in client config):
 
 ```bash
-npx -y github:RobertoM80/browser-debug-mcp-bridge
+npx -y --package=github:RobertoM80/browser-debug-mcp-bridge browser-debug-mcp-bridge
 ```
 
 Optional one-step setup scripts:

@@ -39,13 +39,14 @@ This starts:
 Alternative (no local clone path in MCP config, GitHub over npx):
 
 1. command: `npx`
-2. args: `["-y", "github:RobertoM80/browser-debug-mcp-bridge"]`
+2. args: `["-y", "--package=github:RobertoM80/browser-debug-mcp-bridge", "browser-debug-mcp-bridge"]`
 
 Notes:
 
 1. First run is slower because dependencies are downloaded.
 2. For stable daily usage, prefer local clone + `node <repo>/scripts/mcp-start.cjs`.
 3. You still need the Chrome extension loaded; this option only changes server startup.
+4. If npm reports `EPERM` under `npm-cache\\_cacache\\tmp\\git-clone...`, use local mode instead.
 
 ## 4) Generate client config snippets
 

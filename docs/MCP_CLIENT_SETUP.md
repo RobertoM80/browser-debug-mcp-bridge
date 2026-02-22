@@ -19,7 +19,7 @@ From any MCP host, use this command:
 Quick no-clone option (GitHub via npx, slower cold start):
 
 - command: `npx`
-- args: `["-y", "github:RobertoM80/browser-debug-mcp-bridge"]`
+- args: `["-y", "--package=github:RobertoM80/browser-debug-mcp-bridge", "browser-debug-mcp-bridge"]`
 
 Important:
 - This only changes how the MCP server is started.
@@ -67,8 +67,12 @@ Optional Codex GitHub npx config:
 ```toml
 [mcp_servers.browser_debug]
 command = "npx"
-args = ["-y", "github:RobertoM80/browser-debug-mcp-bridge"]
+args = ["-y", "--package=github:RobertoM80/browser-debug-mcp-bridge", "browser-debug-mcp-bridge"]
 ```
+
+If this mode fails with npm cache permission errors (for example `EPERM ... npm-cache\\_cacache\\tmp\\git-clone...`), switch to local mode:
+- command: `node`
+- args: `["<ABSOLUTE_PATH_TO_REPO>\\scripts\\mcp-start.cjs"]`
 
 ## Claude Desktop
 

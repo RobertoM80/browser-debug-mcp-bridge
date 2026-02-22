@@ -11,7 +11,7 @@ args = ["${sharedArgs[0]}"]`;
 
 const codexTomlNpxGithub = `[mcp_servers.browser_debug]
 command = "npx"
-args = ["-y", "github:RobertoM80/browser-debug-mcp-bridge"]`;
+args = ["-y", "--package=github:RobertoM80/browser-debug-mcp-bridge", "browser-debug-mcp-bridge"]`;
 
 const jsonConfig = JSON.stringify(
   {
@@ -31,7 +31,7 @@ const jsonConfigNpxGithub = JSON.stringify(
     mcpServers: {
       'browser-debug': {
         command: 'npx',
-        args: ['-y', 'github:RobertoM80/browser-debug-mcp-bridge'],
+        args: ['-y', '--package=github:RobertoM80/browser-debug-mcp-bridge', 'browser-debug-mcp-bridge'],
       },
     },
   },
