@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 const { spawn } = require('node:child_process');
 const { existsSync } = require('node:fs');
-const { join, resolve } = require('node:path');
+const { dirname, join, resolve } = require('node:path');
 const { createRequire } = require('node:module');
 
 const repoRoot = resolve(__dirname, '..');
@@ -10,6 +10,7 @@ const mcpBridgeEntry = join(repoRoot, 'apps', 'mcp-server', 'src', 'mcp-bridge.t
 const args = process.argv.slice(2);
 const useTsx = args.includes('--mode=tsx');
 const dryRun = args.includes('--dry-run');
+const debug = args.includes('--debug');
 const localRequire = createRequire(join(repoRoot, 'package.json'));
 
 function resolveRuntimePath(specifier) {
@@ -20,15 +21,47 @@ function resolveRuntimePath(specifier) {
   }
 }
 
-const nxBin = resolveRuntimePath('nx/bin/nx.js');
-const tsxCli = resolveRuntimePath('tsx/dist/cli.mjs');
+function resolveFromPackage(packageName, relativePath) {
+  const packageJsonPath = resolveRuntimePath(`${packageName}/package.json`);
+  if (!packageJsonPath) return '';
+  const candidate = join(dirname(packageJsonPath), relativePath);
+  return existsSync(candidate) ? candidate : '';
+}
+
+function resolveBinFallback(name) {
+  const cmdSuffix = process.platform === 'win32' ? '.cmd' : '';
+  const candidate = join(repoRoot, 'node_modules', '.bin', `${name}${cmdSuffix}`);
+  return existsSync(candidate) ? candidate : '';
+}
+
+const nxBin =
+  resolveRuntimePath('nx/bin/nx.js') ||
+  resolveFromPackage('nx', 'bin/nx.js') ||
+  resolveBinFallback('nx');
+
+const tsxCli =
+  resolveRuntimePath('tsx/dist/cli.mjs') ||
+  resolveFromPackage('tsx', 'dist/cli.mjs') ||
+  resolveBinFallback('tsx');
+
+function logDebug(message) {
+  if (!debug) return;
+  process.stderr.write(`[mcp-start][debug] ${message}\n`);
+}
 
 if (!existsSync(packageJson)) {
   process.stderr.write(`[mcp-start] Invalid repository root: ${repoRoot}\n`);
   process.exit(1);
 }
 
+logDebug(`repoRoot=${repoRoot}`);
+logDebug(`packageJsonExists=${existsSync(packageJson)}`);
+logDebug(`nxBin=${nxBin || '<not found>'}`);
+logDebug(`tsxCli=${tsxCli || '<not found>'}`);
+logDebug(`mcpBridgeEntry=${mcpBridgeEntry} exists=${existsSync(mcpBridgeEntry)}`);
+
 function spawnRuntime(runtime) {
+  logDebug(`selectedRuntime=${runtime}`);
   if (dryRun) {
     process.stderr.write(`[mcp-start] Dry run mode. Selected runtime: ${runtime}\n`);
     if (runtime === 'nx') {
@@ -40,16 +73,28 @@ function spawnRuntime(runtime) {
   }
 
   const child = runtime === 'nx'
-    ? spawn(process.execPath, [nxBin, 'run', 'mcp-server:serve-mcp'], {
+    ? spawn(
+        nxBin.endsWith('.cmd') ? nxBin : process.execPath,
+        nxBin.endsWith('.cmd') ? ['run', 'mcp-server:serve-mcp'] : [nxBin, 'run', 'mcp-server:serve-mcp'],
+        {
         cwd: repoRoot,
         env: { ...process.env },
         stdio: 'inherit',
-      })
-    : spawn(process.execPath, [tsxCli, mcpBridgeEntry], {
+      },
+      )
+    : spawn(
+        tsxCli.endsWith('.cmd') ? tsxCli : process.execPath,
+        tsxCli.endsWith('.cmd') ? [mcpBridgeEntry] : [tsxCli, mcpBridgeEntry],
+        {
         cwd: repoRoot,
         env: { ...process.env },
         stdio: 'inherit',
-      });
+      },
+      );
+
+  logDebug(`spawnCommand=${runtime === 'nx'
+    ? `${nxBin.endsWith('.cmd') ? nxBin : `${process.execPath} ${nxBin}`} run mcp-server:serve-mcp`
+    : `${tsxCli.endsWith('.cmd') ? tsxCli : `${process.execPath} ${tsxCli}`} ${mcpBridgeEntry}`}`);
 
   child.on('exit', (code, signal) => {
     if (signal) {
