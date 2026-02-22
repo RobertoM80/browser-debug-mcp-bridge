@@ -31,7 +31,7 @@ Why it exists:
 ## 2. Docs Pages (`.github/workflows/docs-pages.yml`)
 
 When it runs:
-1. On push to `main`
+1. On push to `main` only when docs or docs-build-related files changed
 2. Manually
 
 What it does:
