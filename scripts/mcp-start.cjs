@@ -3,6 +3,7 @@ const { spawn } = require('node:child_process');
 const { existsSync } = require('node:fs');
 const { dirname, join, resolve } = require('node:path');
 const { createRequire } = require('node:module');
+const net = require('node:net');
 
 const repoRoot = resolve(__dirname, '..');
 const packageJson = join(repoRoot, 'package.json');
@@ -47,6 +48,23 @@ const tsxCli =
   resolveRuntimePath('tsx/dist/cli.mjs') ||
   resolveFromPackage('tsx', 'dist/cli.mjs') ||
   resolveBinFallback('tsx');
+
+function isPortInUse(port, host = '127.0.0.1') {
+  return new Promise((resolvePort) => {
+    const server = net.createServer();
+    server.once('error', (error) => {
+      if (error && error.code === 'EADDRINUSE') {
+        resolvePort(true);
+        return;
+      }
+      resolvePort(false);
+    });
+    server.once('listening', () => {
+      server.close(() => resolvePort(false));
+    });
+    server.listen(port, host);
+  });
+}
 
 if (!existsSync(packageJson)) {
   process.stderr.write(`[mcp-start] Invalid repository root: ${repoRoot}\n`);
@@ -122,6 +140,28 @@ function spawnRuntime(runtime) {
 }
 
 async function main() {
+  const port = Number(process.env.PORT || '8065');
+  if (Number.isFinite(port)) {
+    const inUse = await isPortInUse(port);
+    if (inUse) {
+      process.stderr.write(
+        `[mcp-start] Port ${port} is already in use. Another Browser Debug MCP Bridge instance is likely running.\n`,
+      );
+      process.stderr.write(
+        '[mcp-start] Stop the existing process, or run this instance on a different port.\n',
+      );
+      if (process.platform === 'win32') {
+        process.stderr.write(
+          '[mcp-start] Windows help: netstat -ano | findstr :8065\n',
+        );
+      }
+      process.stderr.write(
+        '[mcp-start] Example with different port: PORT=8070 browser-debug-mcp-bridge --standalone\n',
+      );
+      process.exit(1);
+    }
+  }
+
   if (useTsx) {
     if (!existsSync(tsxCli)) {
       process.stderr.write('[mcp-start] Missing tsx runtime. Run npm install/pnpm install first.\n');
