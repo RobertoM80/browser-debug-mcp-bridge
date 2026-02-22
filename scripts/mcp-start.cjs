@@ -7,9 +7,11 @@ const { createRequire } = require('node:module');
 const repoRoot = resolve(__dirname, '..');
 const packageJson = join(repoRoot, 'package.json');
 const mcpBridgeEntry = join(repoRoot, 'apps', 'mcp-server', 'src', 'mcp-bridge.ts');
+const mainServerEntry = join(repoRoot, 'apps', 'mcp-server', 'src', 'main.ts');
 const args = process.argv.slice(2);
 const useTsx = args.includes('--mode=tsx');
 const dryRun = args.includes('--dry-run');
+const standalone = args.includes('--standalone');
 const localRequire = createRequire(join(repoRoot, 'package.json'));
 const supportsColor = Boolean(process.stderr.isTTY) && !process.env.NO_COLOR;
 const greenBackground = '\x1b[42m\x1b[30m';
@@ -52,23 +54,34 @@ if (!existsSync(packageJson)) {
 }
 
 function spawnRuntime(runtime) {
+  const nxTarget = standalone ? 'mcp-server:serve' : 'mcp-server:serve-mcp';
+  const entryScript = standalone ? mainServerEntry : mcpBridgeEntry;
+
   if (dryRun) {
     process.stderr.write(`[mcp-start] Dry run mode. Selected runtime: ${runtime}\n`);
     if (runtime === 'nx') {
-      process.stderr.write(`[mcp-start] Command: node ${nxBin} run mcp-server:serve-mcp\n`);
+      process.stderr.write(`[mcp-start] Command: node ${nxBin} run ${nxTarget}\n`);
     } else {
-      process.stderr.write(`[mcp-start] Command: node ${tsxCli} ${mcpBridgeEntry}\n`);
+      process.stderr.write(`[mcp-start] Command: node ${tsxCli} ${entryScript}\n`);
     }
     process.exit(0);
   }
 
-  const startedMessage = `[mcp-start] Started Browser Debug MCP Bridge (runtime: ${runtime}). Keep this terminal open.`;
+  const startedMessage = standalone
+    ? `[mcp-start] Started Browser Debug MCP Bridge (runtime: ${runtime}, mode: standalone). Keep this terminal open.`
+    : `[mcp-start] Started Browser Debug MCP Bridge (runtime: ${runtime}, mode: mcp-stdio).`;
   process.stderr.write(`${supportsColor ? `${greenBackground}${startedMessage}${ansiReset}` : startedMessage}\n`);
+  if (!standalone && process.stdin.isTTY) {
+    process.stderr.write(
+      '[mcp-start] Running from interactive terminal without MCP host. ' +
+      'Use --standalone for manual keep-alive testing.\n',
+    );
+  }
 
   const child = runtime === 'nx'
     ? spawn(
         nxBin.endsWith('.cmd') ? nxBin : process.execPath,
-        nxBin.endsWith('.cmd') ? ['run', 'mcp-server:serve-mcp'] : [nxBin, 'run', 'mcp-server:serve-mcp'],
+        nxBin.endsWith('.cmd') ? ['run', nxTarget] : [nxBin, 'run', nxTarget],
         {
         cwd: repoRoot,
         env: { ...process.env },
@@ -77,7 +90,7 @@ function spawnRuntime(runtime) {
       )
     : spawn(
         tsxCli.endsWith('.cmd') ? tsxCli : process.execPath,
-        tsxCli.endsWith('.cmd') ? [mcpBridgeEntry] : [tsxCli, mcpBridgeEntry],
+        tsxCli.endsWith('.cmd') ? [entryScript] : [tsxCli, entryScript],
         {
         cwd: repoRoot,
         env: { ...process.env },
@@ -89,6 +102,12 @@ function spawnRuntime(runtime) {
     if (signal) {
       process.kill(process.pid, signal);
       return;
+    }
+    if (!standalone && process.stdin.isTTY && (code ?? 0) === 0) {
+      process.stderr.write(
+        '[mcp-start] MCP stdio process exited (no MCP host attached). ' +
+        'Use --standalone to keep the local server running in a terminal.\n',
+      );
     }
     process.exit(code ?? 0);
   });
