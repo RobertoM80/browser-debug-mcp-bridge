@@ -11,6 +11,9 @@ const args = process.argv.slice(2);
 const useTsx = args.includes('--mode=tsx');
 const dryRun = args.includes('--dry-run');
 const localRequire = createRequire(join(repoRoot, 'package.json'));
+const supportsColor = Boolean(process.stderr.isTTY) && !process.env.NO_COLOR;
+const greenBackground = '\x1b[42m\x1b[30m';
+const ansiReset = '\x1b[0m';
 
 function resolveRuntimePath(specifier) {
   try {
@@ -59,9 +62,8 @@ function spawnRuntime(runtime) {
     process.exit(0);
   }
 
-  process.stderr.write(
-    `[mcp-start] Starting Browser Debug MCP Bridge (runtime: ${runtime}). Keep this terminal open.\n`,
-  );
+  const startedMessage = `[mcp-start] Started Browser Debug MCP Bridge (runtime: ${runtime}). Keep this terminal open.`;
+  process.stderr.write(`${supportsColor ? `${greenBackground}${startedMessage}${ansiReset}` : startedMessage}\n`);
 
   const child = runtime === 'nx'
     ? spawn(
