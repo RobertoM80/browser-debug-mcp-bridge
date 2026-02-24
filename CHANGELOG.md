@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.4.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.3.1...browser-debug-mcp-bridge-v1.4.0) (2026-02-24)
+
+
+### Features
+
+* update release-please manifest and changelog ([bcb53ad](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/bcb53ada924d073b855828b0455f83e60dedd578))
+
+
+### Bug Fixes
+
+* add explicit .js imports for ESM dist runtime ([2989d5d](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/2989d5d4e502543d100621bfbaf0dde46d4a4015))
+* remove trailing whitespace in README.md ([f8de5a6](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/f8de5a672347cefc6350e4a18b6a4bcc9913ea48))
+
 ## [1.3.1](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.3.0...browser-debug-mcp-bridge-v1.3.1) (2026-02-24)
 
 
