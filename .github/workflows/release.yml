@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+      - 'browser-debug-mcp-bridge-v*'
   workflow_dispatch:
 
 permissions:
