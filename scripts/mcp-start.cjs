@@ -7,10 +7,13 @@ const net = require('node:net');
 
 const repoRoot = resolve(__dirname, '..');
 const packageJson = join(repoRoot, 'package.json');
+const mcpBridgeDistEntry = join(repoRoot, 'apps', 'mcp-server', 'dist', 'mcp-bridge.js');
+const mainServerDistEntry = join(repoRoot, 'apps', 'mcp-server', 'dist', 'main.js');
 const mcpBridgeEntry = join(repoRoot, 'apps', 'mcp-server', 'src', 'mcp-bridge.ts');
 const mainServerEntry = join(repoRoot, 'apps', 'mcp-server', 'src', 'main.ts');
 const args = process.argv.slice(2);
 const useTsx = args.includes('--mode=tsx');
+const useDist = args.includes('--mode=dist');
 const dryRun = args.includes('--dry-run');
 const standalone = args.includes('--standalone');
 const localRequire = createRequire(join(repoRoot, 'package.json'));
@@ -73,12 +76,21 @@ if (!existsSync(packageJson)) {
 
 function spawnRuntime(runtime) {
   const nxTarget = standalone ? 'mcp-server:serve' : 'mcp-server:serve-mcp';
-  const entryScript = standalone ? mainServerEntry : mcpBridgeEntry;
+  const entryScript =
+    runtime === 'dist'
+      ? standalone
+        ? mainServerDistEntry
+        : mcpBridgeDistEntry
+      : standalone
+        ? mainServerEntry
+        : mcpBridgeEntry;
 
   if (dryRun) {
     process.stderr.write(`[mcp-start] Dry run mode. Selected runtime: ${runtime}\n`);
     if (runtime === 'nx') {
       process.stderr.write(`[mcp-start] Command: node ${nxBin} run ${nxTarget}\n`);
+    } else if (runtime === 'dist') {
+      process.stderr.write(`[mcp-start] Command: node ${entryScript}\n`);
     } else {
       process.stderr.write(`[mcp-start] Command: node ${tsxCli} ${entryScript}\n`);
     }
@@ -96,25 +108,32 @@ function spawnRuntime(runtime) {
     );
   }
 
-  const child = runtime === 'nx'
-    ? spawn(
-        nxBin.endsWith('.cmd') ? nxBin : process.execPath,
-        nxBin.endsWith('.cmd') ? ['run', nxTarget] : [nxBin, 'run', nxTarget],
-        {
-        cwd: repoRoot,
-        env: { ...process.env },
-        stdio: 'inherit',
-      },
-      )
-    : spawn(
-        tsxCli.endsWith('.cmd') ? tsxCli : process.execPath,
-        tsxCli.endsWith('.cmd') ? [entryScript] : [tsxCli, entryScript],
-        {
-        cwd: repoRoot,
-        env: { ...process.env },
-        stdio: 'inherit',
-      },
-      );
+  const child =
+    runtime === 'nx'
+      ? spawn(
+          nxBin.endsWith('.cmd') ? nxBin : process.execPath,
+          nxBin.endsWith('.cmd') ? ['run', nxTarget] : [nxBin, 'run', nxTarget],
+          {
+            cwd: repoRoot,
+            env: { ...process.env },
+            stdio: 'inherit',
+          },
+        )
+      : runtime === 'dist'
+        ? spawn(process.execPath, [entryScript], {
+            cwd: repoRoot,
+            env: { ...process.env },
+            stdio: 'inherit',
+          })
+        : spawn(
+            tsxCli.endsWith('.cmd') ? tsxCli : process.execPath,
+            tsxCli.endsWith('.cmd') ? [entryScript] : [tsxCli, entryScript],
+            {
+              cwd: repoRoot,
+              env: { ...process.env },
+              stdio: 'inherit',
+            },
+          );
 
   child.on('exit', (code, signal) => {
     if (signal) {
@@ -162,12 +181,28 @@ async function main() {
     }
   }
 
+  if (useDist) {
+    if (!existsSync(mcpBridgeDistEntry) || !existsSync(mainServerDistEntry)) {
+      process.stderr.write(
+        '[mcp-start] Missing dist runtime. Build mcp-server first (pnpm nx build mcp-server).\n',
+      );
+      process.exit(1);
+    }
+    spawnRuntime('dist');
+    return;
+  }
+
   if (useTsx) {
     if (!existsSync(tsxCli)) {
       process.stderr.write('[mcp-start] Missing tsx runtime. Run npm install/pnpm install first.\n');
       process.exit(1);
     }
     spawnRuntime('tsx');
+    return;
+  }
+
+  if (existsSync(mcpBridgeDistEntry) && existsSync(mainServerDistEntry)) {
+    spawnRuntime('dist');
     return;
   }
 

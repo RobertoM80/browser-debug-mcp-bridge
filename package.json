@@ -2,7 +2,17 @@
   "name": "browser-debug-mcp-bridge",
   "version": "1.1.0",
   "description": "Chrome Extension + Node.js MCP server for browser debugging",
-  "private": true,
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "scripts/mcp-start.cjs",
+    "apps/mcp-server/dist/**/*",
+    "apps/mcp-server/package.json",
+    "README.md",
+    "LICENSE"
+  ],
   "bin": {
     "browser-debug-mcp-bridge": "scripts/mcp-start.cjs"
   },
@@ -14,6 +24,8 @@
     "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm build && pnpm docs:ci && pnpm mcp:check-stdio-guard",
     "serve": "nx serve mcp-server",
     "mcp:start": "node scripts/mcp-start.cjs",
+    "build:mcp-runtime": "pnpm -C apps/mcp-server build",
+    "prepack": "pnpm run build:mcp-runtime",
     "docs:dev": "nx serve docs",
     "docs:build": "nx build docs",
     "docs:lint": "nx lint docs",
