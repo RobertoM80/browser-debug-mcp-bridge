@@ -99,5 +99,5 @@ libs/
   shared/             Shared schemas/types/utils
   redaction/          Privacy redaction engine
   selectors/          Robust selector generation
-  mcp-contracts/      MCP tool contracts and schemas
+  mcp-contracts/      MCP tool contracts and schemas 
 ```
