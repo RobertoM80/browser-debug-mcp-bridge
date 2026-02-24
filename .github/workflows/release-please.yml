@@ -33,7 +33,6 @@ jobs:
         if: ${{ github.actor != 'nektos/act' }}
         uses: googleapis/release-please-action@v4
         with:
-          command: manifest
           config-file: .release-please-config.json
           manifest-file: .release-please-manifest.json
           token: ${{ secrets.GITHUB_TOKEN }}
