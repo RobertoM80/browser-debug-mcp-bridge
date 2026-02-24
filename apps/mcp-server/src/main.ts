@@ -2,9 +2,9 @@ import Fastify from 'fastify';
 import { mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { pathToFileURL } from 'url';
-import { WebSocketManager } from './websocket/websocket-server';
-import { initializeDatabase, getConnection, getDatabasePath } from './db';
-import { resetDatabase } from './db/migrations';
+import { WebSocketManager } from './websocket/websocket-server.js';
+import { initializeDatabase, getConnection, getDatabasePath } from './db/index.js';
+import { resetDatabase } from './db/migrations.js';
 import {
   exportSessionToJson,
   exportSessionToZip,
@@ -17,7 +17,7 @@ import {
   shouldRunCleanup,
   updateRetentionSettings,
   writeSnapshot,
-} from './retention';
+} from './retention.js';
 
 const fastify = Fastify({
   logger: process.env.MCP_STDIO_MODE === '1' ? false : true

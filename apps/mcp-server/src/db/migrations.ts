@@ -1,5 +1,5 @@
 import { Database } from 'better-sqlite3';
-import { initializeSchema, getSchemaVersion, clearDatabase, SCHEMA_VERSION } from './schema';
+import { initializeSchema, getSchemaVersion, clearDatabase, SCHEMA_VERSION } from './schema.js';
 
 export interface Migration {
   version: number;

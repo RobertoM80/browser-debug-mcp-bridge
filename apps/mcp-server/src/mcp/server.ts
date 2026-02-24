@@ -4,7 +4,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import type { Database } from 'better-sqlite3';
 import { existsSync, readFileSync } from 'fs';
 import { dirname, resolve } from 'path';
-import { getConnection } from '../db/connection';
+import { getConnection } from '../db/connection.js';
 
 type ToolInput = Record<string, unknown>;
 

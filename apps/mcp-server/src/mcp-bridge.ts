@@ -1,6 +1,6 @@
 import { pathToFileURL } from 'url';
-import { createMCPServer, CaptureClientResult } from './mcp/server';
-import type { WebSocketManager } from './websocket/websocket-server';
+import { createMCPServer, CaptureClientResult } from './mcp/server.js';
+import type { WebSocketManager } from './websocket/websocket-server.js';
 
 let stopServerFn: (() => void) | null = null;
 let getWebSocketManager: (() => WebSocketManager | null) | null = null;
@@ -25,7 +25,7 @@ function ensureWebSocketManager() {
 
 async function bootstrapMainRuntime(): Promise<void> {
   process.env.MCP_STDIO_MODE = '1';
-  const mainRuntime = await import('./main');
+  const mainRuntime = await import('./main.js');
   await mainRuntime.startServer();
   stopServerFn = mainRuntime.stopServer;
   getWebSocketManager = () => mainRuntime.wsManager;

@@ -8,9 +8,9 @@ import {
   CaptureCommand,
   CaptureResultMessage,
   EventBatchMessage,
-} from './messages';
-import { EventsRepository } from '../db/events-repository';
-import { getConnection } from '../db/connection';
+} from './messages.js';
+import { EventsRepository } from '../db/events-repository.js';
+import { getConnection } from '../db/connection.js';
 
 interface StructuredLogger {
   info(payload: Record<string, unknown>, message?: string): void;

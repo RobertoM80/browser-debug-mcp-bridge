@@ -1,3 +1,3 @@
-export * from './connection';
-export * from './schema';
-export * from './migrations';
+export * from './connection.js';
+export * from './schema.js';
+export * from './migrations.js';

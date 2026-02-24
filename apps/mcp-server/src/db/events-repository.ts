@@ -1,8 +1,8 @@
 import { Database } from 'better-sqlite3';
-import type { EventMessage, SessionStartMessage, SessionEndMessage } from '../websocket/messages';
-import { resolveErrorFingerprint } from './error-fingerprints';
-import { getDatabasePath } from './connection';
-import { writeSnapshot } from '../retention';
+import type { EventMessage, SessionStartMessage, SessionEndMessage } from '../websocket/messages.js';
+import { resolveErrorFingerprint } from './error-fingerprints.js';
+import { getDatabasePath } from './connection.js';
+import { writeSnapshot } from '../retention.js';
 
 export interface SessionRecord {
   sessionId: string;
