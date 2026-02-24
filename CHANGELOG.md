@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.1](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.3.0...browser-debug-mcp-bridge-v1.3.1) (2026-02-24)
+
+
+### Bug Fixes
+
+* add explicit .js imports for ESM dist runtime ([2989d5d](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/2989d5d4e502543d100621bfbaf0dde46d4a4015))
+
 ## [1.3.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.2.0...browser-debug-mcp-bridge-v1.3.0) (2026-02-24)
 
 
