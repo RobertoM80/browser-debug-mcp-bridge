@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.2.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.1.0...browser-debug-mcp-bridge-v1.2.0) (2026-02-24)
+
+
+### Features
+
+* add npx GitHub launch option and update documentation for quick setup ([0a92bf4](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/0a92bf4dd789b27a7ee7a561904a18a29152ed5e))
+* add port availability check to prevent conflicts during startup ([70055e4](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/70055e4080a227b3a0e4123a63f99aee6711eadd))
+* enhance debug and improve path resolution for nx and tsx binaries ([31cb74c](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/31cb74cd6fd95f7c466f8fa71ff481db3029906d))
+* enhance startup message formatting with color support ([ba7af1c](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/ba7af1ca7be63424e448634f182ad334ca015164))
+* enhance startup messages and remove debug logging in mcp-start script ([b3f4870](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/b3f487063263b9f9bc99be4f52fad1377967f30c))
+* implement tagging script and update redirect logic in docs ([a3bab87](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/a3bab871a9b5a1b8f13370115579faf0162ae102))
+* publish npm package and add dist runtime launcher ([6f0b59e](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/6f0b59e10318999a0979d506290f6791efbde765))
+* update docs pages workflow to trigger on specific file changes ([813226a](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/813226aab7e9ae146231b2c5d883a89e95df9c24))
+* update docs-pages workflow to trigger on specific file changes ([60a9873](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/60a98733a0cce0fe481ea4e85afaf570a178ecd7))
+* update npx command package usage in setup documentation ([99198ef](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/99198ef48fe7200f2261cef27d9b0cffb489a81c))
+
+
+### Bug Fixes
+
+* update docs pages workflow to use new build script ([9d4061d](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/9d4061d2f86f6af721de2884bb6020fdf4f433bf))
+* update node engine requirement in package.json ([c9098e1](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/c9098e188ace7eb35e7a924e6c09de50c02a8fb6))
+
 ## [1.1.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.0.0...browser-debug-mcp-bridge-v1.1.0) (2026-02-21)
 
 
