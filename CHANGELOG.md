@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.2.0...browser-debug-mcp-bridge-v1.3.0) (2026-02-24)
+
+
+### Features
+
+* enhance npm package publishing workflow and update ([2f318e7](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/2f318e74370edf4f703df883f38aec8076720588))
+
 ## [1.2.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.1.0...browser-debug-mcp-bridge-v1.2.0) (2026-02-24)
 
 
