@@ -12,6 +12,10 @@ By default, safe mode and redaction reduce sensitive exposure. Full bodies and t
 
 No. Heavy captures are on-demand MCP requests with strict limits.
 
-## How should docs be versioned?
+## Why does MCP return no sessions?
 
-Use docs snapshots per release train (for example `v1`, `v2`, `v3`) while keeping `current` aligned to main branch behavior.
+Most common causes:
+
+1. No active session was started in the extension popup.
+2. The current site is not allowlisted.
+3. MCP server was launched from a different config than expected.

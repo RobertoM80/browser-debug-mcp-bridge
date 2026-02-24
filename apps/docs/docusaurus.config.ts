@@ -42,14 +42,14 @@ const config: Config = {
         {
           title: 'Core',
           items: [
-            { label: 'Architecture', to: '/docs/architecture/overview' },
+            { label: 'Getting Started', to: '/docs/getting-started/quick-start' },
+            { label: 'MCP Tools', to: '/docs/mcp-tools/overview' },
             { label: 'Security & Privacy', to: '/docs/security-privacy/controls' }
           ]
         },
         {
-          title: 'Operate',
+          title: 'Support',
           items: [
-            { label: 'Testing', to: '/docs/testing/strategy' },
             { label: 'Troubleshooting', to: '/docs/troubleshooting/common-issues' }
           ]
         }
@@ -66,7 +66,14 @@ const config: Config = {
         docs: {
           routeBasePath: 'docs',
           sidebarPath: './sidebars.ts',
-          editUrl: undefined
+          editUrl: undefined,
+          exclude: [
+            '**/contributing/**',
+            '**/workflows/**',
+            '**/testing/**',
+            '**/architecture/**',
+            '**/server/**'
+          ]
         },
         blog: false,
         theme: {

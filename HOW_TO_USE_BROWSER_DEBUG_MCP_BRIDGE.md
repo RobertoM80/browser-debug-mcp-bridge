@@ -1,6 +1,7 @@
 # HOW TO USE BROWSER DEBUG MCP BRIDGE
 
-This guide explains, in simple steps, how to install this project from GitHub and use it from any other project through MCP, without publishing an npm package.
+This guide explains how to use Browser Debug MCP Bridge from any project through MCP.
+You can run it from npm (recommended) or from a local Git clone.
 
 ## What this project is
 
@@ -43,8 +44,8 @@ What the diagram means:
 
 You need:
 1. Node.js 20+
-2. pnpm 9+
-3. Git
+2. pnpm 9+ (only for local clone mode and extension build from source)
+3. Git (only for local clone mode)
 4. Google Chrome
 
 Check versions:
@@ -55,7 +56,19 @@ pnpm -v
 git --version
 ```
 
-## Step 1: Clone from GitHub
+## Step 1: Choose installation mode
+
+MCP runtime modes:
+1. npm package mode (recommended for most users)
+2. local Git clone mode (best for contributors/customization)
+
+### 1A) npm package mode (recommended)
+
+In MCP client config use:
+1. command: `npx`
+2. args: `["-y", "browser-debug-mcp-bridge"]`
+
+### 1B) Local clone mode
 
 ```bash
 git clone https://github.com/<ORG_OR_USER>/browser-debug-mcp-bridge.git
@@ -66,7 +79,7 @@ pnpm install
 Important:
 1. Keep this folder on disk.
 2. MCP clients will run this repo directly from its local path.
-3. No npm package is required.
+3. This mode is optional if you use npm package mode.
 
 Alternative one-step setup:
 
@@ -75,7 +88,11 @@ Alternative one-step setup:
 2. macOS/Linux:
    - `bash ./install.sh`
 
-## Step 2: Build and load the extension
+## Step 2: Build and load the extension (required)
+
+Note:
+1. npm package mode covers MCP server startup only.
+2. You still need the extension loaded in Chrome.
 
 Build:
 
@@ -102,6 +119,12 @@ pnpm install
 node scripts/mcp-start.cjs
 ```
 
+Or (npm mode):
+
+```bash
+npx -y browser-debug-mcp-bridge
+```
+
 What this starts:
 1. HTTP/WebSocket ingest server at `http://127.0.0.1:8065`
 2. MCP stdio server for MCP clients (Codex, Claude, Cursor, Windsurf, etc.)
@@ -112,7 +135,7 @@ Expected result:
 
 ## Step 4: Generate ready-to-paste MCP config
 
-From repo root:
+For local clone mode, from repo root:
 
 ```bash
 pnpm mcp:print-config
@@ -136,18 +159,21 @@ Common locations:
 1. Codex: `C:\Users\<you>\.codex\config.toml` (or project `.codex/config.toml`)
 2. Claude Desktop: `%APPDATA%\Claude\claude_desktop_config.json`
 3. Cursor/Windsurf: their MCP settings page or MCP JSON config
-4. OpenCode/custom clients: MCP JSON config block with same `pnpm` + `args`
+4. OpenCode/custom clients: MCP JSON config block with same `command` + `args`
 
-Key command for all clients:
+Local clone config (recommended for contributors):
 1. command: `node`
 2. args: `["<ABSOLUTE_PATH_TO_BROWSER_DEBUG_MCP_BRIDGE>\\scripts\\mcp-start.cjs"]`
 
-Optional no-clone MCP command (GitHub via npx):
+npm config (recommended for normal users):
 1. command: `npx`
-2. args: `["-y", "github:RobertoM80/browser-debug-mcp-bridge"]`
+2. args: `["-y", "browser-debug-mcp-bridge"]`
 
-Use this for quick tests. For regular use, prefer the local clone path command.
-You still need the Chrome extension loaded; this only changes how the MCP server process is launched.
+GitHub fallback config (if npm package is unavailable):
+1. command: `npx`
+2. args: `["-y", "--package=github:RobertoM80/browser-debug-mcp-bridge", "browser-debug-mcp-bridge"]`
+
+You still need the Chrome extension loaded; these options only change MCP server startup mode.
 
 ## Step 6: Prepare a browser session
 
@@ -171,6 +197,7 @@ Then ask the LLM to use browser-debug tools, for example:
 4. `list_snapshots`
 
 This works because the MCP client can call this bridge process by path, even while you work in a different repo.
+It also works in npm mode because MCP client can run `npx -y browser-debug-mcp-bridge`.
 
 ## Step 8: Verify everything works
 
@@ -207,15 +234,18 @@ If snapshot calls fail:
 
 If MCP client shows no tools:
 1. Wrong repo path in MCP config.
-2. `pnpm` not available in environment used by MCP client.
+2. Wrong MCP command/args for selected mode.
 3. MCP process failed to start.
+4. Another process already uses port `8065`.
 
-## Why this works without npm publish
+## Distribution modes summary
 
-Because MCP clients run a local command.
-
-You provide:
-1. `command = node` (recommended) or `command = npx` (quick GitHub mode)
-2. `args` pointing to this repo script path or GitHub repo spec
-
-So distribution can stay Git-based and public, with no package publication step.
+1. npm mode:
+   - `command = npx`
+   - `args = ["-y", "browser-debug-mcp-bridge"]`
+2. local clone mode:
+   - `command = node`
+   - `args` points to `<repo>/scripts/mcp-start.cjs`
+3. GitHub fallback mode:
+   - `command = npx`
+   - `args = ["-y", "--package=github:RobertoM80/browser-debug-mcp-bridge", "browser-debug-mcp-bridge"]`

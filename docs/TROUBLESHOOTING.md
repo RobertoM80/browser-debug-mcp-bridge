@@ -2,9 +2,12 @@
 
 ## Server does not start
 
-- Confirm Node 20+ and pnpm are installed
-- Run `pnpm install`
-- Run `pnpm nx serve mcp-server`
+- Confirm Node 20+ is installed
+- If using npm mode, run `npx -y browser-debug-mcp-bridge`
+- If using local clone mode:
+  - confirm pnpm is installed
+  - run `pnpm install`
+  - run `node scripts/mcp-start.cjs`
 - Check for port collisions on `8065`
 
 ## Extension cannot connect to server

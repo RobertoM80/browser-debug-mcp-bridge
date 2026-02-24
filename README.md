@@ -29,7 +29,15 @@ pnpm install
 node scripts/mcp-start.cjs
 ```
 
-Quick GitHub-only MCP launch (no local path in client config):
+Quick npm MCP launch (marketplace-style, after publish):
+
+```bash
+npx -y browser-debug-mcp-bridge
+```
+
+Note: npm mode starts the MCP server runtime. The Chrome extension still needs to be built/loaded separately (see "Load the extension").
+
+GitHub fallback launch (if npm package is not available yet):
 
 ```bash
 npx -y --package=github:RobertoM80/browser-debug-mcp-bridge browser-debug-mcp-bridge

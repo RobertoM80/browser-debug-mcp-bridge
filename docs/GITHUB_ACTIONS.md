@@ -69,11 +69,19 @@ What it does:
    - `mcp-server-dist.tgz`
    - `chrome-extension-dist.tgz`
    - setup docs
-3. Publishes GitHub Release with generated notes + assets
+3. Publishes npm package automatically (if version not already published)
+4. Publishes GitHub Release with generated notes + assets
 
 Why it exists:
 1. Create reproducible release artifacts automatically
-2. Publish release metadata without manual upload steps
+2. Publish npm + GitHub release metadata without manual upload steps
+
+Required repository secret for Release workflow:
+
+1. `NPM_TOKEN`
+2. Token must have permission to publish `browser-debug-mcp-bridge` on npm
+3. Workflow fails fast if `NPM_TOKEN` is missing
+4. If same package version is already on npm, npm publish step is skipped safely
 
 ## 5. Dependency Update (`.github/workflows/dependency-update.yml`)
 

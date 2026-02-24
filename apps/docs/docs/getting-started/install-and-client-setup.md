@@ -36,7 +36,12 @@ This starts:
 1. Ingest API/WebSocket on `http://127.0.0.1:8065`
 2. MCP stdio tool runtime
 
-Alternative (no local clone path in MCP config, GitHub over npx):
+Alternative (no local clone path in MCP config, npm registry):
+
+1. command: `npx`
+2. args: `["-y", "browser-debug-mcp-bridge"]`
+
+GitHub fallback (if registry package is not available):
 
 1. command: `npx`
 2. args: `["-y", "--package=github:RobertoM80/browser-debug-mcp-bridge", "browser-debug-mcp-bridge"]`

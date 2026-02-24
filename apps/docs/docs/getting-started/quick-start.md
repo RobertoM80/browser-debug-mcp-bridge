@@ -3,8 +3,8 @@
 ## Prerequisites
 
 - Node.js 20+
-- pnpm 9+
 - Chrome with developer mode enabled
+- Local extension build (from this repository)
 
 ## Install and run
 
@@ -14,7 +14,15 @@ pnpm nx serve mcp-server
 pnpm nx build chrome-extension --watch
 ```
 
-For MCP client integration (Codex/Claude/Cursor/Windsurf), use the dedicated launcher:
+For MCP client integration (Codex/Claude/Cursor/Windsurf), you can use:
+
+1. npm mode:
+
+```bash
+npx -y browser-debug-mcp-bridge
+```
+
+1. local clone mode:
 
 ```bash
 node scripts/mcp-start.cjs

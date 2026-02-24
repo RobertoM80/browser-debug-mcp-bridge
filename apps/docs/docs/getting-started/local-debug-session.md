@@ -24,4 +24,4 @@
 - Use V2 heavy capture tools only for focused selectors/pages
 - Use V3 correlation tools to connect user action to error/network causes
 
-See [Failure Diagnosis Playbook](../workflows/failure-diagnosis-playbook.md) for a full procedure.
+For deeper triage patterns, use [Troubleshooting](../troubleshooting/common-issues.md) and the correlation/snapshot MCP tools.
