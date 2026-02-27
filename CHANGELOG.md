@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.5.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.4.0...browser-debug-mcp-bridge-v1.5.0) (2026-02-27)
+
+
+### Features
+
+* enhance session management and live capture tools ([4705507](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/4705507fb9f22569fff3223d2d3933eb235a9810))
+* **merge:** merge branch main ([86f3804](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/86f38044b1dcfa7f445e1f990c80751660dfacc7))
+
+
+### Bug Fixes
+
+* couple mcp lifecycle to host and add --stop ([210cc22](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/210cc224f66abb14b71b90eb4770dff1ec9cf99d))
+* update README.md expectations for setup instructions ([df34876](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/df348761a2387aaacf57777fbbef807d24190e0f))
+
 ## [1.4.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.3.1...browser-debug-mcp-bridge-v1.4.0) (2026-02-24)
 
 
