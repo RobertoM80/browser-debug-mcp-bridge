@@ -5,7 +5,7 @@ import type { WebSocketManager } from './websocket/websocket-server.js';
 let stopServerFn: (() => void) | null = null;
 let getWebSocketManager: (() => WebSocketManager | null) | null = null;
 
-function ensureWebSocketManager() {
+function ensureWebSocketManager(): WebSocketManager {
   if (!getWebSocketManager) {
     throw new Error('WebSocket manager resolver is not initialized yet.');
   }
@@ -13,14 +13,7 @@ function ensureWebSocketManager() {
   if (!manager) {
     throw new Error('WebSocket manager is not initialized yet.');
   }
-  return manager as {
-    sendCaptureCommand: (
-      sessionId: string,
-      command: 'CAPTURE_DOM_SUBTREE' | 'CAPTURE_DOM_DOCUMENT' | 'CAPTURE_COMPUTED_STYLES' | 'CAPTURE_LAYOUT_METRICS' | 'CAPTURE_UI_SNAPSHOT',
-      payload: Record<string, unknown>,
-      timeoutMs?: number
-    ) => Promise<CaptureClientResult>;
-  };
+  return manager;
 }
 
 async function bootstrapMainRuntime(): Promise<void> {
@@ -51,6 +44,20 @@ async function startBridge(): Promise<void> {
           const manager = ensureWebSocketManager();
           return manager.sendCaptureCommand(sessionId, command, payload, timeoutMs);
         },
+      },
+      getSessionConnectionState: (sessionId) => {
+        const manager = ensureWebSocketManager();
+        const state = manager.getSessionConnectionState(sessionId);
+        if (!state) {
+          return undefined;
+        }
+        return {
+          connected: state.connected,
+          connectedAt: state.connectedAt,
+          lastHeartbeatAt: state.lastHeartbeatAt,
+          disconnectedAt: state.disconnectedAt,
+          disconnectReason: state.disconnectReason,
+        };
       },
     },
   );

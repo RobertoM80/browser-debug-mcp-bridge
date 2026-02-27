@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { existsSync } = require('node:fs');
 const { dirname, join, resolve } = require('node:path');
 const { createRequire } = require('node:module');
 const net = require('node:net');
+const http = require('node:http');
 
 const repoRoot = resolve(__dirname, '..');
 const packageJson = join(repoRoot, 'package.json');
@@ -67,6 +68,154 @@ function isPortInUse(port, host = '127.0.0.1') {
     });
     server.listen(port, host);
   });
+}
+
+function delay(ms) {
+  return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+function fetchJson(pathname, port, timeoutMs = 1000) {
+  return new Promise((resolveJson) => {
+    const request = http.request(
+      {
+        host: '127.0.0.1',
+        port,
+        path: pathname,
+        method: 'GET',
+        timeout: timeoutMs,
+      },
+      (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('end', () => {
+          try {
+            const payload = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            resolveJson(payload);
+          } catch {
+            resolveJson(null);
+          }
+        });
+      },
+    );
+    request.on('error', () => resolveJson(null));
+    request.on('timeout', () => {
+      request.destroy();
+      resolveJson(null);
+    });
+    request.end();
+  });
+}
+
+async function isBridgeHttpEndpoint(port) {
+  const root = await fetchJson('/', port);
+  if (root && typeof root === 'object' && typeof root.name === 'string' && root.name.includes('Browser Debug MCP Bridge')) {
+    return true;
+  }
+
+  const health = await fetchJson('/health', port);
+  return Boolean(health && typeof health === 'object' && health.status === 'ok' && health.websocket);
+}
+
+function getWindowsListeningPids(port) {
+  const result = spawnSync('netstat', ['-ano', '-p', 'tcp'], { encoding: 'utf8' });
+  if (result.status !== 0) {
+    return [];
+  }
+
+  const targetSuffix = `:${port}`;
+  const pids = new Set();
+  const lines = String(result.stdout || '').split(/\r?\n/u);
+
+  for (const line of lines) {
+    const parts = line.trim().split(/\s+/u);
+    if (parts.length < 5) {
+      continue;
+    }
+
+    const proto = String(parts[0] || '').toUpperCase();
+    const localAddress = String(parts[1] || '');
+    const state = String(parts[3] || '').toUpperCase();
+    const pid = Number(parts[4]);
+
+    if (proto === 'TCP' && state === 'LISTENING' && localAddress.endsWith(targetSuffix) && Number.isInteger(pid) && pid > 0) {
+      pids.add(pid);
+    }
+  }
+
+  return Array.from(pids);
+}
+
+function getWindowsProcessCommandLine(pid) {
+  const result = spawnSync(
+    'powershell.exe',
+    ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CommandLine`],
+    { encoding: 'utf8' },
+  );
+
+  if (result.status !== 0) {
+    return '';
+  }
+
+  return String(result.stdout || '').trim();
+}
+
+function isLikelyBridgeCommandLine(commandLine) {
+  const normalized = String(commandLine || '').toLowerCase();
+  return normalized.includes('browser-debug-mcp-bridge')
+    || normalized.includes('mcp-start.cjs')
+    || normalized.includes('mcp-bridge')
+    || normalized.includes('mcp-server:serve-mcp')
+    || normalized.includes('mcp-server:serve');
+}
+
+function killWindowsProcess(pid) {
+  const result = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { encoding: 'utf8' });
+  return result.status === 0;
+}
+
+async function tryRecoverStaleBridgeOnWindowsPort(port) {
+  if (process.platform !== 'win32') {
+    return false;
+  }
+
+  const endpointLooksLikeBridge = await isBridgeHttpEndpoint(port);
+  const listenerPids = getWindowsListeningPids(port).filter((pid) => pid !== process.pid);
+  if (listenerPids.length === 0) {
+    return false;
+  }
+
+  let attemptedRestart = false;
+  for (const pid of listenerPids) {
+    const commandLine = getWindowsProcessCommandLine(pid);
+    const looksLikeBridge = endpointLooksLikeBridge || isLikelyBridgeCommandLine(commandLine);
+    if (!looksLikeBridge) {
+      continue;
+    }
+
+    attemptedRestart = true;
+    process.stderr.write(
+      `[mcp-start] Port ${port} is occupied by stale bridge process (pid ${pid}). Restarting automatically.\n`,
+    );
+
+    if (!killWindowsProcess(pid)) {
+      process.stderr.write(`[mcp-start] Failed to terminate stale process ${pid}.\n`);
+    }
+  }
+
+  if (!attemptedRestart) {
+    return false;
+  }
+
+  for (let attempt = 0; attempt < 12; attempt++) {
+    await delay(200);
+    const stillInUse = await isPortInUse(port);
+    if (!stillInUse) {
+      process.stderr.write(`[mcp-start] Recovered port ${port} from stale bridge instance.\n`);
+      return true;
+    }
+  }
+
+  return false;
 }
 
 if (!existsSync(packageJson)) {
@@ -161,7 +310,14 @@ function spawnRuntime(runtime) {
 async function main() {
   const port = Number(process.env.PORT || '8065');
   if (Number.isFinite(port)) {
-    const inUse = await isPortInUse(port);
+    let inUse = await isPortInUse(port);
+    if (inUse) {
+      const recovered = await tryRecoverStaleBridgeOnWindowsPort(port);
+      if (recovered) {
+        inUse = await isPortInUse(port);
+      }
+    }
+
     if (inUse) {
       process.stderr.write(
         `[mcp-start] Port ${port} is already in use. Another Browser Debug MCP Bridge instance is likely running.\n`,

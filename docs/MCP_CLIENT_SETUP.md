@@ -32,6 +32,10 @@ Important:
 - This only changes how the MCP server is started.
 - You still need the Chrome extension loaded and connected to `127.0.0.1:8065`.
 
+Launcher behavior on Windows:
+- If port `8065` is held by a stale bridge process, launcher tries automatic recovery and restart.
+- If `8065` is still blocked after recovery, check for non-bridge processes bound to that port.
+
 Example Windows path:
 - `C:\\Users\\your-user\\Documents\\progetti\\browser-debug-mcp-bridge`
 - full args example:
@@ -149,8 +153,9 @@ If the host accepts JSON-style MCP server entries, use:
    - `npx -y browser-debug-mcp-bridge` (npm mode).
 3. Open extension popup, set allowlist, start session.
 4. Ask LLM to call `list_sessions`.
-5. Ask LLM to call `capture_ui_snapshot` with `sessionId`.
-6. Verify with `list_snapshots` or extension DB Viewer snapshots table.
+5. Use a `sessionId` with `liveConnection.connected = true` for live tools.
+6. Ask LLM to call `capture_ui_snapshot` with that `sessionId`.
+7. Verify with `list_snapshots` or extension DB Viewer snapshots table.
 
 ## CI safety check (stdio guard)
 

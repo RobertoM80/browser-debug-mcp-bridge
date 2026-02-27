@@ -110,6 +110,47 @@ describe('mcp/server V1 query tools', () => {
     db.close();
   });
 
+  it('includes live connection metadata in list_sessions when available', async () => {
+    const db = createTestDb();
+    const now = Date.now();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode, url_start, url_last)
+        VALUES (?, ?, ?, ?, ?)
+      `
+    ).run('session-live', now - 2 * 60_000, 1, 'https://live.example', 'https://live.example');
+
+    const tools = createToolRegistry(
+      createV1ToolHandlers(
+        () => db,
+        (sessionId) => sessionId === "session-live"
+          ? {
+              connected: true,
+              connectedAt: now - 60_000,
+              lastHeartbeatAt: now - 1_000,
+            }
+          : undefined,
+      ),
+    );
+
+    const response = await routeToolCall(tools, 'list_sessions', { sinceMinutes: 10 });
+
+    const session = (response.sessions as Array<{
+      sessionId: string;
+      liveConnection?: {
+        connected: boolean;
+        connectedAt?: number;
+        lastHeartbeatAt?: number;
+      };
+    }>)[0];
+    expect(session?.sessionId).toBe('session-live');
+    expect(session?.liveConnection?.connected).toBe(true);
+    expect(session?.liveConnection?.connectedAt).toBe(now - 60_000);
+    expect(session?.liveConnection?.lastHeartbeatAt).toBe(now - 1_000);
+
+    db.close();
+  });
   it('returns session summary counts and time range', async () => {
     const db = createTestDb();
 
@@ -761,6 +802,20 @@ describe('mcp/server V2 capture tools', () => {
     expect(response.properties).toEqual({ display: 'block', visibility: 'visible' });
   });
 
+  it('normalizes disconnected extension errors for live capture tools', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async () => {
+          throw new Error('Could not establish connection. Receiving end does not exist.');
+        },
+      })
+    );
+
+    await expect(routeToolCall(tools, 'get_dom_document', {
+      sessionId: 'session-v2',
+      mode: 'outline',
+    })).rejects.toThrow('LIVE_SESSION_DISCONNECTED');
+  });
   it('captures ui snapshot through v2 capture command path', async () => {
     const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
     const tools = createToolRegistry(

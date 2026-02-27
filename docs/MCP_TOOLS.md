@@ -10,13 +10,23 @@ All tool responses include:
 
 ### list_sessions
 
-Lists recent sessions.
+Lists recent sessions and includes live connection metadata so you can distinguish historical sessions from actively connected extension sessions.
 
 Example:
 
 ```json
 { "name": "list_sessions", "arguments": { "sinceMinutes": 60 } }
 ```
+
+Important response fields per session:
+
+- `liveConnection.connected`: `true` only when the extension session is currently reachable for live capture commands
+- `liveConnection.lastHeartbeatAt`: latest websocket heartbeat/message timestamp seen by the server
+- `liveConnection.disconnectReason`: best-known disconnect reason when no longer connected
+
+Use this rule for live tools (`get_dom_document`, `capture_ui_snapshot`, etc.):
+
+- Prefer sessions where `liveConnection.connected` is `true`
 
 ### get_session_summary
 
@@ -128,6 +138,14 @@ Returns layout and bounding-box metrics for a selector.
 ```json
 { "name": "get_layout_metrics", "arguments": { "sessionId": "sess_123", "selector": ".modal" } }
 ```
+
+### Live capture disconnection behavior
+
+When a listed session is not currently connected, live tools return a normalized disconnection error that starts with:
+
+- `LIVE_SESSION_DISCONNECTED`
+
+This indicates the session is historical/stale or transport was dropped. Start/reconnect a live session in the extension and retry with a session id where `liveConnection.connected` is `true`.
 
 ## V3 Correlation tools
 

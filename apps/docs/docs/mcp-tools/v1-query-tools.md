@@ -6,6 +6,12 @@
 { "name": "list_sessions", "arguments": { "sinceMinutes": 60 } }
 ```
 
+Response guidance:
+
+- `liveConnection.connected` tells you whether a session is currently usable for live capture tools
+- `liveConnection.lastHeartbeatAt` helps identify stale session ids
+- Prefer session ids with `liveConnection.connected = true` before calling live tools
+
 ## `get_session_summary`
 
 ```json

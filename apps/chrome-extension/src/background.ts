@@ -75,6 +75,7 @@ interface CapturePingResponse {
 }
 
 const snapshotPngUsageBySession = new Map<string, SnapshotPngUsage>();
+const captureTabBySession = new Map<string, { tabId: number; windowId?: number }>();
 
 function getSnapshotPngUsage(sessionId: string): SnapshotPngUsage {
   const existing = snapshotPngUsageBySession.get(sessionId);
@@ -127,47 +128,58 @@ async function captureVisibleTabPng(windowId?: number): Promise<string> {
   });
 }
 
-async function executeCaptureCommand(
+function rememberCaptureTabForSession(sessionId: string, tab: chrome.tabs.Tab): void {
+  if (typeof tab.id !== 'number') {
+    return;
+  }
+  captureTabBySession.set(sessionId, {
+    tabId: tab.id,
+    windowId: typeof tab.windowId === 'number' ? tab.windowId : undefined,
+  });
+}
+
+async function resolveCaptureTab(sessionId: string): Promise<chrome.tabs.Tab | undefined> {
+  const remembered = captureTabBySession.get(sessionId);
+  if (remembered) {
+    try {
+      const tab = await chrome.tabs.get(remembered.tabId);
+      if (tab && typeof tab.id === 'number') {
+        rememberCaptureTabForSession(sessionId, tab);
+        return tab;
+      }
+    } catch {
+      captureTabBySession.delete(sessionId);
+    }
+  }
+
+  const active = await getActiveTab();
+  if (active && typeof active.id === 'number') {
+    rememberCaptureTabForSession(sessionId, active);
+  }
+  return active;
+}
+
+function isMissingCaptureReceiverError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  return normalized.includes('could not establish connection')
+    || normalized.includes('receiving end does not exist');
+}
+
+async function sendCaptureCommandToTab(
+  tabId: number,
   command: CaptureCommandType,
   payload: Record<string, unknown>,
-  context: { sessionId: string; commandId: string }
+  allowRetry: boolean = true,
 ): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
-  const tab = await getActiveTab();
-  if (!tab || tab.id === undefined) {
-    throw new Error('No active tab available for capture');
-  }
-  const tabId = tab.id;
-
-  if (command === 'CAPTURE_UI_SNAPSHOT') {
-    const llmRequested = payload.llmRequested === true;
-    if (!canCaptureSnapshot(captureConfig, { llmRequested })) {
-      throw new Error('Snapshot capture is disabled or requires request opt-in');
-    }
-
-    const trigger = normalizeSnapshotTrigger(payload.trigger);
-    if (!captureConfig.snapshots.triggers.includes(trigger)) {
-      throw new Error(`Snapshot trigger "${trigger}" is disabled in extension settings`);
-    }
-
-    const mode = normalizeSnapshotMode(payload.mode, captureConfig.snapshots.mode);
-    const requestedStyleMode = normalizeSnapshotStyleMode(payload.styleMode, captureConfig.snapshots.styleMode);
-    const explicitStyleMode = payload.explicitStyleMode === true;
-    const styleMode: SnapshotStyleMode = resolveSnapshotStyleMode(requestedStyleMode, explicitStyleMode);
-
-    const contentPayload: Record<string, unknown> = {
-      ...payload,
-      trigger,
-      styleMode,
-      explicitStyleMode,
-    };
-
-    const captured = await new Promise<{ payload: Record<string, unknown>; truncated?: boolean }>((resolve, reject) => {
+  const attempt = async (): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> => {
+    return new Promise((resolve, reject) => {
       chrome.tabs.sendMessage(
         tabId,
         {
           type: 'CAPTURE_EXECUTE',
-          command: 'CAPTURE_UI_SNAPSHOT',
-          payload: contentPayload,
+          command,
+          payload,
         },
         (response?: CaptureTabResponse) => {
           const runtimeError = chrome.runtime.lastError;
@@ -193,6 +205,65 @@ async function executeCaptureCommand(
         }
       );
     });
+  };
+
+  try {
+    return await attempt();
+  } catch (error) {
+    if (!allowRetry || !isMissingCaptureReceiverError(error)) {
+      throw error;
+    }
+
+    const recovered = await ensureContentScriptReady(tabId);
+    if (!recovered) {
+      throw new Error('Extension target is unavailable after recovery attempt');
+    }
+
+    return attempt();
+  }
+}
+async function executeCaptureCommand(
+  command: CaptureCommandType,
+  payload: Record<string, unknown>,
+  context: { sessionId: string; commandId: string }
+): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  const tab = await resolveCaptureTab(context.sessionId);
+  if (!tab || tab.id === undefined) {
+    throw new Error('No tab available for this session capture');
+  }
+
+  rememberCaptureTabForSession(context.sessionId, tab);
+
+  const tabId = tab.id;
+  const contentReady = await ensureContentScriptReady(tabId);
+  if (!contentReady) {
+    throw new Error('Target tab for this session is unavailable for live capture');
+  }
+
+  if (command === 'CAPTURE_UI_SNAPSHOT') {
+    const llmRequested = payload.llmRequested === true;
+    if (!canCaptureSnapshot(captureConfig, { llmRequested })) {
+      throw new Error('Snapshot capture is disabled or requires request opt-in');
+    }
+
+    const trigger = normalizeSnapshotTrigger(payload.trigger);
+    if (!captureConfig.snapshots.triggers.includes(trigger)) {
+      throw new Error(`Snapshot trigger "${trigger}" is disabled in extension settings`);
+    }
+
+    const mode = normalizeSnapshotMode(payload.mode, captureConfig.snapshots.mode);
+    const requestedStyleMode = normalizeSnapshotStyleMode(payload.styleMode, captureConfig.snapshots.styleMode);
+    const explicitStyleMode = payload.explicitStyleMode === true;
+    const styleMode: SnapshotStyleMode = resolveSnapshotStyleMode(requestedStyleMode, explicitStyleMode);
+
+    const contentPayload: Record<string, unknown> = {
+      ...payload,
+      trigger,
+      styleMode,
+      explicitStyleMode,
+    };
+
+    const captured = await sendCaptureCommandToTab(tabId, 'CAPTURE_UI_SNAPSHOT', contentPayload);
 
     const basePayload = captured.payload;
     const now = Date.now();
@@ -278,38 +349,7 @@ async function executeCaptureCommand(
     };
   }
 
-  return new Promise((resolve, reject) => {
-    chrome.tabs.sendMessage(
-      tabId,
-      {
-        type: 'CAPTURE_EXECUTE',
-        command,
-        payload,
-      },
-      (response?: CaptureTabResponse) => {
-        const runtimeError = chrome.runtime.lastError;
-        if (runtimeError) {
-          reject(new Error(runtimeError.message));
-          return;
-        }
-
-        if (!response) {
-          reject(new Error('No capture response from content script'));
-          return;
-        }
-
-        if (!response.ok) {
-          reject(new Error(response.error ?? 'Capture command failed'));
-          return;
-        }
-
-        resolve({
-          payload: response.result ?? {},
-          truncated: response.truncated,
-        });
-      }
-    );
-  });
+  return sendCaptureCommandToTab(tabId, command, payload);
 }
 
 const sessionManager = new SessionManager({
@@ -455,8 +495,11 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
             safeMode: captureConfig.safeMode,
           });
 
-          if (typeof tab?.id === 'number') {
+          if (started.sessionId && typeof tab?.id === 'number') {
+            rememberCaptureTabForSession(started.sessionId, tab);
             await ensureContentScriptReady(tab.id);
+          } else if (started.sessionId) {
+            captureTabBySession.delete(started.sessionId);
           }
 
           sessionManager.queueEvent('custom', {
@@ -482,6 +525,7 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
         const activeSessionId = sessionManager.getState().sessionId;
         if (activeSessionId) {
           snapshotPngUsageBySession.delete(activeSessionId);
+          captureTabBySession.delete(activeSessionId);
         }
         return { ok: true as const, state: sessionManager.stopSession() };
       });

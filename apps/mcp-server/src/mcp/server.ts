@@ -41,9 +41,18 @@ export interface MCPServerRuntime {
   start: () => Promise<void>;
 }
 
+export interface SessionConnectionLookupResult {
+  connected: boolean;
+  connectedAt: number;
+  lastHeartbeatAt: number;
+  disconnectedAt?: number;
+  disconnectReason?: 'manual_stop' | 'network_error' | 'stale_timeout' | 'normal_closure' | 'abnormal_close' | 'unknown';
+}
+
 export interface MCPServerOptions {
   captureClient?: CaptureCommandClient;
   logger?: MCPLogger;
+  getSessionConnectionState?: (sessionId: string) => SessionConnectionLookupResult | undefined;
 }
 
 export interface MCPLogger {
@@ -279,6 +288,7 @@ const DEFAULT_EVENT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const DEFAULT_SNAPSHOT_ASSET_CHUNK_BYTES = 64 * 1024;
 const MAX_SNAPSHOT_ASSET_CHUNK_BYTES = 256 * 1024;
+const LIVE_SESSION_DISCONNECTED_CODE = 'LIVE_SESSION_DISCONNECTED';
 
 const NETWORK_DOMAIN_GROUP_SQL = `
   CASE
@@ -395,6 +405,20 @@ export interface CaptureCommandClient {
     payload: Record<string, unknown>,
     timeoutMs?: number,
   ): Promise<CaptureClientResult>;
+}
+
+class LiveSessionDisconnectedError extends Error {
+  readonly code = LIVE_SESSION_DISCONNECTED_CODE;
+
+  constructor(sessionId: string, reason?: string) {
+    const normalizedReason = typeof reason === 'string' && reason.trim().length > 0
+      ? reason.trim()
+      : 'Extension connection is stale or unavailable';
+    super(
+      `${LIVE_SESSION_DISCONNECTED_CODE}: Session ${sessionId} is not connected to a live extension target. ${normalizedReason}. Start a fresh session in the extension and retry with a connected sessionId from list_sessions.`,
+    );
+    this.name = 'LiveSessionDisconnectedError';
+  }
 }
 
 function resolveLimit(value: unknown, fallback: number): number {
@@ -734,15 +758,63 @@ function asStringArray(value: unknown, maxItems: number): string[] {
     .slice(0, maxItems);
 }
 
-function ensureCaptureSuccess(result: CaptureClientResult): Record<string, unknown> {
+function isLiveSessionDisconnectedMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes('no active extension connection')
+    || normalized.includes('receiving end does not exist')
+    || normalized.includes('could not establish connection')
+    || normalized.includes('connection closed before capture completed')
+    || normalized.includes('websocket manager closed')
+    || normalized.includes('extension target is unavailable')
+    || normalized.includes('target tab for this session is unavailable');
+}
+
+function normalizeCaptureError(sessionId: string, error: unknown): Error {
+  const fallback = error instanceof Error ? error : new Error(String(error));
+  const message = fallback.message ?? '';
+
+  if (isLiveSessionDisconnectedMessage(message)) {
+    return new LiveSessionDisconnectedError(sessionId, message);
+  }
+
+  return fallback;
+}
+
+function isLiveSessionDisconnectedError(error: unknown): error is LiveSessionDisconnectedError {
+  return error instanceof LiveSessionDisconnectedError;
+}
+
+async function executeLiveCapture(
+  captureClient: CaptureCommandClient,
+  sessionId: string,
+  command:
+    | 'CAPTURE_DOM_SUBTREE'
+    | 'CAPTURE_DOM_DOCUMENT'
+    | 'CAPTURE_COMPUTED_STYLES'
+    | 'CAPTURE_LAYOUT_METRICS'
+    | 'CAPTURE_UI_SNAPSHOT',
+  payload: Record<string, unknown>,
+  timeoutMs: number,
+): Promise<CaptureClientResult> {
+  try {
+    return await captureClient.execute(sessionId, command, payload, timeoutMs);
+  } catch (error) {
+    throw normalizeCaptureError(sessionId, error);
+  }
+}
+
+function ensureCaptureSuccess(result: CaptureClientResult, sessionId: string): Record<string, unknown> {
   if (!result.ok) {
-    throw new Error(result.error ?? 'Capture command failed');
+    throw normalizeCaptureError(sessionId, new Error(result.error ?? 'Capture command failed'));
   }
 
   return result.payload ?? {};
 }
 
-export function createV1ToolHandlers(getDb: () => Database): Partial<Record<string, ToolHandler>> {
+export function createV1ToolHandlers(
+  getDb: () => Database,
+  getSessionConnectionState?: (sessionId: string) => SessionConnectionLookupResult | undefined,
+): Partial<Record<string, ToolHandler>> {
   return {
     list_sessions: async (input) => {
       const db = getDb();
@@ -801,6 +873,24 @@ export function createV1ToolHandlers(getDb: () => Database): Partial<Record<stri
         dpr: row.dpr ?? undefined,
         safeMode: row.safe_mode === 1,
         pinned: row.pinned === 1,
+        liveConnection: (() => {
+          const state = getSessionConnectionState?.(row.session_id);
+          if (!state) {
+            return {
+              connected: false,
+              lastHeartbeatAt: undefined,
+              disconnectReason: row.ended_at ? 'manual_stop' : undefined,
+            };
+          }
+
+          return {
+            connected: state.connected,
+            connectedAt: state.connectedAt,
+            lastHeartbeatAt: state.lastHeartbeatAt,
+            disconnectedAt: state.disconnectedAt,
+            disconnectReason: state.disconnectReason,
+          };
+        })(),
       }));
 
       return {
@@ -1719,7 +1809,8 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
 
       const maxDepth = resolveCaptureDepth(input.maxDepth, 3);
       const maxBytes = resolveCaptureBytes(input.maxBytes, 50_000);
-      const capture = await captureClient.execute(
+      const capture = await executeLiveCapture(
+        captureClient,
         sessionId,
         'CAPTURE_DOM_SUBTREE',
         { selector, maxDepth, maxBytes },
@@ -1732,7 +1823,7 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
           maxResults: maxBytes,
           truncated: capture.truncated ?? false,
         },
-        ...ensureCaptureSuccess(capture),
+        ...ensureCaptureSuccess(capture, sessionId),
       };
     },
 
@@ -1747,7 +1838,8 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
       const maxDepth = resolveCaptureDepth(input.maxDepth, 4);
 
       try {
-        const capture = await captureClient.execute(
+        const capture = await executeLiveCapture(
+          captureClient,
           sessionId,
           'CAPTURE_DOM_DOCUMENT',
           { mode, maxBytes, maxDepth },
@@ -1760,14 +1852,16 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
             maxResults: maxBytes,
             truncated: capture.truncated ?? false,
           },
-          ...ensureCaptureSuccess(capture),
+          ...ensureCaptureSuccess(capture, sessionId),
         };
       } catch (error) {
-        if (mode !== 'html') {
-          throw error;
+        const normalized = normalizeCaptureError(sessionId, error);
+        if (mode !== 'html' || isLiveSessionDisconnectedError(normalized)) {
+          throw normalized;
         }
 
-        const fallback = await captureClient.execute(
+        const fallback = await executeLiveCapture(
+          captureClient,
           sessionId,
           'CAPTURE_DOM_DOCUMENT',
           { mode: 'outline', maxBytes, maxDepth },
@@ -1781,7 +1875,7 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
             truncated: true,
           },
           fallbackReason: 'timeout',
-          ...ensureCaptureSuccess(fallback),
+          ...ensureCaptureSuccess(fallback, sessionId),
         };
       }
     },
@@ -1798,7 +1892,8 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
       }
 
       const properties = asStringArray(input.properties, 64);
-      const capture = await captureClient.execute(
+      const capture = await executeLiveCapture(
+        captureClient,
         sessionId,
         'CAPTURE_COMPUTED_STYLES',
         { selector, properties },
@@ -1811,7 +1906,7 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
           maxResults: properties.length || 8,
           truncated: capture.truncated ?? false,
         },
-        ...ensureCaptureSuccess(capture),
+        ...ensureCaptureSuccess(capture, sessionId),
       };
     },
 
@@ -1822,7 +1917,8 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
       }
 
       const selector = typeof input.selector === 'string' ? input.selector : undefined;
-      const capture = await captureClient.execute(
+      const capture = await executeLiveCapture(
+        captureClient,
         sessionId,
         'CAPTURE_LAYOUT_METRICS',
         { selector },
@@ -1835,7 +1931,7 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
           maxResults: 1,
           truncated: capture.truncated ?? false,
         },
-        ...ensureCaptureSuccess(capture),
+        ...ensureCaptureSuccess(capture, sessionId),
       };
     },
 
@@ -1861,7 +1957,8 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
       const maxBytes = resolveCaptureBytes(input.maxBytes, 50_000);
       const maxAncestors = resolveCaptureAncestors(input.maxAncestors, 4);
 
-      const capture = await captureClient.execute(
+      const capture = await executeLiveCapture(
+        captureClient,
         sessionId,
         'CAPTURE_UI_SNAPSHOT',
         {
@@ -1884,7 +1981,7 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
           maxResults: maxBytes,
           truncated: capture.truncated ?? false,
         },
-        ...ensureCaptureSuccess(capture),
+        ...ensureCaptureSuccess(capture, sessionId),
       };
     },
   };
@@ -1952,7 +2049,7 @@ export function createMCPServer(
   const logger = options.logger ?? createDefaultMcpLogger();
   const v2Handlers = options.captureClient ? createV2ToolHandlers(options.captureClient) : {};
   const tools = createToolRegistry({
-    ...createV1ToolHandlers(() => getConnection().db),
+    ...createV1ToolHandlers(() => getConnection().db, options.getSessionConnectionState),
     ...v2Handlers,
     ...overrides,
   });

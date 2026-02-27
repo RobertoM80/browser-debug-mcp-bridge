@@ -10,11 +10,33 @@
   - run `node scripts/mcp-start.cjs`
 - Check for port collisions on `8065`
 
+Note for Windows launcher behavior:
+
+- `scripts/mcp-start.cjs` automatically tries to recover from stale bridge processes already bound to `8065`
+- If startup still fails on `8065`, the remaining listener is likely a non-bridge process and must be stopped manually
+
 ## Extension cannot connect to server
 
 - Ensure server is running locally before starting a session
 - Verify background logs in extension service worker console
 - Confirm WebSocket endpoint is reachable at `ws://127.0.0.1:8065/ws`
+
+## Live MCP command fails on a listed session
+
+Symptoms:
+
+- Live tools fail even though `list_sessions` returns the session
+- Error starts with `LIVE_SESSION_DISCONNECTED`
+
+Why this happens:
+
+- `list_sessions` includes historical sessions from DB
+- Live tools require an active extension connection for that session id
+
+What to do:
+
+- Run `list_sessions` and pick a session where `liveConnection.connected` is `true`
+- If none are connected, start/restart session from extension popup and retry
 
 ## No events appear in MCP responses
 

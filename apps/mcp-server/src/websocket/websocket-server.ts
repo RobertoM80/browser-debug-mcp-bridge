@@ -45,6 +45,15 @@ interface ConnectionInfo {
   disconnectReason?: 'manual_stop' | 'network_error' | 'stale_timeout' | 'normal_closure' | 'abnormal_close' | 'unknown';
 }
 
+export interface SessionConnectionState {
+  sessionId: string;
+  connected: boolean;
+  connectedAt: number;
+  lastHeartbeatAt: number;
+  disconnectedAt?: number;
+  disconnectReason?: 'manual_stop' | 'network_error' | 'stale_timeout' | 'normal_closure' | 'abnormal_close' | 'unknown';
+}
+
 interface PendingCaptureRequest {
   sessionId: string;
   resolve: (result: CaptureCommandResult) => void;
@@ -62,6 +71,7 @@ export interface CaptureCommandResult {
 export class WebSocketManager {
   private wss: WebSocketServer | null = null;
   private connections: Map<WebSocket, ConnectionInfo> = new Map();
+  private sessionStates: Map<string, SessionConnectionState> = new Map();
   private eventsRepository: EventsRepository | null = null;
   private pendingCaptureRequests: Map<string, PendingCaptureRequest> = new Map();
   private commandCounter = 0;
@@ -166,6 +176,16 @@ export class WebSocketManager {
 
     connectionInfo.lastPingAt = Date.now();
 
+    if (connectionInfo.sessionId) {
+      const previous = this.sessionStates.get(connectionInfo.sessionId);
+      this.sessionStates.set(connectionInfo.sessionId, {
+        sessionId: connectionInfo.sessionId,
+        connected: true,
+        connectedAt: previous?.connectedAt ?? connectionInfo.connectedAt,
+        lastHeartbeatAt: connectionInfo.lastPingAt,
+      });
+    }
+
     this.logger.debug(
       {
         component: 'websocket',
@@ -189,6 +209,12 @@ export class WebSocketManager {
         case 'session_start':
           this.getRepository().createSession(message);
           connectionInfo.sessionId = message.sessionId;
+          this.sessionStates.set(message.sessionId, {
+            sessionId: message.sessionId,
+            connected: true,
+            connectedAt: connectionInfo.connectedAt,
+            lastHeartbeatAt: connectionInfo.lastPingAt,
+          });
           break;
 
         case 'session_end':
@@ -197,6 +223,7 @@ export class WebSocketManager {
             connectionInfo.sessionId = undefined;
           }
           connectionInfo.disconnectReason = 'manual_stop';
+          this.markSessionDisconnected(message.sessionId, 'manual_stop');
           break;
 
         case 'event':
@@ -248,6 +275,10 @@ export class WebSocketManager {
     const disconnectReason =
       connection?.disconnectReason
       ?? (closeCode === 1000 ? 'normal_closure' : closeCode ? 'abnormal_close' : 'unknown');
+
+    if (connection?.sessionId) {
+      this.markSessionDisconnected(connection.sessionId, disconnectReason);
+    }
 
     this.connections.delete(ws);
     this.logger.info(
@@ -381,8 +412,34 @@ export class WebSocketManager {
           ws.terminate();
           this.connections.delete(ws);
         }
+
+        if (info.sessionId) {
+          const previous = this.sessionStates.get(info.sessionId);
+          this.sessionStates.set(info.sessionId, {
+            sessionId: info.sessionId,
+            connected: true,
+            connectedAt: previous?.connectedAt ?? info.connectedAt,
+            lastHeartbeatAt: info.lastPingAt,
+          });
+        }
       }
     }, this.PING_INTERVAL_MS);
+  }
+
+  private markSessionDisconnected(
+    sessionId: string,
+    reason: SessionConnectionState['disconnectReason'],
+  ): void {
+    const previous = this.sessionStates.get(sessionId);
+    const disconnectedAt = Date.now();
+    this.sessionStates.set(sessionId, {
+      sessionId,
+      connected: false,
+      connectedAt: previous?.connectedAt ?? disconnectedAt,
+      lastHeartbeatAt: previous?.lastHeartbeatAt ?? disconnectedAt,
+      disconnectedAt,
+      disconnectReason: reason,
+    });
   }
 
   getConnectionStats(): { total: number; withSession: number } {
@@ -393,6 +450,25 @@ export class WebSocketManager {
     return {
       total: this.connections.size,
       withSession,
+    };
+  }
+
+  getSessionConnectionState(sessionId: string): SessionConnectionState | undefined {
+    const direct = this.sessionStates.get(sessionId);
+    if (direct) {
+      return { ...direct };
+    }
+
+    const live = this.findConnectionBySession(sessionId);
+    if (!live) {
+      return undefined;
+    }
+
+    return {
+      sessionId,
+      connected: live.ws.readyState === WebSocket.OPEN,
+      connectedAt: live.connectedAt,
+      lastHeartbeatAt: live.lastPingAt,
     };
   }
 

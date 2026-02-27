@@ -205,6 +205,35 @@ describe('WebSocket Server', () => {
       ws.close();
     });
 
+    it('should expose session connection state and mark it disconnected on close', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      const sessionStart: SessionStartMessage = {
+        type: 'session_start',
+        sessionId: 'test-session-live-state',
+        url: 'https://example.com',
+        timestamp: Date.now(),
+        safeMode: false,
+      };
+
+      ws.send(JSON.stringify(sessionStart));
+      await wait(100);
+
+      const liveState = wsManager.getSessionConnectionState('test-session-live-state');
+      expect(liveState).toBeDefined();
+      expect(liveState?.connected).toBe(true);
+
+      ws.close();
+      await wait(150);
+
+      const disconnectedState = wsManager.getSessionConnectionState('test-session-live-state');
+      expect(disconnectedState).toBeDefined();
+      expect(disconnectedState?.connected).toBe(false);
+
+      const allowedReasons = ['manual_stop', 'network_error', 'stale_timeout', 'normal_closure', 'abnormal_close', 'unknown'];
+      expect(allowedReasons).toContain(disconnectedState?.disconnectReason);
+    });
     it('should end a session on session_end message', async () => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
       await new Promise<void>(resolve => ws.on('open', resolve));

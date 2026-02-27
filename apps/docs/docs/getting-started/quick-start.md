@@ -28,6 +28,8 @@ npx -y browser-debug-mcp-bridge
 node scripts/mcp-start.cjs
 ```
 
+On Windows, launcher attempts automatic stale-process recovery if bridge port `8065` is occupied.
+
 ## Load extension build
 
 1. Build once: `pnpm nx build chrome-extension`
@@ -41,6 +43,7 @@ node scripts/mcp-start.cjs
 - Optional stats endpoint: `GET http://127.0.0.1:8065/stats`
 - Confirm popup shows connected status after session start
 - Confirm MCP client can run `list_sessions`
+- For live tools, use a session with `liveConnection.connected = true`
 
 ## Next steps
 

@@ -52,6 +52,7 @@ Notes:
 2. For stable daily usage, prefer local clone + `node <repo>/scripts/mcp-start.cjs`.
 3. You still need the Chrome extension loaded; this option only changes server startup.
 4. If npm reports `EPERM` under `npm-cache\\_cacache\\tmp\\git-clone...`, use local mode instead.
+5. On Windows, launcher attempts automatic recovery when stale bridge processes still hold port `8065`.
 
 ## 4) Generate client config snippets
 
@@ -76,7 +77,7 @@ In extension popup:
 In MCP client:
 
 1. Call `list_sessions`
-2. Select session id
+2. Pick `sessionId` with `liveConnection.connected = true` for live tools
 3. Call `get_session_summary`, `get_recent_events`
 4. Use `capture_ui_snapshot` and `list_snapshots` when visual state is needed
 
@@ -88,6 +89,7 @@ If tools return no data:
 2. Domain missing in allowlist
 3. MCP config points to wrong repository path
 4. MCP host process cannot find `node` in PATH
+5. Session id is historical/stale (`liveConnection.connected = false`)
 
 ## 7) One-command local setup (optional)
 
