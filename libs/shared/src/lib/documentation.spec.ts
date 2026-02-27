@@ -15,9 +15,9 @@ describe('project documentation', () => {
     expect(existsSync(filePath)).toBe(true);
 
     const content = read('README.md');
-    expect(content).toContain('## Quick start');
+    expect(content).toContain('## Setup Modes');
     expect(content).toContain('pnpm install');
-    expect(content).toContain('pnpm nx serve mcp-server');
+    expect(content).toContain('node scripts/mcp-start.cjs');
   });
 
   it('should document MCP tools with usage examples', () => {
