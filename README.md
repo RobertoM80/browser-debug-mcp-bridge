@@ -1,94 +1,204 @@
 # Browser Debug MCP Bridge
 
-Chrome Extension + local Node.js MCP server that captures browser debugging telemetry from a real user session and exposes it through MCP tools.
+Chrome Extension + local Node.js MCP runtime for real-browser debugging.
 
-## Why this project exists
+It captures telemetry from an actual browser session (console, network, navigation, UI events), stores it locally, and exposes debugging tools through MCP to your AI client.
 
-- Debug with real browser context (logged-in sessions, feature flags, extensions)
-- Store lightweight telemetry continuously, request heavy DOM data on demand
-- Keep privacy-first defaults with safe mode, allowlists, and redaction
+## What You Can Do
 
-## Prerequisites
+- Inspect real sessions instead of synthetic test runs
+- Query recent errors, failed requests, and event timelines
+- Run targeted live capture (DOM subtree/document, styles, layout)
+- Correlate user actions with network/runtime failures
+- Keep privacy controls enabled (safe mode, allowlist, redaction)
 
-- Node.js 20+
-- pnpm 9+
-- Chrome (for the extension)
+## How It Works
 
-## Quick start
+1. Chrome extension captures session telemetry.
+2. Local server ingests via HTTP/WebSocket on `127.0.0.1:8065`.
+3. Data is persisted in local SQLite.
+4. MCP stdio server exposes tools to your AI client.
+
+## Requirements
+
+- Node.js `>=20`
+- pnpm `>=9` (for local repo mode)
+- Chrome (Developer Mode to load unpacked extension)
+
+## Setup Modes
+
+### Recommended: Full Local Setup (MCP + Extension)
+
+Use this when you want the full product (including extension).
 
 ```bash
+git clone https://github.com/RobertoM80/browser-debug-mcp-bridge.git
+cd browser-debug-mcp-bridge
 pnpm install
-pnpm nx serve mcp-server
-pnpm nx build chrome-extension --watch
+pnpm nx build mcp-server
+pnpm nx build chrome-extension
 ```
 
-Run unified ingest + MCP stdio runtime (for external MCP clients):
+Load extension:
+
+1. Open `chrome://extensions`
+2. Enable Developer mode
+3. Click **Load unpacked**
+4. Select `dist/apps/chrome-extension`
+
+Start MCP runtime:
 
 ```bash
-pnpm install
 node scripts/mcp-start.cjs
 ```
 
-Quick npm MCP launch (marketplace-style, after publish):
+### Quick Runtime (MCP server launcher only)
+
+If you already have extension/runtime assets aligned, you can launch from npm:
 
 ```bash
 npx -y browser-debug-mcp-bridge
 ```
 
-Note: npm mode starts the MCP server runtime. The Chrome extension still needs to be built/loaded separately (see "Load the extension").
-
-GitHub fallback launch (if npm package is not available yet):
+GitHub fallback (if npm registry package is unavailable):
 
 ```bash
 npx -y --package=github:RobertoM80/browser-debug-mcp-bridge browser-debug-mcp-bridge
 ```
 
-Optional one-step setup scripts:
+Important:
+
+- This only starts the runtime.
+- You still need a compatible extension connected to `127.0.0.1:8065`.
+
+## MCP Client Configuration
+
+Generate ready-to-paste snippets:
 
 ```bash
-# Windows (PowerShell)
-./install.ps1
+pnpm mcp:print-config
+```
 
+### OpenAI (Codex CLI / Codex in VS Code)
+
+Edit `~/.codex/config.toml` (Windows: `C:\Users\<you>\.codex\config.toml`) and add:
+
+```toml
+[mcp_servers.browser_debug]
+command = "node"
+args = ["C:\\ABSOLUTE\\PATH\\TO\\browser-debug-mcp-bridge\\scripts\\mcp-start.cjs"]
+```
+
+npm quick mode:
+
+```toml
+[mcp_servers.browser_debug]
+command = "npx"
+args = ["-y", "browser-debug-mcp-bridge"]
+```
+
+### OpenCode
+
+Use JSON MCP config:
+
+```json
+{
+  "mcpServers": {
+    "browser-debug": {
+      "command": "node",
+      "args": [
+        "C:\\ABSOLUTE\\PATH\\TO\\browser-debug-mcp-bridge\\scripts\\mcp-start.cjs"
+      ]
+    }
+  }
+}
+```
+
+### VS Code (any MCP host expecting command/args)
+
+Use the same values:
+
+- `command`: `node`
+- `args`: `[
+  "<ABSOLUTE_PATH>/scripts/mcp-start.cjs"
+]`
+
+If your VS Code MCP host uses JSON, reuse the OpenCode JSON block above.
+
+## First End-to-End Check
+
+- Start MCP host/client (so it launches this server).
+- Open extension popup, allowlist domain, start a session.
+- Ask your AI client to run:
+
+```json
+{ "name": "list_sessions", "arguments": { "sinceMinutes": 60 } }
+```
+
+- Pick a session where `liveConnection.connected` is `true`.
+- Run query tools first (`get_session_summary`, `get_recent_events`, `get_network_failures`).
+- Use live tools (`get_dom_document`, `capture_ui_snapshot`) only on connected sessions.
+
+## Port and Startup Behavior
+
+Default port is `8065`.
+
+- On Windows, launcher tries automatic stale bridge recovery first.
+- If port is still occupied, startup fails with `MCP_STARTUP_PORT_IN_USE`.
+- In that case, free/reserve port `8065` for this bridge and restart.
+- In `mcp-stdio` mode, bridge lifecycle is tied to the host and should stop when host transport closes.
+- If a stale process still remains, stop it explicitly with `node scripts/mcp-start.cjs --stop`.
+
+Useful Windows command:
+
+```powershell
+netstat -ano | findstr :8065
+```
+
+Stop command:
+
+```bash
+node scripts/mcp-start.cjs --stop
+```
+
+## Common Failure Signals
+
+- `LIVE_SESSION_DISCONNECTED`: session exists in DB but no active extension transport. Fix: restart/reconnect extension session, then use a `liveConnection.connected = true` session id.
+- `MCP_STARTUP_PORT_IN_USE`: required MCP port is blocked. Fix: stop the process using that port and restart bridge.
+
+## Useful Commands
+
+```bash
+pnpm typecheck
+pnpm lint
+pnpm test
+pnpm build
+pnpm docs:ci
+pnpm verify
+node scripts/mcp-start.cjs --stop
+```
+
+Optional one-shot local setup:
+
+```powershell
+# Windows
+./install.ps1
+```
+
+```bash
 # macOS/Linux
 bash ./install.sh
 ```
 
-Useful workspace commands:
+## Tooling Docs
 
-```bash
-pnpm typecheck
-pnpm test
-pnpm nx run-many -t lint
-pnpm nx run-many -t build
-```
+- [MCP tools reference](https://github.com/RobertoM80/browser-debug-mcp-bridge/blob/main/docs/MCP_TOOLS.md)
+- [MCP client setup](https://github.com/RobertoM80/browser-debug-mcp-bridge/blob/main/docs/MCP_CLIENT_SETUP.md)
+- [Troubleshooting](https://github.com/RobertoM80/browser-debug-mcp-bridge/blob/main/docs/TROUBLESHOOTING.md)
+- [Architecture](https://github.com/RobertoM80/browser-debug-mcp-bridge/blob/main/docs/ARCHITECTURE.md)
+- [Security and privacy](https://github.com/RobertoM80/browser-debug-mcp-bridge/blob/main/SECURITY.md)
 
-Enable local pre-commit checks (typecheck + lint + test before each commit):
-
-```bash
-pnpm hooks:install
-```
-
-## Load the extension
-
-1. Build the extension: `pnpm nx build chrome-extension`
-2. Open Chrome -> `chrome://extensions`
-3. Enable Developer mode
-4. Click **Load unpacked**
-5. Select `dist/apps/chrome-extension`
-
-## Main docs
-
-- Project spec: `PROJECT_INFOS.md`
-- Full beginner setup guide: `HOW_TO_USE_BROWSER_DEBUG_MCP_BRIDGE.md`
-- MCP tools reference: `docs/MCP_TOOLS.md`
-- MCP client setup (Codex/Claude/Cursor/Windsurf): `docs/MCP_CLIENT_SETUP.md`
-- GitHub Actions explained: `docs/GITHUB_ACTIONS.md`
-- Security and privacy controls: `SECURITY.md`
-- Troubleshooting guide: `docs/TROUBLESHOOTING.md`
-- Architecture overview: `docs/ARCHITECTURE.md`
-- Architecture decisions: `docs/ARCHITECTURE_DECISIONS.md`
-
-## Repository layout
+## Repository Layout
 
 ```text
 apps/
@@ -98,6 +208,6 @@ apps/
 libs/
   shared/             Shared schemas/types/utils
   redaction/          Privacy redaction engine
-  selectors/          Robust selector generation
-  mcp-contracts/      MCP tool contracts and schemas 
+  selectors/          Selector generation
+  mcp-contracts/      MCP tool contracts and schemas
 ```

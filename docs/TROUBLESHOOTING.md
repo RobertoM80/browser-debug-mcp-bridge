@@ -13,7 +13,19 @@
 Note for Windows launcher behavior:
 
 - `scripts/mcp-start.cjs` automatically tries to recover from stale bridge processes already bound to `8065`
+- If launcher prints `MCP_STARTUP_PORT_IN_USE`, reserve/free MCP port `8065` for the bridge and start again
 - If startup still fails on `8065`, the remaining listener is likely a non-bridge process and must be stopped manually
+
+## MCP process stays running after host exits
+
+Expected behavior:
+
+- In `mcp-stdio` mode, bridge should stop when MCP host transport closes
+
+Manual recovery:
+
+- Run `node scripts/mcp-start.cjs --stop`
+- If stop fails with `MCP_STOP_PORT_OCCUPIED_BY_OTHER_APP`, the listener on `8065` is not bridge and must be handled manually
 
 ## Extension cannot connect to server
 

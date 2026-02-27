@@ -30,6 +30,12 @@ node scripts/mcp-start.cjs
 
 On Windows, launcher attempts automatic stale-process recovery if bridge port `8065` is occupied.
 
+In `mcp-stdio` mode, bridge should stop when host transport closes. If a stale process remains, run:
+
+```bash
+node scripts/mcp-start.cjs --stop
+```
+
 ## Load extension build
 
 1. Build once: `pnpm nx build chrome-extension`

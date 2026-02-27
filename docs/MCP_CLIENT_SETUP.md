@@ -1,6 +1,7 @@
 # MCP Client Setup (Universal)
 
 This repository now exposes a single universal launcher that starts:
+
 - HTTP/WebSocket ingest server on `http://127.0.0.1:8065`
 - MCP stdio runtime (tool server for LLM clients)
 
@@ -29,14 +30,26 @@ Quick GitHub fallback option (if registry package is not available):
 - args: `["-y", "--package=github:RobertoM80/browser-debug-mcp-bridge", "browser-debug-mcp-bridge"]`
 
 Important:
+
 - This only changes how the MCP server is started.
 - You still need the Chrome extension loaded and connected to `127.0.0.1:8065`.
+- In `mcp-stdio` mode, runtime should stop when the MCP host process/transport closes.
 
 Launcher behavior on Windows:
+
 - If port `8065` is held by a stale bridge process, launcher tries automatic recovery and restart.
 - If `8065` is still blocked after recovery, check for non-bridge processes bound to that port.
 
+Manual stop command:
+
+```bash
+node scripts/mcp-start.cjs --stop
+```
+
+Use this when a stale bridge process is still occupying port `8065`.
+
 Example Windows path:
+
 - `C:\\Users\\your-user\\Documents\\progetti\\browser-debug-mcp-bridge`
 - full args example:
   - `["C:\\Users\\your-user\\Documents\\progetti\\browser-debug-mcp-bridge\\scripts\\mcp-start.cjs"]`
@@ -56,6 +69,7 @@ pnpm mcp:print-config -- --repo=C:\\absolute\\path\\to\\browser-debug-mcp-bridge
 ## Codex (VS Code / CLI)
 
 Edit:
+
 - Global: `C:\Users\<you>\.codex\config.toml`
 - Or project: `<repo>\.codex\config.toml`
 
@@ -68,6 +82,7 @@ args = ["C:\\Users\\your-user\\Documents\\progetti\\browser-debug-mcp-bridge\\sc
 ```
 
 Quick checklist:
+
 1. Run `pnpm install` (local clone mode only)
 2. Add block above to `.codex/config.toml`
 3. Restart Codex client
@@ -90,6 +105,7 @@ args = ["-y", "browser-debug-mcp-bridge"]
 ```
 
 If this mode fails with npm cache permission errors (for example `EPERM ... npm-cache\\_cacache\\tmp\\git-clone...`), switch to local mode:
+
 - command: `node`
 - args: `["<ABSOLUTE_PATH_TO_REPO>\\scripts\\mcp-start.cjs"]`
 
@@ -111,6 +127,7 @@ Edit `%APPDATA%\Claude\claude_desktop_config.json`:
 ```
 
 Quick checklist:
+
 1. Run `pnpm install` (local clone mode only)
 2. Paste JSON block in `%APPDATA%\\Claude\\claude_desktop_config.json`
 3. Restart Claude Desktop
@@ -121,6 +138,7 @@ Quick checklist:
 Use the same `command` + `args` values in that client's MCP server config UI/JSON.
 
 Quick checklist:
+
 1. Run `pnpm install` (local clone mode only)
 2. Add MCP server with:
    - command: `node`

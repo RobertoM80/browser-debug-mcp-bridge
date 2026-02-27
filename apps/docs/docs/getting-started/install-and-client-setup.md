@@ -53,6 +53,13 @@ Notes:
 3. You still need the Chrome extension loaded; this option only changes server startup.
 4. If npm reports `EPERM` under `npm-cache\\_cacache\\tmp\\git-clone...`, use local mode instead.
 5. On Windows, launcher attempts automatic recovery when stale bridge processes still hold port `8065`.
+6. In `mcp-stdio` mode, runtime should stop when the MCP host transport closes.
+
+Manual stop command (if stale process still occupies `8065`):
+
+```bash
+node scripts/mcp-start.cjs --stop
+```
 
 ## 4) Generate client config snippets
 

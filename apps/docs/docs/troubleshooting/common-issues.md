@@ -21,7 +21,14 @@ Actions:
 ## Server start fails with port conflict
 
 - Launcher (`node scripts/mcp-start.cjs`) auto-recovers stale bridge processes on Windows when possible
+- If launcher prints `MCP_STARTUP_PORT_IN_USE`, reserve/free MCP port `8065` for the bridge and retry
 - If startup still fails on port `8065`, stop non-bridge listener processes manually and retry
+
+## MCP process remains alive after host closes
+
+- In `mcp-stdio` mode, process should stop when host transport closes
+- If a stale bridge process remains, run `node scripts/mcp-start.cjs --stop`
+- If stop reports `MCP_STOP_PORT_OCCUPIED_BY_OTHER_APP`, the listener is not bridge and must be stopped manually
 
 ## No events in session summary
 

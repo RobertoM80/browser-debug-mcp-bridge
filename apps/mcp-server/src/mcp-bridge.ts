@@ -4,6 +4,7 @@ import type { WebSocketManager } from './websocket/websocket-server.js';
 
 let stopServerFn: (() => void) | null = null;
 let getWebSocketManager: (() => WebSocketManager | null) | null = null;
+let isShuttingDown = false;
 
 function ensureWebSocketManager(): WebSocketManager {
   if (!getWebSocketManager) {
@@ -28,9 +29,32 @@ function writeStderr(message: string): void {
   process.stderr.write(`${message}\n`);
 }
 
-function shutdown(code = 0): void {
+function shutdown(code = 0, reason?: string): void {
+  if (isShuttingDown) {
+    return;
+  }
+  isShuttingDown = true;
+  if (reason) {
+    writeStderr(`[MCPServer][Bridge] ${reason}`);
+  }
   stopServerFn?.();
   process.exit(code);
+}
+
+function registerLifecycleGuards(): void {
+  process.on('SIGINT', () => shutdown(0, 'Received SIGINT.'));
+  process.on('SIGTERM', () => shutdown(0, 'Received SIGTERM.'));
+  if (process.platform !== 'win32') {
+    process.on('SIGHUP', () => shutdown(0, 'Received SIGHUP.'));
+  }
+
+  const shutdownFromHostDisconnect = (source: string): void => {
+    shutdown(0, `Host transport closed (${source}); stopping MCP bridge.`);
+  };
+
+  process.stdin.on('end', () => shutdownFromHostDisconnect('stdin-end'));
+  process.stdin.on('close', () => shutdownFromHostDisconnect('stdin-close'));
+  process.on('disconnect', () => shutdownFromHostDisconnect('parent-disconnect'));
 }
 
 async function startBridge(): Promise<void> {
@@ -70,8 +94,7 @@ async function startBridge(): Promise<void> {
   writeStderr('[MCPServer][Bridge] 2) Ask your MCP client to call list_sessions');
 }
 
-process.on('SIGINT', () => shutdown(0));
-process.on('SIGTERM', () => shutdown(0));
+registerLifecycleGuards();
 
 const entryUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
 

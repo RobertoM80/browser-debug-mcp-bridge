@@ -17,6 +17,7 @@ const useTsx = args.includes('--mode=tsx');
 const useDist = args.includes('--mode=dist');
 const dryRun = args.includes('--dry-run');
 const standalone = args.includes('--standalone');
+const stopRequested = args.includes('--stop');
 const localRequire = createRequire(join(repoRoot, 'package.json'));
 const supportsColor = Boolean(process.stderr.isTTY) && !process.env.NO_COLOR;
 const greenBackground = '\x1b[42m\x1b[30m';
@@ -161,16 +162,58 @@ function getWindowsProcessCommandLine(pid) {
 
 function isLikelyBridgeCommandLine(commandLine) {
   const normalized = String(commandLine || '').toLowerCase();
-  return normalized.includes('browser-debug-mcp-bridge')
-    || normalized.includes('mcp-start.cjs')
-    || normalized.includes('mcp-bridge')
+  return normalized.includes('scripts\\mcp-start.cjs')
+    || normalized.includes('scripts/mcp-start.cjs')
+    || normalized.includes('mcp-bridge.js')
+    || normalized.includes('mcp-bridge.ts')
     || normalized.includes('mcp-server:serve-mcp')
-    || normalized.includes('mcp-server:serve');
+    || normalized.includes('browser-debug-mcp-bridge.cmd');
 }
 
 function killWindowsProcess(pid) {
   const result = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { encoding: 'utf8' });
   return result.status === 0;
+}
+
+function getPosixListeningPids(port) {
+  const result = spawnSync('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' });
+  if (result.error || result.status !== 0) {
+    return [];
+  }
+
+  return String(result.stdout || '')
+    .split(/\r?\n/u)
+    .map((value) => Number(value.trim()))
+    .filter((pid) => Number.isInteger(pid) && pid > 0);
+}
+
+function getListeningPids(port) {
+  return process.platform === 'win32' ? getWindowsListeningPids(port) : getPosixListeningPids(port);
+}
+
+function getPosixProcessCommandLine(pid) {
+  const result = spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
+  if (result.error || result.status !== 0) {
+    return '';
+  }
+  return String(result.stdout || '').trim();
+}
+
+function getProcessCommandLine(pid) {
+  return process.platform === 'win32' ? getWindowsProcessCommandLine(pid) : getPosixProcessCommandLine(pid);
+}
+
+function terminateProcess(pid) {
+  if (process.platform === 'win32') {
+    return killWindowsProcess(pid);
+  }
+
+  try {
+    process.kill(pid, 'SIGTERM');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function tryRecoverStaleBridgeOnWindowsPort(port) {
@@ -216,6 +259,76 @@ async function tryRecoverStaleBridgeOnWindowsPort(port) {
   }
 
   return false;
+}
+
+async function stopBridgeOnPort(port) {
+  const listenerPids = getListeningPids(port).filter((pid) => pid !== process.pid);
+  if (listenerPids.length === 0) {
+    const inUse = await isPortInUse(port);
+    if (!inUse) {
+      process.stderr.write(`[mcp-start] MCP_STOP_NO_ACTIVE_PROCESS: no listener found on port ${port}.\n`);
+      process.exit(0);
+    }
+
+    process.stderr.write(
+      `[mcp-start] MCP_STOP_FAILED: port ${port} is in use but listener process could not be resolved on ${process.platform}.\n`,
+    );
+    process.exit(1);
+  }
+
+  const endpointLooksLikeBridge = await isBridgeHttpEndpoint(port);
+  const bridgePids = [];
+  const nonBridgePids = [];
+
+  for (const pid of listenerPids) {
+    const commandLine = getProcessCommandLine(pid);
+    const looksLikeBridge = endpointLooksLikeBridge || isLikelyBridgeCommandLine(commandLine);
+    if (looksLikeBridge) {
+      bridgePids.push({ pid, commandLine });
+      continue;
+    }
+    nonBridgePids.push({ pid, commandLine });
+  }
+
+  if (bridgePids.length === 0) {
+    process.stderr.write(
+      `[mcp-start] MCP_STOP_PORT_OCCUPIED_BY_OTHER_APP: port ${port} is not owned by Browser Debug MCP Bridge.\n`,
+    );
+    for (const proc of nonBridgePids) {
+      process.stderr.write(
+        `[mcp-start] Occupant pid=${proc.pid}${proc.commandLine ? ` cmd=${proc.commandLine}` : ''}\n`,
+      );
+    }
+    process.exit(1);
+  }
+
+  let stopFailed = false;
+  for (const proc of bridgePids) {
+    process.stderr.write(`[mcp-start] Stopping Browser Debug MCP Bridge process ${proc.pid} on port ${port}.\n`);
+    if (!terminateProcess(proc.pid)) {
+      process.stderr.write(`[mcp-start] Failed to terminate process ${proc.pid}.\n`);
+      stopFailed = true;
+    }
+  }
+
+  if (stopFailed) {
+    process.stderr.write('[mcp-start] MCP_STOP_FAILED: one or more processes could not be terminated.\n');
+    process.exit(1);
+  }
+
+  for (let attempt = 0; attempt < 15; attempt++) {
+    await delay(200);
+    const remainingListeners = getListeningPids(port).filter((pid) => pid !== process.pid);
+    if (remainingListeners.length === 0) {
+      process.stderr.write(`[mcp-start] MCP_STOP_SUCCESS: Browser Debug MCP Bridge stopped on port ${port}.\n`);
+      process.exit(0);
+    }
+  }
+
+  process.stderr.write(
+    `[mcp-start] MCP_STOP_FAILED: process termination requested but port ${port} is still in use.\n`,
+  );
+  process.exit(1);
 }
 
 if (!existsSync(packageJson)) {
@@ -284,6 +397,45 @@ function spawnRuntime(runtime) {
             },
           );
 
+  const forwardSignalToChild = (signal) => {
+    if (child.exitCode !== null || child.killed) {
+      return;
+    }
+
+    try {
+      child.kill(signal);
+    } catch {
+      // Ignore signal forwarding failures when child is already terminating.
+    }
+  };
+
+  process.on('SIGINT', () => forwardSignalToChild('SIGINT'));
+  process.on('SIGTERM', () => forwardSignalToChild('SIGTERM'));
+  if (process.platform !== 'win32') {
+    process.on('SIGHUP', () => forwardSignalToChild('SIGHUP'));
+  }
+
+  process.on('exit', () => {
+    if (child.exitCode === null && !child.killed) {
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        // Ignore failures during process exit.
+      }
+    }
+  });
+
+  if (!standalone) {
+    const shutdownFromHostDisconnect = () => {
+      process.stderr.write('[mcp-start] MCP host disconnected; stopping MCP bridge child process.\n');
+      forwardSignalToChild('SIGTERM');
+    };
+
+    process.stdin.on('end', shutdownFromHostDisconnect);
+    process.stdin.on('close', shutdownFromHostDisconnect);
+    process.on('disconnect', shutdownFromHostDisconnect);
+  }
+
   child.on('exit', (code, signal) => {
     if (signal) {
       process.kill(process.pid, signal);
@@ -309,6 +461,16 @@ function spawnRuntime(runtime) {
 
 async function main() {
   const port = Number(process.env.PORT || '8065');
+  if (!Number.isFinite(port) || port <= 0) {
+    process.stderr.write(`[mcp-start] Invalid PORT value: ${String(process.env.PORT || '')}\n`);
+    process.exit(1);
+  }
+
+  if (stopRequested) {
+    await stopBridgeOnPort(port);
+    return;
+  }
+
   if (Number.isFinite(port)) {
     let inUse = await isPortInUse(port);
     if (inUse) {
@@ -320,19 +482,19 @@ async function main() {
 
     if (inUse) {
       process.stderr.write(
-        `[mcp-start] Port ${port} is already in use. Another Browser Debug MCP Bridge instance is likely running.\n`,
+        `[mcp-start] MCP_STARTUP_PORT_IN_USE: required MCP port ${port} is already in use.\n`,
       );
       process.stderr.write(
-        '[mcp-start] Stop the existing process, or run this instance on a different port.\n',
+        `[mcp-start] Reserve port ${port} for Browser Debug MCP Bridge: stop the process currently using it, then start the bridge again.\n`,
+      );
+      process.stderr.write(
+        '[mcp-start] The bridge cannot start until the configured MCP port is free.\n',
       );
       if (process.platform === 'win32') {
         process.stderr.write(
-          '[mcp-start] Windows help: netstat -ano | findstr :8065\n',
+          `[mcp-start] Windows help: netstat -ano | findstr :${port}\n`,
         );
       }
-      process.stderr.write(
-        '[mcp-start] Example with different port: PORT=8070 browser-debug-mcp-bridge --standalone\n',
-      );
       process.exit(1);
     }
   }
