@@ -22,14 +22,47 @@ It captures telemetry from an actual browser session (console, network, navigati
 ## Requirements
 
 - Node.js `>=20`
+- npm (for no-repo quick mode)
 - pnpm `>=9` (for local repo mode)
 - Chrome (Developer Mode to load unpacked extension)
 
 ## Setup Modes
 
-### Recommended: Full Local Setup (MCP + Extension)
+### Recommended for Most Users: No-Repo Quick Setup
 
-Use this when you want the full product (including extension).
+Use this when you want to install and run quickly without cloning this repository.
+
+1. Install runtime globally:
+
+```bash
+npm i -g browser-debug-mcp-bridge
+```
+
+2. Download the latest extension asset `chrome-extension-dist.tgz` from:
+
+- `https://github.com/RobertoM80/browser-debug-mcp-bridge/releases/latest`
+
+3. Extract the archive and load extension in Chrome:
+
+1. Open `chrome://extensions`
+2. Enable Developer mode
+3. Click **Load unpacked**
+4. Select the extracted extension folder
+
+4. Configure MCP host with direct Node launch (recommended):
+
+1. Find npm global root: `npm root -g`
+2. Use script path: `<NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs`
+
+5. Alternative quick runtime (secondary):
+
+```bash
+npx -y browser-debug-mcp-bridge
+```
+
+### Local Repo Setup (Contributors/Customization)
+
+Use this when you need local development, customization, or source-level debugging.
 
 ```bash
 git clone https://github.com/RobertoM80/browser-debug-mcp-bridge.git
@@ -52,28 +85,9 @@ Start MCP runtime:
 node scripts/mcp-start.cjs
 ```
 
-### Quick Runtime (MCP server launcher only)
-
-If you already have extension/runtime assets aligned, you can launch from npm:
-
-```bash
-npx -y browser-debug-mcp-bridge
-```
-
-GitHub fallback (if npm registry package is unavailable):
-
-```bash
-npx -y --package=github:RobertoM80/browser-debug-mcp-bridge browser-debug-mcp-bridge
-```
-
-Important:
-
-- This only starts the runtime.
-- You still need a compatible extension connected to `127.0.0.1:8065`.
-
 ## MCP Client Configuration
 
-Generate ready-to-paste snippets:
+If you are using local repo mode, generate ready-to-paste snippets:
 
 ```bash
 pnpm mcp:print-config
@@ -81,7 +95,17 @@ pnpm mcp:print-config
 
 ### OpenAI (Codex CLI / Codex in VS Code)
 
+Best-practice launch path: use direct `node` launch to the installed script path.
+
 Edit `~/.codex/config.toml` (Windows: `C:\Users\<you>\.codex\config.toml`) and add:
+
+```toml
+[mcp_servers.browser_debug]
+command = "node"
+args = ["C:\\Users\\<you>\\AppData\\Roaming\\npm\\node_modules\\browser-debug-mcp-bridge\\scripts\\mcp-start.cjs"]
+```
+
+local repo mode alternative:
 
 ```toml
 [mcp_servers.browser_debug]
@@ -89,7 +113,7 @@ command = "node"
 args = ["C:\\ABSOLUTE\\PATH\\TO\\browser-debug-mcp-bridge\\scripts\\mcp-start.cjs"]
 ```
 
-npm quick mode:
+npm quick mode (secondary):
 
 ```toml
 [mcp_servers.browser_debug]
@@ -107,7 +131,7 @@ Use JSON MCP config:
     "browser-debug": {
       "command": "node",
       "args": [
-        "C:\\ABSOLUTE\\PATH\\TO\\browser-debug-mcp-bridge\\scripts\\mcp-start.cjs"
+        "C:\\Users\\<you>\\AppData\\Roaming\\npm\\node_modules\\browser-debug-mcp-bridge\\scripts\\mcp-start.cjs"
       ]
     }
   }
@@ -120,7 +144,7 @@ Use the same values:
 
 - `command`: `node`
 - `args`: `[
-  "<ABSOLUTE_PATH>/scripts/mcp-start.cjs"
+  "<NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs"
 ]`
 
 If your VS Code MCP host uses JSON, reuse the OpenCode JSON block above.
@@ -143,11 +167,14 @@ If your VS Code MCP host uses JSON, reuse the OpenCode JSON block above.
 
 Default port is `8065`.
 
+- Launcher enforces a single-instance startup lock to avoid concurrent launch races.
 - On Windows, launcher tries automatic stale bridge recovery first.
 - If port is still occupied, startup fails with `MCP_STARTUP_PORT_IN_USE`.
 - In that case, free/reserve port `8065` for this bridge and restart.
+- Launcher reports `Started` only after `/health` becomes reachable on `127.0.0.1:8065`.
 - In `mcp-stdio` mode, bridge lifecycle is tied to the host and should stop when host transport closes.
 - If a stale process still remains, stop it explicitly with `node scripts/mcp-start.cjs --stop`.
+- Optional: set `MCP_STARTUP_TIMEOUT_MS` (default `15000`) for slower machines.
 
 Useful Windows command:
 

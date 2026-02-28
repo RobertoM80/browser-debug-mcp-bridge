@@ -3,6 +3,7 @@
 ## Server does not start
 
 - Confirm Node 20+ is installed
+- Prefer direct launch path in MCP config: `command = node`, `args = ["...\\scripts\\mcp-start.cjs"]`
 - If using npm mode, run `npx -y browser-debug-mcp-bridge`
 - If using local clone mode:
   - confirm pnpm is installed
@@ -12,8 +13,10 @@
 
 Note for Windows launcher behavior:
 
+- `scripts/mcp-start.cjs` enforces a single-instance startup lock to prevent concurrent launch races
 - `scripts/mcp-start.cjs` automatically tries to recover from stale bridge processes already bound to `8065`
 - If launcher prints `MCP_STARTUP_PORT_IN_USE`, reserve/free MCP port `8065` for the bridge and start again
+- If launcher prints `MCP_STARTUP_LOCKED`, another launcher process is still active
 - If startup still fails on `8065`, the remaining listener is likely a non-bridge process and must be stopped manually
 
 ## MCP process stays running after host exits

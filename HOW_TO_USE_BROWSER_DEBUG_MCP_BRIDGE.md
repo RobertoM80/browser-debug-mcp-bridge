@@ -1,7 +1,7 @@
 # HOW TO USE BROWSER DEBUG MCP BRIDGE
 
 This guide explains how to use Browser Debug MCP Bridge from any project through MCP.
-You can run it from npm (recommended) or from a local Git clone.
+You can run it without cloning (recommended for normal users) or from a local Git clone.
 
 ## What this project is
 
@@ -44,14 +44,16 @@ What the diagram means:
 
 You need:
 1. Node.js 20+
-2. pnpm 9+ (only for local clone mode and extension build from source)
-3. Git (only for local clone mode)
-4. Google Chrome
+2. npm (for quick no-repo install)
+3. pnpm 9+ (only for local clone mode and extension build from source)
+4. Git (only for local clone mode)
+5. Google Chrome
 
 Check versions:
 
 ```bash
 node -v
+npm -v
 pnpm -v
 git --version
 ```
@@ -59,12 +61,28 @@ git --version
 ## Step 1: Choose installation mode
 
 MCP runtime modes:
-1. npm package mode (recommended for most users)
+1. no-repo mode (recommended for most users)
 2. local Git clone mode (best for contributors/customization)
 
-### 1A) npm package mode (recommended)
+### 1A) No-repo mode (recommended)
 
-In MCP client config use:
+Install runtime globally once:
+
+```bash
+npm i -g browser-debug-mcp-bridge
+```
+
+Then in MCP client config use direct node launch:
+1. command: `node`
+2. args: `["<NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs"]`
+
+Find `<NPM_GLOBAL_ROOT>` with:
+
+```bash
+npm root -g
+```
+
+Secondary quick option:
 1. command: `npx`
 2. args: `["-y", "browser-debug-mcp-bridge"]`
 
@@ -79,7 +97,7 @@ pnpm install
 Important:
 1. Keep this folder on disk.
 2. MCP clients will run this repo directly from its local path.
-3. This mode is optional if you use npm package mode.
+3. This mode is optional if you use no-repo mode.
 
 Alternative one-step setup:
 
@@ -88,13 +106,18 @@ Alternative one-step setup:
 2. macOS/Linux:
    - `bash ./install.sh`
 
-## Step 2: Build and load the extension (required)
+## Step 2: Install and load the extension (required)
 
 Note:
-1. npm package mode covers MCP server startup only.
-2. You still need the extension loaded in Chrome.
+1. Runtime launch mode does not include automatic extension installation.
+2. You must load a compatible extension connected to `127.0.0.1:8065`.
 
-Build:
+No-repo extension option (recommended):
+1. Download `chrome-extension-dist.tgz` from:
+   - `https://github.com/RobertoM80/browser-debug-mcp-bridge/releases/latest`
+2. Extract it locally.
+
+Local clone extension option:
 
 ```bash
 pnpm nx build chrome-extension
@@ -104,7 +127,7 @@ Load into Chrome:
 1. Open `chrome://extensions`
 2. Enable **Developer mode**
 3. Click **Load unpacked**
-4. Select `dist/apps/chrome-extension`
+4. Select extracted extension folder (no-repo mode) or `dist/apps/chrome-extension` (local clone mode)
 
 Expected result:
 1. The extension appears in the extension list.
@@ -112,17 +135,25 @@ Expected result:
 
 ## Step 3: Start the universal MCP runtime
 
-Run:
+No-repo mode (recommended):
+
+```bash
+npm i -g browser-debug-mcp-bridge
+# then run in MCP host via:
+# node <NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs
+```
+
+No-repo secondary option:
+
+```bash
+npx -y browser-debug-mcp-bridge
+```
+
+Local clone mode:
 
 ```bash
 pnpm install
 node scripts/mcp-start.cjs
-```
-
-Or (npm mode):
-
-```bash
-npx -y browser-debug-mcp-bridge
 ```
 
 What this starts:
@@ -165,9 +196,9 @@ Local clone config (recommended for contributors):
 1. command: `node`
 2. args: `["<ABSOLUTE_PATH_TO_BROWSER_DEBUG_MCP_BRIDGE>\\scripts\\mcp-start.cjs"]`
 
-npm config (recommended for normal users):
-1. command: `npx`
-2. args: `["-y", "browser-debug-mcp-bridge"]`
+no-repo config (recommended for normal users):
+1. command: `node`
+2. args: `["<NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs"]`
 
 GitHub fallback config (if npm package is unavailable):
 1. command: `npx`
@@ -197,7 +228,7 @@ Then ask the LLM to use browser-debug tools, for example:
 4. `list_snapshots`
 
 This works because the MCP client can call this bridge process by path, even while you work in a different repo.
-It also works in npm mode because MCP client can run `npx -y browser-debug-mcp-bridge`.
+Preferred path is direct node launch to the globally installed script; npm mode (`npx`) also works.
 
 ## Step 8: Verify everything works
 
@@ -240,12 +271,15 @@ If MCP client shows no tools:
 
 ## Distribution modes summary
 
-1. npm mode:
-   - `command = npx`
-   - `args = ["-y", "browser-debug-mcp-bridge"]`
+1. no-repo mode (recommended):
+   - `command = node`
+   - `args` points to `<NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs`
 2. local clone mode:
    - `command = node`
    - `args` points to `<repo>/scripts/mcp-start.cjs`
-3. GitHub fallback mode:
+3. npm mode (secondary):
+   - `command = npx`
+   - `args = ["-y", "browser-debug-mcp-bridge"]`
+4. GitHub fallback mode:
    - `command = npx`
    - `args = ["-y", "--package=github:RobertoM80/browser-debug-mcp-bridge", "browser-debug-mcp-bridge"]`

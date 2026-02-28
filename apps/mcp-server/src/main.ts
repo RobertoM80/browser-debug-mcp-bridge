@@ -24,6 +24,7 @@ const fastify = Fastify({
 });
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8065;
+const HOST = process.env.HOST || '127.0.0.1';
 let wsManager: WebSocketManager | null = null;
 const startedAt = Date.now();
 let cleanupInterval: NodeJS.Timeout | null = null;
@@ -456,8 +457,8 @@ export async function startServer(): Promise<void> {
       }
     }, settings.cleanupIntervalMinutes * 60_000);
 
-    await fastify.listen({ port: PORT, host: '0.0.0.0' });
-    fastify.log.info(`Server listening on port ${PORT}`);
+    await fastify.listen({ port: PORT, host: HOST });
+    fastify.log.info(`Server listening on ${HOST}:${PORT}`);
 
     wsManager = new WebSocketManager();
     wsManager.initialize(fastify);

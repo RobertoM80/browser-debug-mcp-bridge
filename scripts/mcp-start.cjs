@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 const { spawn, spawnSync } = require('node:child_process');
-const { existsSync } = require('node:fs');
+const { existsSync, mkdirSync, openSync, writeFileSync, closeSync, readFileSync, unlinkSync } = require('node:fs');
 const { dirname, join, resolve } = require('node:path');
 const { createRequire } = require('node:module');
 const net = require('node:net');
@@ -22,6 +22,9 @@ const localRequire = createRequire(join(repoRoot, 'package.json'));
 const supportsColor = Boolean(process.stderr.isTTY) && !process.env.NO_COLOR;
 const greenBackground = '\x1b[42m\x1b[30m';
 const ansiReset = '\x1b[0m';
+const launchLockPath = join(process.env.DATA_DIR ? resolve(process.env.DATA_DIR) : join(repoRoot, 'data'), '.mcp-start.lock');
+
+let launchLockHeld = false;
 
 function resolveRuntimePath(specifier) {
   try {
@@ -73,6 +76,117 @@ function isPortInUse(port, host = '127.0.0.1') {
 
 function delay(ms) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, ms));
+}
+
+function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return Boolean(error && error.code === 'EPERM');
+  }
+}
+
+function parseLockPayload(raw) {
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function readLaunchLock(lockPath) {
+  try {
+    const raw = readFileSync(lockPath, 'utf8');
+    return parseLockPayload(raw);
+  } catch {
+    return null;
+  }
+}
+
+function acquireLaunchLock(lockPath) {
+  mkdirSync(dirname(lockPath), { recursive: true });
+  const payload = JSON.stringify({
+    pid: process.pid,
+    createdAt: new Date().toISOString(),
+    command: process.argv.join(' '),
+  });
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = openSync(lockPath, 'wx');
+      try {
+        writeFileSync(fd, payload, 'utf8');
+      } finally {
+        closeSync(fd);
+      }
+      launchLockHeld = true;
+      return;
+    } catch (error) {
+      if (!error || error.code !== 'EEXIST') {
+        throw error;
+      }
+
+      const existing = readLaunchLock(lockPath);
+      const lockPid = Number(existing && existing.pid);
+      if (Number.isInteger(lockPid) && lockPid > 0 && lockPid !== process.pid && isProcessAlive(lockPid)) {
+        process.stderr.write(
+          `[mcp-start] MCP_STARTUP_LOCKED: another launcher instance (pid ${lockPid}) is already running.\n`,
+        );
+        process.stderr.write('[mcp-start] If startup appears stuck, run: node scripts/mcp-start.cjs --stop\n');
+        process.exit(1);
+      }
+
+      try {
+        unlinkSync(lockPath);
+      } catch (unlinkError) {
+        if (!unlinkError || unlinkError.code !== 'ENOENT') {
+          process.stderr.write(
+            `[mcp-start] MCP_STARTUP_LOCK_FAILED: unable to clear stale lock at ${lockPath}.\n`,
+          );
+          process.exit(1);
+        }
+      }
+    }
+  }
+
+  process.stderr.write(`[mcp-start] MCP_STARTUP_LOCK_FAILED: unable to acquire startup lock at ${lockPath}.\n`);
+  process.exit(1);
+}
+
+function releaseLaunchLock(lockPath) {
+  if (!launchLockHeld) {
+    return;
+  }
+
+  try {
+    const existing = readLaunchLock(lockPath);
+    const lockPid = Number(existing && existing.pid);
+    if (Number.isInteger(lockPid) && lockPid > 0 && lockPid !== process.pid) {
+      launchLockHeld = false;
+      return;
+    }
+    unlinkSync(lockPath);
+  } catch (error) {
+    if (error && error.code !== 'ENOENT') {
+      process.stderr.write(`[mcp-start] Warning: failed to release startup lock ${lockPath}.\n`);
+    }
+  } finally {
+    launchLockHeld = false;
+  }
+}
+
+function getStartupTimeoutMs() {
+  const timeoutMs = Number(process.env.MCP_STARTUP_TIMEOUT_MS || '15000');
+  if (!Number.isFinite(timeoutMs) || timeoutMs < 1000) {
+    return 15000;
+  }
+  return Math.floor(timeoutMs);
 }
 
 function fetchJson(pathname, port, timeoutMs = 1000) {
@@ -261,6 +375,32 @@ async function tryRecoverStaleBridgeOnWindowsPort(port) {
   return false;
 }
 
+async function waitForBridgeReady(port, child) {
+  const timeoutMs = getStartupTimeoutMs();
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) {
+      return {
+        ok: false,
+        reason: `MCP bridge exited during startup with code ${child.exitCode}.`,
+      };
+    }
+
+    const health = await fetchJson('/health', port, 1000);
+    if (health && typeof health === 'object' && health.status === 'ok' && health.websocket) {
+      return { ok: true };
+    }
+
+    await delay(200);
+  }
+
+  return {
+    ok: false,
+    reason: `Timed out after ${timeoutMs}ms waiting for /health on 127.0.0.1:${port}.`,
+  };
+}
+
 async function stopBridgeOnPort(port) {
   const listenerPids = getListeningPids(port).filter((pid) => pid !== process.pid);
   if (listenerPids.length === 0) {
@@ -336,7 +476,7 @@ if (!existsSync(packageJson)) {
   process.exit(1);
 }
 
-function spawnRuntime(runtime) {
+async function spawnRuntime(runtime, port) {
   const nxTarget = standalone ? 'mcp-server:serve' : 'mcp-server:serve-mcp';
   const entryScript =
     runtime === 'dist'
@@ -357,17 +497,6 @@ function spawnRuntime(runtime) {
       process.stderr.write(`[mcp-start] Command: node ${tsxCli} ${entryScript}\n`);
     }
     process.exit(0);
-  }
-
-  const startedMessage = standalone
-    ? `[mcp-start] Started Browser Debug MCP Bridge (runtime: ${runtime}, mode: standalone). Keep this terminal open.`
-    : `[mcp-start] Started Browser Debug MCP Bridge (runtime: ${runtime}, mode: mcp-stdio).`;
-  process.stderr.write(`${supportsColor ? `${greenBackground}${startedMessage}${ansiReset}` : startedMessage}\n`);
-  if (!standalone && process.stdin.isTTY) {
-    process.stderr.write(
-      '[mcp-start] Running from interactive terminal without MCP host. ' +
-      'Use --standalone for manual keep-alive testing.\n',
-    );
   }
 
   const child =
@@ -396,6 +525,8 @@ function spawnRuntime(runtime) {
               stdio: 'inherit',
             },
           );
+
+  let startupFinished = false;
 
   const forwardSignalToChild = (signal) => {
     if (child.exitCode !== null || child.killed) {
@@ -441,6 +572,11 @@ function spawnRuntime(runtime) {
       process.kill(process.pid, signal);
       return;
     }
+    if (!startupFinished) {
+      process.stderr.write(
+        `[mcp-start] MCP_STARTUP_FAILED: MCP bridge exited before readiness check completed (code ${code ?? 0}).\n`,
+      );
+    }
     if (!standalone && process.stdin.isTTY && (code ?? 0) === 0) {
       process.stderr.write(
         '[mcp-start] MCP stdio process exited (no MCP host attached). ' +
@@ -457,6 +593,25 @@ function spawnRuntime(runtime) {
     );
     process.exit(1);
   });
+
+  const readiness = await waitForBridgeReady(port, child);
+  if (!readiness.ok) {
+    process.stderr.write(`[mcp-start] MCP_STARTUP_FAILED: ${readiness.reason}\n`);
+    forwardSignalToChild('SIGTERM');
+    process.exit(1);
+  }
+
+  startupFinished = true;
+  const startedMessage = standalone
+    ? `[mcp-start] Started Browser Debug MCP Bridge (runtime: ${runtime}, mode: standalone). Keep this terminal open.`
+    : `[mcp-start] Started Browser Debug MCP Bridge (runtime: ${runtime}, mode: mcp-stdio).`;
+  process.stderr.write(`${supportsColor ? `${greenBackground}${startedMessage}${ansiReset}` : startedMessage}\n`);
+  if (!standalone && process.stdin.isTTY) {
+    process.stderr.write(
+      '[mcp-start] Running from interactive terminal without MCP host. ' +
+      'Use --standalone for manual keep-alive testing.\n',
+    );
+  }
 }
 
 async function main() {
@@ -469,6 +624,11 @@ async function main() {
   if (stopRequested) {
     await stopBridgeOnPort(port);
     return;
+  }
+
+  if (!dryRun) {
+    acquireLaunchLock(launchLockPath);
+    process.on('exit', () => releaseLaunchLock(launchLockPath));
   }
 
   if (Number.isFinite(port)) {
@@ -506,7 +666,7 @@ async function main() {
       );
       process.exit(1);
     }
-    spawnRuntime('dist');
+    await spawnRuntime('dist', port);
     return;
   }
 
@@ -515,17 +675,17 @@ async function main() {
       process.stderr.write('[mcp-start] Missing tsx runtime. Run npm install/pnpm install first.\n');
       process.exit(1);
     }
-    spawnRuntime('tsx');
+    await spawnRuntime('tsx', port);
     return;
   }
 
   if (existsSync(mcpBridgeDistEntry) && existsSync(mainServerDistEntry)) {
-    spawnRuntime('dist');
+    await spawnRuntime('dist', port);
     return;
   }
 
   if (existsSync(nxBin)) {
-    spawnRuntime('nx');
+    await spawnRuntime('nx', port);
     return;
   }
 
@@ -538,7 +698,7 @@ async function main() {
   }
 
   process.stderr.write('[mcp-start] nx runtime not found, using tsx fallback runtime.\n');
-  spawnRuntime('tsx');
+  await spawnRuntime('tsx', port);
 }
 
 main().catch((error) => {

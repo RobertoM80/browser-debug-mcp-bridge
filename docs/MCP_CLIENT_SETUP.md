@@ -11,15 +11,36 @@ This repository now exposes a single universal launcher that starts:
 - Chrome extension loaded and connected to `127.0.0.1:8065`
 - For local clone mode only:
   - `pnpm install`
+- For no-repo mode (recommended):
+  - `npm i -g browser-debug-mcp-bridge`
 
 ## Universal command
 
-From any MCP host, use this command:
+Recommended quick setup (no repo clone):
+
+1. Install once:
+
+```bash
+npm i -g browser-debug-mcp-bridge
+```
+
+2. Resolve global npm root:
+
+```bash
+npm root -g
+```
+
+3. Configure MCP host with direct Node launch:
+
+- command: `node`
+- args: `["<NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs"]`
+
+If you already cloned this repo, local path is also valid:
 
 - command: `node`
 - args: `["<ABSOLUTE_PATH_TO_REPO>\\scripts\\mcp-start.cjs"]`
 
-Quick npm registry option (recommended once published):
+Quick npm registry option (secondary):
 
 - command: `npx`
 - args: `["-y", "browser-debug-mcp-bridge"]`
@@ -34,11 +55,14 @@ Important:
 - This only changes how the MCP server is started.
 - You still need the Chrome extension loaded and connected to `127.0.0.1:8065`.
 - In `mcp-stdio` mode, runtime should stop when the MCP host process/transport closes.
+- Startup readiness timeout can be tuned with `MCP_STARTUP_TIMEOUT_MS` (default `15000`).
 
 Launcher behavior on Windows:
 
+- Launcher now enforces a single-instance startup lock to prevent concurrent launch races.
 - If port `8065` is held by a stale bridge process, launcher tries automatic recovery and restart.
 - If `8065` is still blocked after recovery, check for non-bridge processes bound to that port.
+- Launcher reports `Started` only after `/health` is reachable on `127.0.0.1:8065`.
 
 Manual stop command:
 
@@ -50,8 +74,10 @@ Use this when a stale bridge process is still occupying port `8065`.
 
 Example Windows path:
 
-- `C:\\Users\\your-user\\Documents\\progetti\\browser-debug-mcp-bridge`
+- `C:\\Users\\<you>\\AppData\\Roaming\\npm\\node_modules`
 - full args example:
+  - `["C:\\Users\\<you>\\AppData\\Roaming\\npm\\node_modules\\browser-debug-mcp-bridge\\scripts\\mcp-start.cjs"]`
+- local repo alternative:
   - `["C:\\Users\\your-user\\Documents\\progetti\\browser-debug-mcp-bridge\\scripts\\mcp-start.cjs"]`
 
 Generate copy-paste config snippets automatically:
@@ -78,13 +104,13 @@ Example:
 ```toml
 [mcp_servers.browser_debug]
 command = "node"
-args = ["C:\\Users\\your-user\\Documents\\progetti\\browser-debug-mcp-bridge\\scripts\\mcp-start.cjs"]
+args = ["C:\\Users\\<you>\\AppData\\Roaming\\npm\\node_modules\\browser-debug-mcp-bridge\\scripts\\mcp-start.cjs"]
 ```
 
 Quick checklist:
 
-1. Run `pnpm install` (local clone mode only)
-2. Add block above to `.codex/config.toml`
+1. If using local clone mode, run `pnpm install`
+2. Add block above to `.codex/config.toml` (global-path block for no-repo mode)
 3. Restart Codex client
 4. Confirm tools like `list_sessions` are visible
 
@@ -119,7 +145,7 @@ Edit `%APPDATA%\Claude\claude_desktop_config.json`:
     "browser-debug": {
       "command": "node",
       "args": [
-        "C:\\Users\\your-user\\Documents\\progetti\\browser-debug-mcp-bridge\\scripts\\mcp-start.cjs"
+        "C:\\Users\\<you>\\AppData\\Roaming\\npm\\node_modules\\browser-debug-mcp-bridge\\scripts\\mcp-start.cjs"
       ]
     }
   }
@@ -142,7 +168,7 @@ Quick checklist:
 1. Run `pnpm install` (local clone mode only)
 2. Add MCP server with:
    - command: `node`
-   - args: `["<repo>\\scripts\\mcp-start.cjs"]`
+   - args: `["<NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs"]`
 3. Restart client
 4. Confirm tools list includes browser-debug tools
 
@@ -156,7 +182,7 @@ If the host accepts JSON-style MCP server entries, use:
     "browser-debug": {
       "command": "node",
       "args": [
-        "C:\\path\\to\\browser-debug-mcp-bridge\\scripts\\mcp-start.cjs"
+        "<NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs"
       ]
     }
   }
@@ -166,7 +192,8 @@ If the host accepts JSON-style MCP server entries, use:
 ## Runtime flow check
 
 1. Start MCP host.
-2. Ensure it spawns either:
+2. Ensure it spawns one of:
+   - `node <NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs` (no-repo mode),
    - `node <repo>\\scripts\\mcp-start.cjs` (local clone mode), or
    - `npx -y browser-debug-mcp-bridge` (npm mode).
 3. Open extension popup, set allowlist, start session.
