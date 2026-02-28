@@ -203,6 +203,20 @@ const TOOL_SCHEMAS: Record<string, object> = {
       maxAncestors: { type: 'number' },
     },
   },
+  get_live_console_logs: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      url: { type: 'string' },
+      tabId: { type: 'number' },
+      levels: { type: 'array', items: { type: 'string' } },
+      contains: { type: 'string' },
+      sinceTs: { type: 'number' },
+      includeRuntimeErrors: { type: 'boolean' },
+      limit: { type: 'number' },
+    },
+  },
   explain_last_failure: {
     type: 'object',
     required: ['sessionId'],
@@ -269,6 +283,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_computed_styles: 'Read computed CSS styles for an element',
   get_layout_metrics: 'Read viewport and element layout metrics',
   capture_ui_snapshot: 'Capture redacted UI snapshot (DOM/styles/optional PNG) and persist it',
+  get_live_console_logs: 'Read in-memory live console logs for a connected session',
   explain_last_failure: 'Explain the latest failure timeline',
   get_event_correlation: 'Correlate related events by window',
   list_snapshots: 'List snapshot metadata by session/time/trigger',
@@ -405,7 +420,8 @@ export interface CaptureCommandClient {
       | 'CAPTURE_DOM_DOCUMENT'
       | 'CAPTURE_COMPUTED_STYLES'
       | 'CAPTURE_LAYOUT_METRICS'
-      | 'CAPTURE_UI_SNAPSHOT',
+      | 'CAPTURE_UI_SNAPSHOT'
+      | 'CAPTURE_GET_LIVE_CONSOLE_LOGS',
     payload: Record<string, unknown>,
     timeoutMs?: number,
   ): Promise<CaptureClientResult>;
@@ -835,6 +851,33 @@ function asStringArray(value: unknown, maxItems: number): string[] {
     .slice(0, maxItems);
 }
 
+const LIVE_CONSOLE_LEVELS = new Set(['log', 'info', 'warn', 'error', 'debug', 'trace']);
+
+function resolveLiveConsoleLevels(value: unknown): string[] {
+  const levels = asStringArray(value, 16)
+    .map((entry) => entry.trim().toLowerCase())
+    .filter((entry) => LIVE_CONSOLE_LEVELS.has(entry));
+
+  return Array.from(new Set(levels));
+}
+
+function resolveOptionalTabId(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error('tabId must be an integer');
+  }
+
+  const tabId = Math.floor(value);
+  if (!Number.isInteger(tabId) || tabId < 0) {
+    throw new Error('tabId must be an integer');
+  }
+
+  return tabId;
+}
+
 function isLiveSessionDisconnectedMessage(message: string): boolean {
   const normalized = message.toLowerCase();
   return normalized.includes('no active extension connection')
@@ -869,7 +912,8 @@ async function executeLiveCapture(
     | 'CAPTURE_DOM_DOCUMENT'
     | 'CAPTURE_COMPUTED_STYLES'
     | 'CAPTURE_LAYOUT_METRICS'
-    | 'CAPTURE_UI_SNAPSHOT',
+    | 'CAPTURE_UI_SNAPSHOT'
+    | 'CAPTURE_GET_LIVE_CONSOLE_LOGS',
   payload: Record<string, unknown>,
   timeoutMs: number,
 ): Promise<CaptureClientResult> {
@@ -2074,6 +2118,47 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
         ...createBaseResponse(sessionId),
         limitsApplied: {
           maxResults: maxBytes,
+          truncated: capture.truncated ?? false,
+        },
+        ...ensureCaptureSuccess(capture, sessionId),
+      };
+    },
+
+    get_live_console_logs: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const origin = normalizeRequestedOrigin(input.url);
+      const tabId = resolveOptionalTabId(input.tabId);
+      const levels = resolveLiveConsoleLevels(input.levels);
+      const contains = typeof input.contains === 'string' && input.contains.trim().length > 0
+        ? input.contains.trim()
+        : undefined;
+      const sinceTs = resolveOptionalTimestamp(input.sinceTs);
+      const includeRuntimeErrors = input.includeRuntimeErrors !== false;
+      const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
+      const capture = await executeLiveCapture(
+        captureClient,
+        sessionId,
+        'CAPTURE_GET_LIVE_CONSOLE_LOGS',
+        {
+          origin,
+          tabId,
+          levels,
+          contains,
+          sinceTs,
+          includeRuntimeErrors,
+          limit,
+        },
+        3_000,
+      );
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: limit,
           truncated: capture.truncated ?? false,
         },
         ...ensureCaptureSuccess(capture, sessionId),

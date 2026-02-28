@@ -1,4 +1,5 @@
 import { SessionManager, SessionState, CaptureCommandType } from './session-manager';
+import { LiveConsoleBufferStore } from './live-console-buffer';
 import {
   applySafeModeRestrictions,
   canCaptureSnapshot,
@@ -85,6 +86,7 @@ interface SessionTabScope {
 const snapshotPngUsageBySession = new Map<string, SnapshotPngUsage>();
 const captureTabBySession = new Map<string, { tabId: number; windowId?: number }>();
 const sessionTabScopeBySession = new Map<string, SessionTabScope>();
+const liveConsoleBufferStore = new LiveConsoleBufferStore();
 
 function getSnapshotPngUsage(sessionId: string): SnapshotPngUsage {
   const existing = snapshotPngUsageBySession.get(sessionId);
@@ -147,6 +149,79 @@ function resolveSessionEventOrigin(senderUrl: string, payload: Record<string, un
   return undefined;
 }
 
+function resolveLiveConsoleTabId(value: unknown): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error('tabId must be an integer');
+  }
+
+  const tabId = Math.floor(value);
+  if (!Number.isInteger(tabId) || tabId < 0) {
+    throw new Error('tabId must be an integer');
+  }
+
+  return tabId;
+}
+
+function resolveLiveConsoleSinceTs(value: unknown): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error('sinceTs must be a finite number');
+  }
+
+  const sinceTs = Math.floor(value);
+  if (sinceTs < 0) {
+    throw new Error('sinceTs must be >= 0');
+  }
+
+  return sinceTs;
+}
+
+function resolveLiveConsoleContains(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function resolveLiveConsoleLimit(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 100;
+  }
+
+  const limit = Math.floor(value);
+  if (limit < 1) {
+    return 100;
+  }
+
+  return Math.min(limit, 500);
+}
+
+function resolveLiveConsoleLevels(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const normalized = Array.from(
+    new Set(
+      value
+        .filter((entry): entry is string => typeof entry === 'string')
+        .map((entry) => entry.trim().toLowerCase())
+        .filter((entry) => entry.length > 0),
+    ),
+  );
+
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 function setSessionTabScope(sessionId: string, baseUrl: string, tabId?: number): void {
   const allowedTabIds = new Set<number>();
   if (typeof tabId === 'number') {
@@ -180,6 +255,7 @@ function cleanupSessionLocalState(sessionId: string): void {
   snapshotPngUsageBySession.delete(sessionId);
   captureTabBySession.delete(sessionId);
   sessionTabScopeBySession.delete(sessionId);
+  liveConsoleBufferStore.clearSession(sessionId);
 }
 
 async function buildSessionTabScopeResult(sessionId: string): Promise<Record<string, unknown>> {
@@ -350,6 +426,58 @@ async function executeCaptureCommand(
   payload: Record<string, unknown>,
   context: { sessionId: string; commandId: string }
 ): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  if (command === 'CAPTURE_GET_LIVE_CONSOLE_LOGS') {
+    const requestedTabId = resolveLiveConsoleTabId(payload.tabId);
+    const requestedOrigin = normalizeHttpOrigin(payload.origin ?? payload.url);
+    if ((payload.origin !== undefined || payload.url !== undefined) && !requestedOrigin) {
+      throw new Error('origin/url must be a valid absolute http(s) URL');
+    }
+
+    const sessionScope = getSessionTabScope(context.sessionId);
+    if (requestedTabId !== undefined && sessionScope && !sessionScope.allowedTabIds.has(requestedTabId)) {
+      throw new Error(`tabId ${requestedTabId} is not bound to this session`);
+    }
+
+    const limit = resolveLiveConsoleLimit(payload.limit);
+    const levels = resolveLiveConsoleLevels(payload.levels);
+    const contains = resolveLiveConsoleContains(payload.contains);
+    const sinceTs = resolveLiveConsoleSinceTs(payload.sinceTs);
+    const includeRuntimeErrors = payload.includeRuntimeErrors !== false;
+    const queryResult = liveConsoleBufferStore.query(context.sessionId, {
+      tabId: requestedTabId,
+      origin: requestedOrigin,
+      levels,
+      contains,
+      sinceTs,
+      limit,
+      includeRuntimeErrors,
+    });
+
+    return {
+      payload: {
+        sessionId: context.sessionId,
+        logs: queryResult.logs,
+        pagination: {
+          returned: queryResult.logs.length,
+          matched: queryResult.matched,
+        },
+        filtersApplied: {
+          tabId: requestedTabId,
+          origin: requestedOrigin,
+          levels: levels ?? [],
+          contains,
+          sinceTs,
+          includeRuntimeErrors,
+        },
+        bufferStats: {
+          buffered: queryResult.buffered,
+          dropped: queryResult.dropped,
+        },
+      },
+      truncated: queryResult.truncated,
+    };
+  }
+
   const tab = await resolveCaptureTab(context.sessionId);
   if (!tab || tab.id === undefined) {
     throw new Error('No tab available for this session capture');
@@ -707,12 +835,18 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
         payload = restricted;
       }
 
+      const eventOrigin = resolveSessionEventOrigin(senderUrl, payload);
       const accepted = sessionManager.queueEvent(request.eventType, payload, {
         tabId: senderTabId,
-        origin: resolveSessionEventOrigin(senderUrl, payload),
+        origin: eventOrigin,
       });
       if (accepted) {
         captureDiagnostics.accepted += 1;
+        liveConsoleBufferStore.append(activeSessionId, request.eventType, payload, {
+          tabId: senderTabId,
+          origin: eventOrigin,
+          now: Date.now(),
+        });
       } else {
         captureDiagnostics.rejectedInactive += 1;
       }

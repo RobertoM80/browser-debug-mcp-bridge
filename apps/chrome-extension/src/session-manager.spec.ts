@@ -267,6 +267,51 @@ describe('SessionManager', () => {
     expect(response.payload.sessionId).toBe('session-5');
   });
 
+  it('accepts live console log capture commands from server', async () => {
+    const ws = new MockWebSocket();
+    const manager = new SessionManager({
+      createSessionId: () => 'session-live-logs',
+      createWebSocket: () => ws,
+      now: () => 1700000000000,
+      handleCaptureCommand: async (command) => ({
+        payload: {
+          command,
+          logs: [{ message: '[auth] logged in success', level: 'info' }],
+        },
+        truncated: false,
+      }),
+    });
+
+    manager.startSession({ url: 'https://example.com' });
+    ws.open();
+    ws.sentMessages.length = 0;
+
+    ws.receive(
+      JSON.stringify({
+        type: 'capture_command',
+        commandId: 'cmd-live-1',
+        sessionId: 'session-live-logs',
+        command: 'CAPTURE_GET_LIVE_CONSOLE_LOGS',
+        payload: { contains: '[auth]' },
+      }),
+    );
+
+    await Promise.resolve();
+
+    expect(ws.sentMessages).toHaveLength(1);
+    const response = JSON.parse(ws.sentMessages[0]) as {
+      type: string;
+      commandId: string;
+      ok: boolean;
+      payload: { command: string; logs: Array<{ message: string }> };
+    };
+    expect(response.type).toBe('capture_result');
+    expect(response.commandId).toBe('cmd-live-1');
+    expect(response.ok).toBe(true);
+    expect(response.payload.command).toBe('CAPTURE_GET_LIVE_CONSOLE_LOGS');
+    expect(response.payload.logs[0]?.message).toContain('[auth]');
+  });
+
   it('uses readable default session ids with date hints', () => {
     const manager = new SessionManager({
       createWebSocket: () => new MockWebSocket(),

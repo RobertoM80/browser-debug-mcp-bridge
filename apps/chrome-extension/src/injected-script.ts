@@ -12,7 +12,7 @@ interface InjectedCaptureOptions {
   win?: Window;
 }
 
-type ConsoleLevel = 'log' | 'warn' | 'error';
+type ConsoleLevel = 'log' | 'info' | 'warn' | 'error' | 'debug' | 'trace';
 
 type NetworkErrorType = 'timeout' | 'cors' | 'dns' | 'blocked' | 'http_error';
 
@@ -148,8 +148,11 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
   const win = options.win ?? window;
   const winWithXhr = win as Window & { XMLHttpRequest?: typeof XMLHttpRequest };
   const originalLog = console.log;
+  const originalInfo = console.info;
   const originalWarn = console.warn;
   const originalError = console.error;
+  const originalDebug = console.debug;
+  const originalTrace = console.trace;
   const originalFetch = win.fetch ? win.fetch.bind(win) : undefined;
   const xhrPrototype = winWithXhr.XMLHttpRequest?.prototype;
   const originalXhrOpen = xhrPrototype?.open;
@@ -316,8 +319,11 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
   }
 
   console.log = hookConsole('log', originalLog);
+  console.info = hookConsole('info', originalInfo);
   console.warn = hookConsole('warn', originalWarn);
   console.error = hookConsole('error', originalError);
+  console.debug = hookConsole('debug', originalDebug);
+  console.trace = hookConsole('trace', originalTrace);
   win.addEventListener('error', onRuntimeError);
   win.addEventListener('unhandledrejection', onUnhandledRejection);
 
@@ -329,8 +335,11 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
 
   return () => {
     console.log = originalLog;
+    console.info = originalInfo;
     console.warn = originalWarn;
     console.error = originalError;
+    console.debug = originalDebug;
+    console.trace = originalTrace;
     if (originalFetch) {
       win.fetch = originalFetch;
     }

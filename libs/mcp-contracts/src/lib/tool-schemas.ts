@@ -35,7 +35,7 @@ export const GetNavigationHistorySchema = z.object({
 
 export const GetConsoleEventsSchema = z.object({
   sessionId: z.string().describe('Unique session identifier'),
-  level: z.enum(['error', 'warn', 'info', 'debug']).optional()
+  level: z.enum(['log', 'info', 'warn', 'error', 'debug', 'trace']).optional()
     .describe('Filter by console level'),
   limit: z.number().int().min(1).max(200).optional()
     .describe('Maximum number of console events to return'),
@@ -118,6 +118,24 @@ export const CaptureUISnapshotSchema = z.object({
     .describe('Maximum bytes for DOM/style payload sections'),
   maxAncestors: z.number().int().min(0).max(8).optional()
     .describe('Maximum ancestor chain length for computed style capture'),
+});
+
+export const GetLiveConsoleLogsSchema = z.object({
+  sessionId: z.string().describe('Connected session identifier'),
+  url: z.string().optional()
+    .describe('Optional absolute URL; normalized to origin filter'),
+  tabId: z.number().int().min(0).optional()
+    .describe('Optional tab scope filter'),
+  levels: z.array(z.enum(['log', 'info', 'warn', 'error', 'debug', 'trace'])).optional()
+    .describe('Optional console level filters'),
+  contains: z.string().optional()
+    .describe('Optional case-insensitive message substring match'),
+  sinceTs: z.number().int().min(0).optional()
+    .describe('Optional timestamp lower bound (ms epoch)'),
+  includeRuntimeErrors: z.boolean().optional()
+    .describe('Include runtime error events in the live stream (default true)'),
+  limit: z.number().int().min(1).max(200).optional()
+    .describe('Maximum number of live logs to return'),
 });
 
 export const ExplainLastFailureSchema = z.object({

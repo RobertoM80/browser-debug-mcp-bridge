@@ -738,5 +738,53 @@ describe('WebSocket Server', () => {
 
       ws.close();
     });
+
+    it('sends live console log capture command and resolves response', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      const sessionStart: SessionStartMessage = {
+        type: 'session_start',
+        sessionId: 'capture-live-logs-session',
+        url: 'https://example.com',
+        timestamp: Date.now(),
+        safeMode: false,
+      };
+
+      ws.send(JSON.stringify(sessionStart));
+      await wait(100);
+
+      const commandPromise = wsManager.sendCaptureCommand(
+        'capture-live-logs-session',
+        'CAPTURE_GET_LIVE_CONSOLE_LOGS',
+        { contains: '[auth]', limit: 5 },
+        2000,
+      );
+
+      const commandMessage = await waitForMessage(ws) as CaptureCommandMessage;
+      expect(commandMessage.type).toBe('capture_command');
+      expect(commandMessage.command).toBe('CAPTURE_GET_LIVE_CONSOLE_LOGS');
+
+      ws.send(
+        JSON.stringify({
+          type: 'capture_result',
+          commandId: commandMessage.commandId,
+          sessionId: 'capture-live-logs-session',
+          ok: true,
+          payload: {
+            logs: [{ message: '[auth] logged in success', level: 'info' }],
+            pagination: { returned: 1, matched: 1 },
+          },
+          truncated: false,
+          timestamp: Date.now(),
+        }),
+      );
+
+      const result = await commandPromise;
+      expect(result.ok).toBe(true);
+      expect(Array.isArray(result.payload?.logs)).toBe(true);
+
+      ws.close();
+    });
   });
 });

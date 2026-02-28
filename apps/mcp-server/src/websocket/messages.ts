@@ -35,6 +35,7 @@ export const CaptureCommandSchema = z.enum([
   'CAPTURE_COMPUTED_STYLES',
   'CAPTURE_LAYOUT_METRICS',
   'CAPTURE_UI_SNAPSHOT',
+  'CAPTURE_GET_LIVE_CONSOLE_LOGS',
 ]);
 
 export const BaseWebSocketMessageSchema = z.object({

@@ -971,4 +971,91 @@ describe('mcp/server V2 capture tools', () => {
     expect(response.trigger).toBe('click');
     expect(response.snapshot).toBeDefined();
   });
+
+  it('requests live console logs through v2 capture command path', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          return {
+            ok: true,
+            payload: {
+              logs: [
+                {
+                  timestamp: 1700000001000,
+                  level: 'info',
+                  message: '[auth] logged in success',
+                  tabId: 7,
+                  origin: 'http://localhost:3000',
+                  source: 'console',
+                },
+              ],
+              pagination: {
+                returned: 1,
+                matched: 1,
+              },
+              bufferStats: {
+                buffered: 42,
+                dropped: 0,
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'get_live_console_logs', {
+      sessionId: 'session-v2',
+      url: 'http://localhost:3000/path',
+      tabId: 7,
+      levels: ['info', 'error'],
+      contains: '[auth]',
+      sinceTs: 1700000000000,
+      limit: 25,
+    });
+
+    expect(captureCalls).toHaveLength(1);
+    expect(captureCalls[0]).toMatchObject({
+      command: 'CAPTURE_GET_LIVE_CONSOLE_LOGS',
+      payload: {
+        origin: 'http://localhost:3000',
+        tabId: 7,
+        levels: ['info', 'error'],
+        contains: '[auth]',
+        sinceTs: 1700000000000,
+        includeRuntimeErrors: true,
+        limit: 25,
+      },
+    });
+    expect(response.limitsApplied).toEqual({ maxResults: 25, truncated: false });
+    expect((response.logs as Array<{ message: string }>)[0]?.message).toContain('[auth]');
+  });
+
+  it('rejects invalid url for live console log capture tool', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async () => ({ ok: true, payload: { logs: [] } }),
+      }),
+    );
+
+    await expect(routeToolCall(tools, 'get_live_console_logs', {
+      sessionId: 'session-v2',
+      url: 'localhost:3000',
+    })).rejects.toThrow('url must be a valid absolute http(s) URL');
+  });
+
+  it('rejects invalid tabId for live console log capture tool', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async () => ({ ok: true, payload: { logs: [] } }),
+      }),
+    );
+
+    await expect(routeToolCall(tools, 'get_live_console_logs', {
+      sessionId: 'session-v2',
+      tabId: 'abc',
+    })).rejects.toThrow('tabId must be an integer');
+  });
 });

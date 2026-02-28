@@ -33,6 +33,7 @@ export const CAPTURE_TOOLS = {
   GET_COMPUTED_STYLES: 'get_computed_styles',
   GET_LAYOUT_METRICS: 'get_layout_metrics',
   CAPTURE_UI_SNAPSHOT: 'capture_ui_snapshot',
+  GET_LIVE_CONSOLE_LOGS: 'get_live_console_logs',
 } as const;
 
 export const CORRELATION_TOOLS = {

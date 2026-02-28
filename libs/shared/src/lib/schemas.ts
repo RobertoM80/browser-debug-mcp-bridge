@@ -54,7 +54,7 @@ export const NetworkEventSchema = EventSchema.extend({
 export const ConsoleEventSchema = EventSchema.extend({
   type: z.literal('console'),
   data: z.object({
-    level: z.enum(['error', 'warn', 'info', 'debug']),
+    level: z.enum(['log', 'info', 'warn', 'error', 'debug', 'trace']),
     message: z.string(),
     args: z.array(z.unknown()).optional(),
   }),
