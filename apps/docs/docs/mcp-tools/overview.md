@@ -9,7 +9,7 @@ All tool responses include:
 ## Tool families
 
 - **V1 query tools** for recent sessions, events, and persisted diagnostics
-- **V2 heavy capture tools** for targeted DOM/styles/layout evidence
+- **V2 heavy capture tools** for targeted DOM/styles/layout evidence and live in-memory console retrieval
 - **V3 correlation tools** for reasoned timelines across events
 - **V4 snapshot tools** for snapshot timelines and bounded asset retrieval
 
@@ -22,7 +22,7 @@ All tool responses include:
 
 ## Console capture scope
 
-- Captured: page JS console calls (`log`, `warn`, `error`) and runtime JS errors
+- Captured: page JS console calls (`log`, `info`, `warn`, `error`, `debug`, `trace`) and runtime JS errors
 - Not fully mirrored: every DevTools UI-only/browser-internal console row
 
 Continue with:

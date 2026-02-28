@@ -110,8 +110,9 @@ In MCP client:
 1. Call `list_sessions`
 2. Pick `sessionId` with `liveConnection.connected = true` for live tools
 3. Call `get_session_summary`, `get_recent_events`
-4. Optional origin scope: call query tools with `url` (example `http://localhost:3000`)
-5. Use `capture_ui_snapshot` and `list_snapshots` when visual state is needed
+4. Use `get_live_console_logs` for in-memory logs and server-side `contains` filters
+5. Optional origin scope: call query tools with `url` (example `http://localhost:3000`)
+6. Use `capture_ui_snapshot` and `list_snapshots` when visual state is needed
 
 ## 7) Common failure points
 

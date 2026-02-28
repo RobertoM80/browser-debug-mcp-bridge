@@ -27,6 +27,12 @@ Origin-scoped example:
 { "name": "get_recent_events", "arguments": { "url": "http://localhost:3000", "limit": 50 } }
 ```
 
+Live console example:
+
+```json
+{ "name": "get_live_console_logs", "arguments": { "sessionId": "sess_123", "contains": "[auth]", "limit": 100 } }
+```
+
 ## Escalate only when needed
 
 - Use V1 query tools for telemetry first

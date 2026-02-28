@@ -201,9 +201,10 @@ If the host accepts JSON-style MCP server entries, use:
 3. Open extension popup, set allowlist, start session.
 4. Ask LLM to call `list_sessions`.
 5. Use a `sessionId` with `liveConnection.connected = true` for live tools.
-6. Ask LLM to call `capture_ui_snapshot` with that `sessionId`.
-7. Verify with `list_snapshots` or extension DB Viewer snapshots table.
-8. Optional filter check: call `get_recent_events` with `{ "url": "http://localhost:3000" }` to scope by origin.
+6. Ask LLM to call `get_live_console_logs` with that `sessionId` and optional `contains` filter.
+7. Ask LLM to call `capture_ui_snapshot` with that `sessionId`.
+8. Verify with `list_snapshots` or extension DB Viewer snapshots table.
+9. Optional filter check: call `get_recent_events` with `{ "url": "http://localhost:3000" }` to scope by origin.
 
 ## CI safety check (stdio guard)
 

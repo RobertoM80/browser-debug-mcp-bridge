@@ -58,6 +58,7 @@ node scripts/mcp-start.cjs --stop
 - Confirm MCP client can run `list_sessions`
 - For live tools, use a session with `liveConnection.connected = true`
 - Session scope is tab-bound by default; use popup `Session Tabs` to add/remove tabs
+- Verify live console path with `get_live_console_logs` on a connected `sessionId`
 
 ## Next steps
 

@@ -59,6 +59,7 @@ What to do:
 - Verify current site matches allowlist configuration
 - Keep safe mode enabled but ensure capture is not globally disabled
 - Run `list_sessions` first, then query with the returned `sessionId`
+- For live console investigation, call `get_live_console_logs` with `sessionId` and optional `contains` filter
 
 ## Tests fail locally
 

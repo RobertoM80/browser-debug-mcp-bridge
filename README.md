@@ -9,6 +9,7 @@ It captures telemetry from an actual browser session (console, network, navigati
 - Inspect real sessions instead of synthetic test runs
 - Query recent errors, failed requests, and event timelines
 - Run targeted live capture (DOM subtree/document, styles, layout)
+- Pull live in-memory console logs with server-side filters (`url`, `tabId`, `levels`, `contains`)
 - Correlate user actions with network/runtime failures
 - Keep privacy controls enabled (safe mode, allowlist, redaction)
 
@@ -38,23 +39,23 @@ Use this when you want to install and run quickly without cloning this repositor
 npm i -g browser-debug-mcp-bridge
 ```
 
-2. Download the latest extension asset `chrome-extension-dist.tgz` from:
+1. Download the latest extension asset `chrome-extension-dist.tgz` from:
 
 - `https://github.com/RobertoM80/browser-debug-mcp-bridge/releases/latest`
 
-3. Extract the archive and load extension in Chrome:
+1. Extract the archive and load extension in Chrome:
 
 1. Open `chrome://extensions`
-2. Enable Developer mode
-3. Click **Load unpacked**
-4. Select the extracted extension folder
+1. Enable Developer mode
+1. Click **Load unpacked**
+1. Select the extracted extension folder
 
-4. Configure MCP host with direct Node launch (recommended):
+1. Configure MCP host with direct Node launch (recommended):
 
 1. Find npm global root: `npm root -g`
-2. Use script path: `<NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs`
+1. Use script path: `<NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs`
 
-5. Alternative quick runtime (secondary):
+1. Alternative quick runtime (secondary):
 
 ```bash
 npx -y browser-debug-mcp-bridge
@@ -161,7 +162,7 @@ If your VS Code MCP host uses JSON, reuse the OpenCode JSON block above.
 
 - Pick a session where `liveConnection.connected` is `true`.
 - Run query tools first (`get_session_summary`, `get_recent_events`, `get_network_failures`).
-- Use live tools (`get_dom_document`, `capture_ui_snapshot`) only on connected sessions.
+- Use live tools (`get_dom_document`, `capture_ui_snapshot`, `get_live_console_logs`) only on connected sessions.
 
 ## Session Scope and URL Filtering
 
@@ -198,6 +199,36 @@ Example: session + URL intersection
 {
   "name": "get_network_failures",
   "arguments": { "sessionId": "sess_123", "url": "http://localhost:3000", "limit": 20 }
+}
+```
+
+## Live Console Logs (Non-Persistent)
+
+`get_live_console_logs` reads from extension in-memory ring buffers (session-scoped), so this live stream can be filtered without DB scanning.
+
+- `sessionId` is required
+- optional filters: `url` (origin), `tabId`, `levels`, `contains`, `sinceTs`
+- supports substring filters like `"[auth]"` directly server-side
+- results are bounded by `limit` and buffer capacity
+
+Capture scope:
+
+- Captured from page context: `console.log`, `console.info`, `console.warn`, `console.error`, `console.debug`, `console.trace`
+- Runtime JS exceptions are included as `error`-level live entries
+- Browser-internal/DevTools UI-only rows are not guaranteed
+
+Example:
+
+```json
+{
+  "name": "get_live_console_logs",
+  "arguments": {
+    "sessionId": "sess_123",
+    "url": "http://localhost:3000",
+    "levels": ["info", "error"],
+    "contains": "[auth]",
+    "limit": 100
+  }
 }
 ```
 

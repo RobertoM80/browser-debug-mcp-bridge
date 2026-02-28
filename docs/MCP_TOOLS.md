@@ -83,7 +83,7 @@ Returns console events filtered by level.
 
 Current capture source:
 
-- captures page JavaScript console calls (`console.log`, `console.warn`, `console.error`)
+- captures page JavaScript console calls (`console.log`, `console.info`, `console.warn`, `console.error`, `console.debug`, `console.trace`)
 - captures runtime JS errors via `window.onerror`/`unhandledrejection` as `error` events
 - does not mirror every DevTools UI-only/browser-internal console row
 
@@ -161,6 +161,28 @@ Returns layout and bounding-box metrics for a selector.
 
 ```json
 { "name": "get_layout_metrics", "arguments": { "sessionId": "sess_123", "selector": ".modal" } }
+```
+
+### get_live_console_logs
+
+Reads session-scoped live console logs from extension memory (non-persistent buffer).
+
+Filters:
+
+- required: `sessionId`
+- optional: `url` (origin), `tabId`, `levels`, `contains`, `sinceTs`, `limit`
+
+```json
+{
+  "name": "get_live_console_logs",
+  "arguments": {
+    "sessionId": "sess_123",
+    "url": "http://localhost:3000",
+    "levels": ["info", "error"],
+    "contains": "[auth]",
+    "limit": 100
+  }
+}
 ```
 
 ### Live capture disconnection behavior

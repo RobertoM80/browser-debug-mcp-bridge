@@ -32,8 +32,27 @@ Heavy capture is server-orchestrated and extension-executed through command/resp
 { "name": "get_layout_metrics", "arguments": { "sessionId": "sess_123", "selector": ".modal" } }
 ```
 
+## `get_live_console_logs`
+
+Reads session-scoped live console logs from extension memory (non-persistent).
+
+```json
+{
+  "name": "get_live_console_logs",
+  "arguments": {
+    "sessionId": "sess_123",
+    "url": "http://localhost:3000",
+    "levels": ["info", "error"],
+    "contains": "[auth]",
+    "sinceTs": 1730200000000,
+    "limit": 100
+  }
+}
+```
+
 ## Limits and fallback
 
 - `maxBytes` and depth caps are always enforced.
 - Timeout fallback may return outline-style output instead of full HTML.
 - Redaction still applies before response is returned.
+- Live console logs are bounded by in-memory ring buffer size and `limit`.

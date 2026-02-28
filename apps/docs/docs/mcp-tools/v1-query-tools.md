@@ -66,9 +66,10 @@ URL-only example:
 
 Capture notes:
 
-- Typical levels emitted from page console hooks are `log`, `warn`, `error`.
+- Typical levels emitted from page console hooks are `log`, `info`, `warn`, `error`, `debug`, `trace`.
 - Runtime exceptions are available as `error` events (query via `get_recent_events` with `eventTypes: ["error"]`).
 - DevTools UI-only/browser-internal messages are not guaranteed to be present.
+- For server-side substring filtering (for example `"[auth]"`), use `get_live_console_logs`.
 
 ```json
 {

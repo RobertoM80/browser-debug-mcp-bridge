@@ -36,6 +36,8 @@ pnpm nx run-many -t lint
 - End plans with a list of unresolved questions (if any).
 - Prefer reading configs before choosing new tools.
 - If a command fails, report the error and stop for guidance.
+- Remeber to unpdate all docs if needed, included docusaur docs
+- Rememver to run lint, tests, build, types and e2e if present at the end of every task. and adjust if needed
 
 ## Reference Files
 

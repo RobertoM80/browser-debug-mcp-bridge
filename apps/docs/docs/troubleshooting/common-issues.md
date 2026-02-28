@@ -47,3 +47,4 @@ Actions:
 - `GET /health`
 - `GET /stats`
 - MCP `get_recent_events` and `get_network_failures`
+- MCP `get_live_console_logs` (supports `contains` and `levels` filters for live console triage)

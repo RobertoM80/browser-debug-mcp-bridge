@@ -43,6 +43,44 @@ If Nx daemon/worker is unstable in the environment:
 - When changing default ports/endpoints, update both code and docs together.
 - Avoid destructive git operations unless explicitly requested.
 
+## Session and Log Semantics
+
+- Sessions are tab-bound by default (single active tab on session start).
+- Only explicitly bound tabs should contribute telemetry for a session.
+- Query tools support optional origin filtering (`url` normalized to origin).
+- Live console triage should use `get_live_console_logs` (non-persistent in-memory buffer).
+- Persisted console history remains available via `get_console_events`.
+
+### `get_live_console_logs` usage
+
+Required input:
+
+- `sessionId`
+
+Optional filters:
+
+- `url` (absolute URL, normalized to origin)
+- `tabId`
+- `levels` (`log`, `info`, `warn`, `error`, `debug`, `trace`)
+- `contains` (case-insensitive substring)
+- `sinceTs`
+- `limit`
+
+Example:
+
+```json
+{
+  "name": "get_live_console_logs",
+  "arguments": {
+    "sessionId": "sess_123",
+    "url": "http://localhost:3000",
+    "levels": ["info", "error"],
+    "contains": "[auth]",
+    "limit": 100
+  }
+}
+```
+
 ## Completion Checklist
 
 - Code compiles for affected projects.

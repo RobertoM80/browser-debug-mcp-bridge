@@ -30,6 +30,6 @@ Most common causes:
 
 ## Can I filter console logs by URL or string?
 
-URL: yes, for persisted query tools that support `url` origin filtering.
+URL: yes. Persisted query tools support origin filtering with `url`, and live tool `get_live_console_logs` also supports `url`.
 
-String contains: not yet as a dedicated server-side filter. Today you can fetch logs with `get_console_events` and filter text client-side.
+String contains: yes, via `get_live_console_logs` with `contains` (for example `"[auth]"`).
