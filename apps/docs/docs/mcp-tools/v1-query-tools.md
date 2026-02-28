@@ -1,5 +1,15 @@
 # V1 Query Tools
 
+## Session and URL Filters
+
+For `get_recent_events`, `get_navigation_history`, `get_console_events`, and `get_network_failures`:
+
+- You can pass `sessionId`, `url`, or both.
+- `url` is normalized to origin (`scheme://host:port`).
+- `sessionId + url` applies intersection filtering.
+- `url` without `sessionId` searches across sessions.
+- Invalid/non-absolute URLs are rejected. Use full values like `http://localhost:3000`.
+
 ## `list_sessions`
 
 ```json
@@ -23,7 +33,18 @@ Response guidance:
 ```json
 {
   "name": "get_recent_events",
-  "arguments": { "sessionId": "sess_123", "types": ["error", "network"], "limit": 50 }
+  "arguments": { "sessionId": "sess_123", "eventTypes": ["error", "network"], "limit": 50 }
+}
+```
+
+Backward compatibility note: `types` is still accepted as an alias.
+
+URL-only example:
+
+```json
+{
+  "name": "get_recent_events",
+  "arguments": { "url": "http://localhost:3000", "eventTypes": ["error", "network"], "limit": 50 }
 }
 ```
 
@@ -33,10 +54,27 @@ Response guidance:
 { "name": "get_navigation_history", "arguments": { "sessionId": "sess_123", "limit": 25 } }
 ```
 
+```json
+{ "name": "get_navigation_history", "arguments": { "url": "http://localhost:3000", "limit": 25 } }
+```
+
 ## `get_console_events`
 
 ```json
 { "name": "get_console_events", "arguments": { "sessionId": "sess_123", "level": "error", "limit": 25 } }
+```
+
+Capture notes:
+
+- Typical levels emitted from page console hooks are `log`, `warn`, `error`.
+- Runtime exceptions are available as `error` events (query via `get_recent_events` with `eventTypes: ["error"]`).
+- DevTools UI-only/browser-internal messages are not guaranteed to be present.
+
+```json
+{
+  "name": "get_console_events",
+  "arguments": { "sessionId": "sess_123", "url": "http://localhost:3000", "level": "error", "limit": 25 }
+}
 ```
 
 ## `get_error_fingerprints`
@@ -51,6 +89,13 @@ Response guidance:
 {
   "name": "get_network_failures",
   "arguments": { "sessionId": "sess_123", "groupBy": "domain", "limit": 20, "offset": 0 }
+}
+```
+
+```json
+{
+  "name": "get_network_failures",
+  "arguments": { "url": "http://localhost:3000", "groupBy": "domain", "limit": 20, "offset": 0 }
 }
 ```
 

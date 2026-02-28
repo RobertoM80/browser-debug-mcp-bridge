@@ -9,6 +9,7 @@ This repository now exposes a single universal launcher that starts:
 
 - Node.js 20+
 - Chrome extension loaded and connected to `127.0.0.1:8065`
+- For no-repo mode, download `chrome-extension-dist.tgz` from latest GitHub release and load it unpacked
 - For local clone mode only:
   - `pnpm install`
 - For no-repo mode (recommended):
@@ -24,13 +25,13 @@ Recommended quick setup (no repo clone):
 npm i -g browser-debug-mcp-bridge
 ```
 
-2. Resolve global npm root:
+1. Resolve global npm root:
 
 ```bash
 npm root -g
 ```
 
-3. Configure MCP host with direct Node launch:
+1. Configure MCP host with direct Node launch:
 
 - command: `node`
 - args: `["<NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs"]`
@@ -54,6 +55,7 @@ Important:
 
 - This only changes how the MCP server is started.
 - You still need the Chrome extension loaded and connected to `127.0.0.1:8065`.
+- Sessions are tab-bound by default; use popup `Session Tabs` to add/remove tabs for the active session.
 - In `mcp-stdio` mode, runtime should stop when the MCP host process/transport closes.
 - Startup readiness timeout can be tuned with `MCP_STARTUP_TIMEOUT_MS` (default `15000`).
 
@@ -201,6 +203,7 @@ If the host accepts JSON-style MCP server entries, use:
 5. Use a `sessionId` with `liveConnection.connected = true` for live tools.
 6. Ask LLM to call `capture_ui_snapshot` with that `sessionId`.
 7. Verify with `list_snapshots` or extension DB Viewer snapshots table.
+8. Optional filter check: call `get_recent_events` with `{ "url": "http://localhost:3000" }` to scope by origin.
 
 ## CI safety check (stdio guard)
 

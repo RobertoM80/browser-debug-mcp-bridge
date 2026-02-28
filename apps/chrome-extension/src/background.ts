@@ -53,6 +53,9 @@ type RuntimeRequest =
   | { type: 'SESSION_GET_SNAPSHOTS'; sessionId: string; limit: number; offset: number }
   | { type: 'SESSION_LIST_RECENT'; limit: number; offset: number }
   | { type: 'SESSION_CAPTURE_DIAGNOSTICS' }
+  | { type: 'SESSION_GET_TAB_SCOPE' }
+  | { type: 'SESSION_ADD_TAB_TO_SESSION'; tabId: number }
+  | { type: 'SESSION_REMOVE_TAB_FROM_SESSION'; tabId: number }
   | { type: 'DB_RESET' };
 
 type RuntimeResponse =
@@ -74,8 +77,14 @@ interface CapturePingResponse {
   type?: 'CAPTURE_PONG';
 }
 
+interface SessionTabScope {
+  baseOrigin?: string;
+  allowedTabIds: Set<number>;
+}
+
 const snapshotPngUsageBySession = new Map<string, SnapshotPngUsage>();
 const captureTabBySession = new Map<string, { tabId: number; windowId?: number }>();
+const sessionTabScopeBySession = new Map<string, SessionTabScope>();
 
 function getSnapshotPngUsage(sessionId: string): SnapshotPngUsage {
   const existing = snapshotPngUsageBySession.get(sessionId);
@@ -100,6 +109,101 @@ function estimateDataUrlBytes(dataUrl: string): number {
   const encoded = dataUrl.slice(commaIndex + 1);
   const padding = encoded.endsWith('==') ? 2 : encoded.endsWith('=') ? 1 : 0;
   return Math.max(0, Math.floor((encoded.length * 3) / 4) - padding);
+}
+
+function normalizeHttpOrigin(candidate: unknown): string | undefined {
+  if (typeof candidate !== 'string' || candidate.trim().length === 0) {
+    return undefined;
+  }
+
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return undefined;
+    }
+    return parsed.origin;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveSessionEventOrigin(senderUrl: string, payload: Record<string, unknown>): string | undefined {
+  const candidates: unknown[] = [
+    payload.origin,
+    payload.url,
+    payload.to,
+    payload.href,
+    payload.location,
+    senderUrl,
+  ];
+
+  for (const candidate of candidates) {
+    const origin = normalizeHttpOrigin(candidate);
+    if (origin) {
+      return origin;
+    }
+  }
+
+  return undefined;
+}
+
+function setSessionTabScope(sessionId: string, baseUrl: string, tabId?: number): void {
+  const allowedTabIds = new Set<number>();
+  if (typeof tabId === 'number') {
+    allowedTabIds.add(tabId);
+  }
+
+  sessionTabScopeBySession.set(sessionId, {
+    baseOrigin: normalizeHttpOrigin(baseUrl),
+    allowedTabIds,
+  });
+}
+
+function getSessionTabScope(sessionId: string): SessionTabScope | undefined {
+  return sessionTabScopeBySession.get(sessionId);
+}
+
+function isTabAllowedForSession(sessionId: string, tabId?: number): boolean {
+  const scope = getSessionTabScope(sessionId);
+  if (!scope) {
+    return true;
+  }
+
+  if (scope.allowedTabIds.size === 0 || typeof tabId !== 'number') {
+    return false;
+  }
+
+  return scope.allowedTabIds.has(tabId);
+}
+
+function cleanupSessionLocalState(sessionId: string): void {
+  snapshotPngUsageBySession.delete(sessionId);
+  captureTabBySession.delete(sessionId);
+  sessionTabScopeBySession.delete(sessionId);
+}
+
+async function buildSessionTabScopeResult(sessionId: string): Promise<Record<string, unknown>> {
+  const scope = getSessionTabScope(sessionId);
+  const boundTabIds = scope ? Array.from(scope.allowedTabIds).sort((a, b) => a - b) : [];
+  const allTabs = await chrome.tabs.query({ currentWindow: true });
+
+  const tabs = allTabs
+    .filter((tab): tab is chrome.tabs.Tab & { id: number } => typeof tab.id === 'number')
+    .map((tab) => ({
+      tabId: tab.id,
+      title: tab.title ?? 'Untitled tab',
+      url: tab.url ?? '',
+      origin: normalizeHttpOrigin(tab.url),
+      active: tab.active === true,
+      bound: boundTabIds.includes(tab.id),
+    }));
+
+  return {
+    sessionId,
+    baseOrigin: scope?.baseOrigin,
+    allowedTabIds: boundTabIds,
+    tabs,
+  };
 }
 
 async function captureVisibleTabPng(windowId?: number): Promise<string> {
@@ -139,8 +243,11 @@ function rememberCaptureTabForSession(sessionId: string, tab: chrome.tabs.Tab): 
 }
 
 async function resolveCaptureTab(sessionId: string): Promise<chrome.tabs.Tab | undefined> {
+  const scope = getSessionTabScope(sessionId);
+  const allowedTabIds = scope ? Array.from(scope.allowedTabIds) : [];
+
   const remembered = captureTabBySession.get(sessionId);
-  if (remembered) {
+  if (remembered && (!scope || scope.allowedTabIds.has(remembered.tabId))) {
     try {
       const tab = await chrome.tabs.get(remembered.tabId);
       if (tab && typeof tab.id === 'number') {
@@ -152,11 +259,27 @@ async function resolveCaptureTab(sessionId: string): Promise<chrome.tabs.Tab | u
     }
   }
 
-  const active = await getActiveTab();
-  if (active && typeof active.id === 'number') {
-    rememberCaptureTabForSession(sessionId, active);
+  for (const candidateTabId of allowedTabIds) {
+    try {
+      const tab = await chrome.tabs.get(candidateTabId);
+      if (tab && typeof tab.id === 'number') {
+        rememberCaptureTabForSession(sessionId, tab);
+        return tab;
+      }
+    } catch {
+      if (scope) {
+        scope.allowedTabIds.delete(candidateTabId);
+      }
+    }
   }
-  return active;
+
+  const active = await getActiveTab();
+  if (active && typeof active.id === 'number' && (!scope || scope.allowedTabIds.has(active.id))) {
+    rememberCaptureTabForSession(sessionId, active);
+    return active;
+  }
+
+  return undefined;
 }
 
 function isMissingCaptureReceiverError(error: unknown): boolean {
@@ -342,7 +465,10 @@ async function executeCaptureCommand(
       profile: captureConfig.snapshots.privacy.profile,
     });
 
-    sessionManager.queueEvent('ui_snapshot', redactedSnapshot.record);
+    sessionManager.queueEvent('ui_snapshot', redactedSnapshot.record, {
+      tabId,
+      origin: normalizeHttpOrigin(snapshotRecord.url),
+    });
     return {
       payload: redactedSnapshot.record,
       truncated: truncated || redactedSnapshot.metadata.blockedPng,
@@ -363,6 +489,7 @@ const captureDiagnostics = {
   accepted: 0,
   rejectedAllowlist: 0,
   rejectedSafeMode: 0,
+  rejectedTabScope: 0,
   rejectedInactive: 0,
   lastEventType: '',
   lastSenderUrl: '',
@@ -482,10 +609,15 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
             };
           }
 
+          const initialTabId = typeof tab?.id === 'number' ? tab.id : undefined;
+          const baseOrigin = normalizeHttpOrigin(activeUrl);
+
           const started = sessionManager.startSession({
             url: activeUrl,
             tabId: tab?.id,
             windowId: tab?.windowId,
+            baseOrigin,
+            allowedTabIds: initialTabId !== undefined ? [initialTabId] : [],
             userAgent: navigator.userAgent,
             viewport: {
               width: screenWidth,
@@ -494,6 +626,14 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
             dpr: devicePixelRatio,
             safeMode: captureConfig.safeMode,
           });
+
+          if (started.sessionId) {
+            setSessionTabScope(started.sessionId, activeUrl, initialTabId);
+            sessionManager.setSessionScope({
+              baseOrigin,
+              allowedTabIds: initialTabId !== undefined ? [initialTabId] : [],
+            });
+          }
 
           if (started.sessionId && typeof tab?.id === 'number') {
             rememberCaptureTabForSession(started.sessionId, tab);
@@ -506,6 +646,9 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
             marker: 'session_started',
             url: activeUrl,
             timestamp: Date.now(),
+          }, {
+            tabId: initialTabId,
+            origin: baseOrigin,
           });
 
           if (started.sessionId) {
@@ -524,18 +667,30 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
       return Promise.resolve().then(() => {
         const activeSessionId = sessionManager.getState().sessionId;
         if (activeSessionId) {
-          snapshotPngUsageBySession.delete(activeSessionId);
-          captureTabBySession.delete(activeSessionId);
+          cleanupSessionLocalState(activeSessionId);
         }
         return { ok: true as const, state: sessionManager.stopSession() };
       });
 
     case 'SESSION_QUEUE_EVENT': {
       const senderUrl = sender.tab?.url ?? sender.url ?? '';
+      const senderTabId = typeof sender.tab?.id === 'number' ? sender.tab.id : undefined;
       captureDiagnostics.received += 1;
       captureDiagnostics.lastEventType = request.eventType;
       captureDiagnostics.lastSenderUrl = senderUrl;
       captureDiagnostics.lastUpdatedAt = Date.now();
+
+      const activeSessionId = sessionManager.getState().sessionId;
+      if (!activeSessionId) {
+        captureDiagnostics.rejectedInactive += 1;
+        return Promise.resolve({ ok: true, state: sessionManager.getState(), accepted: false });
+      }
+
+      if (!isTabAllowedForSession(activeSessionId, senderTabId)) {
+        captureDiagnostics.rejectedTabScope += 1;
+        return Promise.resolve({ ok: true, state: sessionManager.getState(), accepted: false });
+      }
+
       const shouldValidateByAllowlist = senderUrl.startsWith('http://') || senderUrl.startsWith('https://');
       if (shouldValidateByAllowlist && !isUrlAllowed(senderUrl, captureConfig.allowlist)) {
         captureDiagnostics.rejectedAllowlist += 1;
@@ -552,7 +707,10 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
         payload = restricted;
       }
 
-      const accepted = sessionManager.queueEvent(request.eventType, payload);
+      const accepted = sessionManager.queueEvent(request.eventType, payload, {
+        tabId: senderTabId,
+        origin: resolveSessionEventOrigin(senderUrl, payload),
+      });
       if (accepted) {
         captureDiagnostics.accepted += 1;
       } else {
@@ -571,6 +729,114 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
           safeMode: captureConfig.safeMode,
         },
       });
+
+    case 'SESSION_GET_TAB_SCOPE':
+      return Promise.resolve()
+        .then(async () => {
+          const sessionState = sessionManager.getState();
+          if (!sessionState.sessionId || !sessionState.isActive) {
+            return {
+              ok: true as const,
+              result: {
+                isActive: false,
+                sessionId: null,
+                baseOrigin: undefined,
+                allowedTabIds: [],
+                tabs: [],
+              },
+            };
+          }
+
+          const scope = await buildSessionTabScopeResult(sessionState.sessionId);
+          return {
+            ok: true as const,
+            result: {
+              isActive: true,
+              ...scope,
+            },
+          };
+        })
+        .catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : 'Failed to read tab scope' }));
+
+    case 'SESSION_ADD_TAB_TO_SESSION':
+      return Promise.resolve()
+        .then(async () => {
+          const sessionState = sessionManager.getState();
+          if (!sessionState.sessionId || !sessionState.isActive) {
+            throw new Error('No active session to bind tab');
+          }
+
+          const requestedTabId = Number(request.tabId);
+          if (!Number.isInteger(requestedTabId)) {
+            throw new Error('tabId must be an integer');
+          }
+
+          const tab = await chrome.tabs.get(requestedTabId);
+          if (!tab || typeof tab.id !== 'number') {
+            throw new Error('Tab not found: ' + requestedTabId);
+          }
+
+          let scope = getSessionTabScope(sessionState.sessionId);
+          if (!scope) {
+            scope = {
+              baseOrigin: sessionState.baseOrigin,
+              allowedTabIds: new Set<number>(),
+            };
+            sessionTabScopeBySession.set(sessionState.sessionId, scope);
+          }
+
+          scope.allowedTabIds.add(tab.id);
+          sessionManager.setSessionScope({
+            baseOrigin: scope.baseOrigin,
+            allowedTabIds: Array.from(scope.allowedTabIds),
+          });
+
+          if (!captureTabBySession.has(sessionState.sessionId)) {
+            rememberCaptureTabForSession(sessionState.sessionId, tab);
+          }
+
+          const result = await buildSessionTabScopeResult(sessionState.sessionId);
+          return { ok: true as const, result: { isActive: true, ...result } };
+        })
+        .catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : 'Failed to add tab to session' }));
+
+    case 'SESSION_REMOVE_TAB_FROM_SESSION':
+      return Promise.resolve()
+        .then(async () => {
+          const sessionState = sessionManager.getState();
+          if (!sessionState.sessionId || !sessionState.isActive) {
+            throw new Error('No active session to update');
+          }
+
+          const requestedTabId = Number(request.tabId);
+          if (!Number.isInteger(requestedTabId)) {
+            throw new Error('tabId must be an integer');
+          }
+
+          const scope = getSessionTabScope(sessionState.sessionId);
+          if (!scope) {
+            throw new Error('Session tab scope is unavailable');
+          }
+
+          scope.allowedTabIds.delete(requestedTabId);
+          sessionManager.setSessionScope({
+            baseOrigin: scope.baseOrigin,
+            allowedTabIds: Array.from(scope.allowedTabIds),
+          });
+          const remembered = captureTabBySession.get(sessionState.sessionId);
+          if (remembered?.tabId === requestedTabId) {
+            captureTabBySession.delete(sessionState.sessionId);
+          }
+
+          if (scope.allowedTabIds.size === 0) {
+            cleanupSessionLocalState(sessionState.sessionId);
+            return { ok: true as const, state: sessionManager.stopSession() };
+          }
+
+          const result = await buildSessionTabScopeResult(sessionState.sessionId);
+          return { ok: true as const, result: { isActive: true, ...result } };
+        })
+        .catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : 'Failed to remove tab from session' }));
 
     case 'RETENTION_GET_SETTINGS':
       return fetchServer('/retention/settings')
@@ -680,6 +946,35 @@ chrome.runtime.onMessage.addListener((request: RuntimeRequest, _sender, sendResp
     });
 
   return true;
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  const state = sessionManager.getState();
+  if (!state.sessionId || !state.isActive) {
+    return;
+  }
+
+  const scope = getSessionTabScope(state.sessionId);
+  if (!scope || !scope.allowedTabIds.has(tabId)) {
+    return;
+  }
+
+  scope.allowedTabIds.delete(tabId);
+  sessionManager.setSessionScope({
+    baseOrigin: scope.baseOrigin,
+    allowedTabIds: Array.from(scope.allowedTabIds),
+  });
+  const remembered = captureTabBySession.get(state.sessionId);
+  if (remembered?.tabId === tabId) {
+    captureTabBySession.delete(state.sessionId);
+  }
+
+  if (scope.allowedTabIds.size > 0) {
+    return;
+  }
+
+  cleanupSessionLocalState(state.sessionId);
+  sessionManager.stopSession();
 });
 
 console.log(`${LOG_PREFIX} Service worker started`);

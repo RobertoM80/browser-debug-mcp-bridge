@@ -18,6 +18,12 @@ All tool responses include:
 - Inputs validated with Zod schemas
 - Pagination available on high-cardinality tools
 - Size/depth/time limits applied to heavy captures
+- Query tools support `sessionId`, `url` (origin), or both for intersection filtering
+
+## Console capture scope
+
+- Captured: page JS console calls (`log`, `warn`, `error`) and runtime JS errors
+- Not fully mirrored: every DevTools UI-only/browser-internal console row
 
 Continue with:
 

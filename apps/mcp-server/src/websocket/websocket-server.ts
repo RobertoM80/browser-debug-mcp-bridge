@@ -302,6 +302,8 @@ export class WebSocketManager {
       eventType: event.eventType,
       data: event.data,
       timestamp: event.timestamp ?? message.timestamp ?? Date.now(),
+      tabId: event.tabId,
+      origin: event.origin,
     }));
   }
 

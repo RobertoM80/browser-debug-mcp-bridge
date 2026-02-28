@@ -26,6 +26,8 @@ export interface EventRecord {
   timestamp: number;
   type: string;
   payload: Record<string, unknown>;
+  tabId?: number;
+  origin?: string;
 }
 
 export class EventsRepository {
@@ -37,14 +39,14 @@ export class EventsRepository {
     }
 
     const insert = this.db.prepare(`
-      INSERT INTO events (event_id, session_id, ts, type, payload_json)
-      VALUES (?, ?, ?, ?, ?)
+      INSERT INTO events (event_id, session_id, ts, type, payload_json, tab_id, origin)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
 
     const insertNetwork = this.db.prepare(`
       INSERT INTO network (
-        request_id, session_id, ts_start, duration_ms, method, url, status, initiator, error_class, response_size_est
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        request_id, session_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class, response_size_est
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const upsertFingerprint = this.db.prepare(`
@@ -62,13 +64,20 @@ export class EventsRepository {
       for (const message of batch) {
         const eventId = `${message.sessionId}-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
         const dbEventType = this.mapEventType(message.eventType);
+        const eventTabId =
+          typeof message.tabId === 'number' && Number.isFinite(message.tabId)
+            ? Math.floor(message.tabId)
+            : this.resolveTabIdFromPayload(message.data);
+        const eventOrigin = this.resolveEventOrigin(message.data, message.origin);
 
         insert.run(
           eventId,
           message.sessionId,
           message.timestamp ?? Date.now(),
           dbEventType,
-          JSON.stringify(message.data)
+          JSON.stringify(message.data),
+          eventTabId,
+          eventOrigin,
         );
 
         if (message.eventType === 'error') {
@@ -76,7 +85,7 @@ export class EventsRepository {
         }
 
         if (message.eventType === 'network') {
-          this.insertNetworkEventPrepared(insertNetwork, message.sessionId, message.data);
+          this.insertNetworkEventPrepared(insertNetwork, message.sessionId, message.data, eventOrigin);
         }
 
         if (message.eventType === 'ui_snapshot') {
@@ -115,7 +124,7 @@ export class EventsRepository {
 
   endSession(message: SessionEndMessage): void {
     const update = this.db.prepare(`
-      UPDATE sessions 
+      UPDATE sessions
       SET ended_at = ?
       WHERE session_id = ?
     `);
@@ -129,20 +138,20 @@ export class EventsRepository {
 
   private mapEventType(eventType: string): string {
     const mapping: Record<string, string> = {
-      'navigation': 'nav',
-      'console': 'console',
-      'error': 'error',
-      'network': 'network',
-      'click': 'ui',
-      'scroll': 'ui',
-      'input': 'ui',
-      'change': 'ui',
-      'submit': 'ui',
-      'focus': 'ui',
-      'blur': 'ui',
-      'keydown': 'ui',
-      'ui_snapshot': 'ui',
-      'custom': 'ui',
+      navigation: 'nav',
+      console: 'console',
+      error: 'error',
+      network: 'network',
+      click: 'ui',
+      scroll: 'ui',
+      input: 'ui',
+      change: 'ui',
+      submit: 'ui',
+      focus: 'ui',
+      blur: 'ui',
+      keydown: 'ui',
+      ui_snapshot: 'ui',
+      custom: 'ui',
     };
     return mapping[eventType] || 'ui';
   }
@@ -169,9 +178,12 @@ export class EventsRepository {
   private insertNetworkEventPrepared(
     statement: ReturnType<Database['prepare']>,
     sessionId: string,
-    data: Record<string, unknown>
+    data: Record<string, unknown>,
+    eventOrigin: string | null,
   ): void {
     const requestId = `${sessionId}-net-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+    const url = data.url as string ?? '';
+    const origin = eventOrigin ?? normalizeOriginCandidate(url);
 
     (statement as { run: (...params: unknown[]) => unknown }).run(
       requestId,
@@ -179,7 +191,8 @@ export class EventsRepository {
       data.timestamp as number ?? Date.now(),
       data.duration as number ?? null,
       data.method as string ?? 'GET',
-      data.url as string ?? '',
+      url,
+      origin,
       data.status as number ?? null,
       data.initiator as string ?? 'other',
       data.errorType as string ?? null,
@@ -201,8 +214,43 @@ export class EventsRepository {
     );
   }
 
+  private resolveTabIdFromPayload(payload: Record<string, unknown>): number | null {
+    const candidate = payload.tabId;
+    if (typeof candidate === 'number' && Number.isFinite(candidate)) {
+      return Math.floor(candidate);
+    }
+    return null;
+  }
+
+  private resolveEventOrigin(payload: Record<string, unknown>, fallback?: string): string | null {
+    const candidates: unknown[] = [fallback, payload.origin, payload.url, payload.to, payload.href, payload.location];
+    for (const candidate of candidates) {
+      const origin = normalizeOriginCandidate(candidate);
+      if (origin) {
+        return origin;
+      }
+    }
+    return null;
+  }
+
   sessionExists(sessionId: string): boolean {
     const result = this.db.prepare('SELECT 1 FROM sessions WHERE session_id = ?').get(sessionId);
     return !!result;
+  }
+}
+
+function normalizeOriginCandidate(value: unknown): string | null {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    return parsed.origin;
+  } catch {
+    return null;
   }
 }

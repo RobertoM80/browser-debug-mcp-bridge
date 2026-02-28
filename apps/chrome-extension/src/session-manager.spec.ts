@@ -50,10 +50,16 @@ describe('SessionManager', () => {
       now: () => 1700000000000,
     });
 
-    const startState = manager.startSession({ url: 'https://example.com' });
+    const startState = manager.startSession({
+      url: 'https://example.com',
+      baseOrigin: 'https://example.com',
+      allowedTabIds: [11],
+    });
 
     expect(startState.isActive).toBe(true);
     expect(startState.sessionId).toBe('session-1');
+    expect(startState.baseOrigin).toBe('https://example.com');
+    expect(startState.allowedTabIds).toEqual([11]);
     expect(startState.connectionStatus).toBe('connecting');
     expect(startState.queuedEvents).toBe(1);
 
@@ -63,10 +69,11 @@ describe('SessionManager', () => {
     expect(finalState.connectionStatus).toBe('connected');
     expect(finalState.queuedEvents).toBe(0);
 
-    const sent = JSON.parse(ws.sentMessages[0]) as { type: string; sessionId: string; url: string };
+    const sent = JSON.parse(ws.sentMessages[0]) as { type: string; sessionId: string; url: string; origin?: string };
     expect(sent.type).toBe('session_start');
     expect(sent.sessionId).toBe('session-1');
     expect(sent.url).toBe('https://example.com');
+    expect(sent.origin).toBe('https://example.com');
   });
 
   it('applies backpressure by dropping oldest queued events', () => {
@@ -143,6 +150,36 @@ describe('SessionManager', () => {
 
     const accepted = manager.queueEvent('console', { level: 'error' });
     expect(accepted).toBe(false);
+  });
+
+  it('forwards tab and origin metadata in event payloads', () => {
+    const ws = new MockWebSocket();
+    const manager = new SessionManager({
+      createSessionId: () => 'session-meta',
+      createWebSocket: () => ws,
+      now: () => 1700000000000,
+    });
+
+    manager.startSession({ url: 'https://example.com' });
+    ws.open();
+    ws.sentMessages.length = 0;
+
+    manager.queueEvent('navigation', { to: 'https://example.com/next' }, {
+      tabId: 7,
+      origin: 'https://example.com',
+    });
+
+    expect(ws.sentMessages).toHaveLength(1);
+    const sent = JSON.parse(ws.sentMessages[0]) as {
+      type: string;
+      tabId?: number;
+      origin?: string;
+      eventType: string;
+    };
+    expect(sent.type).toBe('event');
+    expect(sent.eventType).toBe('navigation');
+    expect(sent.tabId).toBe(7);
+    expect(sent.origin).toBe('https://example.com');
   });
 
   it('redacts sensitive data in outbound events', () => {

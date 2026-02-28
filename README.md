@@ -163,6 +163,44 @@ If your VS Code MCP host uses JSON, reuse the OpenCode JSON block above.
 - Run query tools first (`get_session_summary`, `get_recent_events`, `get_network_failures`).
 - Use live tools (`get_dom_document`, `capture_ui_snapshot`) only on connected sessions.
 
+## Session Scope and URL Filtering
+
+- Sessions start bound to the active tab only.
+- Telemetry from unbound tabs is rejected to avoid cross-tab contamination.
+- Use the popup `Session Tabs` panel to explicitly add/remove tabs from the active session.
+- If all bound tabs are removed/closed, the session auto-stops.
+
+MCP query tools support `sessionId`, `url`, or both:
+
+- `sessionId` only: filter by session
+- `url` only: filter by URL origin across sessions (for example `http://localhost:3000`)
+- `sessionId + url`: intersection (only rows matching both)
+
+Supported tools:
+
+- `get_recent_events`
+- `get_navigation_history`
+- `get_console_events`
+- `get_network_failures`
+
+Example: URL-only query
+
+```json
+{
+  "name": "get_recent_events",
+  "arguments": { "url": "http://localhost:3000", "limit": 50 }
+}
+```
+
+Example: session + URL intersection
+
+```json
+{
+  "name": "get_network_failures",
+  "arguments": { "sessionId": "sess_123", "url": "http://localhost:3000", "limit": 20 }
+}
+```
+
 ## Port and Startup Behavior
 
 Default port is `8065`.

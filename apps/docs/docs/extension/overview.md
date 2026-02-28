@@ -7,6 +7,14 @@ The MV3 extension contains:
 - injected script for fetch/XHR hooks and runtime/console errors
 - popup UI for session controls, safe mode, and allowlist settings
 
+## Session tab isolation
+
+- Starting a session binds capture to the current active tab.
+- Events from other tabs are ignored unless explicitly added.
+- The popup `Session Tabs` panel lets you add/remove tabs for the active session.
+- If the last bound tab is closed or removed from scope, the session auto-stops.
+- This prevents mixed telemetry from unrelated tabs and base URLs.
+
 ## Privacy behavior
 
 - Safe mode defaults to enabled.

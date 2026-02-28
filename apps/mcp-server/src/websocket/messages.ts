@@ -55,6 +55,8 @@ export const EventMessageSchema = BaseWebSocketMessageSchema.extend({
   sessionId: z.string(),
   eventType: EventTypeSchema,
   data: z.record(z.string(), z.unknown()),
+  tabId: z.number().int().optional(),
+  origin: z.string().optional(),
 });
 
 export const EventBatchMessageSchema = BaseWebSocketMessageSchema.extend({
@@ -64,6 +66,8 @@ export const EventBatchMessageSchema = BaseWebSocketMessageSchema.extend({
     eventType: EventTypeSchema,
     data: z.record(z.string(), z.unknown()),
     timestamp: z.number().optional(),
+    tabId: z.number().int().optional(),
+    origin: z.string().optional(),
   })).min(1).max(100),
 });
 

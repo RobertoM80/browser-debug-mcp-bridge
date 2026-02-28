@@ -171,6 +171,71 @@ h1 {
   background: var(--card);
 }
 
+.session-tabs {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  background: linear-gradient(155deg, #ffffff, #f5f6f7);
+}
+
+.session-tabs summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.session-tabs summary::after {
+  content: "\25BE";
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.session-tabs[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.session-tabs[open] summary::after {
+  transform: rotate(180deg);
+}
+
+.session-tabs-list {
+  display: grid;
+  gap: 6px;
+  max-height: 140px;
+  overflow: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
+.session-tab-item {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text-main);
+}
+
+.session-tab-checkbox {
+  margin-top: 1px;
+}
+
+.session-tab-label {
+  word-break: break-word;
+}
+
+.session-tabs-empty {
+  font-size: 11px;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
 .toggle {
   display: flex;
   align-items: center;

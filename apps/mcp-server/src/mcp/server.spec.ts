@@ -222,6 +222,80 @@ describe('mcp/server V1 query tools', () => {
     db.close();
   });
 
+  it('returns recent events filtered by url origin across sessions when sessionId is omitted', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-a', 1000, 0), ('session-b', 1001, 0)
+      `
+    ).run();
+    db.prepare(
+      `
+        INSERT INTO events (event_id, session_id, ts, type, payload_json)
+        VALUES
+          ('evt-local', 'session-a', 2001, 'nav', '{"url":"http://localhost:3000/app"}'),
+          ('evt-remote', 'session-b', 2002, 'nav', '{"url":"https://example.com/home"}')
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_recent_events', {
+      url: 'http://localhost:3000',
+      limit: 10,
+    });
+
+    expect(response.sessionId).toBeUndefined();
+    expect(response.events).toHaveLength(1);
+    expect((response.events as Array<{ eventId: string }>)[0]?.eventId).toBe('evt-local');
+
+    db.close();
+  });
+
+  it('applies sessionId and url intersection for recent events', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-1', 1000, 0)
+      `
+    ).run();
+    db.prepare(
+      `
+        INSERT INTO events (event_id, session_id, ts, type, payload_json)
+        VALUES
+          ('evt-local', 'session-1', 2001, 'nav', '{"url":"http://localhost:3000/app"}'),
+          ('evt-remote', 'session-1', 2002, 'nav', '{"url":"https://example.com/home"}')
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_recent_events', {
+      sessionId: 'session-1',
+      url: 'http://localhost:3000',
+      limit: 10,
+    });
+
+    expect(response.sessionId).toBe('session-1');
+    expect(response.events).toHaveLength(1);
+    expect((response.events as Array<{ eventId: string }>)[0]?.eventId).toBe('evt-local');
+
+    db.close();
+  });
+
+  it('rejects invalid url filters for recent events', async () => {
+    const db = createTestDb();
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+
+    await expect(routeToolCall(tools, 'get_recent_events', {
+      url: 'localhost:3000',
+    })).rejects.toThrow('url must be a valid absolute http(s) URL');
+
+    db.close();
+  });
+
   it('returns only navigation history entries', async () => {
     const db = createTestDb();
 
@@ -354,6 +428,38 @@ describe('mcp/server V1 query tools', () => {
       firstSeenAt: 1020,
       lastSeenAt: 1030,
     });
+
+    db.close();
+  });
+
+  it('filters network failures by url origin without sessionId', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-1', 1000, 0), ('session-2', 1001, 0)
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO network (request_id, session_id, ts_start, duration_ms, method, url, status, initiator, error_class)
+        VALUES
+          ('req-local', 'session-1', 1010, 120, 'GET', 'http://localhost:3000/api', 500, 'fetch', NULL),
+          ('req-remote', 'session-2', 1020, 120, 'GET', 'https://example.com/api', 500, 'fetch', NULL)
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_network_failures', {
+      url: 'http://localhost:3000',
+      limit: 10,
+    });
+
+    expect(response.sessionId).toBeUndefined();
+    expect(response.failures).toHaveLength(1);
+    expect((response.failures as Array<{ requestId: string }>)[0]?.requestId).toBe('req-local');
 
     db.close();
   });

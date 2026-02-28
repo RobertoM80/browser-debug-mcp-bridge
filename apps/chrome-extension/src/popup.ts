@@ -1,6 +1,8 @@
 type SessionState = {
   isActive: boolean;
   sessionId: string | null;
+  baseOrigin?: string;
+  allowedTabIds?: number[];
   connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'reconnecting';
   queuedEvents: number;
   droppedEvents: number;
@@ -43,6 +45,23 @@ type RetentionSettings = {
 type CleanupResult = {
   deletedSessions: number;
   warning: string | null;
+};
+
+type SessionScopeTab = {
+  tabId: number;
+  title: string;
+  url: string;
+  origin?: string;
+  active: boolean;
+  bound: boolean;
+};
+
+type SessionTabScope = {
+  isActive: boolean;
+  sessionId: string | null;
+  baseOrigin?: string;
+  allowedTabIds: number[];
+  tabs: SessionScopeTab[];
 };
 
 type SessionImportResult = {
@@ -272,6 +291,126 @@ function parseSessionImportResult(result: unknown): SessionImportResult | null {
   };
 }
 
+function parseSessionTabScope(result: unknown): SessionTabScope | null {
+  if (!result || typeof result !== 'object') {
+    return null;
+  }
+
+  const candidate = result as Partial<SessionTabScope>;
+  const isActive = candidate.isActive === true;
+  const sessionId = typeof candidate.sessionId === 'string' ? candidate.sessionId : null;
+  const allowedTabIds = Array.isArray(candidate.allowedTabIds)
+    ? candidate.allowedTabIds
+      .filter((entry): entry is number => typeof entry === 'number' && Number.isFinite(entry))
+      .map((entry) => Math.floor(entry))
+    : [];
+
+  const tabs = Array.isArray(candidate.tabs)
+    ? candidate.tabs
+      .map((entry) => {
+        if (!entry || typeof entry !== 'object') {
+          return null;
+        }
+
+        const tab = entry as Partial<SessionScopeTab>;
+        if (typeof tab.tabId !== 'number' || !Number.isFinite(tab.tabId)) {
+          return null;
+        }
+
+        const mapped: SessionScopeTab = {
+          tabId: Math.floor(tab.tabId),
+          title: typeof tab.title === 'string' ? tab.title : 'Untitled tab',
+          url: typeof tab.url === 'string' ? tab.url : '',
+          active: tab.active === true,
+          bound: tab.bound === true,
+        };
+        if (typeof tab.origin === 'string') {
+          mapped.origin = tab.origin;
+        }
+
+        return mapped;
+      })
+      .filter((entry): entry is SessionScopeTab => entry !== null)
+    : [];
+
+  return {
+    isActive,
+    sessionId,
+    baseOrigin: typeof candidate.baseOrigin === 'string' ? candidate.baseOrigin : undefined,
+    allowedTabIds,
+    tabs,
+  };
+}
+
+function renderSessionTabScope(scope: SessionTabScope): void {
+  const baseOriginEl = document.getElementById('session-base-origin');
+  const tabsListEl = document.getElementById('session-tabs-list');
+  if (!baseOriginEl || !tabsListEl) {
+    return;
+  }
+
+  tabsListEl.replaceChildren();
+
+  if (!scope.isActive || !scope.sessionId) {
+    setStatusMessage(baseOriginEl, 'No active session. Start one to bind tabs.', 'info');
+    const placeholder = document.createElement('div');
+    placeholder.className = 'session-tabs-empty';
+    placeholder.textContent = 'Session tab binding is available after session start.';
+    tabsListEl.appendChild(placeholder);
+    return;
+  }
+
+  const originLabel = scope.baseOrigin ?? 'unknown origin';
+  setStatusMessage(baseOriginEl, 'Base origin: ' + originLabel + ' | Bound tabs: ' + scope.allowedTabIds.length, 'info');
+
+  if (scope.tabs.length === 0) {
+    const placeholder = document.createElement('div');
+    placeholder.className = 'session-tabs-empty';
+    placeholder.textContent = 'No tabs detected in this window.';
+    tabsListEl.appendChild(placeholder);
+    return;
+  }
+
+  for (const tab of scope.tabs) {
+    const item = document.createElement('label');
+    item.className = 'session-tab-item';
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.className = 'session-tab-checkbox';
+    checkbox.dataset.tabId = String(tab.tabId);
+    checkbox.checked = tab.bound;
+
+    const label = document.createElement('span');
+    label.className = 'session-tab-label';
+    const activeSuffix = tab.active ? ' (active)' : '';
+    const originText = tab.origin ?? 'unknown origin';
+    label.textContent = '[' + tab.tabId + '] ' + tab.title + ' | ' + originText + activeSuffix;
+
+    item.appendChild(checkbox);
+    item.appendChild(label);
+    tabsListEl.appendChild(item);
+  }
+}
+
+async function refreshSessionTabScope(): Promise<void> {
+  const result = await sendRuntimeMessage({ type: 'SESSION_GET_TAB_SCOPE' });
+  if (result.ok && 'result' in result) {
+    const parsed = parseSessionTabScope(result.result);
+    if (parsed) {
+      renderSessionTabScope(parsed);
+      return;
+    }
+  }
+
+  const baseOriginEl = document.getElementById('session-base-origin');
+  if (!result.ok) {
+    setStatusMessage(baseOriginEl, 'Error: ' + result.error, 'error');
+  } else {
+    setStatusMessage(baseOriginEl, 'Unexpected tab scope response.', 'warning');
+  }
+}
+
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   let binary = '';
   const bytes = new Uint8Array(buffer);
@@ -345,12 +484,13 @@ async function refreshState(): Promise<void> {
   const result = await sendRuntimeMessage({ type: 'SESSION_GET_STATE' });
   if (result.ok && 'state' in result) {
     renderSessionState(result.state);
+    await refreshSessionTabScope();
     return;
   }
 
   const statusEl = document.getElementById('status');
   if (statusEl && !result.ok) {
-    setStatusMessage(statusEl, `Error: ${result.error}`, 'error');
+    setStatusMessage(statusEl, 'Error: ' + result.error, 'error');
   }
 }
 
@@ -390,11 +530,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const importSessionButton = document.getElementById('import-session');
   const importSessionInput = document.getElementById('import-session-file') as HTMLInputElement | null;
   const showDbEntriesButton = document.getElementById('show-db-entries');
+  const refreshSessionTabsButton = document.getElementById('refresh-session-tabs');
+  const sessionTabsList = document.getElementById('session-tabs-list');
 
   startButton?.addEventListener('click', async () => {
     const result = await sendRuntimeMessage({ type: 'SESSION_START' });
     if (result.ok && 'state' in result) {
       renderSessionState(result.state);
+      await refreshSessionTabScope();
       return;
     }
     setConfigStatus(result.ok ? 'Unable to start session' : result.error, 'error');
@@ -404,9 +547,47 @@ document.addEventListener('DOMContentLoaded', () => {
     const result = await sendRuntimeMessage({ type: 'SESSION_STOP' });
     if (result.ok && 'state' in result) {
       renderSessionState(result.state);
+      await refreshSessionTabScope();
       return;
     }
     setConfigStatus(result.ok ? 'Unable to stop session' : result.error, 'error');
+  });
+
+  refreshSessionTabsButton?.addEventListener('click', async () => {
+    await refreshSessionTabScope();
+  });
+
+  sessionTabsList?.addEventListener('change', async (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLInputElement) || target.type !== 'checkbox') {
+      return;
+    }
+
+    const tabId = Number(target.dataset.tabId);
+    if (!Number.isInteger(tabId)) {
+      setConfigStatus('Invalid tab selection.', 'error');
+      return;
+    }
+
+    target.disabled = true;
+    const message = target.checked
+      ? { type: 'SESSION_ADD_TAB_TO_SESSION' as const, tabId }
+      : { type: 'SESSION_REMOVE_TAB_FROM_SESSION' as const, tabId };
+
+    const result = await sendRuntimeMessage(message);
+    target.disabled = false;
+
+    if (!result.ok) {
+      target.checked = !target.checked;
+      setConfigStatus(result.error, 'error');
+      return;
+    }
+
+    if ('state' in result) {
+      renderSessionState(result.state);
+    }
+
+    await refreshSessionTabScope();
   });
 
   saveConfigButton?.addEventListener('click', async () => {

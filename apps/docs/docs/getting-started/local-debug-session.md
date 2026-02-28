@@ -4,9 +4,10 @@
 
 1. Start server: `pnpm nx serve mcp-server`
 2. Load extension build and open target page
-3. Start session from popup (safe mode enabled)
-4. Reproduce issue in the browser
-5. Query evidence through MCP tools
+3. Start session from popup (safe mode enabled, tab-bound by default)
+4. Optional: add extra tabs from `Session Tabs` panel only when needed
+5. Reproduce issue in the browser
+6. Query evidence through MCP tools
 
 ## First MCP queries
 
@@ -18,6 +19,12 @@ Pick a session where `liveConnection.connected` is `true` before running live ca
 
 ```json
 { "name": "get_session_summary", "arguments": { "sessionId": "sess_123" } }
+```
+
+Origin-scoped example:
+
+```json
+{ "name": "get_recent_events", "arguments": { "url": "http://localhost:3000", "limit": 50 } }
 ```
 
 ## Escalate only when needed

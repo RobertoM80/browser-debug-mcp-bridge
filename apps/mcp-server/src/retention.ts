@@ -622,14 +622,14 @@ export function importSessionFromJson(
   );
 
   const insertEvent = db.prepare(
-    `INSERT INTO events (event_id, session_id, ts, type, payload_json)
-     VALUES (?, ?, ?, ?, ?)`
+    `INSERT INTO events (event_id, session_id, ts, type, payload_json, tab_id, origin)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
   );
 
   const insertNetwork = db.prepare(
     `INSERT INTO network (
-      request_id, session_id, ts_start, duration_ms, method, url, status, initiator, error_class, response_size_est
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      request_id, session_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class, response_size_est
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   const insertFingerprint = db.prepare(
@@ -667,7 +667,7 @@ export function importSessionFromJson(
     for (let i = 0; i < parsed.events.length; i += 1) {
       const row = parsed.events[i];
       const eventId = `${sessionId}-import-event-${importedAt}-${i}`;
-      insertEvent.run(eventId, sessionId, row.ts, row.type, row.payloadJson);
+      insertEvent.run(eventId, sessionId, row.ts, row.type, row.payloadJson, row.tabId, row.origin);
     }
 
     for (let i = 0; i < parsed.network.length; i += 1) {
@@ -680,6 +680,7 @@ export function importSessionFromJson(
         row.durationMs,
         row.method,
         row.url,
+        row.origin,
         row.status,
         row.initiator,
         row.errorClass,
@@ -1065,12 +1066,13 @@ function normalizeImportPayload(payload: unknown): {
     allowlistHash: string | null;
     pinned: 0 | 1;
   };
-  events: Array<{ ts: number; type: string; payloadJson: string }>;
+  events: Array<{ ts: number; type: string; payloadJson: string; tabId: number | null; origin: string | null }>;
   network: Array<{
     tsStart: number;
     durationMs: number | null;
     method: string;
     url: string;
+    origin: string | null;
     status: number | null;
     initiator: string | null;
     errorClass: string | null;
@@ -1133,8 +1135,21 @@ function normalizeImportPayload(payload: unknown): {
     const ts = asTimestamp(event.ts ?? event.timestamp, createdAt);
     const rawType = asString(event.type, 'ui');
     const type = allowedEventTypes.has(rawType) ? rawType : 'ui';
-    const payloadJson = toJsonString(event.payload_json ?? event.payload ?? {});
-    return { ts, type, payloadJson };
+    const rawPayload = event.payload_json ?? event.payload ?? {};
+    const payloadJson = toJsonString(rawPayload);
+    const payload =
+      rawPayload && typeof rawPayload === 'object' && !Array.isArray(rawPayload)
+        ? (rawPayload as Record<string, unknown>)
+        : {};
+    return {
+      ts,
+      type,
+      payloadJson,
+      tabId: asNullableInteger(event.tab_id ?? event.tabId ?? payload.tabId),
+      origin: normalizeHttpOrigin(
+        event.origin ?? payload.origin ?? payload.url ?? payload.to ?? payload.href ?? payload.location
+      ),
+    };
   });
 
   const network = rawNetwork.map((entry, index) => {
@@ -1150,6 +1165,7 @@ function normalizeImportPayload(payload: unknown): {
       durationMs: asNullableInteger(row.duration_ms ?? row.durationMs),
       method,
       url,
+      origin: normalizeHttpOrigin(row.origin ?? url),
       status: asNullableInteger(row.status),
       initiator: initiatorCandidate && allowedInitiators.has(initiatorCandidate) ? initiatorCandidate : null,
       errorClass: errorClassCandidate && allowedErrorClasses.has(errorClassCandidate) ? errorClassCandidate : null,
@@ -1260,6 +1276,22 @@ function asArray(value: unknown, error: string): unknown[] {
 
 function asString(value: unknown, fallback: string): string {
   return typeof value === 'string' ? value : fallback;
+}
+
+function normalizeHttpOrigin(value: unknown): string | null {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return null;
+    }
+    return parsed.origin;
+  } catch {
+    return null;
+  }
 }
 
 function asNonEmptyString(value: unknown, error: string): string {

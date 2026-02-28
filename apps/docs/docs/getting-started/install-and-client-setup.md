@@ -1,8 +1,30 @@
 # Install And MCP Client Setup
 
-This page is the developer-focused setup reference for running Browser Debug MCP Bridge in real projects.
+This page covers both fast no-repo setup and local development setup.
 
-## 1) Clone and install
+## 1) Quick setup (no repo clone, recommended)
+
+Install runtime:
+
+```bash
+npm i -g browser-debug-mcp-bridge
+```
+
+Download extension asset `chrome-extension-dist.tgz` from latest release and load unpacked in Chrome:
+
+1. Open `chrome://extensions`
+2. Enable Developer mode
+3. Click **Load unpacked**
+4. Select extracted extension folder
+
+Configure MCP host with direct Node launch:
+
+1. Resolve npm global root: `npm root -g`
+2. Set:
+   1. command: `node`
+   2. args: `["<NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs"]`
+
+## 2) Local clone setup (contributors/customization)
 
 ```bash
 git clone https://github.com/<ORG_OR_USER>/browser-debug-mcp-bridge.git
@@ -10,7 +32,7 @@ cd browser-debug-mcp-bridge
 pnpm install
 ```
 
-## 2) Build extension and load in Chrome
+## 3) Build extension and load in Chrome
 
 ```bash
 pnpm nx build chrome-extension
@@ -23,7 +45,7 @@ Then:
 3. Click **Load unpacked**
 4. Select `dist/apps/chrome-extension`
 
-## 3) Start runtime for MCP clients
+## 4) Start runtime for MCP clients
 
 For MCP hosts, run:
 
@@ -36,7 +58,7 @@ This starts:
 1. Ingest API/WebSocket on `http://127.0.0.1:8065`
 2. MCP stdio tool runtime
 
-Alternative (no local clone path in MCP config, npm registry):
+Alternative (secondary):
 
 1. command: `npx`
 2. args: `["-y", "browser-debug-mcp-bridge"]`
@@ -61,7 +83,7 @@ Manual stop command (if stale process still occupies `8065`):
 node scripts/mcp-start.cjs --stop
 ```
 
-## 4) Generate client config snippets
+## 5) Generate client config snippets
 
 ```bash
 pnpm mcp:print-config
@@ -73,22 +95,25 @@ Use output snippets directly in:
 2. Claude Desktop config JSON
 3. Cursor/Windsurf/OpenCode MCP server JSON
 
-## 5) Session bootstrap checklist
+## 6) Session bootstrap checklist
 
 In extension popup:
 
 1. Add target domain to allowlist
 2. Start session
-3. Enable snapshots if your workflow needs DOM/style/PNG evidence
+3. Session starts bound to current tab only
+4. Use `Session Tabs` to add/remove tabs for this session explicitly
+5. Enable snapshots if your workflow needs DOM/style/PNG evidence
 
 In MCP client:
 
 1. Call `list_sessions`
 2. Pick `sessionId` with `liveConnection.connected = true` for live tools
 3. Call `get_session_summary`, `get_recent_events`
-4. Use `capture_ui_snapshot` and `list_snapshots` when visual state is needed
+4. Optional origin scope: call query tools with `url` (example `http://localhost:3000`)
+5. Use `capture_ui_snapshot` and `list_snapshots` when visual state is needed
 
-## 6) Common failure points
+## 7) Common failure points
 
 If tools return no data:
 
@@ -97,8 +122,9 @@ If tools return no data:
 3. MCP config points to wrong repository path
 4. MCP host process cannot find `node` in PATH
 5. Session id is historical/stale (`liveConnection.connected = false`)
+6. Event came from a tab that is not bound to the active session
 
-## 7) One-command local setup (optional)
+## 8) One-command local setup (optional)
 
 Windows:
 

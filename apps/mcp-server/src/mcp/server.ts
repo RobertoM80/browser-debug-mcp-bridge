@@ -97,9 +97,9 @@ const TOOL_SCHEMAS: Record<string, object> = {
   },
   get_recent_events: {
     type: 'object',
-    required: ['sessionId'],
     properties: {
       sessionId: { type: 'string' },
+      url: { type: 'string' },
       eventTypes: { type: 'array', items: { type: 'string' } },
       limit: { type: 'number' },
       offset: { type: 'number' },
@@ -107,18 +107,18 @@ const TOOL_SCHEMAS: Record<string, object> = {
   },
   get_navigation_history: {
     type: 'object',
-    required: ['sessionId'],
     properties: {
       sessionId: { type: 'string' },
+      url: { type: 'string' },
       limit: { type: 'number' },
       offset: { type: 'number' },
     },
   },
   get_console_events: {
     type: 'object',
-    required: ['sessionId'],
     properties: {
       sessionId: { type: 'string' },
+      url: { type: 'string' },
       level: { type: 'string' },
       limit: { type: 'number' },
       offset: { type: 'number' },
@@ -137,6 +137,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     type: 'object',
     properties: {
       sessionId: { type: 'string' },
+      url: { type: 'string' },
       errorType: { type: 'string' },
       groupBy: { type: 'string' },
       limit: { type: 'number' },
@@ -324,6 +325,8 @@ interface EventRow {
   ts: number;
   type: string;
   payload_json: string;
+  tab_id: number | null;
+  origin: string | null;
 }
 
 interface ErrorFingerprintRow {
@@ -343,6 +346,7 @@ interface NetworkFailureRow {
   duration_ms: number | null;
   method: string;
   url: string;
+  origin: string | null;
   status: number | null;
   initiator: string | null;
   error_class: string | null;
@@ -487,6 +491,73 @@ function parseRequestedTypes(value: unknown): string[] {
   return Array.from(new Set(normalized));
 }
 
+function normalizeRequestedOrigin(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+
+  if (typeof value !== 'string') {
+    throw new Error('url must be a string');
+  }
+
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error('url must use http:// or https://');
+    }
+    return parsed.origin;
+  } catch {
+    throw new Error('url must be a valid absolute http(s) URL');
+  }
+}
+
+function ensureSessionOrOriginFilter(sessionId: string | undefined, origin: string | undefined): void {
+  if (!sessionId && !origin) {
+    throw new Error('sessionId or url is required');
+  }
+}
+
+function resolveUrlPrefixFromOrigin(origin: string): string {
+  return origin.endsWith('/') ? origin : origin + '/';
+}
+
+function appendEventOriginFilter(where: string[], params: unknown[], origin: string | undefined): void {
+  if (!origin) {
+    return;
+  }
+
+  const prefix = resolveUrlPrefixFromOrigin(origin);
+  where.push(`
+    (
+      origin = ?
+      OR (
+        origin IS NULL AND (
+          json_extract(payload_json, '$.origin') = ?
+          OR json_extract(payload_json, '$.url') = ?
+          OR json_extract(payload_json, '$.url') LIKE ?
+          OR json_extract(payload_json, '$.to') = ?
+          OR json_extract(payload_json, '$.to') LIKE ?
+          OR json_extract(payload_json, '$.href') = ?
+          OR json_extract(payload_json, '$.href') LIKE ?
+          OR json_extract(payload_json, '$.location') = ?
+          OR json_extract(payload_json, '$.location') LIKE ?
+        )
+      )
+    )
+  `);
+  params.push(origin, origin, origin, `${prefix}%`, origin, `${prefix}%`, origin, `${prefix}%`, origin, `${prefix}%`);
+}
+
+function appendNetworkOriginFilter(where: string[], params: unknown[], origin: string | undefined): void {
+  if (!origin) {
+    return;
+  }
+
+  const prefix = resolveUrlPrefixFromOrigin(origin);
+  where.push('(origin = ? OR (origin IS NULL AND (url = ? OR url LIKE ?)))');
+  params.push(origin, origin, `${prefix}%`);
+}
+
 function resolveLastUrl(payload: Record<string, unknown>): string | undefined {
   const candidates = [payload.url, payload.to, payload.href, payload.location];
   for (const candidate of candidates) {
@@ -499,12 +570,18 @@ function resolveLastUrl(payload: Record<string, unknown>): string | undefined {
 }
 
 function mapEventRecord(row: EventRow): Record<string, unknown> {
+  const payload = readJsonPayload(row.payload_json);
   return {
     eventId: row.event_id,
     sessionId: row.session_id,
     timestamp: row.ts,
     type: row.type,
-    payload: readJsonPayload(row.payload_json),
+    tabId: row.tab_id ?? (typeof payload.tabId === 'number' ? payload.tabId : undefined),
+    origin:
+      row.origin
+      ?? (typeof payload.origin === 'string' ? payload.origin : undefined)
+      ?? undefined,
+    payload,
   };
 }
 
@@ -989,16 +1066,20 @@ export function createV1ToolHandlers(
     get_recent_events: async (input) => {
       const db = getDb();
       const sessionId = getSessionId(input);
-      if (!sessionId) {
-        throw new Error('sessionId is required');
-      }
+      const origin = normalizeRequestedOrigin(input.url);
+      ensureSessionOrOriginFilter(sessionId, origin);
 
       const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
       const offset = resolveOffset(input.offset);
       const requestedTypes = parseRequestedTypes(input.types ?? input.eventTypes);
 
-      const params: unknown[] = [sessionId];
-      const where: string[] = ['session_id = ?'];
+      const params: unknown[] = [];
+      const where: string[] = [];
+      if (sessionId) {
+        where.push('session_id = ?');
+        params.push(sessionId);
+      }
+      appendEventOriginFilter(where, params, origin);
       if (requestedTypes.length > 0) {
         const placeholders = requestedTypes.map(() => '?').join(', ');
         where.push(`type IN (${placeholders})`);
@@ -1007,7 +1088,7 @@ export function createV1ToolHandlers(
 
       const rows = db
         .prepare(`
-        SELECT event_id, session_id, ts, type, payload_json
+        SELECT event_id, session_id, ts, type, payload_json, tab_id, origin
         FROM events
         WHERE ${where.join(' AND ')}
         ORDER BY ts DESC
@@ -1034,21 +1115,27 @@ export function createV1ToolHandlers(
     get_navigation_history: async (input) => {
       const db = getDb();
       const sessionId = getSessionId(input);
-      if (!sessionId) {
-        throw new Error('sessionId is required');
-      }
+      const origin = normalizeRequestedOrigin(input.url);
+      ensureSessionOrOriginFilter(sessionId, origin);
 
       const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
       const offset = resolveOffset(input.offset);
+      const params: unknown[] = [];
+      const where: string[] = ["type = 'nav'"];
+      if (sessionId) {
+        where.push('session_id = ?');
+        params.push(sessionId);
+      }
+      appendEventOriginFilter(where, params, origin);
       const rows = db
         .prepare(`
-        SELECT event_id, session_id, ts, type, payload_json
+        SELECT event_id, session_id, ts, type, payload_json, tab_id, origin
         FROM events
-        WHERE session_id = ? AND type = 'nav'
+        WHERE ${where.join(' AND ')}
         ORDER BY ts DESC
         LIMIT ? OFFSET ?
       `)
-        .all(sessionId, limit + 1, offset) as EventRow[];
+        .all(...params, limit + 1, offset) as EventRow[];
 
       const truncated = rows.length > limit;
 
@@ -1069,26 +1156,30 @@ export function createV1ToolHandlers(
     get_console_events: async (input) => {
       const db = getDb();
       const sessionId = getSessionId(input);
-      if (!sessionId) {
-        throw new Error('sessionId is required');
-      }
+      const origin = normalizeRequestedOrigin(input.url);
+      ensureSessionOrOriginFilter(sessionId, origin);
 
       const level = typeof input.level === 'string' ? input.level : undefined;
       const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
       const offset = resolveOffset(input.offset);
-      const params: unknown[] = [sessionId];
-      let levelClause = '';
+      const params: unknown[] = [];
+      const where: string[] = ["type = 'console'"];
+      if (sessionId) {
+        where.push('session_id = ?');
+        params.push(sessionId);
+      }
+      appendEventOriginFilter(where, params, origin);
 
       if (level) {
-        levelClause = "AND json_extract(payload_json, '$.level') = ?";
+        where.push("json_extract(payload_json, '$.level') = ?");
         params.push(level);
       }
 
       const rows = db
         .prepare(`
-        SELECT event_id, session_id, ts, type, payload_json
+        SELECT event_id, session_id, ts, type, payload_json, tab_id, origin
         FROM events
-        WHERE session_id = ? AND type = 'console' ${levelClause}
+        WHERE ${where.join(' AND ')}
         ORDER BY ts DESC
         LIMIT ? OFFSET ?
       `)
@@ -1171,6 +1262,8 @@ export function createV1ToolHandlers(
     get_network_failures: async (input) => {
       const db = getDb();
       const sessionId = typeof input.sessionId === 'string' ? input.sessionId : undefined;
+      const origin = normalizeRequestedOrigin(input.url);
+      ensureSessionOrOriginFilter(sessionId, origin);
       const groupBy = typeof input.groupBy === 'string' ? input.groupBy : undefined;
       const errorType = typeof input.errorType === 'string' ? input.errorType : undefined;
       const limit = resolveLimit(input.limit, DEFAULT_LIST_LIMIT);
@@ -1184,6 +1277,7 @@ export function createV1ToolHandlers(
         where.push('session_id = ?');
         params.push(sessionId);
       }
+      appendNetworkOriginFilter(where, params, origin);
 
       where.push(errorFilter);
       if (errorFilter === 'error_class = ?' && errorType) {
@@ -1239,7 +1333,7 @@ export function createV1ToolHandlers(
 
       const rows = db
         .prepare(`
-          SELECT request_id, session_id, ts_start, duration_ms, method, url, status, initiator, error_class
+          SELECT request_id, session_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class
           FROM network
           ${whereClause}
           ORDER BY ts_start DESC
@@ -1266,6 +1360,7 @@ export function createV1ToolHandlers(
           durationMs: row.duration_ms ?? undefined,
           method: row.method,
           url: row.url,
+          origin: row.origin ?? undefined,
           status: row.status ?? undefined,
           initiator: row.initiator ?? undefined,
           errorType: classifyNetworkFailure(row.status, row.error_class),
@@ -1289,7 +1384,7 @@ export function createV1ToolHandlers(
       const offset = resolveOffset(input.offset);
       const rows = db
         .prepare(`
-          SELECT event_id, session_id, ts, type, payload_json
+          SELECT event_id, session_id, ts, type, payload_json, tab_id, origin
           FROM events
           WHERE session_id = ?
             AND type IN ('ui', 'element_ref')
@@ -1328,7 +1423,7 @@ export function createV1ToolHandlers(
 
       const latestErrorEvent = db
         .prepare(`
-          SELECT event_id, session_id, ts, type, payload_json
+          SELECT event_id, session_id, ts, type, payload_json, tab_id, origin
           FROM events
           WHERE session_id = ?
             AND (type = 'error' OR (type = 'console' AND json_extract(payload_json, '$.level') = 'error'))
@@ -1339,7 +1434,7 @@ export function createV1ToolHandlers(
 
       const latestNetworkFailure = db
         .prepare(`
-          SELECT request_id, session_id, ts_start, duration_ms, method, url, status, initiator, error_class
+          SELECT request_id, session_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class
           FROM network
           WHERE session_id = ?
             AND (error_class IS NOT NULL OR COALESCE(status, 0) >= 400)
@@ -1372,7 +1467,7 @@ export function createV1ToolHandlers(
 
       const eventRows = db
         .prepare(`
-          SELECT event_id, session_id, ts, type, payload_json
+          SELECT event_id, session_id, ts, type, payload_json, tab_id, origin
           FROM events
           WHERE session_id = ?
             AND ts BETWEEN ? AND ?
@@ -1382,7 +1477,7 @@ export function createV1ToolHandlers(
 
       const networkRows = db
         .prepare(`
-          SELECT request_id, session_id, ts_start, duration_ms, method, url, status, initiator, error_class
+          SELECT request_id, session_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class
           FROM network
           WHERE session_id = ?
             AND ts_start BETWEEN ? AND ?
@@ -1471,7 +1566,7 @@ export function createV1ToolHandlers(
 
       const anchorEvent = db
         .prepare(`
-          SELECT event_id, session_id, ts, type, payload_json
+          SELECT event_id, session_id, ts, type, payload_json, tab_id, origin
           FROM events
           WHERE session_id = ? AND event_id = ?
           LIMIT 1
@@ -1489,7 +1584,7 @@ export function createV1ToolHandlers(
 
       const nearbyEvents = db
         .prepare(`
-          SELECT event_id, session_id, ts, type, payload_json
+          SELECT event_id, session_id, ts, type, payload_json, tab_id, origin
           FROM events
           WHERE session_id = ?
             AND event_id != ?
@@ -1499,7 +1594,7 @@ export function createV1ToolHandlers(
 
       const nearbyNetworkFailures = db
         .prepare(`
-          SELECT request_id, session_id, ts_start, duration_ms, method, url, status, initiator, error_class
+          SELECT request_id, session_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class
           FROM network
           WHERE session_id = ?
             AND ts_start BETWEEN ? AND ?

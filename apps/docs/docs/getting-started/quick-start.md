@@ -4,9 +4,24 @@
 
 - Node.js 20+
 - Chrome with developer mode enabled
-- Local extension build (from this repository)
+- Chrome extension (release asset or local build)
 
-## Install and run
+## Fast path (no repo clone, recommended)
+
+```bash
+npm i -g browser-debug-mcp-bridge
+npm root -g
+```
+
+Then:
+
+1. Download latest `chrome-extension-dist.tgz` release asset and extract it
+2. Load unpacked extension from `chrome://extensions`
+3. Configure MCP host:
+   1. command: `node`
+   2. args: `["<NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs"]`
+
+## Local dev path (repo clone)
 
 ```bash
 pnpm install
@@ -14,15 +29,7 @@ pnpm nx serve mcp-server
 pnpm nx build chrome-extension --watch
 ```
 
-For MCP client integration (Codex/Claude/Cursor/Windsurf), you can use:
-
-1. npm mode:
-
-```bash
-npx -y browser-debug-mcp-bridge
-```
-
-1. local clone mode:
+For MCP client integration, local path mode is:
 
 ```bash
 node scripts/mcp-start.cjs
@@ -38,7 +45,7 @@ node scripts/mcp-start.cjs --stop
 
 ## Load extension build
 
-1. Build once: `pnpm nx build chrome-extension`
+1. Build once (local path only): `pnpm nx build chrome-extension`
 2. Open `chrome://extensions`
 3. Enable Developer mode
 4. Load unpacked from `dist/apps/chrome-extension`
@@ -50,6 +57,7 @@ node scripts/mcp-start.cjs --stop
 - Confirm popup shows connected status after session start
 - Confirm MCP client can run `list_sessions`
 - For live tools, use a session with `liveConnection.connected = true`
+- Session scope is tab-bound by default; use popup `Session Tabs` to add/remove tabs
 
 ## Next steps
 

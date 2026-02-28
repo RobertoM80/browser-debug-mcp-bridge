@@ -6,6 +6,22 @@ All tool responses include:
 - `limitsApplied`
 - `redactionSummary`
 
+## Session scope and URL filtering
+
+Session capture is tab-bound by default:
+
+- Starting a session binds capture to the active tab only
+- Unbound tabs are rejected
+- Additional tabs must be added explicitly from popup `Session Tabs`
+
+For `get_recent_events`, `get_navigation_history`, `get_console_events`, and `get_network_failures`:
+
+- pass `sessionId`, `url`, or both
+- `url` is normalized to origin (`scheme://host:port`)
+- `sessionId + url` applies intersection filtering
+- `url` without `sessionId` searches across sessions
+- invalid/non-absolute URLs are rejected (use `http://localhost:3000`)
+
 ## V1 Query tools
 
 ### list_sessions
@@ -43,9 +59,11 @@ Returns event stream entries with optional type filtering.
 ```json
 {
   "name": "get_recent_events",
-  "arguments": { "sessionId": "sess_123", "types": ["error", "network"], "limit": 50 }
+  "arguments": { "sessionId": "sess_123", "eventTypes": ["error", "network"], "limit": 50 }
 }
 ```
+
+Backward compatibility note: `types` is still accepted as an alias.
 
 ### get_navigation_history
 
@@ -62,6 +80,12 @@ Returns console events filtered by level.
 ```json
 { "name": "get_console_events", "arguments": { "sessionId": "sess_123", "level": "error", "limit": 25 } }
 ```
+
+Current capture source:
+
+- captures page JavaScript console calls (`console.log`, `console.warn`, `console.error`)
+- captures runtime JS errors via `window.onerror`/`unhandledrejection` as `error` events
+- does not mirror every DevTools UI-only/browser-internal console row
 
 ### get_error_fingerprints
 

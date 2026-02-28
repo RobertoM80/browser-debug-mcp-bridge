@@ -6,6 +6,8 @@ export interface SessionStartContext {
   url: string;
   tabId?: number;
   windowId?: number;
+  baseOrigin?: string;
+  allowedTabIds?: number[];
   userAgent?: string;
   viewport?: {
     width: number;
@@ -18,6 +20,8 @@ export interface SessionStartContext {
 export interface SessionState {
   isActive: boolean;
   sessionId: string | null;
+  baseOrigin?: string;
+  allowedTabIds?: number[];
   connectionStatus: ConnectionStatus;
   queuedEvents: number;
   droppedEvents: number;
@@ -64,6 +68,7 @@ interface OutboundMessage {
   timestamp: number;
   sessionId: string;
   url?: string;
+  origin?: string;
   tabId?: number;
   windowId?: number;
   userAgent?: string;
@@ -81,6 +86,8 @@ interface OutboundEventPayload {
   eventType: string;
   data: Record<string, unknown>;
   timestamp: number;
+  tabId?: number;
+  origin?: string;
 }
 
 interface EventBatchMessage {
@@ -181,6 +188,8 @@ export class SessionManager {
   private reconnectEligible = false;
   private reconnectStartedAt: number | null = null;
   private manualStopRequested = false;
+  private activeBaseOrigin: string | null = null;
+  private activeAllowedTabIds: number[] = [];
 
   constructor(options: SessionManagerOptions = {}) {
     this.wsUrl = options.wsUrl ?? 'ws://127.0.0.1:8065/ws';
@@ -205,6 +214,14 @@ export class SessionManager {
     this.clearReconnectTimer();
     this.sessionId = this.createSessionId();
     this.isActive = true;
+    this.activeBaseOrigin = typeof context.baseOrigin === 'string' ? context.baseOrigin : null;
+    this.activeAllowedTabIds = Array.from(
+      new Set(
+        (context.allowedTabIds ?? []).filter(
+          (tabId): tabId is number => typeof tabId === 'number' && Number.isFinite(tabId),
+        ),
+      ),
+    );
     this.ensureConnection();
     this.startHeartbeat();
 
@@ -213,6 +230,7 @@ export class SessionManager {
       sessionId: this.sessionId,
       timestamp: this.now(),
       url: context.url,
+      origin: this.activeBaseOrigin ?? undefined,
       tabId: context.tabId,
       windowId: context.windowId,
       userAgent: context.userAgent,
@@ -244,10 +262,16 @@ export class SessionManager {
 
     this.isActive = false;
     this.sessionId = null;
+    this.activeBaseOrigin = null;
+    this.activeAllowedTabIds = [];
     return this.getState();
   }
 
-  queueEvent(eventType: string, data: Record<string, unknown>): boolean {
+  queueEvent(
+    eventType: string,
+    data: Record<string, unknown>,
+    metadata?: { tabId?: number; origin?: string }
+  ): boolean {
     if (!this.isActive || !this.sessionId) {
       return false;
     }
@@ -257,6 +281,8 @@ export class SessionManager {
       sessionId: this.sessionId,
       eventType,
       data,
+      tabId: metadata?.tabId,
+      origin: metadata?.origin,
       timestamp: this.now(),
     });
 
@@ -267,11 +293,33 @@ export class SessionManager {
     return {
       isActive: this.isActive,
       sessionId: this.sessionId,
+      baseOrigin: this.activeBaseOrigin ?? undefined,
+      allowedTabIds: this.activeAllowedTabIds.slice(),
       connectionStatus: this.connectionStatus,
       queuedEvents: this.buffer.length,
       droppedEvents: this.droppedEvents,
       reconnectAttempts: this.reconnectAttempts,
     };
+  }
+
+  setSessionScope(scope: { baseOrigin?: string; allowedTabIds?: number[] }): void {
+    if (!this.isActive || !this.sessionId) {
+      return;
+    }
+
+    if (scope.baseOrigin !== undefined) {
+      this.activeBaseOrigin = scope.baseOrigin;
+    }
+
+    if (Array.isArray(scope.allowedTabIds)) {
+      this.activeAllowedTabIds = Array.from(
+        new Set(
+          scope.allowedTabIds.filter(
+            (tabId): tabId is number => typeof tabId === 'number' && Number.isFinite(tabId),
+          ),
+        ),
+      );
+    }
   }
 
   private ensureConnection(): void {
@@ -470,6 +518,8 @@ export class SessionManager {
             eventType: candidate.eventType,
             data: candidate.data,
             timestamp: candidate.timestamp,
+            tabId: candidate.tabId,
+            origin: candidate.origin,
           });
         }
 
@@ -493,6 +543,8 @@ export class SessionManager {
             eventType: single.eventType,
             data: single.data,
             timestamp: single.timestamp,
+            tabId: single.tabId,
+            origin: single.origin,
           }));
           continue;
         }

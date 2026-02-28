@@ -21,6 +21,12 @@
       <button id="start-session" type="button">Start Session</button>
       <button id="stop-session" type="button">Stop Session</button>
     </div>
+    <details class="settings session-tabs" open>
+      <summary>Session Tabs</summary>
+      <div id="session-base-origin" class="config-status" aria-live="polite"></div>
+      <div id="session-tabs-list" class="session-tabs-list" aria-live="polite"></div>
+      <button id="refresh-session-tabs" type="button">Refresh tabs</button>
+    </details>
     <button id="show-db-entries" type="button" class="open-db-btn">Open DB entries</button>
     <div class="settings">
       <label class="toggle" for="safe-mode">
