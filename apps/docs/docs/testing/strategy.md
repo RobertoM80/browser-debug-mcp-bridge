@@ -1,28 +1,50 @@
-# Testing
+# Testing Strategy
 
 ## Test stack
 
-- Vitest for unit and integration coverage
-- Project-level Nx test targets
-- Workspace command: `pnpm test`
+- Vitest for unit/integration tests across apps/libs.
+- Playwright for browser-level E2E coverage (`apps/e2e-playwright`).
+- Nx targets to run each lane consistently in local and CI.
 
-## What to cover
+## Test lanes
 
-- extension capture and transport behavior
-- server ingest and persistence paths
-- MCP tool input validation and response contracts
-- guardrails (limits + redaction) and fallback behavior
+1. Unit + integration:
+   - command: `pnpm test`
+2. E2E smoke:
+   - command: `pnpm test:e2e:smoke`
+   - intent: fast checks for extension UI wiring and MCP connectivity
+3. E2E full:
+   - command: `pnpm test:e2e:full`
+   - intent: deeper checks for extension -> bridge -> DB -> MCP tool behavior
 
-## Verification commands
+## CI behavior
 
-```bash
-pnpm test
-pnpm nx run-many -t lint
-pnpm nx run-many -t build
-```
+- CI workflow (`.github/workflows/ci.yml`) runs:
+  1. `validate` (`pnpm verify`)
+  2. `e2e-smoke`
+  3. `e2e-full`
+- Nightly workflow (`.github/workflows/nightly-health.yml`) runs:
+  1. `pnpm verify`
+  2. `e2e-full`
+  3. runtime `/health` smoke check
+
+Both CI and nightly install Chromium and execute E2E through `xvfb-run` on Linux runners.
+
+## Coverage goals
+
+- Extension:
+  - popup controls, session lifecycle, tab-binding behavior
+  - event capture gating and transport
+- Server:
+  - ingest paths, persistence, query filters, error handling
+- MCP:
+  - tool input validation and response contract stability
+  - session and URL-origin filter semantics
 
 ## Docs quality gates
 
-- `nx lint docs` checks markdown style and internal links
-- `nx build docs` verifies static generation
-- `nx run docs:ci` is the docs CI verification command
+- `pnpm docs:lint` checks docs lint rules.
+- `pnpm docs:build` verifies static site build.
+- `pnpm docs:ci` is the docs CI verification target.
+
+See also: [E2E Matrix](./e2e-matrix.md).

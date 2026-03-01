@@ -1,30 +1,44 @@
 # Testing Guide
 
-## Test Runner
+## Test Layers
 
-Vitest is used across all projects.
+This repository uses two test layers:
 
-## Commands
+1. Unit and integration tests with Vitest (workspace-wide).
+2. End-to-end tests with Playwright (`apps/e2e-playwright`).
+
+## Local Commands
 
 ```bash
-# Test all
-pnpm nx run-many -t test
+# Unit + integration (all projects)
+pnpm test
 
-# Test one project
+# One project (unit/integration)
 pnpm nx test <project>
 
-# Test with coverage
-pnpm nx test <project> --coverage
+# E2E smoke suite (fast lane)
+pnpm test:e2e:smoke
 
-# Run single test file
-pnpm nx test <project> --testPathPattern <path>
+# E2E full suite (deeper coverage)
+pnpm test:e2e:full
 
-# Run test by name
-pnpm nx test <project> --testNamePattern "<name>"
+# All E2E tests
+pnpm test:e2e
 ```
 
-## Testing Patterns
+## CI Mapping
 
-- Integration tests for WebSocket ingest and MCP tool responses
-- Coverage configured in individual project configs
-- Update or add tests for new behavior
+- PR and push to `main`:
+  1. `validate` job runs `pnpm verify`
+  2. `e2e-smoke` job runs Playwright smoke suite
+  3. `e2e-full` job runs Playwright full suite
+- Nightly:
+  1. Runs `pnpm verify`
+  2. Runs Playwright full suite
+  3. Runs runtime `/health` smoke check
+
+## Scope Expectations
+
+- Use unit/integration tests for contracts, schemas, persistence, and core logic.
+- Use E2E smoke tests for extension popup wiring and MCP connectivity sanity.
+- Use E2E full tests for extension-to-server-to-DB data flow and tool outputs.

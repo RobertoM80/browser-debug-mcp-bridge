@@ -11,6 +11,8 @@ Use it to move from first run to day-to-day debugging:
 - Start with [Quick Start](./getting-started/quick-start.md)
 - Use [Install And MCP Client Setup](./getting-started/install-and-client-setup.md) for cross-client MCP integration
 - Query sessions using [MCP Tools](./mcp-tools/overview.md)
+- Validate your setup with [Testing Strategy](./testing/strategy.md)
+- Understand automation with [GitHub Actions Automation](./workflows/github-actions-automation.md)
 - Validate guardrails in [Security & Privacy](./security-privacy/controls.md)
 - Fix common setup/runtime problems in [Troubleshooting](./troubleshooting/common-issues.md)
 

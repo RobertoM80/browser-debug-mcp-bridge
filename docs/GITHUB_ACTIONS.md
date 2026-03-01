@@ -14,7 +14,9 @@ What it does:
 1. Checks out repository code
 2. Installs Node + pnpm
 3. Installs dependencies
-4. Runs `pnpm verify`
+4. Runs `validate` job (`pnpm verify`)
+5. Runs Playwright `e2e-smoke` job
+6. Runs Playwright `e2e-full` job
 
 What `pnpm verify` includes:
 1. Typecheck
@@ -27,6 +29,7 @@ What `pnpm verify` includes:
 Why it exists:
 1. Prevent regressions before merge
 2. Keep quality gates centralized in one command
+3. Validate user-facing extension + MCP wiring through browser-level E2E checks
 
 ## 2. Docs Pages (`.github/workflows/docs-pages.yml`)
 
@@ -107,16 +110,19 @@ When it runs:
 
 What it does:
 1. Runs `pnpm verify`
-2. Starts local `mcp-server`
-3. Performs runtime smoke test on `GET /health`
+2. Installs Playwright Chromium
+3. Runs Playwright full E2E suite
+4. Starts local `mcp-server`
+5. Performs runtime smoke test on `GET /health`
 
 Why it exists:
 1. Detect environment/runtime breakages that static CI might miss
+2. Catch browser-level regressions that can appear outside normal PR traffic
 
 ## 7. Typical automated flow
 
 1. You push commits.
-2. `CI` validates quality.
+2. `CI` validates quality and runs smoke/full browser E2E suites.
 3. `Release Please` updates release PR automatically.
 4. When you tag a version, `Release` publishes assets.
 5. `Docs Pages` deploys docs on `main`.

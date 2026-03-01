@@ -268,11 +268,18 @@ node scripts/mcp-start.cjs --stop
 pnpm typecheck
 pnpm lint
 pnpm test
+pnpm test:e2e:smoke
+pnpm test:e2e:full
 pnpm build
 pnpm docs:ci
 pnpm verify
 node scripts/mcp-start.cjs --stop
 ```
+
+CI lanes:
+
+- Pull requests and pushes to `main`: `verify` + Playwright smoke + Playwright full.
+- Nightly: `verify` + Playwright full + runtime `/health` smoke check.
 
 Optional one-shot local setup:
 

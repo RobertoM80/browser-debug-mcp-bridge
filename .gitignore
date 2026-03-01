@@ -57,15 +57,17 @@ thumbs.db
 # Docusaurus
 **/.docusaurus/
 **/*/exports
+/exports/
 
 # Local AI agent tooling
 .codex/
 .cursor/
 .opencode/
 opencode.json
+.github/agents/
+.github/prompts/
+.github/skills/
 
 # Local package manager cache
 .npm-cache/
-
-# GitHub
-.github/
+.pnpm-store/
