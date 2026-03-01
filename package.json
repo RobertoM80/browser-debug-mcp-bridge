@@ -43,7 +43,10 @@
     "release:tag:yes": "node tools/release/create-tag.mjs --yes",
     "mcp:print-config": "node tools/mcp/print-client-config.mjs",
     "mcp:check-stdio-guard": "node tools/mcp/check-stdio-guard.mjs",
-    "hooks:install": "git config core.hooksPath .githooks && git config commit.template .gitmessage.txt"
+    "hooks:install": "git config core.hooksPath .githooks && git config commit.template .gitmessage.txt",
+    "test:e2e": "nx test e2e-playwright",
+    "test:e2e:smoke": "nx run e2e-playwright:smoke",
+    "test:e2e:full": "nx run e2e-playwright:full"
   },
   "keywords": [
     "mcp",
@@ -62,6 +65,7 @@
     "@easyops-cn/docusaurus-search-local": "^0.55.0",
     "@mdx-js/react": "^3.1.1",
     "@nx/vite": "^22.5.2",
+    "@playwright/test": "^1.58.2",
     "@types/chrome": "^0.1.37",
     "@types/node": "^25.3.0",
     "@types/react": "^19.2.14",

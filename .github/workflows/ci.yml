@@ -50,3 +50,115 @@ jobs:
         run: |
           set -euxo pipefail
           pnpm run verify
+
+  e2e-smoke:
+    name: E2E Smoke (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: validate
+    env:
+      NX_VERBOSE_LOGGING: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: |
+          set -euxo pipefail
+          pnpm install --frozen-lockfile --force --reporter=append-only --loglevel=debug
+
+      - name: Build native modules
+        run: |
+          set -euxo pipefail
+          pnpm --filter mcp-server rebuild better-sqlite3 --reporter=append-only --loglevel=debug
+          find node_modules/.pnpm -name better_sqlite3.node -print
+          test -n "$(find node_modules/.pnpm -name better_sqlite3.node -print -quit)"
+
+      - name: Install Playwright Chromium
+        run: |
+          set -euxo pipefail
+          pnpm exec playwright install --with-deps chromium
+
+      - name: Run E2E smoke suite
+        run: |
+          set -euxo pipefail
+          xvfb-run -a pnpm nx run e2e-playwright:smoke
+
+      - name: Upload E2E smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-smoke-artifacts
+          path: |
+            dist/test-results/playwright-artifacts
+            dist/test-results/playwright-report
+            dist/test-results/playwright-junit.xml
+          if-no-files-found: ignore
+
+  e2e-full:
+    name: E2E Full (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    needs: validate
+    env:
+      NX_VERBOSE_LOGGING: "true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.28.2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        run: |
+          set -euxo pipefail
+          pnpm install --frozen-lockfile --force --reporter=append-only --loglevel=debug
+
+      - name: Build native modules
+        run: |
+          set -euxo pipefail
+          pnpm --filter mcp-server rebuild better-sqlite3 --reporter=append-only --loglevel=debug
+          find node_modules/.pnpm -name better_sqlite3.node -print
+          test -n "$(find node_modules/.pnpm -name better_sqlite3.node -print -quit)"
+
+      - name: Install Playwright Chromium
+        run: |
+          set -euxo pipefail
+          pnpm exec playwright install --with-deps chromium
+
+      - name: Run E2E full suite
+        run: |
+          set -euxo pipefail
+          xvfb-run -a pnpm nx run e2e-playwright:full
+
+      - name: Upload E2E full artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-full-artifacts
+          path: |
+            dist/test-results/playwright-artifacts
+            dist/test-results/playwright-report
+            dist/test-results/playwright-junit.xml
+          if-no-files-found: ignore

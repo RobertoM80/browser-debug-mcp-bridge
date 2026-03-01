@@ -1,0 +1,27 @@
+{
+  "name": "e2e-playwright",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "apps/e2e-playwright/tests",
+  "projectType": "application",
+  "targets": {
+    "test": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "pnpm nx run-many -t build --projects mcp-server,chrome-extension && pnpm exec playwright test -c apps/e2e-playwright/playwright.config.ts"
+      }
+    },
+    "smoke": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "pnpm nx run-many -t build --projects mcp-server,chrome-extension && pnpm exec playwright test -c apps/e2e-playwright/playwright.config.ts --grep @smoke"
+      }
+    },
+    "full": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "pnpm nx run-many -t build --projects mcp-server,chrome-extension && pnpm exec playwright test -c apps/e2e-playwright/playwright.config.ts --grep @full"
+      }
+    }
+  },
+  "tags": ["app", "e2e"]
+}
