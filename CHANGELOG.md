@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.6.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.5.0...browser-debug-mcp-bridge-v1.6.0) (2026-02-28)
+
+
+### Features
+
+* Enhance MCP tools with session and URL filtering capabilities ([f91b7de](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/f91b7de07ba0a75666fb81064045c61d1d3e36ba))
+* **mcp:** add live in-memory console log retrieval ([c52b78f](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/c52b78f6ffeb6384b0dd220569e11d1552aad72b))
+* merge branch main ([75a3209](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/75a32096ff5a12bc637089388441578ccfdff45f))
+
+
+### Bug Fixes
+
+* update MCP bridge documentation and startup script ([1a8525f](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/1a8525fc5937c6d8b7764850f4dac3c30c1ae261))
+
 ## [1.5.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.4.0...browser-debug-mcp-bridge-v1.5.0) (2026-02-27)
 
 
