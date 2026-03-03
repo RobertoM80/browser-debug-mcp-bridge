@@ -113,6 +113,10 @@ describe('injected-script capture', () => {
         // no-op
       }
 
+      setRequestHeader(_name: string, _value: string): void {
+        // no-op
+      }
+
       send(): void {
         this.status = 200;
         this.responseText = 'ok';
@@ -140,6 +144,90 @@ describe('injected-script capture', () => {
 
     cleanup();
     (window as Window & { XMLHttpRequest?: typeof XMLHttpRequest }).XMLHttpRequest = originalXhr;
+    postSpy.mockRestore();
+  });
+
+  it('captures request and response JSON bodies when enabled via control message', async () => {
+    const postSpy = vi.spyOn(window, 'postMessage');
+    const originalFetch = window.fetch;
+    window.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ ok: true, citations: ['doc-1'] }), {
+        status: 200,
+        headers: {
+          'content-type': 'application/json',
+        },
+      })
+    ) as typeof fetch;
+
+    const cleanup = installInjectedCapture({ win: window });
+    window.dispatchEvent(new MessageEvent('message', {
+      data: {
+        source: 'browser-debug-mcp-bridge',
+        kind: 'bridge-control',
+        controlType: 'network_config',
+        data: {
+          captureBodies: true,
+          maxBodyBytes: 2048,
+        },
+      },
+      source: window,
+    }));
+
+    await window.fetch('/api/chat/messages', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ prompt: 'hello' }),
+    });
+
+    const payloads = postSpy.mock.calls.map((entry) => entry[0] as { eventType: string; data: Record<string, unknown> });
+    const networkPayload = payloads.find((payload) => payload.eventType === 'network');
+
+    expect(networkPayload).toBeDefined();
+    expect(networkPayload?.data.requestContentType).toBe('application/json');
+    expect(networkPayload?.data.responseContentType).toBe('application/json');
+    expect(networkPayload?.data.requestBodyJson).toMatchObject({ prompt: 'hello' });
+    expect(networkPayload?.data.responseBodyJson).toMatchObject({ ok: true, citations: ['doc-1'] });
+
+    cleanup();
+    window.fetch = originalFetch;
+    postSpy.mockRestore();
+  });
+
+  it('propagates trace hints to emitted network payloads', async () => {
+    const postSpy = vi.spyOn(window, 'postMessage');
+    const originalFetch = window.fetch;
+    window.fetch = vi.fn(async () => new Response('ok', { status: 200 })) as typeof fetch;
+
+    const cleanup = installInjectedCapture({ win: window });
+    window.dispatchEvent(new MessageEvent('message', {
+      data: {
+        source: 'browser-debug-mcp-bridge',
+        kind: 'bridge-control',
+        controlType: 'trace_hint',
+        data: {
+          traceId: 'ui-trace-123',
+          eventType: 'click',
+          selector: '#send-button',
+          timestamp: Date.now(),
+        },
+      },
+      source: window,
+    }));
+
+    await window.fetch('/api/chat/messages', { method: 'POST' });
+
+    const payloads = postSpy.mock.calls.map((entry) => entry[0] as { eventType: string; data: Record<string, unknown> });
+    const networkPayload = payloads.find((payload) => payload.eventType === 'network');
+
+    expect(networkPayload).toBeDefined();
+    expect(networkPayload?.data.traceId).toBe('ui-trace-123');
+    expect(networkPayload?.data.traceEventType).toBe('click');
+    expect(networkPayload?.data.traceSelector).toBe('#send-button');
+
+    cleanup();
+    window.fetch = originalFetch;
     postSpy.mockRestore();
   });
 });

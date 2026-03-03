@@ -78,6 +78,13 @@ interface CapturePingResponse {
   type?: 'CAPTURE_PONG';
 }
 
+interface CaptureConfigUpdatePayload {
+  network: {
+    captureBodies: boolean;
+    maxBodyBytes: number;
+  };
+}
+
 interface SessionTabScope {
   baseOrigin?: string;
   allowedTabIds: Set<number>;
@@ -87,6 +94,29 @@ const snapshotPngUsageBySession = new Map<string, SnapshotPngUsage>();
 const captureTabBySession = new Map<string, { tabId: number; windowId?: number }>();
 const sessionTabScopeBySession = new Map<string, SessionTabScope>();
 const liveConsoleBufferStore = new LiveConsoleBufferStore();
+const FULL_PAGE_CAPTURE_SCROLL_SETTLE_MS = 120;
+const MAX_STITCHED_PNG_PIXELS = 40_000_000;
+
+interface FullPageCaptureMetrics {
+  totalWidth: number;
+  totalHeight: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  originalScrollX: number;
+  originalScrollY: number;
+}
+
+interface FullPageCaptureResult {
+  dataUrl: string;
+  byteLength: number;
+  fullPage: boolean;
+  pageWidth: number;
+  pageHeight: number;
+  viewportWidth: number;
+  viewportHeight: number;
+  tiles: number;
+  downscaled: boolean;
+}
 
 function getSnapshotPngUsage(sessionId: string): SnapshotPngUsage {
   const existing = snapshotPngUsageBySession.get(sessionId);
@@ -308,6 +338,233 @@ async function captureVisibleTabPng(windowId?: number): Promise<string> {
   });
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function buildCaptureOffsets(totalSize: number, viewportSize: number): number[] {
+  const total = Math.max(1, Math.floor(totalSize));
+  const viewport = Math.max(1, Math.floor(viewportSize));
+  if (total <= viewport) {
+    return [0];
+  }
+
+  const offsets: number[] = [];
+  let cursor = 0;
+  const maxStart = total - viewport;
+  while (cursor < maxStart) {
+    offsets.push(cursor);
+    cursor += viewport;
+  }
+
+  offsets.push(maxStart);
+  return Array.from(new Set(offsets));
+}
+
+async function executeScriptInTab<T>(tabId: number, func: (...args: unknown[]) => T, args: unknown[] = []): Promise<T> {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func,
+    args,
+  });
+
+  const firstResult = results[0];
+  if (!firstResult) {
+    throw new Error('No executeScript result from target tab');
+  }
+
+  return firstResult.result as T;
+}
+
+async function getFullPageCaptureMetrics(tabId: number): Promise<FullPageCaptureMetrics> {
+  return executeScriptInTab<FullPageCaptureMetrics>(tabId, () => {
+    const doc = document.documentElement;
+    const body = document.body;
+    const scrolling = document.scrollingElement;
+
+    const totalWidth = Math.max(
+      window.innerWidth,
+      doc?.scrollWidth ?? 0,
+      doc?.clientWidth ?? 0,
+      body?.scrollWidth ?? 0,
+      body?.clientWidth ?? 0,
+      scrolling?.scrollWidth ?? 0,
+      scrolling?.clientWidth ?? 0,
+    );
+
+    const totalHeight = Math.max(
+      window.innerHeight,
+      doc?.scrollHeight ?? 0,
+      doc?.clientHeight ?? 0,
+      body?.scrollHeight ?? 0,
+      body?.clientHeight ?? 0,
+      scrolling?.scrollHeight ?? 0,
+      scrolling?.clientHeight ?? 0,
+    );
+
+    return {
+      totalWidth,
+      totalHeight,
+      viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
+      originalScrollX: window.scrollX,
+      originalScrollY: window.scrollY,
+    };
+  });
+}
+
+async function scrollTabTo(tabId: number, left: number, top: number): Promise<{ x: number; y: number }> {
+  return executeScriptInTab<{ x: number; y: number }>(tabId, (leftArg, topArg) => {
+    const safeLeft = typeof leftArg === 'number' ? leftArg : 0;
+    const safeTop = typeof topArg === 'number' ? topArg : 0;
+    window.scrollTo(safeLeft, safeTop);
+    return {
+      x: window.scrollX,
+      y: window.scrollY,
+    };
+  }, [left, top]);
+}
+
+async function dataUrlToImageBitmap(dataUrl: string): Promise<ImageBitmap> {
+  const response = await fetch(dataUrl);
+  const blob = await response.blob();
+  return createImageBitmap(blob);
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  const chunkSize = 0x8000;
+  let binary = '';
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, Math.min(index + chunkSize, bytes.length));
+    binary += String.fromCharCode(...chunk);
+  }
+  return btoa(binary);
+}
+
+async function offscreenCanvasToPngDataUrl(canvas: OffscreenCanvas): Promise<string> {
+  const blob = await canvas.convertToBlob({ type: 'image/png' });
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const encoded = bytesToBase64(bytes);
+  return `data:image/png;base64,${encoded}`;
+}
+
+function drawTileOnCanvas(
+  context: OffscreenCanvasRenderingContext2D,
+  bitmap: ImageBitmap,
+  captureX: number,
+  captureY: number,
+  scaleX: number,
+  scaleY: number,
+  renderScale: number,
+): void {
+  const destinationX = Math.max(0, Math.round(captureX * scaleX * renderScale));
+  const destinationY = Math.max(0, Math.round(captureY * scaleY * renderScale));
+  const destinationWidth = Math.max(1, Math.round(bitmap.width * renderScale));
+  const destinationHeight = Math.max(1, Math.round(bitmap.height * renderScale));
+  context.drawImage(bitmap, destinationX, destinationY, destinationWidth, destinationHeight);
+}
+
+async function captureFullPageTabPng(tab: chrome.tabs.Tab): Promise<FullPageCaptureResult> {
+  if (typeof tab.id !== 'number') {
+    throw new Error('Tab id is required for PNG capture');
+  }
+
+  if (typeof OffscreenCanvas === 'undefined' || typeof createImageBitmap !== 'function') {
+    const viewportDataUrl = await captureVisibleTabPng(tab.windowId);
+    const viewportByteLength = estimateDataUrlBytes(viewportDataUrl);
+    return {
+      dataUrl: viewportDataUrl,
+      byteLength: viewportByteLength,
+      fullPage: false,
+      pageWidth: tab.width ?? 0,
+      pageHeight: tab.height ?? 0,
+      viewportWidth: tab.width ?? 0,
+      viewportHeight: tab.height ?? 0,
+      tiles: 1,
+      downscaled: false,
+    };
+  }
+
+  const tabId = tab.id;
+  const metrics = await getFullPageCaptureMetrics(tabId);
+  const xOffsets = buildCaptureOffsets(metrics.totalWidth, metrics.viewportWidth);
+  const yOffsets = buildCaptureOffsets(metrics.totalHeight, metrics.viewportHeight);
+
+  let canvas: OffscreenCanvas | null = null;
+  let context: OffscreenCanvasRenderingContext2D | null = null;
+  let scaleX = 1;
+  let scaleY = 1;
+  let renderScale = 1;
+  let downscaled = false;
+  let tiles = 0;
+
+  try {
+    for (const y of yOffsets) {
+      for (const x of xOffsets) {
+        const scrolled = await scrollTabTo(tabId, x, y);
+        await sleep(FULL_PAGE_CAPTURE_SCROLL_SETTLE_MS);
+
+        const tileDataUrl = await captureVisibleTabPng(tab.windowId);
+        const bitmap = await dataUrlToImageBitmap(tileDataUrl);
+        tiles += 1;
+
+        if (!canvas || !context) {
+          scaleX = metrics.viewportWidth > 0 ? bitmap.width / metrics.viewportWidth : 1;
+          scaleY = metrics.viewportHeight > 0 ? bitmap.height / metrics.viewportHeight : 1;
+          if (!Number.isFinite(scaleX) || scaleX <= 0) {
+            scaleX = 1;
+          }
+          if (!Number.isFinite(scaleY) || scaleY <= 0) {
+            scaleY = 1;
+          }
+
+          const stitchedWidthRaw = Math.max(1, Math.round(metrics.totalWidth * scaleX));
+          const stitchedHeightRaw = Math.max(1, Math.round(metrics.totalHeight * scaleY));
+          const pixelCount = stitchedWidthRaw * stitchedHeightRaw;
+
+          if (pixelCount > MAX_STITCHED_PNG_PIXELS) {
+            renderScale = Math.sqrt(MAX_STITCHED_PNG_PIXELS / pixelCount);
+            downscaled = true;
+          }
+
+          const stitchedWidth = Math.max(1, Math.round(stitchedWidthRaw * renderScale));
+          const stitchedHeight = Math.max(1, Math.round(stitchedHeightRaw * renderScale));
+          canvas = new OffscreenCanvas(stitchedWidth, stitchedHeight);
+          context = canvas.getContext('2d');
+          if (!context) {
+            bitmap.close();
+            throw new Error('Failed to initialize full-page PNG canvas');
+          }
+        }
+
+        drawTileOnCanvas(context, bitmap, scrolled.x, scrolled.y, scaleX, scaleY, renderScale);
+        bitmap.close();
+      }
+    }
+  } finally {
+    await scrollTabTo(tabId, metrics.originalScrollX, metrics.originalScrollY).catch(() => undefined);
+  }
+
+  if (!canvas) {
+    throw new Error('Full-page capture produced no tiles');
+  }
+
+  const dataUrl = await offscreenCanvasToPngDataUrl(canvas);
+  return {
+    dataUrl,
+    byteLength: estimateDataUrlBytes(dataUrl),
+    fullPage: true,
+    pageWidth: metrics.totalWidth,
+    pageHeight: metrics.totalHeight,
+    viewportWidth: metrics.viewportWidth,
+    viewportHeight: metrics.viewportHeight,
+    tiles,
+    downscaled,
+  };
+}
+
 function rememberCaptureTabForSession(sessionId: string, tab: chrome.tabs.Tab): void {
   if (typeof tab.id !== 'number') {
     return;
@@ -421,6 +678,77 @@ async function sendCaptureCommandToTab(
     return attempt();
   }
 }
+
+function buildCaptureConfigUpdatePayload(): CaptureConfigUpdatePayload {
+  return {
+    network: {
+      captureBodies: captureConfig.network.captureBodies === true,
+      maxBodyBytes: captureConfig.network.maxBodyBytes,
+    },
+  };
+}
+
+async function sendCaptureConfigUpdateToTab(tabId: number, payload: CaptureConfigUpdatePayload): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    chrome.tabs.sendMessage(
+      tabId,
+      {
+        type: 'CAPTURE_CONFIG_UPDATE',
+        payload,
+      },
+      () => {
+        const runtimeError = chrome.runtime.lastError;
+        if (runtimeError) {
+          reject(new Error(runtimeError.message));
+          return;
+        }
+        resolve();
+      }
+    );
+  });
+}
+
+function getSessionBoundTabIds(sessionId: string): number[] {
+  const scope = getSessionTabScope(sessionId);
+  const tabIds = new Set<number>();
+
+  if (scope) {
+    for (const tabId of scope.allowedTabIds) {
+      tabIds.add(tabId);
+    }
+  }
+
+  const remembered = captureTabBySession.get(sessionId);
+  if (remembered) {
+    tabIds.add(remembered.tabId);
+  }
+
+  return Array.from(tabIds);
+}
+
+async function syncCaptureConfigToSessionTabs(sessionId: string): Promise<void> {
+  const payload = buildCaptureConfigUpdatePayload();
+  const tabIds = getSessionBoundTabIds(sessionId);
+  if (tabIds.length === 0) {
+    return;
+  }
+
+  await Promise.all(
+    tabIds.map(async (tabId) => {
+      const ready = await ensureContentScriptReady(tabId);
+      if (!ready) {
+        return;
+      }
+
+      try {
+        await sendCaptureConfigUpdateToTab(tabId, payload);
+      } catch {
+        // Ignore per-tab config update failures; tab may have navigated/disconnected.
+      }
+    }),
+  );
+}
+
 async function executeCaptureCommand(
   command: CaptureCommandType,
   payload: Record<string, unknown>,
@@ -491,6 +819,12 @@ async function executeCaptureCommand(
     throw new Error('Target tab for this session is unavailable for live capture');
   }
 
+  try {
+    await sendCaptureConfigUpdateToTab(tabId, buildCaptureConfigUpdatePayload());
+  } catch {
+    // Best effort; capture can continue with injected defaults.
+  }
+
   if (command === 'CAPTURE_UI_SNAPSHOT') {
     const llmRequested = payload.llmRequested === true;
     if (!canCaptureSnapshot(captureConfig, { llmRequested })) {
@@ -558,8 +892,9 @@ async function executeCaptureCommand(
           retryAfterMs: captureDecision.retryAfterMs,
         };
       } else {
-        const dataUrl = await captureVisibleTabPng(tab.windowId);
-        const byteLength = estimateDataUrlBytes(dataUrl);
+        const pngCapture = await captureFullPageTabPng(tab);
+        const byteLength = pngCapture.byteLength;
+        const dataUrl = pngCapture.dataUrl;
 
         if (byteLength > policy.maxBytesPerImage) {
           png = {
@@ -567,6 +902,13 @@ async function executeCaptureCommand(
             reason: 'max_bytes_exceeded',
             byteLength,
             maxBytesPerImage: policy.maxBytesPerImage,
+            fullPage: pngCapture.fullPage,
+            pageWidth: pngCapture.pageWidth,
+            pageHeight: pngCapture.pageHeight,
+            viewportWidth: pngCapture.viewportWidth,
+            viewportHeight: pngCapture.viewportHeight,
+            tiles: pngCapture.tiles,
+            downscaled: pngCapture.downscaled,
           };
           (snapshotRecord.truncation as Record<string, unknown>).png = true;
         } else {
@@ -576,6 +918,13 @@ async function executeCaptureCommand(
             format: 'png',
             byteLength,
             dataUrl,
+            fullPage: pngCapture.fullPage,
+            pageWidth: pngCapture.pageWidth,
+            pageHeight: pngCapture.pageHeight,
+            viewportWidth: pngCapture.viewportWidth,
+            viewportHeight: pngCapture.viewportHeight,
+            tiles: pngCapture.tiles,
+            downscaled: pngCapture.downscaled,
           };
         }
       }
@@ -712,8 +1061,12 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
 
     case 'SESSION_UPDATE_CONFIG':
       return saveCaptureConfig(chrome.storage.local, request.config)
-        .then((saved) => {
+        .then(async (saved) => {
           captureConfig = saved;
+          const sessionId = sessionManager.getState().sessionId;
+          if (sessionId) {
+            await syncCaptureConfigToSessionTabs(sessionId);
+          }
           return { ok: true as const, config: saved };
         })
         .catch((error) => ({
@@ -766,6 +1119,7 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
           if (started.sessionId && typeof tab?.id === 'number') {
             rememberCaptureTabForSession(started.sessionId, tab);
             await ensureContentScriptReady(tab.id);
+            await syncCaptureConfigToSessionTabs(started.sessionId);
           } else if (started.sessionId) {
             captureTabBySession.delete(started.sessionId);
           }
@@ -928,6 +1282,8 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
           if (!captureTabBySession.has(sessionState.sessionId)) {
             rememberCaptureTabForSession(sessionState.sessionId, tab);
           }
+
+          await syncCaptureConfigToSessionTabs(sessionState.sessionId);
 
           const result = await buildSessionTabScopeResult(sessionState.sessionId);
           return { ok: true as const, result: { isActive: true, ...result } };

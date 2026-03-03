@@ -31,6 +31,7 @@ export interface SessionImportResult {
   remappedSessionId: boolean;
   events: number;
   network: number;
+  bodyChunks: number;
   fingerprints: number;
   snapshots: number;
 }
@@ -47,6 +48,7 @@ export interface ExportSessionResult {
   compatibilityMode: boolean;
   events: number;
   network: number;
+  bodyChunks: number;
   fingerprints: number;
   snapshots: number;
 }
@@ -83,6 +85,7 @@ type SessionExportPayload = {
   session: Record<string, unknown>;
   events: Record<string, unknown>[];
   network: Record<string, unknown>[];
+  bodyChunks: Record<string, unknown>[];
   fingerprints: Record<string, unknown>[];
   snapshots: SnapshotExportRecord[];
 };
@@ -491,6 +494,7 @@ export function exportSessionToJson(
     compatibilityMode,
     events: payload.events.length,
     network: payload.network.length,
+    bodyChunks: payload.bodyChunks.length,
     fingerprints: payload.fingerprints.length,
     snapshots: payload.snapshots.length,
   };
@@ -543,6 +547,7 @@ export async function exportSessionToZip(
     compatibilityMode: false,
     events: payload.events.length,
     network: payload.network.length,
+    bodyChunks: payload.bodyChunks.length,
     fingerprints: payload.fingerprints.length,
     snapshots: payload.snapshots.length,
   };
@@ -628,8 +633,16 @@ export function importSessionFromJson(
 
   const insertNetwork = db.prepare(
     `INSERT INTO network (
-      request_id, session_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class, response_size_est
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      request_id, session_id, trace_id, tab_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class, response_size_est,
+      request_content_type, request_body_text, request_body_json, request_body_bytes, request_body_truncated, request_body_chunk_ref,
+      response_content_type, response_body_text, response_body_json, response_body_bytes, response_body_truncated, response_body_chunk_ref
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  const insertBodyChunk = db.prepare(
+    `INSERT INTO body_chunks (
+      chunk_ref, session_id, request_id, trace_id, body_kind, content_type, body_text, body_bytes, truncated, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   const insertFingerprint = db.prepare(
@@ -647,6 +660,13 @@ export function importSessionFromJson(
   );
 
   const runImport = db.transaction(() => {
+    const requestIdMap = new Map<string, string>();
+    const chunkRefMap = new Map<string, string>();
+    for (let i = 0; i < parsed.bodyChunks.length; i += 1) {
+      const row = parsed.bodyChunks[i];
+      chunkRefMap.set(row.chunkRef, `${sessionId}-import-chunk-${importedAt}-${i}`);
+    }
+
     insertSession.run(
       sessionId,
       parsed.session.createdAt,
@@ -673,9 +693,14 @@ export function importSessionFromJson(
     for (let i = 0; i < parsed.network.length; i += 1) {
       const row = parsed.network[i];
       const requestId = `${sessionId}-import-network-${importedAt}-${i}`;
+      if (row.requestId) {
+        requestIdMap.set(row.requestId, requestId);
+      }
       insertNetwork.run(
         requestId,
         sessionId,
+        row.traceId,
+        row.tabId,
         row.tsStart,
         row.durationMs,
         row.method,
@@ -685,6 +710,36 @@ export function importSessionFromJson(
         row.initiator,
         row.errorClass,
         row.responseSizeEst,
+        row.requestContentType,
+        row.requestBodyText,
+        row.requestBodyJson,
+        row.requestBodyBytes,
+        row.requestBodyTruncated ? 1 : 0,
+        row.requestBodyChunkRef ? chunkRefMap.get(row.requestBodyChunkRef) ?? null : null,
+        row.responseContentType,
+        row.responseBodyText,
+        row.responseBodyJson,
+        row.responseBodyBytes,
+        row.responseBodyTruncated ? 1 : 0,
+        row.responseBodyChunkRef ? chunkRefMap.get(row.responseBodyChunkRef) ?? null : null,
+      );
+    }
+
+    for (let i = 0; i < parsed.bodyChunks.length; i += 1) {
+      const row = parsed.bodyChunks[i];
+      const chunkRef = chunkRefMap.get(row.chunkRef) ?? `${sessionId}-import-chunk-${importedAt}-${i}`;
+      const mappedRequestId = row.requestId ? requestIdMap.get(row.requestId) ?? null : null;
+      insertBodyChunk.run(
+        chunkRef,
+        sessionId,
+        mappedRequestId,
+        row.traceId,
+        row.bodyKind,
+        row.contentType,
+        row.bodyText,
+        row.bodyBytes,
+        row.truncated ? 1 : 0,
+        row.createdAt,
       );
     }
 
@@ -769,6 +824,7 @@ export function importSessionFromJson(
     remappedSessionId,
     events: parsed.events.length,
     network: parsed.network.length,
+    bodyChunks: parsed.bodyChunks.length,
     fingerprints: parsed.fingerprints.length,
     snapshots: parsed.snapshots.length,
   };
@@ -787,6 +843,9 @@ function buildSessionExportPayload(
 
   const events = db.prepare('SELECT * FROM events WHERE session_id = ? ORDER BY ts ASC').all(sessionId) as Record<string, unknown>[];
   const network = db.prepare('SELECT * FROM network WHERE session_id = ? ORDER BY ts_start ASC').all(sessionId) as Record<string, unknown>[];
+  const bodyChunks = db
+    .prepare('SELECT * FROM body_chunks WHERE session_id = ? ORDER BY created_at ASC')
+    .all(sessionId) as Record<string, unknown>[];
   const fingerprints = db
     .prepare('SELECT * FROM error_fingerprints WHERE session_id = ? ORDER BY count DESC, last_seen_at DESC')
     .all(sessionId) as Record<string, unknown>[];
@@ -875,6 +934,7 @@ function buildSessionExportPayload(
     session,
     events,
     network,
+    bodyChunks,
     fingerprints,
     snapshots,
   };
@@ -1068,6 +1128,9 @@ function normalizeImportPayload(payload: unknown): {
   };
   events: Array<{ ts: number; type: string; payloadJson: string; tabId: number | null; origin: string | null }>;
   network: Array<{
+    requestId: string | null;
+    traceId: string | null;
+    tabId: number | null;
     tsStart: number;
     durationMs: number | null;
     method: string;
@@ -1077,6 +1140,29 @@ function normalizeImportPayload(payload: unknown): {
     initiator: string | null;
     errorClass: string | null;
     responseSizeEst: number | null;
+    requestContentType: string | null;
+    requestBodyText: string | null;
+    requestBodyJson: string | null;
+    requestBodyBytes: number | null;
+    requestBodyTruncated: boolean;
+    requestBodyChunkRef: string | null;
+    responseContentType: string | null;
+    responseBodyText: string | null;
+    responseBodyJson: string | null;
+    responseBodyBytes: number | null;
+    responseBodyTruncated: boolean;
+    responseBodyChunkRef: string | null;
+  }>;
+  bodyChunks: Array<{
+    chunkRef: string;
+    requestId: string | null;
+    traceId: string | null;
+    bodyKind: 'request' | 'response';
+    contentType: string | null;
+    bodyText: string;
+    bodyBytes: number;
+    truncated: boolean;
+    createdAt: number;
   }>;
   fingerprints: Array<{
     fingerprint: string;
@@ -1119,10 +1205,13 @@ function normalizeImportPayload(payload: unknown): {
 
   const rawEvents = asArray(root.events, 'Import payload events must be an array');
   const rawNetwork = asArray(root.network, 'Import payload network must be an array');
+  const rawBodyChunks = root.bodyChunks === undefined
+    ? (root.body_chunks === undefined ? [] : asArray(root.body_chunks, 'Import payload body_chunks must be an array'))
+    : asArray(root.bodyChunks, 'Import payload bodyChunks must be an array');
   const rawFingerprints = asArray(root.fingerprints, 'Import payload fingerprints must be an array');
   const rawSnapshots = root.snapshots === undefined ? [] : asArray(root.snapshots, 'Import payload snapshots must be an array');
 
-  if (rawEvents.length > 100_000 || rawNetwork.length > 100_000 || rawFingerprints.length > 100_000) {
+  if (rawEvents.length > 100_000 || rawNetwork.length > 100_000 || rawBodyChunks.length > 100_000 || rawFingerprints.length > 100_000) {
     throw new Error('Import payload exceeds record limit (100000 per section)');
   }
 
@@ -1161,6 +1250,9 @@ function normalizeImportPayload(payload: unknown): {
     const errorClassCandidate = asNullableString(row.error_class ?? row.errorClass);
 
     return {
+      requestId: asNullableString(row.request_id ?? row.requestId),
+      traceId: asNullableString(row.trace_id ?? row.traceId),
+      tabId: asNullableInteger(row.tab_id ?? row.tabId),
       tsStart,
       durationMs: asNullableInteger(row.duration_ms ?? row.durationMs),
       method,
@@ -1170,6 +1262,36 @@ function normalizeImportPayload(payload: unknown): {
       initiator: initiatorCandidate && allowedInitiators.has(initiatorCandidate) ? initiatorCandidate : null,
       errorClass: errorClassCandidate && allowedErrorClasses.has(errorClassCandidate) ? errorClassCandidate : null,
       responseSizeEst: asNullableInteger(row.response_size_est ?? row.responseSizeEst),
+      requestContentType: asNullableString(row.request_content_type ?? row.requestContentType),
+      requestBodyText: asNullableString(row.request_body_text ?? row.requestBodyText),
+      requestBodyJson: toNullableJsonString(row.request_body_json ?? row.requestBodyJson),
+      requestBodyBytes: asNullableInteger(row.request_body_bytes ?? row.requestBodyBytes),
+      requestBodyTruncated: Boolean(row.request_body_truncated ?? row.requestBodyTruncated),
+      requestBodyChunkRef: asNullableString(row.request_body_chunk_ref ?? row.requestBodyChunkRef),
+      responseContentType: asNullableString(row.response_content_type ?? row.responseContentType),
+      responseBodyText: asNullableString(row.response_body_text ?? row.responseBodyText),
+      responseBodyJson: toNullableJsonString(row.response_body_json ?? row.responseBodyJson),
+      responseBodyBytes: asNullableInteger(row.response_body_bytes ?? row.responseBodyBytes),
+      responseBodyTruncated: Boolean(row.response_body_truncated ?? row.responseBodyTruncated),
+      responseBodyChunkRef: asNullableString(row.response_body_chunk_ref ?? row.responseBodyChunkRef),
+    };
+  });
+
+  const bodyChunks = rawBodyChunks.map((entry, index) => {
+    const row = asObject(entry, `Body chunk at index ${index} must be an object`);
+    const bodyKindCandidate = asString(row.body_kind ?? row.bodyKind, 'request');
+    const bodyKind: 'request' | 'response' = bodyKindCandidate === 'response' ? 'response' : 'request';
+    const bodyText = asString(row.body_text ?? row.bodyText, '');
+    return {
+      chunkRef: asNonEmptyString(row.chunk_ref ?? row.chunkRef ?? `chunk-${index}`, `Body chunk at index ${index} is missing chunk_ref`),
+      requestId: asNullableString(row.request_id ?? row.requestId),
+      traceId: asNullableString(row.trace_id ?? row.traceId),
+      bodyKind,
+      contentType: asNullableString(row.content_type ?? row.contentType),
+      bodyText,
+      bodyBytes: Math.max(0, asInteger(row.body_bytes ?? row.bodyBytes, Buffer.byteLength(bodyText, 'utf-8'))),
+      truncated: Boolean(row.truncated),
+      createdAt: asTimestamp(row.created_at ?? row.createdAt, createdAt),
     };
   });
 
@@ -1245,6 +1367,7 @@ function normalizeImportPayload(payload: unknown): {
     },
     events,
     network,
+    bodyChunks,
     fingerprints,
     snapshots,
   };

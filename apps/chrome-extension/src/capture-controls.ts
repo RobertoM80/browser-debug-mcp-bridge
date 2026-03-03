@@ -2,12 +2,18 @@ export interface CaptureConfig {
   safeMode: boolean;
   allowlist: string[];
   snapshots: SnapshotCaptureConfig;
+  network: NetworkCaptureConfig;
 }
 
 export type SnapshotMode = 'dom' | 'png' | 'both';
 export type SnapshotStyleMode = 'computed-lite' | 'computed-full';
 export type SnapshotTrigger = 'click' | 'manual' | 'navigation' | 'error';
 export type SnapshotPrivacyProfile = 'strict' | 'standard';
+
+export interface NetworkCaptureConfig {
+  captureBodies: boolean;
+  maxBodyBytes: number;
+}
 
 export interface SnapshotCaptureConfig {
   enabled: boolean;
@@ -32,6 +38,7 @@ export interface StorageAreaLike {
 
 const STORAGE_KEY = 'captureConfig';
 const SAFE_MODE_REDACTION = '[REDACTED_SAFE_MODE]';
+const LEGACY_DEFAULT_PNG_MAX_BYTES = 262144;
 
 const BLOCKED_SAFE_MODE_EVENT_TYPES = new Set(['cookie', 'cookies', 'storage', 'local_storage', 'session_storage']);
 const SENSITIVE_KEY_PATTERNS = [
@@ -59,12 +66,16 @@ export const DEFAULT_CAPTURE_CONFIG: CaptureConfig = {
     triggers: ['click', 'manual'],
     pngPolicy: {
       maxImagesPerSession: 8,
-      maxBytesPerImage: 262144,
+      maxBytesPerImage: 1048576,
       minCaptureIntervalMs: 5000,
     },
     privacy: {
       profile: 'strict',
     },
+  },
+  network: {
+    captureBodies: false,
+    maxBodyBytes: 262144,
   },
 };
 
@@ -78,6 +89,7 @@ export function normalizeCaptureConfig(value: unknown): CaptureConfig {
     safeMode: config.safeMode ?? DEFAULT_CAPTURE_CONFIG.safeMode,
     allowlist: normalizeAllowlist(config.allowlist ?? DEFAULT_CAPTURE_CONFIG.allowlist),
     snapshots: normalizeSnapshotCaptureConfig(config.snapshots),
+    network: normalizeNetworkCaptureConfig(config.network),
   };
 }
 
@@ -169,6 +181,15 @@ function normalizePngPolicy(value: unknown): SnapshotCaptureConfig['pngPolicy'] 
     ? (value as Partial<SnapshotCaptureConfig['pngPolicy']>)
     : {};
 
+  const looksLikeLegacyDefaults =
+    input.maxBytesPerImage === LEGACY_DEFAULT_PNG_MAX_BYTES
+    && (input.maxImagesPerSession === undefined || input.maxImagesPerSession === 8)
+    && (input.minCaptureIntervalMs === undefined || input.minCaptureIntervalMs === 5000);
+
+  const maxBytesPerImageInput = looksLikeLegacyDefaults
+    ? DEFAULT_CAPTURE_CONFIG.snapshots.pngPolicy.maxBytesPerImage
+    : input.maxBytesPerImage;
+
   return {
     maxImagesPerSession: normalizeBoundedNumber(
       input.maxImagesPerSession,
@@ -177,7 +198,7 @@ function normalizePngPolicy(value: unknown): SnapshotCaptureConfig['pngPolicy'] 
       200
     ),
     maxBytesPerImage: normalizeBoundedNumber(
-      input.maxBytesPerImage,
+      maxBytesPerImageInput,
       DEFAULT_CAPTURE_CONFIG.snapshots.pngPolicy.maxBytesPerImage,
       32768,
       10485760
@@ -187,6 +208,22 @@ function normalizePngPolicy(value: unknown): SnapshotCaptureConfig['pngPolicy'] 
       DEFAULT_CAPTURE_CONFIG.snapshots.pngPolicy.minCaptureIntervalMs,
       250,
       300000
+    ),
+  };
+}
+
+function normalizeNetworkCaptureConfig(value: unknown): NetworkCaptureConfig {
+  const input = value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Partial<NetworkCaptureConfig>)
+    : {};
+
+  return {
+    captureBodies: input.captureBodies === true,
+    maxBodyBytes: normalizeBoundedNumber(
+      input.maxBodyBytes,
+      DEFAULT_CAPTURE_CONFIG.network.maxBodyBytes,
+      4096,
+      5 * 1024 * 1024,
     ),
   };
 }

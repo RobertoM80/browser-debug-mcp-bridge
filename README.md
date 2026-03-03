@@ -10,6 +10,8 @@ It captures telemetry from an actual browser session (console, network, navigati
 - Query recent errors, failed requests, and event timelines
 - Run targeted live capture (DOM subtree/document, styles, layout)
 - Pull live in-memory console logs with server-side filters (`url`, `tabId`, `levels`, `contains`)
+- Query targeted API calls with optional sanitized request/response bodies
+- Wait deterministically for the next matching API request during repro flows
 - Correlate user actions with network/runtime failures
 - Keep privacy controls enabled (safe mode, allowlist, redaction)
 
@@ -183,6 +185,7 @@ Supported tools:
 - `get_navigation_history`
 - `get_console_events`
 - `get_network_failures`
+- `get_network_calls`
 
 Example: URL-only query
 

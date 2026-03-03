@@ -2,7 +2,7 @@
 
 ## Session and URL Filters
 
-For `get_recent_events`, `get_navigation_history`, `get_console_events`, and `get_network_failures`:
+For `get_recent_events`, `get_navigation_history`, `get_console_events`, `get_network_failures`, and `get_network_calls`:
 
 - You can pass `sessionId`, `url`, or both.
 - `url` is normalized to origin (`scheme://host:port`).
@@ -92,6 +92,64 @@ Capture notes:
   "arguments": { "sessionId": "sess_123", "groupBy": "domain", "limit": 20, "offset": 0 }
 }
 ```
+
+## `get_network_calls`
+
+```json
+{
+  "name": "get_network_calls",
+  "arguments": {
+    "sessionId": "sess_123",
+    "method": "POST",
+    "urlContains": "/api/v1/messages",
+    "includeBodies": true,
+    "limit": 20
+  }
+}
+```
+
+## `wait_for_network_call`
+
+```json
+{
+  "name": "wait_for_network_call",
+  "arguments": {
+    "sessionId": "sess_123",
+    "urlPattern": "/api/v1/messages",
+    "method": "POST",
+    "timeoutMs": 15000,
+    "includeBodies": true
+  }
+}
+```
+
+## `get_request_trace`
+
+```json
+{
+  "name": "get_request_trace",
+  "arguments": { "sessionId": "sess_123", "requestId": "req_456", "includeBodies": true }
+}
+```
+
+## `get_body_chunk`
+
+```json
+{
+  "name": "get_body_chunk",
+  "arguments": { "chunkRef": "req_456:response:...", "offset": 0, "limit": 65536 }
+}
+```
+
+Tool boundaries:
+
+- `get_recent_events`: broad timeline across event types.
+- `get_network_failures`: failure-focused triage and grouping.
+- `get_network_calls`: targeted request search with method/status/time filters and optional bodies.
+- `wait_for_network_call`: deterministic "next matching call" for repro flows.
+- `get_request_trace`: correlation chain for one request/trace across UI + network.
+
+Origin-only network failure query (no session filter):
 
 ```json
 {

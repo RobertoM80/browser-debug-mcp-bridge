@@ -87,6 +87,37 @@ describe('content-script capture', () => {
     cleanup();
   });
 
+  it('attaches traceId to UI events and posts trace_hint control to injected script', () => {
+    document.body.innerHTML = '<button id="trace-button">Trace me</button>';
+    const sendMessage = vi.fn((_message: unknown, callback?: () => void) => {
+      callback?.();
+    });
+    const postSpy = vi.spyOn(window, 'postMessage');
+    const cleanup = installContentCapture({ runtime: createRuntimeMock(sendMessage) });
+
+    const button = document.getElementById('trace-button');
+    expect(button).toBeTruthy();
+    button!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    const clickCall = sendMessage.mock.calls.find((entry: unknown[]) => {
+      const message = entry[0] as { eventType?: string };
+      return message.eventType === 'click';
+    });
+    expect(clickCall).toBeDefined();
+
+    const clickPayload = clickCall![0] as { data: Record<string, unknown> };
+    expect(typeof clickPayload.data.traceId).toBe('string');
+
+    const traceHintPayload = postSpy.mock.calls
+      .map((entry) => entry[0] as { kind?: string; controlType?: string; data?: Record<string, unknown> })
+      .find((entry) => entry.kind === 'bridge-control' && entry.controlType === 'trace_hint');
+    expect(traceHintPayload).toBeDefined();
+    expect(traceHintPayload?.data?.traceId).toBe(clickPayload.data.traceId);
+
+    cleanup();
+    postSpy.mockRestore();
+  });
+
   it('captures input and change events without exposing values', () => {
     document.body.innerHTML = '<input id="email-field" type="email" value="" />';
     const sendMessage = vi.fn((_message: unknown, callback?: () => void) => {

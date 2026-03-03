@@ -464,6 +464,146 @@ describe('mcp/server V1 query tools', () => {
     db.close();
   });
 
+  it('queries network calls with targeted filters and sanitized bodies', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-1', 1000, 0)
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO network (
+          request_id, session_id, trace_id, tab_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class, response_size_est,
+          request_content_type, request_body_json, request_body_bytes, request_body_truncated,
+          response_content_type, response_body_json, response_body_bytes, response_body_truncated
+        ) VALUES
+          ('req-chat', 'session-1', 'trace-1', 7, 1010, 120, 'POST', 'http://localhost:3000/api/chat/messages', 'http://localhost:3000', 200, 'fetch', NULL, 512,
+           'application/json', '{"prompt":"hello","authorization":"[REDACTED]"}', 64, 0,
+           'application/json', '{"answer":"ok","citations":["doc-1"]}', 96, 0)
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_network_calls', {
+      sessionId: 'session-1',
+      method: 'post',
+      urlContains: '/api/chat/messages',
+      statusIn: [200],
+      tabId: 7,
+      includeBodies: true,
+    });
+
+    expect(response.calls).toHaveLength(1);
+    expect((response.calls as Array<{ requestId: string }>)[0]?.requestId).toBe('req-chat');
+    expect((response.calls as Array<{ traceId: string }>)[0]?.traceId).toBe('trace-1');
+    expect((response.calls as Array<{ request: { bodyJson: Record<string, unknown> } }>)[0]?.request.bodyJson).toMatchObject({
+      prompt: 'hello',
+      authorization: '[REDACTED]',
+    });
+
+    db.close();
+  });
+
+  it('waits for matching network calls', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-wait', 1000, 0)
+      `
+    ).run();
+
+    setTimeout(() => {
+      db.prepare(
+        `
+          INSERT INTO network (request_id, session_id, trace_id, ts_start, duration_ms, method, url, status, initiator)
+          VALUES ('req-late', 'session-wait', 'trace-late', ?, 80, 'POST', 'http://localhost:3000/api/chat/messages', 200, 'fetch')
+        `
+      ).run(Date.now());
+    }, 60);
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'wait_for_network_call', {
+      sessionId: 'session-wait',
+      urlPattern: '/api/chat/messages',
+      method: 'POST',
+      timeoutMs: 5000,
+    });
+
+    expect((response.call as { requestId: string }).requestId).toBe('req-late');
+    expect((response.call as { traceId: string }).traceId).toBe('trace-late');
+    expect((response.call as { method: string }).method).toBe('POST');
+
+    db.close();
+  });
+
+  it('returns request trace chains and supports body chunk retrieval', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-trace', 1000, 0)
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO events (event_id, session_id, ts, type, payload_json, tab_id, origin)
+        VALUES ('evt-ui', 'session-trace', 1001, 'ui', '{"eventType":"click","selector":"#send","traceId":"trace-ui-1"}', 7, 'http://localhost:3000')
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO network (
+          request_id, session_id, trace_id, tab_id, ts_start, duration_ms, method, url, origin, status, initiator,
+          request_content_type, request_body_bytes, request_body_chunk_ref,
+          response_content_type, response_body_bytes, response_body_chunk_ref
+        ) VALUES
+          ('req-trace', 'session-trace', 'trace-ui-1', 7, 1010, 120, 'POST', 'http://localhost:3000/api/chat/messages', 'http://localhost:3000', 200, 'fetch',
+           'application/json', 40960, 'chunk-req-1',
+           'application/json', 51200, 'chunk-res-1')
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO body_chunks (
+          chunk_ref, session_id, request_id, trace_id, body_kind, content_type, body_text, body_bytes, truncated, created_at
+        ) VALUES
+          ('chunk-req-1', 'session-trace', 'req-trace', 'trace-ui-1', 'request', 'application/json', '{"prompt":"hello"}', 18, 0, 1011)
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const trace = await routeToolCall(tools, 'get_request_trace', {
+      sessionId: 'session-trace',
+      requestId: 'req-trace',
+      includeBodies: true,
+    });
+
+    expect((trace.traceId as string)).toBe('trace-ui-1');
+    expect((trace.networkCalls as Array<{ requestId: string }>).map((entry) => entry.requestId)).toEqual(['req-trace']);
+    expect((trace.correlatedEvents as Array<{ eventId: string }>).map((entry) => entry.eventId)).toContain('evt-ui');
+
+    const chunk = await routeToolCall(tools, 'get_body_chunk', {
+      chunkRef: 'chunk-req-1',
+      offset: 0,
+      limit: 1024,
+    });
+
+    expect(chunk.chunkRef).toBe('chunk-req-1');
+    expect(chunk.chunkText).toContain('"prompt":"hello"');
+
+    db.close();
+  });
+
   it('returns element refs filtered by selector with pagination', async () => {
     const db = createTestDb();
 

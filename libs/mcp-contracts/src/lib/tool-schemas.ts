@@ -65,6 +65,57 @@ export const GetNetworkFailuresSchema = z.object({
     .describe('Pagination offset for result set'),
 });
 
+export const GetNetworkCallsSchema = z.object({
+  sessionId: z.string().describe('Session identifier'),
+  urlContains: z.string().optional()
+    .describe('Case-sensitive URL substring filter'),
+  urlRegex: z.string().optional()
+    .describe('Regular expression applied to URL'),
+  method: z.string().optional()
+    .describe('HTTP method filter'),
+  statusIn: z.array(z.number().int().min(100).max(599)).optional()
+    .describe('Allowed HTTP statuses'),
+  tabId: z.number().int().min(0).optional()
+    .describe('Optional tab identifier filter'),
+  timeFrom: z.number().int().min(0).optional()
+    .describe('Lower timestamp bound (ms epoch)'),
+  timeTo: z.number().int().min(0).optional()
+    .describe('Upper timestamp bound (ms epoch)'),
+  includeBodies: z.boolean().optional()
+    .describe('Include sanitized request/response body fields'),
+  limit: z.number().int().min(1).max(200).optional()
+    .describe('Maximum number of calls to return'),
+  offset: z.number().int().min(0).optional()
+    .describe('Pagination offset'),
+});
+
+export const WaitForNetworkCallSchema = z.object({
+  sessionId: z.string().describe('Session identifier'),
+  urlPattern: z.string().describe('URL regex pattern to wait for'),
+  method: z.string().optional().describe('Optional HTTP method filter'),
+  timeoutMs: z.number().int().min(100).max(120000).optional()
+    .describe('Wait timeout in milliseconds'),
+  includeBodies: z.boolean().optional()
+    .describe('Include sanitized request/response body fields'),
+});
+
+export const GetRequestTraceSchema = z.object({
+  sessionId: z.string().optional().describe('Optional session scope'),
+  requestId: z.string().optional().describe('Anchor request identifier'),
+  traceId: z.string().optional().describe('Existing trace identifier'),
+  includeBodies: z.boolean().optional()
+    .describe('Include sanitized request/response body fields'),
+  eventLimit: z.number().int().min(1).max(200).optional()
+    .describe('Maximum correlated events to return'),
+});
+
+export const GetBodyChunkSchema = z.object({
+  chunkRef: z.string().describe('Chunk reference identifier'),
+  sessionId: z.string().optional().describe('Optional session scope'),
+  offset: z.number().int().min(0).optional().describe('Byte offset'),
+  limit: z.number().int().min(1).max(262144).optional().describe('Chunk size in bytes'),
+});
+
 export const GetElementRefsSchema = z.object({
   sessionId: z.string().describe('Unique session identifier'),
   selector: z.string().describe('CSS selector to find elements'),

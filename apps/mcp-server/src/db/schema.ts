@@ -1,6 +1,6 @@
 import { Database } from 'better-sqlite3';
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const CREATE_TABLES_SQL = `
 -- Sessions table
@@ -65,6 +65,8 @@ CREATE INDEX IF NOT EXISTS idx_events_session_type ON events(session_id, type);
 CREATE TABLE IF NOT EXISTS network (
   request_id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL,
+  trace_id TEXT,
+  tab_id INTEGER,
   ts_start INTEGER NOT NULL,
   duration_ms INTEGER,
   method TEXT NOT NULL,
@@ -73,6 +75,18 @@ CREATE TABLE IF NOT EXISTS network (
   initiator TEXT CHECK(initiator IN ('fetch', 'xhr', 'img', 'script', 'other')),
   error_class TEXT CHECK(error_class IN ('timeout', 'cors', 'dns', 'blocked', 'http_error', 'unknown')),
   response_size_est INTEGER,
+  request_content_type TEXT,
+  request_body_text TEXT,
+  request_body_json TEXT,
+  request_body_bytes INTEGER,
+  request_body_truncated INTEGER NOT NULL DEFAULT 0,
+  request_body_chunk_ref TEXT,
+  response_content_type TEXT,
+  response_body_text TEXT,
+  response_body_json TEXT,
+  response_body_bytes INTEGER,
+  response_body_truncated INTEGER NOT NULL DEFAULT 0,
+  response_body_chunk_ref TEXT,
   FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
 );
 
@@ -81,6 +95,24 @@ CREATE INDEX IF NOT EXISTS idx_network_url ON network(url);
 CREATE INDEX IF NOT EXISTS idx_network_ts_start ON network(ts_start);
 CREATE INDEX IF NOT EXISTS idx_network_error_class ON network(error_class);
 CREATE INDEX IF NOT EXISTS idx_network_session_error ON network(session_id, error_class);
+
+CREATE TABLE IF NOT EXISTS body_chunks (
+  chunk_ref TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  request_id TEXT,
+  trace_id TEXT,
+  body_kind TEXT NOT NULL CHECK(body_kind IN ('request', 'response')),
+  content_type TEXT,
+  body_text TEXT NOT NULL,
+  body_bytes INTEGER NOT NULL,
+  truncated INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_body_chunks_session_id ON body_chunks(session_id);
+CREATE INDEX IF NOT EXISTS idx_body_chunks_request_id ON body_chunks(request_id);
+CREATE INDEX IF NOT EXISTS idx_body_chunks_trace_id ON body_chunks(trace_id);
 
 -- Error fingerprints table
 CREATE TABLE IF NOT EXISTS error_fingerprints (
@@ -154,6 +186,7 @@ export function getSchemaVersion(db: Database): number | null {
 export function clearDatabase(db: Database): void {
   db.exec(`
     DELETE FROM error_fingerprints;
+    DELETE FROM body_chunks;
     DELETE FROM network;
     DELETE FROM snapshots;
     DELETE FROM events;

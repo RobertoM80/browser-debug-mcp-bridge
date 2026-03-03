@@ -26,6 +26,10 @@ describe('tool-definitions', () => {
   it('should define error tools', () => {
     expect(ERROR_TOOLS.GET_ERROR_FINGERPRINTS).toBe('get_error_fingerprints');
     expect(ERROR_TOOLS.GET_NETWORK_FAILURES).toBe('get_network_failures');
+    expect(ERROR_TOOLS.GET_NETWORK_CALLS).toBe('get_network_calls');
+    expect(ERROR_TOOLS.WAIT_FOR_NETWORK_CALL).toBe('wait_for_network_call');
+    expect(ERROR_TOOLS.GET_REQUEST_TRACE).toBe('get_request_trace');
+    expect(ERROR_TOOLS.GET_BODY_CHUNK).toBe('get_body_chunk');
   });
 
   it('should define query tools', () => {
