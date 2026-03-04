@@ -50,6 +50,11 @@ jobs:
           find node_modules/.pnpm -name better_sqlite3.node -print
           test -n "$(find node_modules/.pnpm -name better_sqlite3.node -print -quit)"
 
+      - name: Install Playwright Chromium
+        run: |
+          set -euxo pipefail
+          pnpm exec playwright install --with-deps chromium
+
       - name: Run release validations
         run: |
           set -euxo pipefail

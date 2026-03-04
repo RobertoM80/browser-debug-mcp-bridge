@@ -69,10 +69,10 @@ async function waitForEntries(
 }
 
 test.describe('@full extension to db integration', () => {
-  let server: ManagedServerProcess;
-  let extension: ExtensionContextHandle;
-  let popupPage: Page;
-  let targetPage: Page;
+  let server: ManagedServerProcess | undefined;
+  let extension: ExtensionContextHandle | undefined;
+  let popupPage: Page | undefined;
+  let targetPage: Page | undefined;
 
   test.beforeAll(async () => {
     server = await startHttpServer(createTempDataDir('bdmcp-e2e-full-ext-data-'));
@@ -83,11 +83,22 @@ test.describe('@full extension to db integration', () => {
   });
 
   test.afterAll(async () => {
-    await extension.close();
-    await server.stop();
+    try {
+      if (extension) {
+        await extension.close();
+      }
+    } finally {
+      if (server) {
+        await server.stop();
+      }
+    }
   });
 
   test('captures bound-tab events, persists to DB, and drops unbound-tab events', async () => {
+    if (!popupPage || !targetPage || !extension) {
+      throw new Error('Test setup did not complete');
+    }
+
     await popupPage.fill('#allowlist-domains', '127.0.0.1');
     await popupPage.uncheck('#safe-mode');
     await popupPage.click('#save-config');

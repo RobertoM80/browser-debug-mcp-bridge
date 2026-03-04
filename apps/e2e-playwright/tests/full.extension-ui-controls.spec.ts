@@ -9,10 +9,10 @@ import {
 } from './utils/runtime';
 
 test.describe('@full extension popup and db-viewer controls', () => {
-  let server: ManagedServerProcess;
-  let extension: ExtensionContextHandle;
-  let popupPage: Page;
-  let targetPage: Page;
+  let server: ManagedServerProcess | undefined;
+  let extension: ExtensionContextHandle | undefined;
+  let popupPage: Page | undefined;
+  let targetPage: Page | undefined;
 
   test.beforeAll(async () => {
     server = await startHttpServer(createTempDataDir('bdmcp-e2e-full-ui-data-'));
@@ -23,11 +23,22 @@ test.describe('@full extension popup and db-viewer controls', () => {
   });
 
   test.afterAll(async () => {
-    await extension.close();
-    await server.stop();
+    try {
+      if (extension) {
+        await extension.close();
+      }
+    } finally {
+      if (server) {
+        await server.stop();
+      }
+    }
   });
 
   test('settings, retention, tab binding, transfer, and danger-zone controls are wired', async () => {
+    if (!popupPage || !targetPage || !extension) {
+      throw new Error('Test setup did not complete');
+    }
+
     await popupPage.fill('#allowlist-domains', '127.0.0.1');
     await popupPage.uncheck('#safe-mode');
     await popupPage.check('#snapshots-enabled');

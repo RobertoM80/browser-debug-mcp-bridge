@@ -14,10 +14,10 @@ type RuntimeResponse =
   | { ok: false; error: string };
 
 test.describe('@smoke extension popup wiring', () => {
-  let server: ManagedServerProcess;
-  let extension: ExtensionContextHandle;
-  let popupPage: Page;
-  let targetPage: Page;
+  let server: ManagedServerProcess | undefined;
+  let extension: ExtensionContextHandle | undefined;
+  let popupPage: Page | undefined;
+  let targetPage: Page | undefined;
 
   test.beforeAll(async () => {
     server = await startHttpServer(createTempDataDir('bdmcp-e2e-smoke-ui-data-'));
@@ -28,11 +28,22 @@ test.describe('@smoke extension popup wiring', () => {
   });
 
   test.afterAll(async () => {
-    await extension.close();
-    await server.stop();
+    try {
+      if (extension) {
+        await extension.close();
+      }
+    } finally {
+      if (server) {
+        await server.stop();
+      }
+    }
   });
 
   test('popup controls render and config save is wired', async () => {
+    if (!popupPage) {
+      throw new Error('Test setup did not complete');
+    }
+
     await expect(popupPage.locator('#start-session')).toBeVisible();
     await expect(popupPage.locator('#stop-session')).toBeVisible();
     await expect(popupPage.locator('#save-config')).toBeVisible();
@@ -53,6 +64,10 @@ test.describe('@smoke extension popup wiring', () => {
   });
 
   test('start and stop session buttons are connected to background runtime', async () => {
+    if (!popupPage || !targetPage) {
+      throw new Error('Test setup did not complete');
+    }
+
     await popupPage.fill('#allowlist-domains', '127.0.0.1');
     await popupPage.click('#save-config');
     await expect(popupPage.locator('#config-status')).toContainText(/Settings saved/i);
