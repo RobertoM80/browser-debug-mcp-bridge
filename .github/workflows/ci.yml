@@ -91,6 +91,18 @@ jobs:
           set -euxo pipefail
           pnpm exec playwright install --with-deps chromium
 
+      - name: E2E preflight checks
+        run: |
+          set -euxo pipefail
+          pnpm nx run-many -t build --projects mcp-server,chrome-extension
+          ls -lah dist/apps/chrome-extension
+          test -f dist/apps/chrome-extension/manifest.json
+          test -f dist/apps/chrome-extension/popup.html
+          test -f dist/apps/chrome-extension/background.js
+          test -f dist/apps/chrome-extension/content-script.js
+          pnpm exec playwright --version
+          node --version
+
       - name: Run E2E smoke suite
         run: |
           set -euxo pipefail
@@ -146,6 +158,18 @@ jobs:
         run: |
           set -euxo pipefail
           pnpm exec playwright install --with-deps chromium
+
+      - name: E2E preflight checks
+        run: |
+          set -euxo pipefail
+          pnpm nx run-many -t build --projects mcp-server,chrome-extension
+          ls -lah dist/apps/chrome-extension
+          test -f dist/apps/chrome-extension/manifest.json
+          test -f dist/apps/chrome-extension/popup.html
+          test -f dist/apps/chrome-extension/background.js
+          test -f dist/apps/chrome-extension/content-script.js
+          pnpm exec playwright --version
+          node --version
 
       - name: Run E2E full suite
         run: |
