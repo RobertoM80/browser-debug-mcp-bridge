@@ -17,6 +17,8 @@
    - command: `pnpm test:e2e:full`
    - intent: deeper checks for extension -> bridge -> DB -> MCP tool behavior
 
+All E2E commands run headless by default. For local UI debugging, use `pnpm test:e2e:head`.
+
 ## CI behavior
 
 - CI workflow (`.github/workflows/ci.yml`) runs:

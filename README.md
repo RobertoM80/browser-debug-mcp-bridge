@@ -271,6 +271,8 @@ node scripts/mcp-start.cjs --stop
 pnpm typecheck
 pnpm lint
 pnpm test
+pnpm test:e2e
+pnpm test:e2e:head
 pnpm test:e2e:smoke
 pnpm test:e2e:full
 pnpm build
@@ -278,6 +280,8 @@ pnpm docs:ci
 pnpm verify
 node scripts/mcp-start.cjs --stop
 ```
+
+E2E commands run headless by default. Use `pnpm test:e2e:head` only for local headed debugging.
 
 CI lanes:
 

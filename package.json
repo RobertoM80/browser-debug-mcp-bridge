@@ -47,6 +47,7 @@
     "mcp:check-stdio-guard": "node tools/mcp/check-stdio-guard.mjs",
     "hooks:install": "git config core.hooksPath .githooks && git config commit.template .gitmessage.txt",
     "test:e2e": "nx test e2e-playwright",
+    "test:e2e:head": "node tools/e2e/run-headed-e2e.mjs",
     "test:e2e:smoke": "nx run e2e-playwright:smoke",
     "test:e2e:full": "nx run e2e-playwright:full"
   },

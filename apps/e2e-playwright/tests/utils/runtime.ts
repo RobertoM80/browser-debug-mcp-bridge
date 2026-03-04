@@ -19,6 +19,7 @@ export const EXTENSION_DIST_DIR = resolve(REPO_ROOT, 'dist/apps/chrome-extension
 const EXTENSION_BOOT_TIMEOUT_MS = 60_000;
 const RUNTIME_MESSAGE_TIMEOUT_MS = 10_000;
 const RUNTIME_MESSAGE_MAX_ATTEMPTS = 8;
+const TRUE_ENV_VALUES = new Set(['1', 'true', 'yes', 'on']);
 
 export function createTempDataDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -165,12 +166,20 @@ export interface ExtensionContextHandle {
   close(): Promise<void>;
 }
 
+function shouldRunHeaded(): boolean {
+  const raw = process.env.BDMCP_E2E_HEADED;
+  if (!raw) {
+    return false;
+  }
+  return TRUE_ENV_VALUES.has(raw.toLowerCase());
+}
+
 export async function launchExtensionContext(): Promise<ExtensionContextHandle> {
   const userDataDir = createTempDataDir('bdmcp-playwright-profile-');
 
   const context = await chromium.launchPersistentContext(userDataDir, {
     channel: 'chromium',
-    headless: false,
+    headless: !shouldRunHeaded(),
     args: [
       `--disable-extensions-except=${EXTENSION_DIST_DIR}`,
       `--load-extension=${EXTENSION_DIST_DIR}`,

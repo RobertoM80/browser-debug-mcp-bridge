@@ -24,7 +24,12 @@ pnpm test:e2e:full
 
 # All E2E tests
 pnpm test:e2e
+
+# All E2E tests (headed debug mode)
+pnpm test:e2e:head
 ```
+
+Default E2E execution is headless. Use `pnpm test:e2e:head` only when you need a visible browser window for debugging.
 
 ## CI Mapping
 

@@ -37,6 +37,8 @@ Command:
 pnpm test:e2e:full
 ```
 
+Headless is the default mode for all E2E runs. Use `pnpm test:e2e:head` when you need a headed browser for local troubleshooting.
+
 ## CI usage
 
 - Pull requests and pushes to `main`: smoke + full.
