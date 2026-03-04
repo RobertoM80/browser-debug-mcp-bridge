@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.7.0...browser-debug-mcp-bridge-v1.8.0) (2026-03-04)
+
+
+### Features
+
+* **session:** add paus resume lifecycle with resume persisted ([d1e135e](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/d1e135e556585f30f2ecb0af3e8f04dc1f1e1f3a))
+* **session:** merged to main ([375f0cf](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/375f0cf9ea6ffc8988c1880069c7b2d2c556a0bd))
+
 ## [1.7.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.6.0...browser-debug-mcp-bridge-v1.7.0) (2026-03-04)
 
 
