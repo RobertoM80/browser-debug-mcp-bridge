@@ -56,7 +56,7 @@ This project aims to:
    - **injected script**: hooks `fetch`/`XHR`, optional console overrides, access to page context
    - **background service worker**: session management, connection to local server, buffering/backpressure, client-side policy checks
    - Minimal UIs:
-     - **popup (V1)**: start/stop session + toggles (safe mode, allowlist)
+     - **popup (V1)**: start/pause/resume/stop session + toggles (safe mode, allowlist)
      - **devtools panel (V2 optional)**: event stream view + inspect/capture commands
 
 2) **Local Server (Node.js/TS)**
@@ -355,7 +355,7 @@ Connect causally:
 ### Phase 1 — End-to-end light telemetry (V1)
 **Depends on:** Phase 0  
 **Extension deliverables**
-- start/stop session + WS connect
+- start/pause/resume/stop session + WS connect
 - capture: navigations, runtime errors, console error/warn, minimal user events
 - buffering + backpressure (no crashes)
 

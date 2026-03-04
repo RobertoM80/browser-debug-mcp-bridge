@@ -1,5 +1,11 @@
 import { Database } from 'better-sqlite3';
-import type { EventMessage, SessionStartMessage, SessionEndMessage } from '../websocket/messages.js';
+import type {
+  EventMessage,
+  SessionStartMessage,
+  SessionPauseMessage,
+  SessionResumeMessage,
+  SessionEndMessage,
+} from '../websocket/messages.js';
 import { resolveErrorFingerprint } from './error-fingerprints.js';
 import { getDatabasePath } from './connection.js';
 import { writeSnapshot } from '../retention.js';
@@ -35,6 +41,7 @@ export interface SessionRecord {
   sessionId: string;
   createdAt: number;
   endedAt?: number;
+  pausedAt?: number;
   tabId?: number;
   windowId?: number;
   urlStart?: string;
@@ -197,11 +204,57 @@ export class EventsRepository {
   endSession(message: SessionEndMessage): void {
     const update = this.db.prepare(`
       UPDATE sessions
-      SET ended_at = ?
+      SET ended_at = ?, paused_at = NULL
       WHERE session_id = ?
     `);
 
     update.run(Date.now(), message.sessionId);
+  }
+
+  pauseSession(message: SessionPauseMessage): void {
+    const update = this.db.prepare(`
+      UPDATE sessions
+      SET paused_at = COALESCE(paused_at, ?), ended_at = NULL
+      WHERE session_id = ? AND ended_at IS NULL
+    `);
+
+    const result = update.run(Date.now(), message.sessionId);
+    if (result.changes === 0) {
+      throw new Error(`Session not found or already ended: ${message.sessionId}`);
+    }
+  }
+
+  resumeSession(message: SessionResumeMessage): void {
+    const update = this.db.prepare(`
+      UPDATE sessions
+      SET
+        paused_at = NULL,
+        ended_at = NULL,
+        url_last = COALESCE(?, url_last),
+        tab_id = COALESCE(?, tab_id),
+        window_id = COALESCE(?, window_id),
+        user_agent = COALESCE(?, user_agent),
+        viewport_w = COALESCE(?, viewport_w),
+        viewport_h = COALESCE(?, viewport_h),
+        dpr = COALESCE(?, dpr),
+        safe_mode = COALESCE(?, safe_mode)
+      WHERE session_id = ? AND ended_at IS NULL
+    `);
+
+    const result = update.run(
+      message.url ?? null,
+      message.tabId ?? null,
+      message.windowId ?? null,
+      message.userAgent ?? null,
+      message.viewport?.width ?? null,
+      message.viewport?.height ?? null,
+      message.dpr ?? null,
+      message.safeMode === undefined ? null : (message.safeMode ? 1 : 0),
+      message.sessionId,
+    );
+    if (result.changes === 0) {
+      throw new Error(`Session not found or already ended: ${message.sessionId}`);
+    }
   }
 
   insertEvent(message: EventMessage): void {

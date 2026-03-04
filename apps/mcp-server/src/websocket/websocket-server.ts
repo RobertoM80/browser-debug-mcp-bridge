@@ -217,6 +217,26 @@ export class WebSocketManager {
           });
           break;
 
+        case 'session_pause':
+          this.getRepository().pauseSession(message);
+          if (connectionInfo.sessionId !== message.sessionId) {
+            connectionInfo.sessionId = message.sessionId;
+          }
+          break;
+
+        case 'session_resume': {
+          this.getRepository().resumeSession(message);
+          connectionInfo.sessionId = message.sessionId;
+          const previous = this.sessionStates.get(message.sessionId);
+          this.sessionStates.set(message.sessionId, {
+            sessionId: message.sessionId,
+            connected: true,
+            connectedAt: previous?.connectedAt ?? connectionInfo.connectedAt,
+            lastHeartbeatAt: connectionInfo.lastPingAt,
+          });
+          break;
+        }
+
         case 'session_end':
           this.getRepository().endSession(message);
           if (connectionInfo.sessionId === message.sessionId) {

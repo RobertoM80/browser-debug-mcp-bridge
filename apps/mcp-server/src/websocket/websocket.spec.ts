@@ -19,6 +19,8 @@ import type {
   EventMessage,
   EventBatchMessage,
   SessionStartMessage,
+  SessionPauseMessage,
+  SessionResumeMessage,
   SessionEndMessage,
   ErrorMessage,
   CaptureCommandMessage,
@@ -735,6 +737,89 @@ describe('WebSocket Server', () => {
       const result = await commandPromise;
       expect(result.ok).toBe(true);
       expect(result.payload?.mode).toBe('outline');
+
+      ws.close();
+    });
+
+    it('should mark a session as paused on session_pause message', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      await new Promise<void>(resolve => ws.on('open', resolve));
+
+      const sessionStart: SessionStartMessage = {
+        type: 'session_start',
+        sessionId: 'test-session-paused',
+        url: 'https://example.com',
+        timestamp: Date.now(),
+        safeMode: false,
+      };
+
+      ws.send(JSON.stringify(sessionStart));
+      await wait(100);
+
+      const sessionPause: SessionPauseMessage = {
+        type: 'session_pause',
+        sessionId: 'test-session-paused',
+        timestamp: Date.now(),
+      };
+      ws.send(JSON.stringify(sessionPause));
+      await wait(100);
+
+      const { db } = global.testDbConn!;
+      const session = db
+        .prepare('SELECT paused_at, ended_at FROM sessions WHERE session_id = ?')
+        .get('test-session-paused') as { paused_at: number | null; ended_at: number | null };
+      expect(session.paused_at).not.toBeNull();
+      expect(session.ended_at).toBeNull();
+
+      ws.close();
+    });
+
+    it('should clear paused_at on session_resume message', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      await new Promise<void>(resolve => ws.on('open', resolve));
+
+      const sessionStart: SessionStartMessage = {
+        type: 'session_start',
+        sessionId: 'test-session-resume',
+        url: 'https://example.com/start',
+        timestamp: Date.now(),
+        safeMode: false,
+      };
+
+      ws.send(JSON.stringify(sessionStart));
+      await wait(100);
+
+      const sessionPause: SessionPauseMessage = {
+        type: 'session_pause',
+        sessionId: 'test-session-resume',
+        timestamp: Date.now(),
+      };
+      ws.send(JSON.stringify(sessionPause));
+      await wait(100);
+
+      const sessionResume: SessionResumeMessage = {
+        type: 'session_resume',
+        sessionId: 'test-session-resume',
+        url: 'https://example.com/resumed',
+        safeMode: true,
+        timestamp: Date.now(),
+      };
+      ws.send(JSON.stringify(sessionResume));
+      await wait(100);
+
+      const { db } = global.testDbConn!;
+      const session = db
+        .prepare('SELECT paused_at, ended_at, url_last, safe_mode FROM sessions WHERE session_id = ?')
+        .get('test-session-resume') as {
+        paused_at: number | null;
+        ended_at: number | null;
+        url_last: string | null;
+        safe_mode: number;
+      };
+      expect(session.paused_at).toBeNull();
+      expect(session.ended_at).toBeNull();
+      expect(session.url_last).toBe('https://example.com/resumed');
+      expect(session.safe_mode).toBe(1);
 
       ws.close();
     });

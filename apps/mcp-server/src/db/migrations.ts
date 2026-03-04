@@ -287,6 +287,20 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 6,
+    name: 'session_pause_resume_state',
+    up: (db) => {
+      const sessionColumns = getColumnNames(db, 'sessions');
+      if (!sessionColumns.has('paused_at')) {
+        db.exec('ALTER TABLE sessions ADD COLUMN paused_at INTEGER;');
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_sessions_paused_at ON sessions(paused_at);
+      `);
+    },
+  },
 ];
 
 export function runMigrations(db: Database): void {

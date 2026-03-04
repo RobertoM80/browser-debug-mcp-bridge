@@ -262,6 +262,7 @@ fastify.get('/sessions', async (request) => {
   type SessionRow = {
     session_id: string;
     created_at: number;
+    paused_at: number | null;
     ended_at: number | null;
     url_last: string | null;
     pinned: number;
@@ -269,7 +270,7 @@ fastify.get('/sessions', async (request) => {
 
   const rows = db.prepare(
     `
-      SELECT session_id, created_at, ended_at, url_last, pinned
+      SELECT session_id, created_at, paused_at, ended_at, url_last, pinned
       FROM sessions
       ORDER BY created_at DESC
       LIMIT ? OFFSET ?
@@ -288,7 +289,9 @@ fastify.get('/sessions', async (request) => {
     sessions: page.map((row) => ({
       sessionId: row.session_id,
       createdAt: row.created_at,
+      pausedAt: row.paused_at,
       endedAt: row.ended_at,
+      status: row.ended_at ? 'ended' : row.paused_at ? 'paused' : 'active',
       urlLast: row.url_last,
       pinned: row.pinned === 1,
     })),

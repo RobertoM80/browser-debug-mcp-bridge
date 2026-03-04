@@ -198,7 +198,7 @@ If the host accepts JSON-style MCP server entries, use:
    - `node <NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs` (no-repo mode),
    - `node <repo>\\scripts\\mcp-start.cjs` (local clone mode), or
    - `npx -y browser-debug-mcp-bridge` (npm mode).
-3. Open extension popup, set allowlist, start session.
+3. Open extension popup, set allowlist, start session (or resume a paused one).
 4. Ask LLM to call `list_sessions`.
 5. Use a `sessionId` with `liveConnection.connected = true` for live tools.
 6. Ask LLM to call `get_live_console_logs` with that `sessionId` and optional `contains` filter.

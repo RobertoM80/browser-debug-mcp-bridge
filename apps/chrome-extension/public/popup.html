@@ -19,7 +19,18 @@
     </div>
     <div class="controls">
       <button id="start-session" type="button">Start Session</button>
+      <button id="pause-session" type="button">Pause Session</button>
+    </div>
+    <div class="controls">
+      <button id="resume-session" type="button">Resume Current</button>
       <button id="stop-session" type="button">Stop Session</button>
+    </div>
+    <div class="settings">
+      <label for="resume-session-id">Resume paused session by ID</label>
+      <div class="controls">
+        <select id="resume-session-id"></select>
+        <button id="resume-selected-session" type="button">Resume Selected</button>
+      </div>
     </div>
     <details class="settings session-tabs" open>
       <summary>Session Tabs</summary>

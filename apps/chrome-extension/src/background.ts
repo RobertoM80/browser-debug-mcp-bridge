@@ -25,6 +25,9 @@ import { redactSnapshotRecord } from '../../../libs/redaction/src';
 type RuntimeRequest =
   | { type: 'SESSION_GET_STATE' }
   | { type: 'SESSION_START' }
+  | { type: 'SESSION_PAUSE' }
+  | { type: 'SESSION_RESUME_CURRENT' }
+  | { type: 'SESSION_RESUME_BY_ID'; sessionId: string }
   | { type: 'SESSION_STOP' }
   | { type: 'SESSION_QUEUE_EVENT'; eventType: string; data: Record<string, unknown> }
   | { type: 'SESSION_GET_CONFIG' }
@@ -1051,6 +1054,56 @@ async function fetchServer(path: string, init?: RequestInit): Promise<Record<str
   return payload;
 }
 
+function buildSessionContextFromTab(tab: chrome.tabs.Tab | undefined): {
+  activeUrl: string;
+  baseOrigin?: string;
+  tabId?: number;
+  windowId?: number;
+  viewport: {
+    width: number;
+    height: number;
+  };
+  dpr: number;
+} {
+  const screenWidth = tab?.width ?? globalThis.screen?.width ?? 0;
+  const screenHeight = tab?.height ?? globalThis.screen?.height ?? 0;
+  const activeUrl = tab?.url ?? 'about:blank';
+  return {
+    activeUrl,
+    baseOrigin: normalizeHttpOrigin(activeUrl),
+    tabId: typeof tab?.id === 'number' ? tab.id : undefined,
+    windowId: typeof tab?.windowId === 'number' ? tab.windowId : undefined,
+    viewport: {
+      width: screenWidth,
+      height: screenHeight,
+    },
+    dpr: globalThis.devicePixelRatio ?? 1,
+  };
+}
+
+async function resolveAllowlistedSessionContext(): Promise<{
+  tab: chrome.tabs.Tab | undefined;
+  activeUrl: string;
+  baseOrigin?: string;
+  tabId?: number;
+  windowId?: number;
+  viewport: {
+    width: number;
+    height: number;
+  };
+  dpr: number;
+}> {
+  const tab = await getActiveTab();
+  const context = buildSessionContextFromTab(tab);
+  if (!isUrlAllowed(context.activeUrl, captureConfig.allowlist)) {
+    throw new Error('Active tab is not in allowlist. Add a domain in popup settings.');
+  }
+  return {
+    tab,
+    ...context,
+  };
+}
+
 function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSender): Promise<RuntimeResponse> {
   switch (request.type) {
     case 'SESSION_GET_STATE':
@@ -1075,50 +1128,31 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
         }));
 
     case 'SESSION_START': {
-      return getActiveTab()
-        .then(async (tab) => {
-          const screenWidth = tab?.width ?? globalThis.screen?.width ?? 0;
-          const screenHeight = tab?.height ?? globalThis.screen?.height ?? 0;
-          const devicePixelRatio = globalThis.devicePixelRatio ?? 1;
-          const activeUrl = tab?.url ?? 'about:blank';
-          const canCaptureActiveTab = isUrlAllowed(activeUrl, captureConfig.allowlist);
-
-          if (!canCaptureActiveTab) {
-            return {
-              ok: false as const,
-              error: 'Active tab is not in allowlist. Add a domain in popup settings.',
-            };
-          }
-
-          const initialTabId = typeof tab?.id === 'number' ? tab.id : undefined;
-          const baseOrigin = normalizeHttpOrigin(activeUrl);
-
+      return resolveAllowlistedSessionContext()
+        .then(async (activeContext) => {
           const started = sessionManager.startSession({
-            url: activeUrl,
-            tabId: tab?.id,
-            windowId: tab?.windowId,
-            baseOrigin,
-            allowedTabIds: initialTabId !== undefined ? [initialTabId] : [],
+            url: activeContext.activeUrl,
+            tabId: activeContext.tabId,
+            windowId: activeContext.windowId,
+            baseOrigin: activeContext.baseOrigin,
+            allowedTabIds: activeContext.tabId !== undefined ? [activeContext.tabId] : [],
             userAgent: navigator.userAgent,
-            viewport: {
-              width: screenWidth,
-              height: screenHeight,
-            },
-            dpr: devicePixelRatio,
+            viewport: activeContext.viewport,
+            dpr: activeContext.dpr,
             safeMode: captureConfig.safeMode,
           });
 
           if (started.sessionId) {
-            setSessionTabScope(started.sessionId, activeUrl, initialTabId);
+            setSessionTabScope(started.sessionId, activeContext.activeUrl, activeContext.tabId);
             sessionManager.setSessionScope({
-              baseOrigin,
-              allowedTabIds: initialTabId !== undefined ? [initialTabId] : [],
+              baseOrigin: activeContext.baseOrigin,
+              allowedTabIds: activeContext.tabId !== undefined ? [activeContext.tabId] : [],
             });
           }
 
-          if (started.sessionId && typeof tab?.id === 'number') {
-            rememberCaptureTabForSession(started.sessionId, tab);
-            await ensureContentScriptReady(tab.id);
+          if (started.sessionId && typeof activeContext.tab?.id === 'number') {
+            rememberCaptureTabForSession(started.sessionId, activeContext.tab);
+            await ensureContentScriptReady(activeContext.tab.id);
             await syncCaptureConfigToSessionTabs(started.sessionId);
           } else if (started.sessionId) {
             captureTabBySession.delete(started.sessionId);
@@ -1126,11 +1160,11 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
 
           sessionManager.queueEvent('custom', {
             marker: 'session_started',
-            url: activeUrl,
+            url: activeContext.activeUrl,
             timestamp: Date.now(),
           }, {
-            tabId: initialTabId,
-            origin: baseOrigin,
+            tabId: activeContext.tabId,
+            origin: activeContext.baseOrigin,
           });
 
           if (started.sessionId) {
@@ -1144,6 +1178,152 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
           error: error instanceof Error ? error.message : 'Failed to start session',
         }));
     }
+
+    case 'SESSION_PAUSE':
+      return Promise.resolve().then(() => {
+        const state = sessionManager.getState();
+        if (!state.isActive || !state.sessionId) {
+          throw new Error('No active session to pause');
+        }
+        if (state.isPaused) {
+          return { ok: true as const, state };
+        }
+
+        return { ok: true as const, state: sessionManager.pauseSession() };
+      }).catch((error) => ({
+        ok: false,
+        error: error instanceof Error ? error.message : 'Failed to pause session',
+      }));
+
+    case 'SESSION_RESUME_CURRENT':
+      return Promise.resolve()
+        .then(async () => {
+          const state = sessionManager.getState();
+          if (!state.isActive || !state.sessionId) {
+            throw new Error('No active session to resume');
+          }
+          if (!state.isPaused) {
+            return { ok: true as const, state };
+          }
+
+          const sessionId = state.sessionId;
+          const existingScope = getSessionTabScope(sessionId);
+          let baseOrigin = existingScope?.baseOrigin ?? state.baseOrigin;
+          let allowedTabIds = existingScope
+            ? Array.from(existingScope.allowedTabIds)
+            : (state.allowedTabIds ?? []);
+          let resumeTab = await resolveCaptureTab(sessionId);
+
+          if (!resumeTab || allowedTabIds.length === 0) {
+            const allowlisted = await resolveAllowlistedSessionContext();
+            baseOrigin = allowlisted.baseOrigin;
+            allowedTabIds = allowlisted.tabId !== undefined ? [allowlisted.tabId] : [];
+            setSessionTabScope(sessionId, allowlisted.activeUrl, allowlisted.tabId);
+            sessionManager.setSessionScope({
+              baseOrigin,
+              allowedTabIds,
+            });
+            resumeTab = allowlisted.tab;
+          }
+
+          if (resumeTab && typeof resumeTab.id === 'number') {
+            rememberCaptureTabForSession(sessionId, resumeTab);
+            await ensureContentScriptReady(resumeTab.id);
+            await syncCaptureConfigToSessionTabs(sessionId);
+          }
+
+          const resumeTabContext = buildSessionContextFromTab(resumeTab);
+
+          const resumed = sessionManager.resumeSession({
+            sessionId,
+            url: resumeTab?.url ?? state.baseOrigin ?? 'about:blank',
+            tabId: typeof resumeTab?.id === 'number' ? resumeTab.id : undefined,
+            windowId: typeof resumeTab?.windowId === 'number' ? resumeTab.windowId : undefined,
+            baseOrigin,
+            allowedTabIds,
+            userAgent: navigator.userAgent,
+            viewport: resumeTabContext.viewport,
+            dpr: resumeTabContext.dpr,
+            safeMode: captureConfig.safeMode,
+          });
+
+          sessionManager.queueEvent('custom', {
+            marker: 'session_resumed',
+            sessionId,
+            timestamp: Date.now(),
+          }, {
+            tabId: typeof resumeTab?.id === 'number' ? resumeTab.id : undefined,
+            origin: baseOrigin,
+          });
+
+          return { ok: true as const, state: resumed };
+        })
+        .catch((error) => ({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Failed to resume session',
+        }));
+
+    case 'SESSION_RESUME_BY_ID':
+      return Promise.resolve()
+        .then(async () => {
+          const requestedSessionId = request.sessionId.trim();
+          if (!requestedSessionId) {
+            throw new Error('sessionId is required');
+          }
+
+          const state = sessionManager.getState();
+          if (state.isActive && state.sessionId && state.sessionId !== requestedSessionId) {
+            throw new Error('Stop or resume the current session before resuming a different session.');
+          }
+
+          if (state.isActive && state.sessionId === requestedSessionId) {
+            if (state.isPaused) {
+              return handleRequest({ type: 'SESSION_RESUME_CURRENT' }, sender);
+            }
+            return { ok: true as const, state };
+          }
+
+          const allowlisted = await resolveAllowlistedSessionContext();
+          setSessionTabScope(requestedSessionId, allowlisted.activeUrl, allowlisted.tabId);
+          sessionManager.setSessionScope({
+            baseOrigin: allowlisted.baseOrigin,
+            allowedTabIds: allowlisted.tabId !== undefined ? [allowlisted.tabId] : [],
+          });
+
+          const resumed = sessionManager.resumeSession({
+            sessionId: requestedSessionId,
+            url: allowlisted.activeUrl,
+            tabId: allowlisted.tabId,
+            windowId: allowlisted.windowId,
+            baseOrigin: allowlisted.baseOrigin,
+            allowedTabIds: allowlisted.tabId !== undefined ? [allowlisted.tabId] : [],
+            userAgent: navigator.userAgent,
+            viewport: allowlisted.viewport,
+            dpr: allowlisted.dpr,
+            safeMode: captureConfig.safeMode,
+          });
+
+          if (resumed.sessionId && typeof allowlisted.tab?.id === 'number') {
+            rememberCaptureTabForSession(resumed.sessionId, allowlisted.tab);
+            await ensureContentScriptReady(allowlisted.tab.id);
+            await syncCaptureConfigToSessionTabs(resumed.sessionId);
+          }
+
+          sessionManager.queueEvent('custom', {
+            marker: 'session_resumed',
+            sessionId: requestedSessionId,
+            timestamp: Date.now(),
+          }, {
+            tabId: allowlisted.tabId,
+            origin: allowlisted.baseOrigin,
+          });
+
+          return { ok: true as const, state: resumed };
+        })
+        .catch((error) => ({
+          ok: false,
+          error: error instanceof Error ? error.message : 'Failed to resume session',
+        }));
 
     case 'SESSION_STOP':
       return Promise.resolve().then(() => {
@@ -1460,6 +1640,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 
   if (scope.allowedTabIds.size > 0) {
+    return;
+  }
+
+  if (state.isPaused) {
+    captureTabBySession.delete(state.sessionId);
     return;
   }
 

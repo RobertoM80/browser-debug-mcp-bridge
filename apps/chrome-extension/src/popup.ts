@@ -1,5 +1,6 @@
 type SessionState = {
   isActive: boolean;
+  isPaused: boolean;
   sessionId: string | null;
   baseOrigin?: string;
   allowedTabIds?: number[];
@@ -78,6 +79,14 @@ type SessionImportResult = {
   snapshots: number;
 };
 
+type RecentSession = {
+  sessionId: string;
+  createdAt?: number;
+  endedAt?: number | null;
+  pausedAt?: number | null;
+  status?: string;
+};
+
 type StatusTone = 'info' | 'success' | 'warning' | 'error';
 
 let statePollTimer: number | null = null;
@@ -109,6 +118,9 @@ function setStatusMessage(element: HTMLElement | null, message: string, tone: St
 }
 
 function toneForSessionState(state: SessionState): StatusTone {
+  if (state.isActive && state.isPaused) {
+    return 'warning';
+  }
   if (state.isActive && state.connectionStatus === 'connected') {
     return 'success';
   }
@@ -139,14 +151,20 @@ function renderSessionState(state: SessionState): void {
   const queueEl = document.getElementById('queue-size');
   const droppedEl = document.getElementById('dropped-events');
   const startButton = document.getElementById('start-session') as HTMLButtonElement | null;
+  const pauseButton = document.getElementById('pause-session') as HTMLButtonElement | null;
+  const resumeCurrentButton = document.getElementById('resume-session') as HTMLButtonElement | null;
   const stopButton = document.getElementById('stop-session') as HTMLButtonElement | null;
+  const resumeByIdButton = document.getElementById('resume-selected-session') as HTMLButtonElement | null;
+  const resumeByIdSelect = document.getElementById('resume-session-id') as HTMLSelectElement | null;
 
   if (statusEl) {
     const statusLabel = state.connectionStatus === 'reconnecting'
       ? `reconnecting, attempt ${state.reconnectAttempts}`
       : state.connectionStatus;
     const message = state.isActive
-      ? `Session active (${statusLabel})`
+      ? state.isPaused
+        ? `Session paused (${statusLabel})`
+        : `Session active (${statusLabel})`
       : `No active session (${statusLabel})`;
     setStatusMessage(statusEl, message, toneForSessionState(state));
   }
@@ -162,8 +180,20 @@ function renderSessionState(state: SessionState): void {
   if (startButton) {
     startButton.disabled = state.isActive;
   }
+  if (pauseButton) {
+    pauseButton.disabled = !state.isActive || state.isPaused;
+  }
+  if (resumeCurrentButton) {
+    resumeCurrentButton.disabled = !state.isActive || !state.isPaused;
+  }
   if (stopButton) {
     stopButton.disabled = !state.isActive;
+  }
+  if (resumeByIdSelect) {
+    resumeByIdSelect.disabled = state.isActive;
+  }
+  if (resumeByIdButton) {
+    resumeByIdButton.disabled = state.isActive;
   }
 }
 
@@ -284,6 +314,71 @@ function getCurrentSessionId(): string | null {
     return null;
   }
   return sessionId;
+}
+
+function parseRecentSessions(result: unknown): RecentSession[] {
+  if (!result || typeof result !== 'object') {
+    return [];
+  }
+
+  const value = result as { sessions?: unknown };
+  if (!Array.isArray(value.sessions)) {
+    return [];
+  }
+
+  return value.sessions
+    .filter((entry): entry is RecentSession => Boolean(entry) && typeof entry === 'object')
+    .filter((entry) => typeof entry.sessionId === 'string');
+}
+
+function renderPausedSessionOptions(sessions: RecentSession[]): void {
+  const select = document.getElementById('resume-session-id') as HTMLSelectElement | null;
+  if (!select) {
+    return;
+  }
+
+  const previousValue = select.value;
+  select.replaceChildren();
+
+  const pausedSessions = sessions.filter((session) => {
+    if (session.status === 'paused') {
+      return true;
+    }
+    return typeof session.pausedAt === 'number' && session.endedAt === null;
+  });
+
+  if (pausedSessions.length === 0) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'No paused sessions';
+    select.append(option);
+    select.value = '';
+    return;
+  }
+
+  for (const session of pausedSessions) {
+    const option = document.createElement('option');
+    option.value = session.sessionId;
+    const createdAt =
+      typeof session.createdAt === 'number' ? new Date(session.createdAt).toLocaleString() : 'unknown';
+    option.textContent = `${session.sessionId} - ${createdAt}`;
+    select.append(option);
+  }
+
+  const hasPrevious = pausedSessions.some((session) => session.sessionId === previousValue);
+  select.value = hasPrevious ? previousValue : pausedSessions[0]?.sessionId ?? '';
+}
+
+async function refreshPausedSessionOptions(): Promise<void> {
+  const response = await sendRuntimeMessage({ type: 'SESSION_LIST_RECENT', limit: 100, offset: 0 });
+  if (!response.ok) {
+    return;
+  }
+  if (!('result' in response)) {
+    return;
+  }
+
+  renderPausedSessionOptions(parseRecentSessions(response.result));
 }
 
 function parseSessionImportResult(result: unknown): SessionImportResult | null {
@@ -536,7 +631,11 @@ async function refreshRetention(): Promise<void> {
 
 document.addEventListener('DOMContentLoaded', () => {
   const startButton = document.getElementById('start-session');
+  const pauseButton = document.getElementById('pause-session');
+  const resumeCurrentButton = document.getElementById('resume-session');
   const stopButton = document.getElementById('stop-session');
+  const resumeByIdButton = document.getElementById('resume-selected-session');
+  const resumeByIdSelect = document.getElementById('resume-session-id') as HTMLSelectElement | null;
   const saveConfigButton = document.getElementById('save-config');
   const saveRetentionButton = document.getElementById('save-retention');
   const runCleanupButton = document.getElementById('run-cleanup-now');
@@ -554,9 +653,50 @@ document.addEventListener('DOMContentLoaded', () => {
     if (result.ok && 'state' in result) {
       renderSessionState(result.state);
       await refreshSessionTabScope();
+      await refreshPausedSessionOptions();
       return;
     }
     setConfigStatus(result.ok ? 'Unable to start session' : result.error, 'error');
+  });
+
+  pauseButton?.addEventListener('click', async () => {
+    const result = await sendRuntimeMessage({ type: 'SESSION_PAUSE' });
+    if (result.ok && 'state' in result) {
+      renderSessionState(result.state);
+      await refreshSessionTabScope();
+      await refreshPausedSessionOptions();
+      return;
+    }
+    setConfigStatus(result.ok ? 'Unable to pause session' : result.error, 'error');
+  });
+
+  resumeCurrentButton?.addEventListener('click', async () => {
+    const result = await sendRuntimeMessage({ type: 'SESSION_RESUME_CURRENT' });
+    if (result.ok && 'state' in result) {
+      renderSessionState(result.state);
+      await refreshSessionTabScope();
+      await refreshPausedSessionOptions();
+      return;
+    }
+    setConfigStatus(result.ok ? 'Unable to resume current session' : result.error, 'error');
+  });
+
+  resumeByIdButton?.addEventListener('click', async () => {
+    const selectedSessionId = resumeByIdSelect?.value?.trim() ?? '';
+    if (!selectedSessionId) {
+      setConfigStatus('Choose a paused session to resume.', 'warning');
+      return;
+    }
+
+    const result = await sendRuntimeMessage({ type: 'SESSION_RESUME_BY_ID', sessionId: selectedSessionId });
+    if (result.ok && 'state' in result) {
+      renderSessionState(result.state);
+      await refreshSessionTabScope();
+      await refreshPausedSessionOptions();
+      return;
+    }
+
+    setConfigStatus(result.ok ? 'Unable to resume selected session' : result.error, 'error');
   });
 
   stopButton?.addEventListener('click', async () => {
@@ -564,6 +704,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (result.ok && 'state' in result) {
       renderSessionState(result.state);
       await refreshSessionTabScope();
+      await refreshPausedSessionOptions();
       return;
     }
     setConfigStatus(result.ok ? 'Unable to stop session' : result.error, 'error');
@@ -793,6 +934,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       setResetDbStatus(response.message ?? 'Database reset successfully.', 'success');
       await refreshState();
+      await refreshPausedSessionOptions();
       return;
     }
 
@@ -813,6 +955,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   refreshState();
+  refreshPausedSessionOptions();
   refreshConfig();
   refreshRetention();
   startStatePolling();

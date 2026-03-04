@@ -151,6 +151,29 @@ describe('mcp/server V1 query tools', () => {
 
     db.close();
   });
+
+  it('includes paused metadata and status in list_sessions', async () => {
+    const db = createTestDb();
+    const now = Date.now();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, paused_at, safe_mode, url_start, url_last)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `
+    ).run('session-paused', now - 2 * 60_000, now - 30_000, 1, 'https://paused.example', 'https://paused.example');
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'list_sessions', { sinceMinutes: 10 });
+    const session = (response.sessions as Array<{ sessionId: string; pausedAt?: number; status?: string }>)
+      .find((entry) => entry.sessionId === 'session-paused');
+
+    expect(session).toBeDefined();
+    expect(typeof session?.pausedAt).toBe('number');
+    expect(session?.status).toBe('paused');
+
+    db.close();
+  });
   it('returns session summary counts and time range', async () => {
     const db = createTestDb();
 

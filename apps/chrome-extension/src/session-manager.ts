@@ -19,6 +19,7 @@ export interface SessionStartContext {
 
 export interface SessionState {
   isActive: boolean;
+  isPaused: boolean;
   sessionId: string | null;
   baseOrigin?: string;
   allowedTabIds?: number[];
@@ -65,7 +66,7 @@ interface WebSocketLike {
 }
 
 interface OutboundMessage {
-  type: 'session_start' | 'session_end' | 'event';
+  type: 'session_start' | 'session_pause' | 'session_resume' | 'session_end' | 'event';
   timestamp: number;
   sessionId: string;
   url?: string;
@@ -180,6 +181,7 @@ export class SessionManager {
   private ws: WebSocketLike | null = null;
   private buffer: OutboundMessage[] = [];
   private isActive = false;
+  private isPaused = false;
   private sessionId: string | null = null;
   private connectionStatus: ConnectionStatus = 'disconnected';
   private droppedEvents = 0;
@@ -215,14 +217,9 @@ export class SessionManager {
     this.clearReconnectTimer();
     this.sessionId = this.createSessionId();
     this.isActive = true;
+    this.isPaused = false;
     this.activeBaseOrigin = typeof context.baseOrigin === 'string' ? context.baseOrigin : null;
-    this.activeAllowedTabIds = Array.from(
-      new Set(
-        (context.allowedTabIds ?? []).filter(
-          (tabId): tabId is number => typeof tabId === 'number' && Number.isFinite(tabId),
-        ),
-      ),
-    );
+    this.activeAllowedTabIds = this.normalizeAllowedTabIds(context.allowedTabIds);
     this.ensureConnection();
     this.startHeartbeat();
 
@@ -262,9 +259,81 @@ export class SessionManager {
     });
 
     this.isActive = false;
+    this.isPaused = false;
     this.sessionId = null;
     this.activeBaseOrigin = null;
     this.activeAllowedTabIds = [];
+    return this.getState();
+  }
+
+  pauseSession(): SessionState {
+    if (!this.isActive || !this.sessionId || this.isPaused) {
+      return this.getState();
+    }
+
+    this.isPaused = true;
+    this.enqueueMessage({
+      type: 'session_pause',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+    });
+
+    return this.getState();
+  }
+
+  resumeSession(context: SessionStartContext & { sessionId?: string }): SessionState {
+    const requestedSessionId =
+      typeof context.sessionId === 'string' && context.sessionId.trim().length > 0
+        ? context.sessionId.trim()
+        : undefined;
+    const targetSessionId = requestedSessionId ?? this.sessionId;
+
+    if (!targetSessionId) {
+      return this.getState();
+    }
+
+    if (this.isActive && this.sessionId && this.sessionId !== targetSessionId) {
+      return this.getState();
+    }
+
+    if (this.isActive && !this.isPaused && this.sessionId === targetSessionId) {
+      return this.getState();
+    }
+
+    this.manualStopRequested = false;
+    this.reconnectAttempts = 0;
+    this.reconnectEligible = false;
+    this.reconnectStartedAt = null;
+    this.clearReconnectTimer();
+
+    this.sessionId = targetSessionId;
+    this.isActive = true;
+    this.isPaused = false;
+
+    if (context.baseOrigin !== undefined) {
+      this.activeBaseOrigin = context.baseOrigin;
+    }
+    if (Array.isArray(context.allowedTabIds)) {
+      this.activeAllowedTabIds = this.normalizeAllowedTabIds(context.allowedTabIds);
+    }
+
+    this.ensureConnection();
+    this.startHeartbeat();
+
+    this.enqueueMessage({
+      type: 'session_resume',
+      sessionId: targetSessionId,
+      timestamp: this.now(),
+      url: context.url,
+      origin: this.activeBaseOrigin ?? undefined,
+      tabId: context.tabId,
+      windowId: context.windowId,
+      userAgent: context.userAgent,
+      viewport: context.viewport,
+      dpr: context.dpr,
+      safeMode: context.safeMode,
+    });
+
     return this.getState();
   }
 
@@ -273,7 +342,7 @@ export class SessionManager {
     data: Record<string, unknown>,
     metadata?: { tabId?: number; origin?: string }
   ): boolean {
-    if (!this.isActive || !this.sessionId) {
+    if (!this.isActive || this.isPaused || !this.sessionId) {
       return false;
     }
 
@@ -293,6 +362,7 @@ export class SessionManager {
   getState(): SessionState {
     return {
       isActive: this.isActive,
+      isPaused: this.isPaused,
       sessionId: this.sessionId,
       baseOrigin: this.activeBaseOrigin ?? undefined,
       allowedTabIds: this.activeAllowedTabIds.slice(),
@@ -313,13 +383,7 @@ export class SessionManager {
     }
 
     if (Array.isArray(scope.allowedTabIds)) {
-      this.activeAllowedTabIds = Array.from(
-        new Set(
-          scope.allowedTabIds.filter(
-            (tabId): tabId is number => typeof tabId === 'number' && Number.isFinite(tabId),
-          ),
-        ),
-      );
+      this.activeAllowedTabIds = this.normalizeAllowedTabIds(scope.allowedTabIds);
     }
   }
 
@@ -373,6 +437,20 @@ export class SessionManager {
 
     const parsed = this.parseCaptureCommand(data);
     if (!parsed || !this.sessionId || parsed.sessionId !== this.sessionId) {
+      return;
+    }
+
+    if (this.isPaused) {
+      this.ws.send(
+        JSON.stringify({
+          type: 'capture_result',
+          commandId: parsed.commandId,
+          sessionId: parsed.sessionId,
+          ok: false,
+          error: 'Session is paused',
+          timestamp: this.now(),
+        }),
+      );
       return;
     }
 
@@ -623,5 +701,15 @@ export class SessionManager {
 
     clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = null;
+  }
+
+  private normalizeAllowedTabIds(tabIds: number[] | undefined): number[] {
+    return Array.from(
+      new Set(
+        (tabIds ?? []).filter(
+          (tabId): tabId is number => typeof tabId === 'number' && Number.isFinite(tabId),
+        ),
+      ),
+    );
   }
 }

@@ -23,6 +23,8 @@ export const WebSocketMessageTypeSchema = z.enum([
   'event',
   'event_batch',
   'session_start',
+  'session_pause',
+  'session_resume',
   'session_end',
   'capture_command',
   'capture_result',
@@ -92,6 +94,26 @@ export const SessionEndMessageSchema = BaseWebSocketMessageSchema.extend({
   sessionId: z.string(),
 });
 
+export const SessionPauseMessageSchema = BaseWebSocketMessageSchema.extend({
+  type: z.literal('session_pause'),
+  sessionId: z.string(),
+});
+
+export const SessionResumeMessageSchema = BaseWebSocketMessageSchema.extend({
+  type: z.literal('session_resume'),
+  sessionId: z.string(),
+  url: z.string().optional(),
+  tabId: z.number().optional(),
+  windowId: z.number().optional(),
+  userAgent: z.string().optional(),
+  viewport: z.object({
+    width: z.number(),
+    height: z.number(),
+  }).optional(),
+  dpr: z.number().optional(),
+  safeMode: z.boolean().optional(),
+});
+
 export const CaptureCommandMessageSchema = BaseWebSocketMessageSchema.extend({
   type: z.literal('capture_command'),
   commandId: z.string(),
@@ -123,6 +145,8 @@ export const WebSocketMessageSchema = z.discriminatedUnion('type', [
   EventMessageSchema,
   EventBatchMessageSchema,
   SessionStartMessageSchema,
+  SessionPauseMessageSchema,
+  SessionResumeMessageSchema,
   SessionEndMessageSchema,
   CaptureCommandMessageSchema,
   CaptureResultMessageSchema,
@@ -135,6 +159,8 @@ export type PongMessage = z.infer<typeof PongMessageSchema>;
 export type EventMessage = z.infer<typeof EventMessageSchema>;
 export type EventBatchMessage = z.infer<typeof EventBatchMessageSchema>;
 export type SessionStartMessage = z.infer<typeof SessionStartMessageSchema>;
+export type SessionPauseMessage = z.infer<typeof SessionPauseMessageSchema>;
+export type SessionResumeMessage = z.infer<typeof SessionResumeMessageSchema>;
 export type SessionEndMessage = z.infer<typeof SessionEndMessageSchema>;
 export type CaptureCommand = z.infer<typeof CaptureCommandSchema>;
 export type CaptureCommandMessage = z.infer<typeof CaptureCommandMessageSchema>;

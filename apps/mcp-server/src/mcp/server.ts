@@ -383,6 +383,7 @@ const NETWORK_DOMAIN_GROUP_SQL = `
 interface SessionRow {
   session_id: string;
   created_at: number;
+  paused_at: number | null;
   ended_at: number | null;
   tab_id: number | null;
   window_id: number | null;
@@ -1227,6 +1228,7 @@ export function createV1ToolHandlers(
         SELECT
           session_id,
           created_at,
+          paused_at,
           ended_at,
           tab_id,
           window_id,
@@ -1249,7 +1251,9 @@ export function createV1ToolHandlers(
       const sessions = rows.slice(0, limit).map((row) => ({
         sessionId: row.session_id,
         createdAt: row.created_at,
+        pausedAt: row.paused_at ?? undefined,
         endedAt: row.ended_at ?? undefined,
+        status: row.ended_at ? 'ended' : row.paused_at ? 'paused' : 'active',
         tabId: row.tab_id ?? undefined,
         windowId: row.window_id ?? undefined,
         urlStart: row.url_start ?? undefined,

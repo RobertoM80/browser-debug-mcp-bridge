@@ -143,6 +143,58 @@ describe('SessionManager', () => {
     expect(sent.type).toBe('session_end');
   });
 
+  it('pauses and resumes an active session with the same session id', () => {
+    const ws = new MockWebSocket();
+    const manager = new SessionManager({
+      createSessionId: () => 'session-pause',
+      createWebSocket: () => ws,
+      now: () => 1700000000000,
+    });
+
+    manager.startSession({ url: 'https://example.com' });
+    ws.open();
+    ws.sentMessages.length = 0;
+
+    const paused = manager.pauseSession();
+    expect(paused.isActive).toBe(true);
+    expect(paused.isPaused).toBe(true);
+    expect(paused.sessionId).toBe('session-pause');
+    expect(JSON.parse(ws.sentMessages[0])).toMatchObject({ type: 'session_pause', sessionId: 'session-pause' });
+
+    const resumed = manager.resumeSession({
+      url: 'https://example.com/resume',
+    });
+    expect(resumed.isActive).toBe(true);
+    expect(resumed.isPaused).toBe(false);
+    expect(resumed.sessionId).toBe('session-pause');
+    expect(JSON.parse(ws.sentMessages[1])).toMatchObject({ type: 'session_resume', sessionId: 'session-pause' });
+  });
+
+  it('rejects queued events while paused and accepts again after resume', () => {
+    const ws = new MockWebSocket();
+    const manager = new SessionManager({
+      createSessionId: () => 'session-paused-events',
+      createWebSocket: () => ws,
+      now: () => 1700000000000,
+    });
+
+    manager.startSession({ url: 'https://example.com' });
+    ws.open();
+    ws.sentMessages.length = 0;
+
+    manager.pauseSession();
+    const acceptedWhilePaused = manager.queueEvent('console', { level: 'warn' });
+    expect(acceptedWhilePaused).toBe(false);
+
+    manager.resumeSession({ url: 'https://example.com' });
+    const acceptedAfterResume = manager.queueEvent('console', { level: 'info' });
+    expect(acceptedAfterResume).toBe(true);
+
+    const lastSent = JSON.parse(ws.sentMessages[ws.sentMessages.length - 1]) as { type: string; eventType?: string };
+    expect(lastSent.type).toBe('event');
+    expect(lastSent.eventType).toBe('console');
+  });
+
   it('rejects queued events when no active session exists', () => {
     const manager = new SessionManager({
       createWebSocket: () => new MockWebSocket(),
@@ -265,6 +317,43 @@ describe('SessionManager', () => {
     expect(response.payload.selector).toBe('#app');
     expect(response.payload.command).toBe('CAPTURE_UI_SNAPSHOT');
     expect(response.payload.sessionId).toBe('session-5');
+  });
+
+  it('returns capture_result error when capture command arrives while paused', async () => {
+    const ws = new MockWebSocket();
+    const manager = new SessionManager({
+      createSessionId: () => 'session-paused-capture',
+      createWebSocket: () => ws,
+      now: () => 1700000000000,
+      handleCaptureCommand: async () => ({
+        payload: { ok: true },
+      }),
+    });
+
+    manager.startSession({ url: 'https://example.com' });
+    ws.open();
+    manager.pauseSession();
+    ws.sentMessages.length = 0;
+
+    ws.receive(
+      JSON.stringify({
+        type: 'capture_command',
+        commandId: 'cmd-paused',
+        sessionId: 'session-paused-capture',
+        command: 'CAPTURE_DOM_DOCUMENT',
+        payload: {},
+      }),
+    );
+
+    await Promise.resolve();
+
+    expect(ws.sentMessages).toHaveLength(1);
+    expect(JSON.parse(ws.sentMessages[0])).toMatchObject({
+      type: 'capture_result',
+      commandId: 'cmd-paused',
+      ok: false,
+      error: 'Session is paused',
+    });
   });
 
   it('accepts live console log capture commands from server', async () => {

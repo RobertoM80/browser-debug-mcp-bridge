@@ -39,6 +39,8 @@ Important response fields per session:
 - `liveConnection.connected`: `true` only when the extension session is currently reachable for live capture commands
 - `liveConnection.lastHeartbeatAt`: latest websocket heartbeat/message timestamp seen by the server
 - `liveConnection.disconnectReason`: best-known disconnect reason when no longer connected
+- `status`: `active`, `paused`, or `ended`
+- `pausedAt`: pause timestamp when `status` is `paused`
 
 Use this rule for live tools (`get_dom_document`, `capture_ui_snapshot`, etc.):
 
