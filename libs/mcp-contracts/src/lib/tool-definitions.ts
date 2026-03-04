@@ -16,6 +16,8 @@ export const SESSION_TOOLS = {
   GET_RECENT_EVENTS: 'get_recent_events',
   GET_NAVIGATION_HISTORY: 'get_navigation_history',
   GET_CONSOLE_EVENTS: 'get_console_events',
+  GET_CONSOLE_SUMMARY: 'get_console_summary',
+  GET_EVENT_SUMMARY: 'get_event_summary',
 } as const;
 
 export const ERROR_TOOLS = {

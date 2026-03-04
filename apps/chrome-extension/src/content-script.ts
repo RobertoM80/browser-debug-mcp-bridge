@@ -547,6 +547,8 @@ export function executeCaptureCommand(
       payload.styleMode === 'computed-full' && payload.explicitStyleMode === true
         ? 'computed-full'
         : 'computed-lite';
+    const includeDom = payload.includeDom !== false;
+    const includeStyles = payload.includeStyles !== false;
     const maxAncestors = clampMaxAncestors(payload.maxAncestors);
 
     const selectedElement = selector ? win.document.querySelector(selector) : null;
@@ -560,39 +562,42 @@ export function executeCaptureCommand(
 
     const domHtml = target.outerHTML;
     const resolvedSelector = selector || getElementSelector(target);
-    let domSnapshot: Record<string, unknown>;
+    let domSnapshot: Record<string, unknown> | undefined;
     let domTruncated = false;
 
-    if (byteSize(domHtml) <= maxBytes) {
-      domSnapshot = {
-        mode: 'html',
-        html: domHtml,
-        maxBytes,
-      };
-    } else {
-      const outline = buildDomOutline(target, maxDepth);
-      const serialized = serializeWithinLimit(outline, maxBytes);
-      domTruncated = true;
-      domSnapshot = {
-        mode: 'outline',
-        outline: serialized.text,
-        maxDepth,
-        maxBytes,
-        fallbackReason: 'maxBytes',
-      };
+    if (includeDom) {
+      if (byteSize(domHtml) <= maxBytes) {
+        domSnapshot = {
+          mode: 'html',
+          html: domHtml,
+          maxBytes,
+        };
+      } else {
+        const outline = buildDomOutline(target, maxDepth);
+        const serialized = serializeWithinLimit(outline, maxBytes);
+        domTruncated = true;
+        domSnapshot = {
+          mode: 'outline',
+          outline: serialized.text,
+          maxDepth,
+          maxBytes,
+          fallbackReason: 'maxBytes',
+        };
+      }
     }
 
-    const styleSnapshot = captureComputedStyleChain(win, target, styleMode, maxAncestors);
+    const styleSnapshot = includeStyles ? captureComputedStyleChain(win, target, styleMode, maxAncestors) : undefined;
+    const stylesTruncated = includeStyles ? Boolean(styleSnapshot?.truncated) : false;
 
     return {
-      truncated: domTruncated || styleSnapshot.truncated,
+      truncated: (includeDom && domTruncated) || stylesTruncated,
       result: {
         timestamp: Date.now(),
         trigger,
         selector: resolvedSelector,
         url: win.location.href,
         mode: {
-          dom: true,
+          dom: includeDom,
           png: false,
         },
         snapshot: {
@@ -604,8 +609,8 @@ export function executeCaptureCommand(
           containsSensitiveInputs: /<input\b[^>]*(type=("|')?(password|email|tel|number)\2)?[^>]*>/i.test(domHtml),
         },
         truncation: {
-          dom: domTruncated,
-          styles: styleSnapshot.truncated,
+          dom: includeDom ? domTruncated : false,
+          styles: stylesTruncated,
         },
       },
     };

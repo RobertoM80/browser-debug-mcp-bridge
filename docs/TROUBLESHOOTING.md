@@ -61,6 +61,18 @@ What to do:
 - Run `list_sessions` first, then query with the returned `sessionId`
 - For live console investigation, call `get_live_console_logs` with `sessionId` and optional `contains` filter
 
+## MCP context grows too fast during debugging
+
+Use compact/byte-budget options on high-volume tools:
+
+- `responseProfile: "compact"` on `get_recent_events`, `get_navigation_history`, `get_console_events`, `get_live_console_logs`
+- `maxResponseBytes` (default `32768`) to enforce smaller pages
+- `dedupeWindowMs` on `get_live_console_logs` to collapse repeated bursts
+
+For PNG snapshots, prefer metadata-first mode:
+
+- `capture_ui_snapshot` with `mode: "png"` (defaults to `includeDom=false`, `includeStyles=false`, `includePngDataUrl=false`)
+
 ## Tests fail locally
 
 - Run `pnpm install` to ensure dependencies are synced

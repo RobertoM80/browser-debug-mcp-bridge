@@ -238,6 +238,23 @@ function resolveLiveConsoleLimit(value: unknown): number {
   return Math.min(limit, 500);
 }
 
+function resolveLiveConsoleDedupeWindowMs(value: unknown): number {
+  if (value === undefined) {
+    return 0;
+  }
+
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error('dedupeWindowMs must be a finite number');
+  }
+
+  const dedupeWindowMs = Math.floor(value);
+  if (dedupeWindowMs < 0) {
+    throw new Error('dedupeWindowMs must be >= 0');
+  }
+
+  return Math.min(dedupeWindowMs, 60_000);
+}
+
 function resolveLiveConsoleLevels(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -774,6 +791,7 @@ async function executeCaptureCommand(
     const contains = resolveLiveConsoleContains(payload.contains);
     const sinceTs = resolveLiveConsoleSinceTs(payload.sinceTs);
     const includeRuntimeErrors = payload.includeRuntimeErrors !== false;
+    const dedupeWindowMs = resolveLiveConsoleDedupeWindowMs(payload.dedupeWindowMs);
     const queryResult = liveConsoleBufferStore.query(context.sessionId, {
       tabId: requestedTabId,
       origin: requestedOrigin,
@@ -782,6 +800,7 @@ async function executeCaptureCommand(
       sinceTs,
       limit,
       includeRuntimeErrors,
+      dedupeWindowMs,
     });
 
     return {
@@ -799,6 +818,7 @@ async function executeCaptureCommand(
           contains,
           sinceTs,
           includeRuntimeErrors,
+          dedupeWindowMs,
         },
         bufferStats: {
           buffered: queryResult.buffered,
@@ -843,12 +863,17 @@ async function executeCaptureCommand(
     const requestedStyleMode = normalizeSnapshotStyleMode(payload.styleMode, captureConfig.snapshots.styleMode);
     const explicitStyleMode = payload.explicitStyleMode === true;
     const styleMode: SnapshotStyleMode = resolveSnapshotStyleMode(requestedStyleMode, explicitStyleMode);
+    const includeDom = typeof payload.includeDom === 'boolean' ? payload.includeDom : mode !== 'png';
+    const includeStyles = typeof payload.includeStyles === 'boolean' ? payload.includeStyles : mode !== 'png';
+    const includePngDataUrl = typeof payload.includePngDataUrl === 'boolean' ? payload.includePngDataUrl : mode !== 'png';
 
     const contentPayload: Record<string, unknown> = {
       ...payload,
       trigger,
       styleMode,
       explicitStyleMode,
+      includeDom,
+      includeStyles,
     };
 
     const captured = await sendCaptureCommandToTab(tabId, 'CAPTURE_UI_SNAPSHOT', contentPayload);
@@ -864,13 +889,17 @@ async function executeCaptureCommand(
       selector: typeof basePayload.selector === 'string' ? basePayload.selector : null,
       url: typeof basePayload.url === 'string' ? basePayload.url : tab.url ?? '',
       mode: {
-        dom: mode === 'dom' || mode === 'both',
+        dom: includeDom,
         png: shouldCapturePng(mode),
         styleMode,
       },
       truncation: {
-        dom: Boolean((basePayload as { truncation?: { dom?: unknown } }).truncation?.dom),
-        styles: Boolean((basePayload as { truncation?: { styles?: unknown } }).truncation?.styles),
+        dom: includeDom
+          ? Boolean((basePayload as { truncation?: { dom?: unknown } }).truncation?.dom)
+          : false,
+        styles: includeStyles
+          ? Boolean((basePayload as { truncation?: { styles?: unknown } }).truncation?.styles)
+          : false,
         png: false,
       },
     };
@@ -949,8 +978,25 @@ async function executeCaptureCommand(
       tabId,
       origin: normalizeHttpOrigin(snapshotRecord.url),
     });
+
+    const responseSnapshot = structuredClone(redactedSnapshot.record);
+    const responseSnapshotRoot = responseSnapshot.snapshot;
+    if (responseSnapshotRoot && typeof responseSnapshotRoot === 'object') {
+      const snapshotRootRecord = responseSnapshotRoot as Record<string, unknown>;
+      if (!includeDom) {
+        delete snapshotRootRecord.dom;
+      }
+      if (!includeStyles) {
+        delete snapshotRootRecord.styles;
+      }
+    }
+
+    if (!includePngDataUrl && responseSnapshot.png && typeof responseSnapshot.png === 'object') {
+      delete (responseSnapshot.png as Record<string, unknown>).dataUrl;
+    }
+
     return {
-      payload: redactedSnapshot.record,
+      payload: responseSnapshot,
       truncated: truncated || redactedSnapshot.metadata.blockedPng,
     };
   }

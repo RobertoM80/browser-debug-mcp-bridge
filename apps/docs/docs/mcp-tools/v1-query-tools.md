@@ -10,6 +10,8 @@ For `get_recent_events`, `get_navigation_history`, `get_console_events`, `get_ne
 - `url` without `sessionId` searches across sessions.
 - Invalid/non-absolute URLs are rejected. Use full values like `http://localhost:3000`.
 
+High-volume queries support `maxResponseBytes` (default `32768`) and return pagination metadata with `hasMore` and `nextOffset`.
+
 ## `list_sessions`
 
 ```json
@@ -33,11 +35,18 @@ Response guidance:
 ```json
 {
   "name": "get_recent_events",
-  "arguments": { "sessionId": "sess_123", "eventTypes": ["error", "network"], "limit": 50 }
+  "arguments": {
+    "sessionId": "sess_123",
+    "eventTypes": ["error", "network"],
+    "limit": 50,
+    "responseProfile": "compact",
+    "maxResponseBytes": 32768
+  }
 }
 ```
 
 Backward compatibility note: `types` is still accepted as an alias.
+Compact profile note: by default compact rows omit full `payload`; set `includePayload: true` to include it.
 
 URL-only example:
 
@@ -51,7 +60,10 @@ URL-only example:
 ## `get_navigation_history`
 
 ```json
-{ "name": "get_navigation_history", "arguments": { "sessionId": "sess_123", "limit": 25 } }
+{
+  "name": "get_navigation_history",
+  "arguments": { "sessionId": "sess_123", "limit": 25, "responseProfile": "compact", "maxResponseBytes": 32768 }
+}
 ```
 
 ```json
@@ -61,7 +73,10 @@ URL-only example:
 ## `get_console_events`
 
 ```json
-{ "name": "get_console_events", "arguments": { "sessionId": "sess_123", "level": "error", "limit": 25 } }
+{
+  "name": "get_console_events",
+  "arguments": { "sessionId": "sess_123", "level": "error", "limit": 25, "responseProfile": "compact", "maxResponseBytes": 32768 }
+}
 ```
 
 Capture notes:
@@ -70,6 +85,28 @@ Capture notes:
 - Runtime exceptions are available as `error` events (query via `get_recent_events` with `eventTypes: ["error"]`).
 - DevTools UI-only/browser-internal messages are not guaranteed to be present.
 - For server-side substring filtering (for example `"[auth]"`), use `get_live_console_logs`.
+
+## `get_console_summary`
+
+```json
+{
+  "name": "get_console_summary",
+  "arguments": { "sessionId": "sess_123", "sinceMinutes": 60, "limit": 10 }
+}
+```
+
+Returns aggregated console diagnostics: total count, per-level counters, and top repeated messages.
+
+## `get_event_summary`
+
+```json
+{
+  "name": "get_event_summary",
+  "arguments": { "sessionId": "sess_123", "sinceMinutes": 60, "limit": 20 }
+}
+```
+
+Returns aggregate event volume and grouped type distribution.
 
 ```json
 {

@@ -5,6 +5,12 @@ All tool responses include:
 - `sessionId`
 - `limitsApplied`
 - `redactionSummary`
+- `responseBytes` (serialized byte size estimate for observability)
+
+High-volume query tools also support:
+
+- `maxResponseBytes` input (soft byte budget, default `32768`)
+- pagination metadata with `hasMore` and `nextOffset`
 
 ## Session scope and URL filtering
 
@@ -61,11 +67,18 @@ Returns event stream entries with optional type filtering.
 ```json
 {
   "name": "get_recent_events",
-  "arguments": { "sessionId": "sess_123", "eventTypes": ["error", "network"], "limit": 50 }
+  "arguments": {
+    "sessionId": "sess_123",
+    "eventTypes": ["error", "network"],
+    "limit": 50,
+    "responseProfile": "compact",
+    "maxResponseBytes": 32768
+  }
 }
 ```
 
 Backward compatibility note: `types` is still accepted as an alias.
+Compact note: `payload` is omitted by default; set `includePayload: true` to include full payload rows.
 
 ### get_navigation_history
 
@@ -80,7 +93,16 @@ Returns recent navigation events.
 Returns console events filtered by level.
 
 ```json
-{ "name": "get_console_events", "arguments": { "sessionId": "sess_123", "level": "error", "limit": 25 } }
+{
+  "name": "get_console_events",
+  "arguments": {
+    "sessionId": "sess_123",
+    "level": "error",
+    "limit": 25,
+    "responseProfile": "compact",
+    "maxResponseBytes": 32768
+  }
+}
 ```
 
 Current capture source:
@@ -88,6 +110,22 @@ Current capture source:
 - captures page JavaScript console calls (`console.log`, `console.info`, `console.warn`, `console.error`, `console.debug`, `console.trace`)
 - captures runtime JS errors via `window.onerror`/`unhandledrejection` as `error` events
 - does not mirror every DevTools UI-only/browser-internal console row
+
+### get_console_summary
+
+Returns aggregated console diagnostics: total/level counters plus top repeated messages.
+
+```json
+{ "name": "get_console_summary", "arguments": { "sessionId": "sess_123", "sinceMinutes": 60, "limit": 10 } }
+```
+
+### get_event_summary
+
+Returns aggregated event diagnostics: total count and type distribution.
+
+```json
+{ "name": "get_event_summary", "arguments": { "sessionId": "sess_123", "sinceMinutes": 60, "limit": 20 } }
+```
 
 ### get_error_fingerprints
 
@@ -236,6 +274,9 @@ Filters:
 
 - required: `sessionId`
 - optional: `url` (origin), `tabId`, `levels`, `contains`, `sinceTs`, `limit`
+- optional: `dedupeWindowMs` to collapse repeated bursts
+- optional: `responseProfile: "compact"` for minimal rows (`timestamp`, `level`, `message`)
+- optional: `includeArgs` (compact mode only), `maxResponseBytes`
 
 ```json
 {
@@ -245,10 +286,23 @@ Filters:
     "url": "http://localhost:3000",
     "levels": ["info", "error"],
     "contains": "[auth]",
+    "dedupeWindowMs": 1000,
+    "responseProfile": "compact",
+    "maxResponseBytes": 32768,
     "limit": 100
   }
 }
 ```
+
+### capture_ui_snapshot (PNG metadata-first defaults)
+
+When `mode: "png"` is used, defaults are metadata-first:
+
+- `includeDom: false`
+- `includeStyles: false`
+- `includePngDataUrl: false`
+
+Override these only when full payloads are explicitly needed.
 
 ### Live capture disconnection behavior
 

@@ -7,6 +7,8 @@ export const ListSessionsSchema = z.object({
     .describe('Maximum number of results to return'),
   offset: z.number().int().min(0).optional()
     .describe('Pagination offset for result set'),
+  maxResponseBytes: z.number().int().min(1024).max(524288).optional()
+    .describe('Soft byte budget for returned rows before truncation'),
 });
 
 export const GetSessionSummarySchema = z.object({
@@ -14,33 +16,86 @@ export const GetSessionSummarySchema = z.object({
 });
 
 export const GetRecentEventsSchema = z.object({
-  sessionId: z.string().describe('Unique session identifier'),
+  sessionId: z.string().optional().describe('Unique session identifier'),
+  url: z.string().optional().describe('Optional absolute URL; normalized to origin filter'),
   eventTypes: z.array(
     z.enum(['navigation', 'console', 'error', 'network', 'click', 'scroll', 'input', 'change', 'submit', 'focus', 'blur', 'keydown'])
   ).optional()
     .describe('Filter by event types'),
+  types: z.array(
+    z.enum(['navigation', 'console', 'error', 'network', 'click', 'scroll', 'input', 'change', 'submit', 'focus', 'blur', 'keydown'])
+  ).optional()
+    .describe('Legacy alias for eventTypes'),
   limit: z.number().int().min(1).max(1000).default(100)
     .describe('Maximum number of events to return'),
   offset: z.number().int().min(0).optional()
     .describe('Pagination offset for result set'),
+  responseProfile: z.enum(['legacy', 'compact']).optional()
+    .describe('Response shape profile; compact omits large payloads by default'),
+  includePayload: z.boolean().optional()
+    .describe('When using compact profile, include full payload for each event'),
+  maxResponseBytes: z.number().int().min(1024).max(524288).optional()
+    .describe('Soft byte budget for returned event rows before truncation'),
 });
 
 export const GetNavigationHistorySchema = z.object({
-  sessionId: z.string().describe('Unique session identifier'),
+  sessionId: z.string().optional().describe('Unique session identifier'),
+  url: z.string().optional().describe('Optional absolute URL; normalized to origin filter'),
   limit: z.number().int().min(1).max(200).optional()
     .describe('Maximum number of navigation events to return'),
   offset: z.number().int().min(0).optional()
     .describe('Pagination offset for result set'),
+  responseProfile: z.enum(['legacy', 'compact']).optional()
+    .describe('Response shape profile; compact omits large payloads by default'),
+  includePayload: z.boolean().optional()
+    .describe('When using compact profile, include full payload for each event'),
+  maxResponseBytes: z.number().int().min(1024).max(524288).optional()
+    .describe('Soft byte budget for returned rows before truncation'),
 });
 
 export const GetConsoleEventsSchema = z.object({
-  sessionId: z.string().describe('Unique session identifier'),
+  sessionId: z.string().optional().describe('Unique session identifier'),
+  url: z.string().optional().describe('Optional absolute URL; normalized to origin filter'),
   level: z.enum(['log', 'info', 'warn', 'error', 'debug', 'trace']).optional()
     .describe('Filter by console level'),
   limit: z.number().int().min(1).max(200).optional()
     .describe('Maximum number of console events to return'),
   offset: z.number().int().min(0).optional()
     .describe('Pagination offset for result set'),
+  responseProfile: z.enum(['legacy', 'compact']).optional()
+    .describe('Response shape profile; compact omits large payloads by default'),
+  includePayload: z.boolean().optional()
+    .describe('When using compact profile, include full payload for each event'),
+  maxResponseBytes: z.number().int().min(1024).max(524288).optional()
+    .describe('Soft byte budget for returned rows before truncation'),
+});
+
+export const GetConsoleSummarySchema = z.object({
+  sessionId: z.string().optional().describe('Optional session filter'),
+  url: z.string().optional().describe('Optional absolute URL; normalized to origin filter'),
+  level: z.enum(['log', 'info', 'warn', 'error', 'debug', 'trace']).optional()
+    .describe('Filter by console level'),
+  sinceMinutes: z.number().int().min(1).max(10080).optional()
+    .describe('Only include console rows newer than N minutes'),
+  limit: z.number().int().min(1).max(200).optional()
+    .describe('Maximum number of top repeated messages to return'),
+});
+
+export const GetEventSummarySchema = z.object({
+  sessionId: z.string().optional().describe('Optional session filter'),
+  url: z.string().optional().describe('Optional absolute URL; normalized to origin filter'),
+  eventTypes: z.array(
+    z.enum(['navigation', 'console', 'error', 'network', 'click', 'scroll', 'input', 'change', 'submit', 'focus', 'blur', 'keydown'])
+  ).optional()
+    .describe('Filter summary by event types'),
+  types: z.array(
+    z.enum(['navigation', 'console', 'error', 'network', 'click', 'scroll', 'input', 'change', 'submit', 'focus', 'blur', 'keydown'])
+  ).optional()
+    .describe('Legacy alias for eventTypes'),
+  sinceMinutes: z.number().int().min(1).max(10080).optional()
+    .describe('Only include events newer than N minutes'),
+  limit: z.number().int().min(1).max(200).optional()
+    .describe('Maximum number of grouped event types to return'),
 });
 
 export const GetErrorFingerprintsSchema = z.object({
@@ -51,6 +106,8 @@ export const GetErrorFingerprintsSchema = z.object({
     .describe('Maximum number of fingerprints to return'),
   offset: z.number().int().min(0).optional()
     .describe('Pagination offset for result set'),
+  maxResponseBytes: z.number().int().min(1024).max(524288).optional()
+    .describe('Soft byte budget for returned rows before truncation'),
 });
 
 export const GetNetworkFailuresSchema = z.object({
@@ -63,6 +120,8 @@ export const GetNetworkFailuresSchema = z.object({
     .describe('Maximum number of failures/groups to return'),
   offset: z.number().int().min(0).optional()
     .describe('Pagination offset for result set'),
+  maxResponseBytes: z.number().int().min(1024).max(524288).optional()
+    .describe('Soft byte budget for returned rows before truncation'),
 });
 
 export const GetNetworkCallsSchema = z.object({
@@ -87,6 +146,8 @@ export const GetNetworkCallsSchema = z.object({
     .describe('Maximum number of calls to return'),
   offset: z.number().int().min(0).optional()
     .describe('Pagination offset'),
+  maxResponseBytes: z.number().int().min(1024).max(524288).optional()
+    .describe('Soft byte budget for returned rows before truncation'),
 });
 
 export const WaitForNetworkCallSchema = z.object({
@@ -123,6 +184,8 @@ export const GetElementRefsSchema = z.object({
     .describe('Maximum number of matching element refs to return'),
   offset: z.number().int().min(0).optional()
     .describe('Pagination offset for result set'),
+  maxResponseBytes: z.number().int().min(1024).max(524288).optional()
+    .describe('Soft byte budget for returned rows before truncation'),
 });
 
 export const GetDOMSubtreeSchema = z.object({
@@ -169,6 +232,12 @@ export const CaptureUISnapshotSchema = z.object({
     .describe('Maximum bytes for DOM/style payload sections'),
   maxAncestors: z.number().int().min(0).max(8).optional()
     .describe('Maximum ancestor chain length for computed style capture'),
+  includeDom: z.boolean().optional()
+    .describe('Include captured DOM section in response payload'),
+  includeStyles: z.boolean().optional()
+    .describe('Include captured computed styles section in response payload'),
+  includePngDataUrl: z.boolean().optional()
+    .describe('Include inline PNG dataUrl in response payload when PNG is captured'),
 });
 
 export const GetLiveConsoleLogsSchema = z.object({
@@ -185,8 +254,16 @@ export const GetLiveConsoleLogsSchema = z.object({
     .describe('Optional timestamp lower bound (ms epoch)'),
   includeRuntimeErrors: z.boolean().optional()
     .describe('Include runtime error events in the live stream (default true)'),
+  dedupeWindowMs: z.number().int().min(0).max(60000).optional()
+    .describe('Collapse repeated identical logs within this time window'),
   limit: z.number().int().min(1).max(200).optional()
     .describe('Maximum number of live logs to return'),
+  responseProfile: z.enum(['legacy', 'compact']).optional()
+    .describe('Response shape profile; compact returns minimal fields'),
+  includeArgs: z.boolean().optional()
+    .describe('When using compact profile, include original console args arrays'),
+  maxResponseBytes: z.number().int().min(1024).max(524288).optional()
+    .describe('Soft byte budget for returned log rows before truncation'),
 });
 
 export const ExplainLastFailureSchema = z.object({
@@ -214,6 +291,8 @@ export const ListSnapshotsSchema = z.object({
     .describe('Maximum number of snapshots to return'),
   offset: z.number().int().min(0).optional()
     .describe('Pagination offset for result set'),
+  maxResponseBytes: z.number().int().min(1024).max(524288).optional()
+    .describe('Soft byte budget for returned rows before truncation'),
 });
 
 export const GetSnapshotForEventSchema = z.object({
@@ -232,6 +311,6 @@ export const GetSnapshotAssetSchema = z.object({
     .describe('Starting byte offset for chunked retrieval'),
   maxBytes: z.number().int().min(1).max(262144).default(65536)
     .describe('Maximum chunk size to return in bytes'),
-  encoding: z.enum(['raw', 'base64']).default('raw')
+  encoding: z.enum(['raw', 'base64']).default('base64')
     .describe('Chunk encoding mode'),
 });

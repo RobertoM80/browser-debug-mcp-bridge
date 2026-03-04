@@ -44,15 +44,31 @@ Reads session-scoped live console logs from extension memory (non-persistent).
     "url": "http://localhost:3000",
     "levels": ["info", "error"],
     "contains": "[auth]",
+    "dedupeWindowMs": 1000,
+    "responseProfile": "compact",
+    "maxResponseBytes": 32768,
     "sinceTs": 1730200000000,
     "limit": 100
   }
 }
 ```
 
+Compact profile returns minimal rows (`timestamp`, `level`, `message`) and supports optional `includeArgs`.
+
+## `capture_ui_snapshot`
+
+`mode: "png"` now defaults to metadata-first responses:
+
+- `includeDom: false`
+- `includeStyles: false`
+- `includePngDataUrl: false`
+
+Use those flags to opt in to heavier payload sections when needed.
+
 ## Limits and fallback
 
 - `maxBytes` and depth caps are always enforced.
+- `maxResponseBytes` is available for high-volume live log reads.
 - Timeout fallback may return outline-style output instead of full HTML.
 - Redaction still applies before response is returned.
 - Live console logs are bounded by in-memory ring buffer size and `limit`.

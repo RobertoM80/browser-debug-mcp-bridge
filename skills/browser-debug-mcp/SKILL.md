@@ -62,6 +62,8 @@ If Nx daemon/worker is unstable in the environment:
 - Query tools support optional origin filtering (`url` normalized to origin).
 - Live console triage should use `get_live_console_logs` (non-persistent in-memory buffer).
 - Persisted console history remains available via `get_console_events`.
+- Prefer `responseProfile: "compact"` + `maxResponseBytes` on high-volume tools to control MCP context growth.
+- Use `get_console_summary` / `get_event_summary` first for fast triage before opening raw timelines.
 
 ### `get_live_console_logs` usage
 
@@ -77,6 +79,10 @@ Optional filters:
 - `contains` (case-insensitive substring)
 - `sinceTs`
 - `limit`
+- `dedupeWindowMs` (collapse repetitive bursts)
+- `responseProfile` (`legacy` or `compact`)
+- `includeArgs` (compact mode only)
+- `maxResponseBytes`
 
 Example:
 
@@ -88,10 +94,21 @@ Example:
     "url": "http://localhost:3000",
     "levels": ["info", "error"],
     "contains": "[auth]",
+    "dedupeWindowMs": 1000,
+    "responseProfile": "compact",
+    "maxResponseBytes": 32768,
     "limit": 100
   }
 }
 ```
+
+### `capture_ui_snapshot` guidance
+
+- For PNG-only workflows, use `mode: "png"` and keep metadata-first defaults:
+  - `includeDom: false`
+  - `includeStyles: false`
+  - `includePngDataUrl: false`
+- Enable those flags only when full payload sections are explicitly required.
 
 ## Completion Checklist
 

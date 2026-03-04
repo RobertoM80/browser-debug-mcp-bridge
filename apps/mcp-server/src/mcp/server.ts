@@ -86,6 +86,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       sinceMinutes: { type: 'number' },
       limit: { type: 'number' },
       offset: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
     },
   },
   get_session_summary: {
@@ -103,6 +104,9 @@ const TOOL_SCHEMAS: Record<string, object> = {
       eventTypes: { type: 'array', items: { type: 'string' } },
       limit: { type: 'number' },
       offset: { type: 'number' },
+      responseProfile: { type: 'string' },
+      includePayload: { type: 'boolean' },
+      maxResponseBytes: { type: 'number' },
     },
   },
   get_navigation_history: {
@@ -112,6 +116,9 @@ const TOOL_SCHEMAS: Record<string, object> = {
       url: { type: 'string' },
       limit: { type: 'number' },
       offset: { type: 'number' },
+      responseProfile: { type: 'string' },
+      includePayload: { type: 'boolean' },
+      maxResponseBytes: { type: 'number' },
     },
   },
   get_console_events: {
@@ -122,6 +129,29 @@ const TOOL_SCHEMAS: Record<string, object> = {
       level: { type: 'string' },
       limit: { type: 'number' },
       offset: { type: 'number' },
+      responseProfile: { type: 'string' },
+      includePayload: { type: 'boolean' },
+      maxResponseBytes: { type: 'number' },
+    },
+  },
+  get_console_summary: {
+    type: 'object',
+    properties: {
+      sessionId: { type: 'string' },
+      url: { type: 'string' },
+      level: { type: 'string' },
+      sinceMinutes: { type: 'number' },
+      limit: { type: 'number' },
+    },
+  },
+  get_event_summary: {
+    type: 'object',
+    properties: {
+      sessionId: { type: 'string' },
+      url: { type: 'string' },
+      eventTypes: { type: 'array', items: { type: 'string' } },
+      sinceMinutes: { type: 'number' },
+      limit: { type: 'number' },
     },
   },
   get_error_fingerprints: {
@@ -131,6 +161,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       sinceMinutes: { type: 'number' },
       limit: { type: 'number' },
       offset: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
     },
   },
   get_network_failures: {
@@ -142,6 +173,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       groupBy: { type: 'string' },
       limit: { type: 'number' },
       offset: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
     },
   },
   get_network_calls: {
@@ -159,6 +191,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       includeBodies: { type: 'boolean' },
       limit: { type: 'number' },
       offset: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
     },
   },
   wait_for_network_call: {
@@ -200,6 +233,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       selector: { type: 'string' },
       limit: { type: 'number' },
       offset: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
     },
   },
   get_dom_subtree: {
@@ -249,6 +283,9 @@ const TOOL_SCHEMAS: Record<string, object> = {
       maxDepth: { type: 'number' },
       maxBytes: { type: 'number' },
       maxAncestors: { type: 'number' },
+      includeDom: { type: 'boolean' },
+      includeStyles: { type: 'boolean' },
+      includePngDataUrl: { type: 'boolean' },
     },
   },
   get_live_console_logs: {
@@ -262,7 +299,11 @@ const TOOL_SCHEMAS: Record<string, object> = {
       contains: { type: 'string' },
       sinceTs: { type: 'number' },
       includeRuntimeErrors: { type: 'boolean' },
+      dedupeWindowMs: { type: 'number' },
       limit: { type: 'number' },
+      responseProfile: { type: 'string' },
+      includeArgs: { type: 'boolean' },
+      maxResponseBytes: { type: 'number' },
     },
   },
   explain_last_failure: {
@@ -292,6 +333,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       untilTimestamp: { type: 'number' },
       limit: { type: 'number' },
       offset: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
     },
   },
   get_snapshot_for_event: {
@@ -323,6 +365,8 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_recent_events: 'Read recent events from a session',
   get_navigation_history: 'Read navigation events for a session',
   get_console_events: 'Read console events for a session',
+  get_console_summary: 'Summarize console volume and top repeated messages',
+  get_event_summary: 'Summarize event volume and type distribution',
   get_error_fingerprints: 'List aggregated error fingerprints',
   get_network_failures: 'List network failures and groupings',
   get_network_calls: 'Query network calls with targeted filters and optional sanitized bodies',
@@ -354,6 +398,8 @@ const DEFAULT_REDACTION_SUMMARY: RedactionSummary = {
 const DEFAULT_LIST_LIMIT = 25;
 const DEFAULT_EVENT_LIMIT = 50;
 const MAX_LIMIT = 200;
+const DEFAULT_MAX_RESPONSE_BYTES = 32 * 1024;
+const MAX_RESPONSE_BYTES = 512 * 1024;
 const DEFAULT_SNAPSHOT_ASSET_CHUNK_BYTES = 64 * 1024;
 const MAX_SNAPSHOT_ASSET_CHUNK_BYTES = 256 * 1024;
 const DEFAULT_BODY_CHUNK_BYTES = 64 * 1024;
@@ -511,6 +557,14 @@ interface CorrelationCandidate {
   deltaMs: number;
 }
 
+type ResponseProfile = 'legacy' | 'compact';
+
+interface ByteBudgetResult<T> {
+  items: T[];
+  responseBytes: number;
+  truncatedByBytes: boolean;
+}
+
 export interface CaptureClientResult {
   ok: boolean;
   payload?: Record<string, unknown>;
@@ -567,6 +621,80 @@ function resolveOffset(value: unknown): number {
 
   const floored = Math.floor(value);
   return floored < 0 ? 0 : floored;
+}
+
+function resolveResponseProfile(value: unknown): ResponseProfile {
+  return value === 'compact' ? 'compact' : 'legacy';
+}
+
+function resolveMaxResponseBytes(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_MAX_RESPONSE_BYTES;
+  }
+
+  const floored = Math.floor(value);
+  if (floored < 1_024) {
+    return DEFAULT_MAX_RESPONSE_BYTES;
+  }
+
+  return Math.min(floored, MAX_RESPONSE_BYTES);
+}
+
+function estimateJsonBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), 'utf-8');
+}
+
+function applyByteBudget<T>(items: T[], maxResponseBytes: number): ByteBudgetResult<T> {
+  if (items.length === 0) {
+    return {
+      items: [],
+      responseBytes: 2, // []
+      truncatedByBytes: false,
+    };
+  }
+
+  const selected: T[] = [];
+  let usedBytes = 2; // []
+  let truncatedByBytes = false;
+
+  for (const item of items) {
+    const itemBytes = estimateJsonBytes(item);
+    const separatorBytes = selected.length > 0 ? 1 : 0; // comma
+    const nextBytes = usedBytes + separatorBytes + itemBytes;
+
+    if (nextBytes > maxResponseBytes && selected.length > 0) {
+      truncatedByBytes = true;
+      break;
+    }
+
+    selected.push(item);
+    usedBytes = nextBytes;
+  }
+
+  if (!truncatedByBytes && selected.length < items.length) {
+    truncatedByBytes = true;
+  }
+
+  return {
+    items: selected,
+    responseBytes: usedBytes,
+    truncatedByBytes,
+  };
+}
+
+function buildOffsetPagination(
+  offset: number,
+  returned: number,
+  hasMore: boolean,
+  maxResponseBytes: number,
+): Record<string, unknown> {
+  return {
+    offset,
+    returned,
+    hasMore,
+    nextOffset: hasMore ? offset + returned : null,
+    maxResponseBytes,
+  };
 }
 
 function readJsonPayload(payloadJson: string): Record<string, unknown> {
@@ -691,8 +819,38 @@ function resolveLastUrl(payload: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
-function mapEventRecord(row: EventRow): Record<string, unknown> {
+function mapEventRecord(
+  row: EventRow,
+  profile: ResponseProfile = 'legacy',
+  options: { includePayload?: boolean } = {},
+): Record<string, unknown> {
   const payload = readJsonPayload(row.payload_json);
+
+  if (profile === 'compact') {
+    const compact: Record<string, unknown> = {
+      eventId: row.event_id,
+      sessionId: row.session_id,
+      timestamp: row.ts,
+      type: row.type,
+      summary: describeEvent(row.type, payload),
+    };
+
+    if (row.type === 'console') {
+      compact.level = typeof payload.level === 'string' ? payload.level : undefined;
+      compact.message = typeof payload.message === 'string' ? payload.message : undefined;
+    }
+
+    if (row.type === 'nav') {
+      compact.url = resolveLastUrl(payload);
+    }
+
+    if (options.includePayload === true) {
+      compact.payload = payload;
+    }
+
+    return compact;
+  }
+
   return {
     eventId: row.event_id,
     sessionId: row.session_id,
@@ -1133,6 +1291,51 @@ function resolveLiveConsoleLevels(value: unknown): string[] {
   return Array.from(new Set(levels));
 }
 
+function asRecordArray(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value.filter((entry): entry is Record<string, unknown> => typeof entry === 'object' && entry !== null);
+}
+
+function mapLiveConsoleLogRecord(
+  log: Record<string, unknown>,
+  profile: ResponseProfile,
+  options: { includeArgs?: boolean } = {},
+): Record<string, unknown> {
+  if (profile === 'compact') {
+    const compact: Record<string, unknown> = {
+      timestamp:
+        typeof log.timestamp === 'number'
+          ? log.timestamp
+          : typeof log.ts === 'number'
+            ? log.ts
+            : undefined,
+      level: typeof log.level === 'string' ? log.level : undefined,
+      message: typeof log.message === 'string' ? log.message : '',
+    };
+
+    if (typeof log.count === 'number') {
+      compact.count = log.count;
+    }
+    if (typeof log.firstTimestamp === 'number') {
+      compact.firstTimestamp = log.firstTimestamp;
+    }
+    if (typeof log.lastTimestamp === 'number') {
+      compact.lastTimestamp = log.lastTimestamp;
+    }
+
+    if (options.includeArgs === true && Array.isArray(log.args)) {
+      compact.args = log.args;
+    }
+
+    return compact;
+  }
+
+  return log;
+}
+
 function resolveOptionalTabId(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') {
     return undefined;
@@ -1214,6 +1417,7 @@ export function createV1ToolHandlers(
       const sinceMinutes = typeof input.sinceMinutes === 'number' ? input.sinceMinutes : undefined;
       const limit = resolveLimit(input.limit, DEFAULT_LIST_LIMIT);
       const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
 
       const where: string[] = [];
       const params: unknown[] = [];
@@ -1247,7 +1451,7 @@ export function createV1ToolHandlers(
       `;
 
       const rows = db.prepare(sql).all(...params, limit + 1, offset) as SessionRow[];
-      const truncated = rows.length > limit;
+      const truncatedByLimit = rows.length > limit;
       const sessions = rows.slice(0, limit).map((row) => ({
         sessionId: row.session_id,
         createdAt: row.created_at,
@@ -1288,6 +1492,8 @@ export function createV1ToolHandlers(
           };
         })(),
       }));
+      const bytePage = applyByteBudget(sessions, maxResponseBytes);
+      const truncated = truncatedByLimit || bytePage.truncatedByBytes;
 
       return {
         ...createBaseResponse(),
@@ -1295,11 +1501,9 @@ export function createV1ToolHandlers(
           maxResults: limit,
           truncated,
         },
-        pagination: {
-          offset,
-          returned: sessions.length,
-        },
-        sessions,
+        pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+        responseBytes: bytePage.responseBytes,
+        sessions: bytePage.items,
       };
     },
 
@@ -1390,6 +1594,9 @@ export function createV1ToolHandlers(
 
       const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
       const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
+      const responseProfile = resolveResponseProfile(input.responseProfile);
+      const includePayload = responseProfile === 'compact' && input.includePayload === true;
       const requestedTypes = parseRequestedTypes(input.types ?? input.eventTypes);
 
       const params: unknown[] = [];
@@ -1415,7 +1622,12 @@ export function createV1ToolHandlers(
       `)
         .all(...params, limit + 1, offset) as EventRow[];
 
-      const truncated = rows.length > limit;
+      const truncatedByLimit = rows.length > limit;
+      const events = rows
+        .slice(0, limit)
+        .map((row) => mapEventRecord(row, responseProfile, { includePayload }));
+      const bytePage = applyByteBudget(events, maxResponseBytes);
+      const truncated = truncatedByLimit || bytePage.truncatedByBytes;
 
       return {
         ...createBaseResponse(sessionId),
@@ -1423,11 +1635,10 @@ export function createV1ToolHandlers(
           maxResults: limit,
           truncated,
         },
-        pagination: {
-          offset,
-          returned: Math.min(rows.length, limit),
-        },
-        events: rows.slice(0, limit).map((row) => mapEventRecord(row)),
+        pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+        responseProfile,
+        responseBytes: bytePage.responseBytes,
+        events: bytePage.items,
       };
     },
 
@@ -1439,6 +1650,9 @@ export function createV1ToolHandlers(
 
       const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
       const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
+      const responseProfile = resolveResponseProfile(input.responseProfile);
+      const includePayload = responseProfile === 'compact' && input.includePayload === true;
       const params: unknown[] = [];
       const where: string[] = ["type = 'nav'"];
       if (sessionId) {
@@ -1456,7 +1670,12 @@ export function createV1ToolHandlers(
       `)
         .all(...params, limit + 1, offset) as EventRow[];
 
-      const truncated = rows.length > limit;
+      const truncatedByLimit = rows.length > limit;
+      const events = rows
+        .slice(0, limit)
+        .map((row) => mapEventRecord(row, responseProfile, { includePayload }));
+      const bytePage = applyByteBudget(events, maxResponseBytes);
+      const truncated = truncatedByLimit || bytePage.truncatedByBytes;
 
       return {
         ...createBaseResponse(sessionId),
@@ -1464,11 +1683,10 @@ export function createV1ToolHandlers(
           maxResults: limit,
           truncated,
         },
-        pagination: {
-          offset,
-          returned: Math.min(rows.length, limit),
-        },
-        events: rows.slice(0, limit).map((row) => mapEventRecord(row)),
+        pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+        responseProfile,
+        responseBytes: bytePage.responseBytes,
+        events: bytePage.items,
       };
     },
 
@@ -1481,6 +1699,9 @@ export function createV1ToolHandlers(
       const level = typeof input.level === 'string' ? input.level : undefined;
       const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
       const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
+      const responseProfile = resolveResponseProfile(input.responseProfile);
+      const includePayload = responseProfile === 'compact' && input.includePayload === true;
       const params: unknown[] = [];
       const where: string[] = ["type = 'console'"];
       if (sessionId) {
@@ -1504,7 +1725,12 @@ export function createV1ToolHandlers(
       `)
         .all(...params, limit + 1, offset) as EventRow[];
 
-      const truncated = rows.length > limit;
+      const truncatedByLimit = rows.length > limit;
+      const events = rows
+        .slice(0, limit)
+        .map((row) => mapEventRecord(row, responseProfile, { includePayload }));
+      const bytePage = applyByteBudget(events, maxResponseBytes);
+      const truncated = truncatedByLimit || bytePage.truncatedByBytes;
 
       return {
         ...createBaseResponse(sessionId),
@@ -1512,11 +1738,201 @@ export function createV1ToolHandlers(
           maxResults: limit,
           truncated,
         },
-        pagination: {
-          offset,
-          returned: Math.min(rows.length, limit),
+        pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+        responseProfile,
+        responseBytes: bytePage.responseBytes,
+        events: bytePage.items,
+      };
+    },
+
+    get_console_summary: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      const origin = normalizeRequestedOrigin(input.url);
+      ensureSessionOrOriginFilter(sessionId, origin);
+      const level = typeof input.level === 'string' && input.level.length > 0 ? input.level : undefined;
+      const sinceMinutes = typeof input.sinceMinutes === 'number' && Number.isFinite(input.sinceMinutes)
+        ? Math.floor(input.sinceMinutes)
+        : undefined;
+      const limit = resolveLimit(input.limit, 10);
+
+      const where: string[] = ["type = 'console'"];
+      const params: unknown[] = [];
+      if (sessionId) {
+        where.push('session_id = ?');
+        params.push(sessionId);
+      }
+      appendEventOriginFilter(where, params, origin);
+      if (level) {
+        where.push("json_extract(payload_json, '$.level') = ?");
+        params.push(level);
+      }
+      if (sinceMinutes !== undefined && sinceMinutes > 0) {
+        where.push('ts >= ?');
+        params.push(Date.now() - sinceMinutes * 60_000);
+      }
+      const whereClause = `WHERE ${where.join(' AND ')}`;
+
+      const totals = db
+        .prepare(
+          `
+          SELECT
+            COUNT(*) AS total,
+            SUM(CASE WHEN json_extract(payload_json, '$.level') = 'log' THEN 1 ELSE 0 END) AS log_count,
+            SUM(CASE WHEN json_extract(payload_json, '$.level') = 'info' THEN 1 ELSE 0 END) AS info_count,
+            SUM(CASE WHEN json_extract(payload_json, '$.level') = 'warn' THEN 1 ELSE 0 END) AS warn_count,
+            SUM(CASE WHEN json_extract(payload_json, '$.level') = 'error' THEN 1 ELSE 0 END) AS error_count,
+            SUM(CASE WHEN json_extract(payload_json, '$.level') = 'debug' THEN 1 ELSE 0 END) AS debug_count,
+            SUM(CASE WHEN json_extract(payload_json, '$.level') = 'trace' THEN 1 ELSE 0 END) AS trace_count,
+            MIN(ts) AS first_ts,
+            MAX(ts) AS last_ts
+          FROM events
+          ${whereClause}
+        `,
+        )
+        .get(...params) as {
+        total: number;
+        log_count: number | null;
+        info_count: number | null;
+        warn_count: number | null;
+        error_count: number | null;
+        debug_count: number | null;
+        trace_count: number | null;
+        first_ts: number | null;
+        last_ts: number | null;
+      };
+
+      const topMessages = db
+        .prepare(
+          `
+          SELECT
+            COALESCE(json_extract(payload_json, '$.message'), 'console event') AS message,
+            COALESCE(json_extract(payload_json, '$.level'), 'log') AS level,
+            COUNT(*) AS count,
+            MIN(ts) AS first_ts,
+            MAX(ts) AS last_ts
+          FROM events
+          ${whereClause}
+          GROUP BY message, level
+          ORDER BY count DESC, last_ts DESC
+          LIMIT ?
+        `,
+        )
+        .all(...params, limit) as Array<{
+        message: string;
+        level: string;
+        count: number;
+        first_ts: number;
+        last_ts: number;
+      }>;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: limit,
+          truncated: false,
         },
-        events: rows.slice(0, limit).map((row) => mapEventRecord(row)),
+        counts: {
+          total: totals.total ?? 0,
+          byLevel: {
+            log: totals.log_count ?? 0,
+            info: totals.info_count ?? 0,
+            warn: totals.warn_count ?? 0,
+            error: totals.error_count ?? 0,
+            debug: totals.debug_count ?? 0,
+            trace: totals.trace_count ?? 0,
+          },
+        },
+        firstSeenAt: totals.first_ts ?? undefined,
+        lastSeenAt: totals.last_ts ?? undefined,
+        topMessages: topMessages.map((entry) => ({
+          level: entry.level,
+          message: entry.message,
+          count: entry.count,
+          firstSeenAt: entry.first_ts,
+          lastSeenAt: entry.last_ts,
+        })),
+      };
+    },
+
+    get_event_summary: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      const origin = normalizeRequestedOrigin(input.url);
+      ensureSessionOrOriginFilter(sessionId, origin);
+      const requestedTypes = parseRequestedTypes(input.types ?? input.eventTypes);
+      const sinceMinutes = typeof input.sinceMinutes === 'number' && Number.isFinite(input.sinceMinutes)
+        ? Math.floor(input.sinceMinutes)
+        : undefined;
+      const limit = resolveLimit(input.limit, 20);
+
+      const where: string[] = [];
+      const params: unknown[] = [];
+      if (sessionId) {
+        where.push('session_id = ?');
+        params.push(sessionId);
+      }
+      appendEventOriginFilter(where, params, origin);
+      if (requestedTypes.length > 0) {
+        const placeholders = requestedTypes.map(() => '?').join(', ');
+        where.push(`type IN (${placeholders})`);
+        params.push(...requestedTypes);
+      }
+      if (sinceMinutes !== undefined && sinceMinutes > 0) {
+        where.push('ts >= ?');
+        params.push(Date.now() - sinceMinutes * 60_000);
+      }
+      const whereClause = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+
+      const totals = db
+        .prepare(
+          `
+          SELECT COUNT(*) AS total, MIN(ts) AS first_ts, MAX(ts) AS last_ts
+          FROM events
+          ${whereClause}
+        `,
+        )
+        .get(...params) as {
+        total: number;
+        first_ts: number | null;
+        last_ts: number | null;
+      };
+
+      const byType = db
+        .prepare(
+          `
+          SELECT type, COUNT(*) AS count, MIN(ts) AS first_ts, MAX(ts) AS last_ts
+          FROM events
+          ${whereClause}
+          GROUP BY type
+          ORDER BY count DESC, last_ts DESC
+          LIMIT ?
+        `,
+        )
+        .all(...params, limit) as Array<{
+        type: string;
+        count: number;
+        first_ts: number;
+        last_ts: number;
+      }>;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: limit,
+          truncated: false,
+        },
+        counts: {
+          total: totals.total ?? 0,
+        },
+        firstSeenAt: totals.first_ts ?? undefined,
+        lastSeenAt: totals.last_ts ?? undefined,
+        byType: byType.map((entry) => ({
+          type: entry.type,
+          count: entry.count,
+          firstSeenAt: entry.first_ts,
+          lastSeenAt: entry.last_ts,
+        })),
       };
     },
 
@@ -1528,6 +1944,7 @@ export function createV1ToolHandlers(
         : undefined;
       const limit = resolveLimit(input.limit, DEFAULT_LIST_LIMIT);
       const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
 
       const params: unknown[] = [];
       const where: string[] = [];
@@ -1554,7 +1971,18 @@ export function createV1ToolHandlers(
         `)
         .all(...params, limit + 1, offset) as ErrorFingerprintRow[];
 
-      const truncated = rows.length > limit;
+      const truncatedByLimit = rows.length > limit;
+      const fingerprints = rows.slice(0, limit).map((row) => ({
+        fingerprint: row.fingerprint,
+        sessionId: row.session_id,
+        count: row.count,
+        sampleMessage: row.sample_message,
+        sampleStack: row.sample_stack ?? undefined,
+        firstSeenAt: row.first_seen_at,
+        lastSeenAt: row.last_seen_at,
+      }));
+      const bytePage = applyByteBudget(fingerprints, maxResponseBytes);
+      const truncated = truncatedByLimit || bytePage.truncatedByBytes;
 
       return {
         ...createBaseResponse(sessionId),
@@ -1562,19 +1990,9 @@ export function createV1ToolHandlers(
           maxResults: limit,
           truncated,
         },
-        pagination: {
-          offset,
-          returned: Math.min(rows.length, limit),
-        },
-        fingerprints: rows.slice(0, limit).map((row) => ({
-          fingerprint: row.fingerprint,
-          sessionId: row.session_id,
-          count: row.count,
-          sampleMessage: row.sample_message,
-          sampleStack: row.sample_stack ?? undefined,
-          firstSeenAt: row.first_seen_at,
-          lastSeenAt: row.last_seen_at,
-        })),
+        pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+        responseBytes: bytePage.responseBytes,
+        fingerprints: bytePage.items,
       };
     },
 
@@ -1587,6 +2005,7 @@ export function createV1ToolHandlers(
       const errorType = typeof input.errorType === 'string' ? input.errorType : undefined;
       const limit = resolveLimit(input.limit, DEFAULT_LIST_LIMIT);
       const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
 
       const params: unknown[] = [];
       const where: string[] = [];
@@ -1628,7 +2047,15 @@ export function createV1ToolHandlers(
           `)
           .all(...params, limit + 1, offset) as GroupedNetworkFailureRow[];
 
-        const truncated = rows.length > limit;
+        const truncatedByLimit = rows.length > limit;
+        const groups = rows.slice(0, limit).map((row) => ({
+          key: row.group_key,
+          count: row.count,
+          firstSeenAt: row.first_ts,
+          lastSeenAt: row.last_ts,
+        }));
+        const bytePage = applyByteBudget(groups, maxResponseBytes);
+        const truncated = truncatedByLimit || bytePage.truncatedByBytes;
 
         return {
           ...createBaseResponse(sessionId),
@@ -1636,17 +2063,10 @@ export function createV1ToolHandlers(
             maxResults: limit,
             truncated,
           },
-          pagination: {
-            offset,
-            returned: Math.min(rows.length, limit),
-          },
+          pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+          responseBytes: bytePage.responseBytes,
           groupBy,
-          groups: rows.slice(0, limit).map((row) => ({
-            key: row.group_key,
-            count: row.count,
-            firstSeenAt: row.first_ts,
-            lastSeenAt: row.last_ts,
-          })),
+          groups: bytePage.items,
         };
       }
 
@@ -1660,7 +2080,23 @@ export function createV1ToolHandlers(
         `)
         .all(...params, limit + 1, offset) as NetworkFailureRow[];
 
-      const truncated = rows.length > limit;
+      const truncatedByLimit = rows.length > limit;
+      const failures = rows.slice(0, limit).map((row) => ({
+        requestId: row.request_id,
+        sessionId: row.session_id,
+        traceId: row.trace_id ?? undefined,
+        tabId: row.tab_id ?? undefined,
+        timestamp: row.ts_start,
+        durationMs: row.duration_ms ?? undefined,
+        method: row.method,
+        url: row.url,
+        origin: row.origin ?? undefined,
+        status: row.status ?? undefined,
+        initiator: row.initiator ?? undefined,
+        errorType: classifyNetworkFailure(row.status, row.error_class),
+      }));
+      const bytePage = applyByteBudget(failures, maxResponseBytes);
+      const truncated = truncatedByLimit || bytePage.truncatedByBytes;
 
       return {
         ...createBaseResponse(sessionId),
@@ -1668,24 +2104,9 @@ export function createV1ToolHandlers(
           maxResults: limit,
           truncated,
         },
-        pagination: {
-          offset,
-          returned: Math.min(rows.length, limit),
-        },
-        failures: rows.slice(0, limit).map((row) => ({
-          requestId: row.request_id,
-          sessionId: row.session_id,
-          traceId: row.trace_id ?? undefined,
-          tabId: row.tab_id ?? undefined,
-          timestamp: row.ts_start,
-          durationMs: row.duration_ms ?? undefined,
-          method: row.method,
-          url: row.url,
-          origin: row.origin ?? undefined,
-          status: row.status ?? undefined,
-          initiator: row.initiator ?? undefined,
-          errorType: classifyNetworkFailure(row.status, row.error_class),
-        })),
+        pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+        responseBytes: bytePage.responseBytes,
+        failures: bytePage.items,
       };
     },
 
@@ -1706,6 +2127,7 @@ export function createV1ToolHandlers(
       const timeTo = resolveOptionalTimestamp(input.timeTo);
       const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
       const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
       if (timeFrom !== undefined && timeTo !== undefined && timeFrom > timeTo) {
         throw new Error('timeFrom must be <= timeTo');
       }
@@ -1747,10 +2169,12 @@ export function createV1ToolHandlers(
            LIMIT ? OFFSET ?`
         ).all(...params, limit + 1, offset) as NetworkCallRow[];
 
-        const truncated = rows.length > limit;
+        const truncatedByLimit = rows.length > limit;
         const calls = rows
           .slice(0, limit)
           .map((row) => mapNetworkCallRecord(row, includeBodies));
+        const bytePage = applyByteBudget(calls, maxResponseBytes);
+        const truncated = truncatedByLimit || bytePage.truncatedByBytes;
 
         return {
           ...createBaseResponse(sessionId),
@@ -1768,11 +2192,9 @@ export function createV1ToolHandlers(
             timeTo,
             includeBodies,
           },
-          pagination: {
-            offset,
-            returned: calls.length,
-          },
-          calls,
+          pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+          responseBytes: bytePage.responseBytes,
+          calls: bytePage.items,
         };
       }
 
@@ -1787,10 +2209,12 @@ export function createV1ToolHandlers(
       ).all(...params, regexScanLimit) as NetworkCallRow[];
       const matched = regexRows.filter((row) => regex.test(row.url));
       const sliced = matched.slice(offset, offset + limit + 1);
-      const truncated = matched.length > offset + limit;
+      const truncatedByLimit = matched.length > offset + limit;
       const calls = sliced
         .slice(0, limit)
         .map((row) => mapNetworkCallRecord(row, includeBodies));
+      const bytePage = applyByteBudget(calls, maxResponseBytes);
+      const truncated = truncatedByLimit || bytePage.truncatedByBytes;
 
       return {
         ...createBaseResponse(sessionId),
@@ -1810,11 +2234,9 @@ export function createV1ToolHandlers(
           includeBodies,
           regexScanLimit,
         },
-        pagination: {
-          offset,
-          returned: calls.length,
-        },
-        calls,
+        pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+        responseBytes: bytePage.responseBytes,
+        calls: bytePage.items,
       };
     },
 
@@ -2005,6 +2427,7 @@ export function createV1ToolHandlers(
 
       const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
       const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
       const rows = db
         .prepare(`
           SELECT event_id, session_id, ts, type, payload_json, tab_id, origin
@@ -2017,7 +2440,10 @@ export function createV1ToolHandlers(
         `)
         .all(sessionId, selector, limit + 1, offset) as EventRow[];
 
-      const truncated = rows.length > limit;
+      const truncatedByLimit = rows.length > limit;
+      const refs = rows.slice(0, limit).map((row) => mapEventRecord(row));
+      const bytePage = applyByteBudget(refs, maxResponseBytes);
+      const truncated = truncatedByLimit || bytePage.truncatedByBytes;
 
       return {
         ...createBaseResponse(sessionId),
@@ -2025,12 +2451,10 @@ export function createV1ToolHandlers(
           maxResults: limit,
           truncated,
         },
-        pagination: {
-          offset,
-          returned: Math.min(rows.length, limit),
-        },
+        pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+        responseBytes: bytePage.responseBytes,
         selector,
-        refs: rows.slice(0, limit).map((row) => mapEventRecord(row)),
+        refs: bytePage.items,
       };
     },
 
@@ -2293,6 +2717,7 @@ export function createV1ToolHandlers(
       const untilTimestamp = resolveOptionalTimestamp(input.untilTimestamp);
       const limit = resolveLimit(input.limit, DEFAULT_LIST_LIMIT);
       const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
 
       const where: string[] = ['session_id = ?'];
       const params: unknown[] = [sessionId];
@@ -2322,18 +2747,19 @@ export function createV1ToolHandlers(
         )
         .all(...params, limit + 1, offset) as SnapshotRow[];
 
-      const truncated = rows.length > limit;
+      const truncatedByLimit = rows.length > limit;
+      const snapshots = rows.slice(0, limit).map((row) => mapSnapshotMetadata(row));
+      const bytePage = applyByteBudget(snapshots, maxResponseBytes);
+      const truncated = truncatedByLimit || bytePage.truncatedByBytes;
       return {
         ...createBaseResponse(sessionId),
         limitsApplied: {
           maxResults: limit,
           truncated,
         },
-        pagination: {
-          offset,
-          returned: Math.min(rows.length, limit),
-        },
-        snapshots: rows.slice(0, limit).map((row) => mapSnapshotMetadata(row)),
+        pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+        responseBytes: bytePage.responseBytes,
+        snapshots: bytePage.items,
       };
     },
 
@@ -2430,7 +2856,7 @@ export function createV1ToolHandlers(
       }
 
       const assetType = input.asset === 'png' ? 'png' : 'png';
-      const encoding = input.encoding === 'base64' ? 'base64' : 'raw';
+      const encoding = input.encoding === 'raw' ? 'raw' : 'base64';
       const offset = resolveOffset(input.offset);
       const maxBytes = resolveChunkBytes(input.maxBytes, DEFAULT_SNAPSHOT_ASSET_CHUNK_BYTES);
 
@@ -2473,6 +2899,7 @@ export function createV1ToolHandlers(
           },
           snapshotId,
           asset: assetType,
+          assetUri: `snapshot://${encodeURIComponent(sessionId)}/${encodeURIComponent(snapshotId)}/${assetType}`,
           mime: snapshot.png_mime ?? 'image/png',
           totalBytes: fullBuffer.byteLength,
           offset,
@@ -2498,6 +2925,7 @@ export function createV1ToolHandlers(
         },
         snapshotId,
         asset: assetType,
+        assetUri: `snapshot://${encodeURIComponent(sessionId)}/${encodeURIComponent(snapshotId)}/${assetType}`,
         mime: snapshot.png_mime ?? 'image/png',
         totalBytes: fullBuffer.byteLength,
         offset,
@@ -2674,6 +3102,9 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
       const maxDepth = resolveCaptureDepth(input.maxDepth, 3);
       const maxBytes = resolveCaptureBytes(input.maxBytes, 50_000);
       const maxAncestors = resolveCaptureAncestors(input.maxAncestors, 4);
+      const includeDom = typeof input.includeDom === 'boolean' ? input.includeDom : mode !== 'png';
+      const includeStyles = typeof input.includeStyles === 'boolean' ? input.includeStyles : mode !== 'png';
+      const includePngDataUrl = typeof input.includePngDataUrl === 'boolean' ? input.includePngDataUrl : mode !== 'png';
 
       const capture = await executeLiveCapture(
         captureClient,
@@ -2688,10 +3119,32 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
           maxDepth,
           maxBytes,
           maxAncestors,
+          includeDom,
+          includeStyles,
+          includePngDataUrl,
           llmRequested: true,
         },
         5_000,
       );
+
+      const payload = ensureCaptureSuccess(capture, sessionId);
+      const snapshotRecord = structuredClone(payload);
+
+      const snapshotRoot = snapshotRecord.snapshot;
+      if (typeof snapshotRoot === 'object' && snapshotRoot !== null) {
+        const snapshotObject = snapshotRoot as Record<string, unknown>;
+        if (!includeDom) {
+          delete snapshotObject.dom;
+        }
+        if (!includeStyles) {
+          delete snapshotObject.styles;
+        }
+      }
+
+      const png = snapshotRecord.png;
+      if (!includePngDataUrl && typeof png === 'object' && png !== null) {
+        delete (png as Record<string, unknown>).dataUrl;
+      }
 
       return {
         ...createBaseResponse(sessionId),
@@ -2699,7 +3152,10 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
           maxResults: maxBytes,
           truncated: capture.truncated ?? false,
         },
-        ...ensureCaptureSuccess(capture, sessionId),
+        includeDom,
+        includeStyles,
+        includePngDataUrl,
+        ...snapshotRecord,
       };
     },
 
@@ -2718,6 +3174,10 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
       const sinceTs = resolveOptionalTimestamp(input.sinceTs);
       const includeRuntimeErrors = input.includeRuntimeErrors !== false;
       const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
+      const responseProfile = resolveResponseProfile(input.responseProfile);
+      const includeArgs = responseProfile === 'compact' && input.includeArgs === true;
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
+      const dedupeWindowMs = resolveDurationMs(input.dedupeWindowMs, 0, 60_000);
       const capture = await executeLiveCapture(
         captureClient,
         sessionId,
@@ -2729,18 +3189,53 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
           contains,
           sinceTs,
           includeRuntimeErrors,
+          dedupeWindowMs,
           limit,
         },
         3_000,
       );
 
+      const payload = ensureCaptureSuccess(capture, sessionId);
+      const rawLogs = asRecordArray(payload.logs);
+      const logs = rawLogs.map((entry) => mapLiveConsoleLogRecord(entry, responseProfile, { includeArgs }));
+      const bytePage = applyByteBudget(logs, maxResponseBytes);
+      const truncated = (capture.truncated ?? false) || bytePage.truncatedByBytes;
+      const paginationRecord =
+        typeof payload.pagination === 'object' && payload.pagination !== null
+          ? payload.pagination as Record<string, unknown>
+          : {};
+      const matched = typeof paginationRecord.matched === 'number'
+        ? Math.max(0, Math.floor(paginationRecord.matched))
+        : rawLogs.length;
+
       return {
         ...createBaseResponse(sessionId),
         limitsApplied: {
           maxResults: limit,
-          truncated: capture.truncated ?? false,
+          truncated,
         },
-        ...ensureCaptureSuccess(capture, sessionId),
+        responseProfile,
+        responseBytes: bytePage.responseBytes,
+        logs: bytePage.items,
+        pagination: {
+          returned: bytePage.items.length,
+          matched,
+          hasMore: truncated,
+          maxResponseBytes,
+        },
+        filtersApplied:
+          typeof payload.filtersApplied === 'object' && payload.filtersApplied !== null
+            ? payload.filtersApplied
+            : {
+              tabId,
+              origin,
+              levels,
+              contains,
+              sinceTs,
+              includeRuntimeErrors,
+              dedupeWindowMs,
+            },
+        bufferStats: payload.bufferStats,
       };
     },
   };
@@ -2775,6 +3270,17 @@ function createDefaultHandler(toolName: string): ToolHandler {
   };
 }
 
+function attachResponseBytes(response: ToolResponse): ToolResponse {
+  if (typeof response.responseBytes === 'number' && Number.isFinite(response.responseBytes)) {
+    return response;
+  }
+
+  return {
+    ...response,
+    responseBytes: estimateJsonBytes(response),
+  };
+}
+
 export function createToolRegistry(overrides: Partial<Record<string, ToolHandler>> = {}): RegisteredTool[] {
   return ALL_TOOLS.map((toolName) => {
     const schema = TOOL_SCHEMAS[toolName] ?? { type: 'object', properties: {} };
@@ -2798,7 +3304,8 @@ export async function routeToolCall(
     throw new Error(`Unknown tool: ${toolName}`);
   }
 
-  return tool.handler(isRecord(input) ? input : {});
+  const response = await tool.handler(isRecord(input) ? input : {});
+  return attachResponseBytes(response);
 }
 
 export function createMCPServer(

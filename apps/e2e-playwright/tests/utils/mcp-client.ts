@@ -118,6 +118,8 @@ export const EXPECTED_TOOL_NAMES = [
   'get_recent_events',
   'get_navigation_history',
   'get_console_events',
+  'get_console_summary',
+  'get_event_summary',
   'get_error_fingerprints',
   'get_network_failures',
   'get_network_calls',

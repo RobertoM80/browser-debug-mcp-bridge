@@ -381,6 +381,147 @@ describe('mcp/server V1 query tools', () => {
     db.close();
   });
 
+  it('returns compact events without payload by default', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-compact', 1000, 0)
+      `
+    ).run();
+    db.prepare(
+      `
+        INSERT INTO events (event_id, session_id, ts, type, payload_json)
+        VALUES ('evt-compact', 'session-compact', 1001, 'console', '{"level":"warn","message":"watch out"}')
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_recent_events', {
+      sessionId: 'session-compact',
+      responseProfile: 'compact',
+    });
+
+    const event = (response.events as Array<Record<string, unknown>>)[0];
+    expect(response.responseProfile).toBe('compact');
+    expect(event?.payload).toBeUndefined();
+    expect(typeof event?.summary).toBe('string');
+    expect(event?.message).toBe('watch out');
+
+    db.close();
+  });
+
+  it('applies maxResponseBytes budget for event queries', async () => {
+    const db = createTestDb();
+    const longMessage = 'x'.repeat(5000);
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-budget', 1000, 0)
+      `
+    ).run();
+    db.prepare(
+      `
+        INSERT INTO events (event_id, session_id, ts, type, payload_json)
+        VALUES
+          ('evt-budget-1', 'session-budget', 1002, 'console', ?),
+          ('evt-budget-2', 'session-budget', 1001, 'console', ?)
+      `
+    ).run(
+      JSON.stringify({ level: 'info', message: longMessage }),
+      JSON.stringify({ level: 'info', message: longMessage }),
+    );
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_recent_events', {
+      sessionId: 'session-budget',
+      limit: 2,
+      maxResponseBytes: 1024,
+    });
+
+    expect((response.events as Array<Record<string, unknown>>).length).toBe(1);
+    expect(response.limitsApplied.truncated).toBe(true);
+    expect(response.pagination).toMatchObject({
+      hasMore: true,
+      nextOffset: 1,
+      maxResponseBytes: 1024,
+    });
+
+    db.close();
+  });
+
+  it('returns console summary with level counters and top repeated messages', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-summary-console', 1000, 0)
+      `
+    ).run();
+    db.prepare(
+      `
+        INSERT INTO events (event_id, session_id, ts, type, payload_json)
+        VALUES
+          ('evt-c1', 'session-summary-console', 1001, 'console', '{"level":"warn","message":"retry"}'),
+          ('evt-c2', 'session-summary-console', 1002, 'console', '{"level":"warn","message":"retry"}'),
+          ('evt-c3', 'session-summary-console', 1003, 'console', '{"level":"error","message":"boom"}')
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_console_summary', {
+      sessionId: 'session-summary-console',
+      limit: 5,
+    });
+
+    expect((response.counts as { total: number }).total).toBe(3);
+    expect((response.counts as { byLevel: { warn: number; error: number } }).byLevel.warn).toBe(2);
+    expect((response.counts as { byLevel: { warn: number; error: number } }).byLevel.error).toBe(1);
+    expect((response.topMessages as Array<{ message: string; count: number }>)[0]).toMatchObject({
+      message: 'retry',
+      count: 2,
+    });
+
+    db.close();
+  });
+
+  it('returns event summary grouped by event type', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-summary-events', 1000, 0)
+      `
+    ).run();
+    db.prepare(
+      `
+        INSERT INTO events (event_id, session_id, ts, type, payload_json)
+        VALUES
+          ('evt-e1', 'session-summary-events', 1001, 'nav', '{"url":"https://example.com"}'),
+          ('evt-e2', 'session-summary-events', 1002, 'ui', '{"eventType":"click"}'),
+          ('evt-e3', 'session-summary-events', 1003, 'ui', '{"eventType":"input"}')
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_event_summary', {
+      sessionId: 'session-summary-events',
+      limit: 5,
+    });
+
+    expect((response.counts as { total: number }).total).toBe(3);
+    expect((response.byType as Array<{ type: string; count: number }>)[0]).toMatchObject({
+      type: 'ui',
+      count: 2,
+    });
+
+    db.close();
+  });
+
   it('returns error fingerprints with pagination', async () => {
     const db = createTestDb();
     const now = Date.now();
@@ -411,7 +552,12 @@ describe('mcp/server V1 query tools', () => {
 
     expect(response.sessionId).toBe('session-1');
     expect(response.limitsApplied).toEqual({ maxResults: 1, truncated: false });
-    expect(response.pagination).toEqual({ offset: 1, returned: 1 });
+    expect(response.pagination).toMatchObject({
+      offset: 1,
+      returned: 1,
+      hasMore: false,
+      nextOffset: null,
+    });
     expect((response.fingerprints as Array<{ fingerprint: string }>)[0]?.fingerprint).toBe('fp-2');
 
     db.close();
@@ -1135,6 +1281,52 @@ describe('mcp/server V2 capture tools', () => {
     expect(response.snapshot).toBeDefined();
   });
 
+  it('uses metadata-first defaults for png snapshot mode', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          return {
+            ok: true,
+            payload: {
+              mode: {
+                dom: true,
+                png: true,
+              },
+              snapshot: {
+                dom: { html: '<div>heavy</div>' },
+                styles: { chain: [{ properties: { display: 'block' } }] },
+              },
+              png: {
+                captured: true,
+                byteLength: 2048,
+                dataUrl: 'data:image/png;base64,AAAA',
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'capture_ui_snapshot', {
+      sessionId: 'session-v2',
+      mode: 'png',
+    });
+
+    expect(captureCalls[0]).toMatchObject({
+      payload: {
+        includeDom: false,
+        includeStyles: false,
+        includePngDataUrl: false,
+      },
+    });
+    expect((response.snapshot as { dom?: unknown; styles?: unknown })?.dom).toBeUndefined();
+    expect((response.snapshot as { dom?: unknown; styles?: unknown })?.styles).toBeUndefined();
+    expect((response.png as { dataUrl?: string })?.dataUrl).toBeUndefined();
+  });
+
   it('requests live console logs through v2 capture command path', async () => {
     const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
     const tools = createToolRegistry(
@@ -1194,6 +1386,53 @@ describe('mcp/server V2 capture tools', () => {
     });
     expect(response.limitsApplied).toEqual({ maxResults: 25, truncated: false });
     expect((response.logs as Array<{ message: string }>)[0]?.message).toContain('[auth]');
+  });
+
+  it('supports compact live console profile with byte-budget truncation', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async () => ({
+          ok: true,
+          payload: {
+            logs: [
+              {
+                timestamp: 1700000001000,
+                level: 'info',
+                message: 'a'.repeat(5000),
+                args: ['verbose'],
+              },
+              {
+                timestamp: 1700000000000,
+                level: 'warn',
+                message: 'b'.repeat(5000),
+                args: ['verbose'],
+              },
+            ],
+            pagination: {
+              returned: 2,
+              matched: 2,
+            },
+          },
+          truncated: false,
+        }),
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'get_live_console_logs', {
+      sessionId: 'session-v2',
+      responseProfile: 'compact',
+      maxResponseBytes: 1024,
+    });
+
+    expect(response.responseProfile).toBe('compact');
+    expect((response.logs as Array<Record<string, unknown>>).length).toBe(1);
+    expect((response.logs as Array<Record<string, unknown>>)[0]?.args).toBeUndefined();
+    expect(response.limitsApplied).toEqual({ maxResults: 50, truncated: true });
+    expect(response.pagination).toMatchObject({
+      returned: 1,
+      hasMore: true,
+      maxResponseBytes: 1024,
+    });
   });
 
   it('rejects invalid url for live console log capture tool', async () => {

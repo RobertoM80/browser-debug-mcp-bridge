@@ -25,10 +25,17 @@ export interface LiveConsoleQuery {
   contains?: string;
   sinceTs?: number;
   includeRuntimeErrors?: boolean;
+  dedupeWindowMs?: number;
+}
+
+export interface LiveConsoleQueryLogEntry extends LiveConsoleEntry {
+  count?: number;
+  firstTimestamp?: number;
+  lastTimestamp?: number;
 }
 
 export interface LiveConsoleQueryResult {
-  logs: LiveConsoleEntry[];
+  logs: LiveConsoleQueryLogEntry[];
   matched: number;
   buffered: number;
   dropped: number;
@@ -188,6 +195,84 @@ function resolveSinceTimestamp(value: unknown): number | undefined {
   return parsed;
 }
 
+function resolveDedupeWindowMs(value: unknown): number {
+  const parsed = resolveInteger(value);
+  if (parsed === undefined || parsed < 1) {
+    return 0;
+  }
+
+  return Math.min(parsed, 60_000);
+}
+
+function buildDedupeKey(entry: LiveConsoleEntry): string {
+  return [
+    entry.level,
+    entry.message,
+    entry.tabId ?? '',
+    entry.origin ?? '',
+    entry.source,
+  ].join('\u0000');
+}
+
+function dedupeEntries(entries: LiveConsoleEntry[], dedupeWindowMs: number): LiveConsoleQueryLogEntry[] {
+  if (dedupeWindowMs < 1 || entries.length === 0) {
+    return entries;
+  }
+
+  interface DedupeCluster {
+    key: string;
+    base: LiveConsoleEntry;
+    newestTs: number;
+    oldestTs: number;
+    count: number;
+  }
+
+  const clusters: LiveConsoleQueryLogEntry[] = [];
+  let current: DedupeCluster | null = null;
+
+  const flushCluster = () => {
+    if (!current) {
+      return;
+    }
+
+    if (current.count <= 1) {
+      clusters.push(current.base);
+    } else {
+      clusters.push({
+        ...current.base,
+        count: current.count,
+        firstTimestamp: current.oldestTs,
+        lastTimestamp: current.newestTs,
+      });
+    }
+  };
+
+  for (const entry of entries) {
+    const key = buildDedupeKey(entry);
+    if (
+      current
+      && current.key === key
+      && current.newestTs - entry.timestamp <= dedupeWindowMs
+    ) {
+      current.count += 1;
+      current.oldestTs = entry.timestamp;
+      continue;
+    }
+
+    flushCluster();
+    current = {
+      key,
+      base: entry,
+      newestTs: entry.timestamp,
+      oldestTs: entry.timestamp,
+      count: 1,
+    };
+  }
+
+  flushCluster();
+  return clusters;
+}
+
 export class LiveConsoleBufferStore {
   private readonly maxEntriesPerSession: number;
   private readonly maxArgsPerEntry: number;
@@ -233,6 +318,7 @@ export class LiveConsoleBufferStore {
     const tabId = normalizeTabId(query.tabId);
     const sinceTs = resolveSinceTimestamp(query.sinceTs);
     const includeRuntimeErrors = query.includeRuntimeErrors !== false;
+    const dedupeWindowMs = resolveDedupeWindowMs(query.dedupeWindowMs);
     const limit = clampLimit(query.limit);
 
     const filtered = entries.filter((entry) => {
@@ -264,14 +350,15 @@ export class LiveConsoleBufferStore {
     });
 
     const sorted = filtered.slice().sort((a, b) => b.timestamp - a.timestamp);
-    const logs = sorted.slice(0, limit);
+    const deduped = dedupeEntries(sorted, dedupeWindowMs);
+    const logs = deduped.slice(0, limit);
 
     return {
       logs,
-      matched: filtered.length,
+      matched: deduped.length,
       buffered: entries.length,
       dropped: this.droppedBySession.get(sessionId) ?? 0,
-      truncated: filtered.length > limit,
+      truncated: deduped.length > limit,
     };
   }
 

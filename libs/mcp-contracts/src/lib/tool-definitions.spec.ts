@@ -21,6 +21,8 @@ describe('tool-definitions', () => {
     expect(SESSION_TOOLS.GET_RECENT_EVENTS).toBe('get_recent_events');
     expect(SESSION_TOOLS.GET_NAVIGATION_HISTORY).toBe('get_navigation_history');
     expect(SESSION_TOOLS.GET_CONSOLE_EVENTS).toBe('get_console_events');
+    expect(SESSION_TOOLS.GET_CONSOLE_SUMMARY).toBe('get_console_summary');
+    expect(SESSION_TOOLS.GET_EVENT_SUMMARY).toBe('get_event_summary');
   });
 
   it('should define error tools', () => {

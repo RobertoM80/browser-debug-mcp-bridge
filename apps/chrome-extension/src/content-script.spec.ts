@@ -327,6 +327,23 @@ describe('content-script capture', () => {
     expect(output.result.truncation).toMatchObject({ dom: false });
   });
 
+  it('can omit DOM and styles in UI snapshot capture payload', () => {
+    document.body.innerHTML = '<main><button id="buy-now">Buy</button></main>';
+
+    const output = executeCaptureCommand(window, 'CAPTURE_UI_SNAPSHOT', {
+      selector: '#buy-now',
+      includeDom: false,
+      includeStyles: false,
+      maxBytes: 10000,
+    });
+
+    expect(output.result.mode).toMatchObject({ dom: false, png: false });
+    const snapshot = output.result.snapshot as { dom?: unknown; styles?: unknown };
+    expect(snapshot.dom).toBeUndefined();
+    expect(snapshot.styles).toBeUndefined();
+    expect(output.result.truncation).toMatchObject({ dom: false, styles: false });
+  });
+
   it('enforces explicit request for computed-full snapshot styles', () => {
     document.body.innerHTML = '<div id="snapshot-target" style="display: block; color: rgb(0, 0, 0)"></div>';
 

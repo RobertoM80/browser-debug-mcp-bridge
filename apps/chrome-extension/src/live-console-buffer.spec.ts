@@ -109,6 +109,28 @@ describe('LiveConsoleBufferStore', () => {
     expect(result.logs[0]?.source).toBe('console');
   });
 
+  it('can dedupe repetitive logs in a time window', () => {
+    const store = new LiveConsoleBufferStore();
+
+    store.append('sess-dedupe', 'console', { level: 'warn', message: 'retrying', timestamp: 1200 }, { tabId: 1 });
+    store.append('sess-dedupe', 'console', { level: 'warn', message: 'retrying', timestamp: 1500 }, { tabId: 1 });
+    store.append('sess-dedupe', 'console', { level: 'warn', message: 'retrying', timestamp: 2000 }, { tabId: 1 });
+    store.append('sess-dedupe', 'console', { level: 'error', message: 'failed', timestamp: 2100 }, { tabId: 1 });
+
+    const result = store.query('sess-dedupe', {
+      dedupeWindowMs: 1000,
+      limit: 10,
+    });
+
+    expect(result.logs).toHaveLength(2);
+    const dedupedWarn = result.logs.find((entry) => entry.message === 'retrying');
+    expect(dedupedWarn).toMatchObject({
+      count: 3,
+      firstTimestamp: 1200,
+      lastTimestamp: 2000,
+    });
+  });
+
   it('ignores non-console event types', () => {
     const store = new LiveConsoleBufferStore();
 

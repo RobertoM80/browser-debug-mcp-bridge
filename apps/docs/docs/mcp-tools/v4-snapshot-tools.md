@@ -6,9 +6,9 @@ These tools expose persisted snapshot metadata and bounded PNG asset reads for d
 
 Find snapshots for a session with optional trigger/time filters.
 
-- Inputs: `sessionId`, optional `trigger`, `sinceTimestamp`, `untilTimestamp`, `limit`, `offset`
+- Inputs: `sessionId`, optional `trigger`, `sinceTimestamp`, `untilTimestamp`, `limit`, `offset`, `maxResponseBytes`
 - Output: metadata only (`snapshotId`, timestamp, trigger, mode, truncation flags, `hasPng`, `pngBytes`)
-- Limits: standard pagination with `maxResults` and `truncated`
+- Limits: standard pagination with `maxResults`, `truncated`, plus `hasMore`/`nextOffset`
 
 ## get_snapshot_for_event
 
@@ -26,6 +26,8 @@ Read PNG assets with strict chunking bounds.
 
 - Inputs: `sessionId`, `snapshotId`, optional `offset`, `maxBytes`, `encoding` (`raw` or `base64`)
 - Output: chunk payload plus `hasMore` and `nextOffset` for continuation
+- Default encoding is `base64` to avoid oversized raw integer arrays in MCP text responses
+- Includes `assetUri` metadata for external/binary-aware client flows
 - Limits:
   - `maxBytes` is bounded to avoid oversized MCP payloads
   - Asset reads are explicit (separate from metadata tools)

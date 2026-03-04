@@ -5,6 +5,7 @@ All tool responses include:
 - `sessionId`
 - `limitsApplied`
 - `redactionSummary`
+- `responseBytes`
 
 ## Tool families
 
@@ -16,9 +17,10 @@ All tool responses include:
 ## Request/response conventions
 
 - Inputs validated with Zod schemas
-- Pagination available on high-cardinality tools
+- Pagination available on high-cardinality tools (`hasMore`, `nextOffset`)
 - Size/depth/time limits applied to heavy captures
 - Query tools support `sessionId`, `url` (origin), or both for intersection filtering
+- High-volume tools support `maxResponseBytes` and optional `responseProfile: "compact"`
 
 ## Console capture scope
 
