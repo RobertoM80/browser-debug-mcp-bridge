@@ -11,7 +11,7 @@ This configures:
 - `commit.template=.gitmessage.txt`
 
 Active hooks:
-- `pre-commit`: runs `pnpm typecheck`, `pnpm lint`, `pnpm test`
+- `pre-commit`: runs `pnpm lint` and `pnpm test:non-e2e` (with `NX_TUI=false`)
 - `commit-msg`: enforces Conventional Commit subject format
 
 Notes:

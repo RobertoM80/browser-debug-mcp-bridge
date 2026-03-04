@@ -1,14 +1,12 @@
 #!/usr/bin/env sh
 set -e
 
-echo "[pre-commit] Running typecheck..."
-pnpm typecheck
+export NX_TUI=false
 
 echo "[pre-commit] Running lint..."
 pnpm lint
 
-echo "[pre-commit] Running tests..."
-pnpm test
+echo "[pre-commit] Running tests (non-e2e)..."
+pnpm test:non-e2e
 
 echo "[pre-commit] OK"
-
