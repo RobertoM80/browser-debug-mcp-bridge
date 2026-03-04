@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.7.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.6.0...browser-debug-mcp-bridge-v1.7.0) (2026-03-04)
+
+
+### Features
+
+* add commit message guidelines to commit template ([c8bd311](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/c8bd311abcdf14939dacff3666166eb984fc51c4))
+* add headed e2e test script to package.json ([a9062ff](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/a9062fffffd8d1cf654ac7f7322e195149bb53d5))
+* **ci:** add e2e test for mcp capture ui snapshot tool ([80cd138](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/80cd138a4e70a6ed559582605c026142d255813a))
+* Merge branch main ([a7c3c24](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/a7c3c244bc73d5fc01228375fdc916be55c837fc))
+* update testing docs and add headed e2e test script ([c88cbdb](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/c88cbdb10174afe78cd2ec8b458694d67149682e))
+
+
+### Bug Fixes
+
+* update capture tool and docs ([acbcf68](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/acbcf68fc2a13cdcfc3caec61fef77fde096fc8c))
+
 ## [1.6.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.5.0...browser-debug-mcp-bridge-v1.6.0) (2026-02-28)
 
 
