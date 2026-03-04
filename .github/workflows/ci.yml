@@ -49,7 +49,7 @@ jobs:
       - name: Verify
         run: |
           set -euxo pipefail
-          pnpm run verify
+          pnpm run verify:ci
 
   e2e-smoke:
     name: E2E Smoke (Playwright)

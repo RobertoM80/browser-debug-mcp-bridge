@@ -19,8 +19,10 @@
   "scripts": {
     "typecheck": "nx run-many -t lint --projects mcp-server,chrome-extension,shared,redaction,selectors,mcp-contracts",
     "test": "nx run-many -t test",
+    "test:non-e2e": "nx run-many -t test --exclude=e2e-playwright",
     "lint": "nx run-many -t lint",
     "build": "nx run-many -t build",
+    "verify:ci": "pnpm typecheck && pnpm lint && pnpm test:non-e2e && pnpm build && pnpm docs:ci && pnpm mcp:check-stdio-guard",
     "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm build && pnpm docs:ci && pnpm mcp:check-stdio-guard",
     "serve": "nx serve mcp-server",
     "mcp:start": "node scripts/mcp-start.cjs",
