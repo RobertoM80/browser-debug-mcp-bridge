@@ -13,7 +13,7 @@ jobs:
   health:
     name: Nightly Health Checks
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 90
     env:
       NX_VERBOSE_LOGGING: "true"
 
@@ -49,6 +49,16 @@ jobs:
           set -euxo pipefail
           pnpm run verify
 
+      - name: Install Playwright Chromium
+        run: |
+          set -euxo pipefail
+          pnpm exec playwright install --with-deps chromium
+
+      - name: Run E2E full suite
+        run: |
+          set -euxo pipefail
+          xvfb-run -a pnpm nx run e2e-playwright:full
+
       - name: Runtime health endpoint smoke test
         run: |
           set -euxo pipefail
@@ -58,3 +68,14 @@ jobs:
           curl --fail --silent --show-error http://127.0.0.1:8065/health
           kill $SERVER_PID
           wait $SERVER_PID || true
+
+      - name: Upload nightly E2E artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-e2e-full-artifacts
+          path: |
+            dist/test-results/playwright-artifacts
+            dist/test-results/playwright-report
+            dist/test-results/playwright-junit.xml
+          if-no-files-found: ignore

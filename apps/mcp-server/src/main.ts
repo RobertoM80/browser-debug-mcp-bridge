@@ -353,6 +353,8 @@ fastify.get('/sessions/:sessionId/entries', async (request) => {
           ), CHAR(13), ' ') AS summary,
           json_object(
             'requestId', request_id,
+            'traceId', trace_id,
+            'tabId', tab_id,
             'timestamp', ts_start,
             'durationMs', duration_ms,
             'method', method,
@@ -360,7 +362,19 @@ fastify.get('/sessions/:sessionId/entries', async (request) => {
             'status', status,
             'initiator', initiator,
             'errorClass', error_class,
-            'responseSizeEst', response_size_est
+            'responseSizeEst', response_size_est,
+            'request', json_object(
+              'contentType', request_content_type,
+              'bodyBytes', request_body_bytes,
+              'truncated', request_body_truncated,
+              'bodyChunkRef', request_body_chunk_ref
+            ),
+            'response', json_object(
+              'contentType', response_content_type,
+              'bodyBytes', response_body_bytes,
+              'truncated', response_body_truncated,
+              'bodyChunkRef', response_body_chunk_ref
+            )
           ) AS raw_json
         FROM network
         WHERE session_id = ?

@@ -21,6 +21,10 @@ export const SESSION_TOOLS = {
 export const ERROR_TOOLS = {
   GET_ERROR_FINGERPRINTS: 'get_error_fingerprints',
   GET_NETWORK_FAILURES: 'get_network_failures',
+  GET_NETWORK_CALLS: 'get_network_calls',
+  WAIT_FOR_NETWORK_CALL: 'wait_for_network_call',
+  GET_REQUEST_TRACE: 'get_request_trace',
+  GET_BODY_CHUNK: 'get_body_chunk',
 } as const;
 
 export const QUERY_TOOLS = {

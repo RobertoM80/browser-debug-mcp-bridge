@@ -83,7 +83,9 @@ What to do:
 ## Snapshot capture not behaving as expected
 
 - Confirm snapshot settings in extension popup: snapshots enabled, required triggers active, and opt-in requirement satisfied
+- PNG snapshots are captured as full-page (not only viewport), so tall pages naturally produce larger files
 - If PNG capture is skipped, check `maxImagesPerSession` quota and `minCaptureIntervalMs` throttle policy in snapshot settings
+- If PNG reports `max_bytes_exceeded`, increase `maxBytesPerImage` in extension snapshot settings
 - If snapshots look incomplete, verify DOM/style truncation flags and configured payload limits
 - For strict safe mode, PNG can be blocked by privacy profile and DOM/style values may be redacted before persistence/export
 - Verify timeline flow with MCP: `get_snapshot_for_event` for click link, then `explain_last_failure` for downstream analysis

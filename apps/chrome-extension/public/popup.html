@@ -85,10 +85,20 @@
           <input id="snapshot-max-images" type="number" min="0" step="1" value="8">
 
           <label for="snapshot-max-bytes">Max bytes/image</label>
-          <input id="snapshot-max-bytes" type="number" min="32768" step="1024" value="262144">
+          <input id="snapshot-max-bytes" type="number" min="32768" step="1024" value="1048576">
 
           <label for="snapshot-min-interval">Min interval (ms)</label>
           <input id="snapshot-min-interval" type="number" min="250" step="50" value="5000">
+        </div>
+
+        <div class="snapshot-policy-grid">
+          <label class="toggle" for="network-capture-bodies">
+            <input id="network-capture-bodies" type="checkbox">
+            <span>Capture network bodies</span>
+          </label>
+
+          <label for="network-max-body-bytes">Max body bytes</label>
+          <input id="network-max-body-bytes" type="number" min="4096" step="1024" value="262144">
         </div>
       </details>
 

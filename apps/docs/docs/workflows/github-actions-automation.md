@@ -14,7 +14,9 @@ Runs:
 
 1. Checkout + Node + pnpm setup
 1. Dependency install (`pnpm install --frozen-lockfile`)
-1. Full validation via `pnpm verify`
+1. `validate` job via `pnpm verify`
+1. `e2e-smoke` Playwright job
+1. `e2e-full` Playwright job
 
 `pnpm verify` includes:
 
@@ -87,6 +89,8 @@ Triggers:
 Runs:
 
 1. `pnpm verify`
+1. Installs Playwright Chromium
+1. Runs `e2e-full`
 1. Starts `mcp-server`
 1. Smoke-checks `GET /health`
 

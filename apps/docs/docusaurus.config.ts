@@ -66,14 +66,7 @@ const config: Config = {
         docs: {
           routeBasePath: 'docs',
           sidebarPath: './sidebars.ts',
-          editUrl: undefined,
-          exclude: [
-            '**/contributing/**',
-            '**/workflows/**',
-            '**/testing/**',
-            '**/architecture/**',
-            '**/server/**'
-          ]
+          editUrl: undefined
         },
         blog: false,
         theme: {

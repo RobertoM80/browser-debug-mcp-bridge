@@ -104,6 +104,7 @@ In extension popup:
 3. Session starts bound to current tab only
 4. Use `Session Tabs` to add/remove tabs for this session explicitly
 5. Enable snapshots if your workflow needs DOM/style/PNG evidence
+6. PNG snapshots are captured as full-page images; raise `Max bytes/image` if large pages hit `max_bytes_exceeded`
 
 In MCP client:
 

@@ -1,5 +1,6 @@
 export const BRIDGE_SOURCE = 'browser-debug-mcp-bridge';
 export const BRIDGE_KIND = 'bridge-event';
+export const BRIDGE_CONTROL_KIND = 'bridge-control';
 
 export interface BridgePayload {
   source: string;
@@ -25,6 +26,23 @@ interface CaptureCommandRequest {
 
 interface CapturePingRequest {
   type: 'CAPTURE_PING';
+}
+
+interface CaptureConfigUpdateRequest {
+  type: 'CAPTURE_CONFIG_UPDATE';
+  payload?: {
+    network?: {
+      captureBodies?: unknown;
+      maxBodyBytes?: unknown;
+    };
+  };
+}
+
+interface BridgeControlPayload {
+  source: string;
+  kind: string;
+  controlType: string;
+  data: Record<string, unknown>;
 }
 
 interface CaptureCommandResponse {
@@ -120,6 +138,10 @@ function sendToBackground(
   } catch {
     // Ignore runtime messaging failures when no receiver is active.
   }
+}
+
+function createTraceId(prefix = 'trace'): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function clampMaxDepth(value: unknown, fallback = 3): number {
@@ -670,6 +692,51 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
 
     sendToBackground(runtime, payload.eventType, payload.data);
   };
+  const postNetworkCaptureConfigToInjectedScript = (payload: CaptureConfigUpdateRequest['payload']): void => {
+    const network = payload?.network;
+    const captureBodies = network?.captureBodies === true;
+    const rawMaxBodyBytes = network?.maxBodyBytes;
+    const maxBodyBytes =
+      typeof rawMaxBodyBytes === 'number' && Number.isFinite(rawMaxBodyBytes)
+        ? Math.max(4096, Math.min(5 * 1024 * 1024, Math.floor(rawMaxBodyBytes)))
+        : 262144;
+
+    const controlPayload: BridgeControlPayload = {
+      source: BRIDGE_SOURCE,
+      kind: BRIDGE_CONTROL_KIND,
+      controlType: 'network_config',
+      data: {
+        captureBodies,
+        maxBodyBytes,
+      },
+    };
+
+    win.postMessage(controlPayload, '*');
+  };
+  const postTraceHintToInjectedScript = (traceId: string, eventType: string, selector?: string): void => {
+    const controlPayload: BridgeControlPayload = {
+      source: BRIDGE_SOURCE,
+      kind: BRIDGE_CONTROL_KIND,
+      controlType: 'trace_hint',
+      data: {
+        traceId,
+        eventType,
+        selector,
+        timestamp: Date.now(),
+      },
+    };
+
+    win.postMessage(controlPayload, '*');
+  };
+  const emitUiEventWithTrace = (eventType: string, data: Record<string, unknown>): void => {
+    const traceId = createTraceId('ui');
+    const selector = typeof data.selector === 'string' ? data.selector : undefined;
+    sendToBackground(runtime, eventType, {
+      ...data,
+      traceId,
+    });
+    postTraceHintToInjectedScript(traceId, eventType, selector);
+  };
   const onClick = (event: MouseEvent): void => {
     const target = getClickableTarget(event);
     if (!target) {
@@ -681,7 +748,7 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
       return;
     }
 
-    sendToBackground(runtime, 'click', {
+    emitUiEventWithTrace('click', {
       eventType: 'click',
       selector,
       timestamp: Date.now(),
@@ -703,7 +770,7 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
     }
 
     const target = getEventTargetElement(event);
-    sendToBackground(runtime, 'scroll', {
+    emitUiEventWithTrace('scroll', {
       eventType: 'scroll',
       selector: target ? getElementSelector(target) : 'window',
       scrollX,
@@ -738,7 +805,7 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
       payload.inputType = event.inputType;
     }
 
-    sendToBackground(runtime, eventType, payload);
+    emitUiEventWithTrace(eventType, payload);
   };
 
   const onInputCapture = (event: Event): void => emitFormEvent('input', event);
@@ -750,7 +817,7 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
       return;
     }
 
-    sendToBackground(runtime, 'submit', {
+    emitUiEventWithTrace('submit', {
       eventType: 'submit',
       selector: getElementSelector(target),
       method: (target.method || 'get').toLowerCase(),
@@ -777,7 +844,7 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
       payload.fieldType = resolveFieldType(target as FormFieldElement);
     }
 
-    sendToBackground(runtime, eventType, payload);
+    emitUiEventWithTrace(eventType, payload);
   };
 
   const onFocusInCapture = (event: FocusEvent): void => emitFocusEvent('focus', event);
@@ -811,18 +878,24 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
       payload.code = event.code;
     }
 
-    sendToBackground(runtime, 'keydown', payload);
+    emitUiEventWithTrace('keydown', payload);
     lastKeydownEmitAt = now;
   };
 
   const onRuntimeCommand = (
-    request: CaptureCommandRequest | CapturePingRequest,
+    request: CaptureCommandRequest | CapturePingRequest | CaptureConfigUpdateRequest,
     _sender: chrome.runtime.MessageSender,
-    sendResponse: (response: CaptureCommandResponse | { ok: true; type: 'CAPTURE_PONG' }) => void
+    sendResponse: (response: CaptureCommandResponse | { ok: true; type: 'CAPTURE_PONG' } | { ok: true; updated: true }) => void
   ): boolean | void => {
     if (request && request.type === 'CAPTURE_PING') {
       sendResponse({ ok: true, type: 'CAPTURE_PONG' });
       return;
+    }
+
+    if (request && request.type === 'CAPTURE_CONFIG_UPDATE') {
+      postNetworkCaptureConfigToInjectedScript(request.payload);
+      sendResponse({ ok: true, updated: true });
+      return true;
     }
 
     if (!request || request.type !== 'CAPTURE_EXECUTE') {

@@ -132,6 +132,12 @@ describe('Database Schema', () => {
       expect(result).toBeDefined();
     });
 
+    it('should create body_chunks table', () => {
+      initializeSchema(db);
+      const result = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='body_chunks'").get();
+      expect(result).toBeDefined();
+    });
+
     it('should create snapshots table', () => {
       initializeSchema(db);
       const result = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='snapshots'").get();
@@ -171,6 +177,15 @@ describe('Database Schema', () => {
       expect(indexNames).toContain('idx_network_ts_start');
       expect(indexNames).toContain('idx_network_error_class');
       expect(indexNames).toContain('idx_network_session_error');
+    });
+
+    it('should create indexes on body_chunks table', () => {
+      initializeSchema(db);
+      const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='body_chunks'").all() as { name: string }[];
+      const indexNames = indexes.map(i => i.name);
+      expect(indexNames).toContain('idx_body_chunks_session_id');
+      expect(indexNames).toContain('idx_body_chunks_request_id');
+      expect(indexNames).toContain('idx_body_chunks_trace_id');
     });
 
     it('should create indexes on error_fingerprints table', () => {
@@ -266,9 +281,19 @@ describe('Database Migrations', () => {
       expect(tableNames).toContain('sessions');
       expect(tableNames).toContain('events');
       expect(tableNames).toContain('network');
+      expect(tableNames).toContain('body_chunks');
       expect(tableNames).toContain('error_fingerprints');
       expect(tableNames).toContain('snapshots');
       expect(tableNames).toContain('schema_version');
+    });
+
+    it('should include trace indexes after all migrations', () => {
+      initializeDatabase(db);
+      const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='network'").all() as { name: string }[];
+      const indexNames = indexes.map((index) => index.name);
+      expect(indexNames).toContain('idx_network_trace_id');
+      expect(indexNames).toContain('idx_network_session_trace_ts');
+      expect(indexNames).toContain('idx_network_tab_id');
     });
   });
 

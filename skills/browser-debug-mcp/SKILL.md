@@ -29,7 +29,19 @@ Prefer these checks after changes:
 
 - Lint: `pnpm nx run-many -t lint`
 - Test: `pnpm nx run-many -t test`
+- E2E smoke: `pnpm test:e2e:smoke`
+- E2E full: `pnpm test:e2e:full`
 - Build/type safety: `pnpm nx run-many -t build`
+- Docs CI: `pnpm docs:ci`
+
+Recommended order for broad changes:
+
+1. `pnpm nx run-many -t lint`
+2. `pnpm nx run-many -t test`
+3. `pnpm test:e2e:smoke`
+4. `pnpm test:e2e:full` (required for integration-sensitive work)
+5. `pnpm nx run-many -t build`
+6. `pnpm docs:ci`
 
 If Nx daemon/worker is unstable in the environment:
 

@@ -19,8 +19,10 @@
   "scripts": {
     "typecheck": "nx run-many -t lint --projects mcp-server,chrome-extension,shared,redaction,selectors,mcp-contracts",
     "test": "nx run-many -t test",
+    "test:non-e2e": "nx run-many -t test --exclude=e2e-playwright",
     "lint": "nx run-many -t lint",
     "build": "nx run-many -t build",
+    "verify:ci": "pnpm typecheck && pnpm lint && pnpm test:non-e2e && pnpm build && pnpm docs:ci && pnpm mcp:check-stdio-guard",
     "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm build && pnpm docs:ci && pnpm mcp:check-stdio-guard",
     "serve": "nx serve mcp-server",
     "mcp:start": "node scripts/mcp-start.cjs",
@@ -43,7 +45,10 @@
     "release:tag:yes": "node tools/release/create-tag.mjs --yes",
     "mcp:print-config": "node tools/mcp/print-client-config.mjs",
     "mcp:check-stdio-guard": "node tools/mcp/check-stdio-guard.mjs",
-    "hooks:install": "git config core.hooksPath .githooks && git config commit.template .gitmessage.txt"
+    "hooks:install": "git config core.hooksPath .githooks && git config commit.template .gitmessage.txt",
+    "test:e2e": "nx test e2e-playwright",
+    "test:e2e:smoke": "nx run e2e-playwright:smoke",
+    "test:e2e:full": "nx run e2e-playwright:full"
   },
   "keywords": [
     "mcp",
@@ -61,7 +66,8 @@
     "@docusaurus/preset-classic": "^3.9.2",
     "@easyops-cn/docusaurus-search-local": "^0.55.1",
     "@mdx-js/react": "^3.1.1",
-    "@nx/vite": "^22.5.3",
+    "@nx/vite": "^22.5.2",
+    "@playwright/test": "^1.58.2",
     "@types/chrome": "^0.1.37",
     "@types/node": "^25.3.3",
     "@types/react": "^19.2.14",

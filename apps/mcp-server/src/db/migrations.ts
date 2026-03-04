@@ -210,6 +210,83 @@ const migrations: Migration[] = [
       runBackfill();
     },
   },
+  {
+    version: 5,
+    name: 'network_trace_and_body_capture',
+    up: (db) => {
+      const networkColumns = getColumnNames(db, 'network');
+      if (!networkColumns.has('trace_id')) {
+        db.exec('ALTER TABLE network ADD COLUMN trace_id TEXT;');
+      }
+      if (!networkColumns.has('tab_id')) {
+        db.exec('ALTER TABLE network ADD COLUMN tab_id INTEGER;');
+      }
+      if (!networkColumns.has('request_content_type')) {
+        db.exec('ALTER TABLE network ADD COLUMN request_content_type TEXT;');
+      }
+      if (!networkColumns.has('request_body_text')) {
+        db.exec('ALTER TABLE network ADD COLUMN request_body_text TEXT;');
+      }
+      if (!networkColumns.has('request_body_json')) {
+        db.exec('ALTER TABLE network ADD COLUMN request_body_json TEXT;');
+      }
+      if (!networkColumns.has('request_body_bytes')) {
+        db.exec('ALTER TABLE network ADD COLUMN request_body_bytes INTEGER;');
+      }
+      if (!networkColumns.has('request_body_truncated')) {
+        db.exec('ALTER TABLE network ADD COLUMN request_body_truncated INTEGER NOT NULL DEFAULT 0;');
+      }
+      if (!networkColumns.has('request_body_chunk_ref')) {
+        db.exec('ALTER TABLE network ADD COLUMN request_body_chunk_ref TEXT;');
+      }
+      if (!networkColumns.has('response_content_type')) {
+        db.exec('ALTER TABLE network ADD COLUMN response_content_type TEXT;');
+      }
+      if (!networkColumns.has('response_body_text')) {
+        db.exec('ALTER TABLE network ADD COLUMN response_body_text TEXT;');
+      }
+      if (!networkColumns.has('response_body_json')) {
+        db.exec('ALTER TABLE network ADD COLUMN response_body_json TEXT;');
+      }
+      if (!networkColumns.has('response_body_bytes')) {
+        db.exec('ALTER TABLE network ADD COLUMN response_body_bytes INTEGER;');
+      }
+      if (!networkColumns.has('response_body_truncated')) {
+        db.exec('ALTER TABLE network ADD COLUMN response_body_truncated INTEGER NOT NULL DEFAULT 0;');
+      }
+      if (!networkColumns.has('response_body_chunk_ref')) {
+        db.exec('ALTER TABLE network ADD COLUMN response_body_chunk_ref TEXT;');
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_network_trace_id ON network(trace_id);
+        CREATE INDEX IF NOT EXISTS idx_network_session_trace_ts ON network(session_id, trace_id, ts_start);
+        CREATE INDEX IF NOT EXISTS idx_network_tab_id ON network(tab_id);
+      `);
+
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS body_chunks (
+          chunk_ref TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          request_id TEXT,
+          trace_id TEXT,
+          body_kind TEXT NOT NULL CHECK(body_kind IN ('request', 'response')),
+          content_type TEXT,
+          body_text TEXT NOT NULL,
+          body_bytes INTEGER NOT NULL,
+          truncated INTEGER NOT NULL DEFAULT 0,
+          created_at INTEGER NOT NULL,
+          FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+        );
+      `);
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_body_chunks_session_id ON body_chunks(session_id);
+        CREATE INDEX IF NOT EXISTS idx_body_chunks_request_id ON body_chunks(request_id);
+        CREATE INDEX IF NOT EXISTS idx_body_chunks_trace_id ON body_chunks(trace_id);
+      `);
+    },
+  },
 ];
 
 export function runMigrations(db: Database): void {

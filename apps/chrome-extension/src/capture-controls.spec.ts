@@ -99,6 +99,10 @@ describe('capture controls', () => {
           profile: 'standard',
         },
       },
+      network: {
+        captureBodies: true,
+        maxBodyBytes: 123456,
+      },
     });
 
     expect(saved).toEqual({
@@ -119,6 +123,10 @@ describe('capture controls', () => {
           profile: 'standard',
         },
       },
+      network: {
+        captureBodies: true,
+        maxBodyBytes: 123456,
+      },
     });
 
     const loaded = await loadCaptureConfig(storage);
@@ -130,6 +138,7 @@ describe('capture controls', () => {
       safeMode: true,
       allowlist: [],
       snapshots: DEFAULT_CAPTURE_CONFIG.snapshots,
+      network: DEFAULT_CAPTURE_CONFIG.network,
     });
   });
 
@@ -166,6 +175,21 @@ describe('capture controls', () => {
         profile: 'strict',
       },
     });
+  });
+
+  it('migrates legacy png max-bytes default to the new default budget', () => {
+    const normalized = normalizeCaptureConfig({
+      snapshots: {
+        ...DEFAULT_CAPTURE_CONFIG.snapshots,
+        pngPolicy: {
+          maxImagesPerSession: 8,
+          maxBytesPerImage: 262144,
+          minCaptureIntervalMs: 5000,
+        },
+      },
+    });
+
+    expect(normalized.snapshots.pngPolicy.maxBytesPerImage).toBe(1048576);
   });
 
   it('defaults snapshot privacy profile to strict and supports standard mode', () => {
@@ -249,5 +273,19 @@ describe('capture controls', () => {
     });
 
     expect(fallback.snapshots.styleMode).toBe('computed-lite');
+  });
+
+  it('normalizes network body capture bounds', () => {
+    const normalized = normalizeCaptureConfig({
+      network: {
+        captureBodies: true,
+        maxBodyBytes: 99_999_999,
+      },
+    });
+
+    expect(normalized.network).toEqual({
+      captureBodies: true,
+      maxBodyBytes: 5 * 1024 * 1024,
+    });
   });
 });

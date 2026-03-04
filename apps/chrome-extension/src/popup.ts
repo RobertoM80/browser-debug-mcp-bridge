@@ -24,6 +24,10 @@ type CaptureConfig = {
       minCaptureIntervalMs: number;
     };
   };
+  network: {
+    captureBodies: boolean;
+    maxBodyBytes: number;
+  };
 };
 
 type SessionResponse =
@@ -177,6 +181,8 @@ function renderConfig(config: CaptureConfig): void {
   const maxImagesPerSession = document.getElementById('snapshot-max-images') as HTMLInputElement | null;
   const maxBytesPerImage = document.getElementById('snapshot-max-bytes') as HTMLInputElement | null;
   const minCaptureIntervalMs = document.getElementById('snapshot-min-interval') as HTMLInputElement | null;
+  const networkCaptureBodies = document.getElementById('network-capture-bodies') as HTMLInputElement | null;
+  const networkMaxBodyBytes = document.getElementById('network-max-body-bytes') as HTMLInputElement | null;
 
   if (safeModeCheckbox) {
     safeModeCheckbox.checked = config.safeMode;
@@ -197,6 +203,8 @@ function renderConfig(config: CaptureConfig): void {
   if (maxImagesPerSession) maxImagesPerSession.value = String(config.snapshots.pngPolicy.maxImagesPerSession);
   if (maxBytesPerImage) maxBytesPerImage.value = String(config.snapshots.pngPolicy.maxBytesPerImage);
   if (minCaptureIntervalMs) minCaptureIntervalMs.value = String(config.snapshots.pngPolicy.minCaptureIntervalMs);
+  if (networkCaptureBodies) networkCaptureBodies.checked = config.network.captureBodies;
+  if (networkMaxBodyBytes) networkMaxBodyBytes.value = String(config.network.maxBodyBytes);
 }
 
 function getConfigFromForm(): CaptureConfig {
@@ -213,6 +221,8 @@ function getConfigFromForm(): CaptureConfig {
   const maxImagesPerSession = document.getElementById('snapshot-max-images') as HTMLInputElement | null;
   const maxBytesPerImage = document.getElementById('snapshot-max-bytes') as HTMLInputElement | null;
   const minCaptureIntervalMs = document.getElementById('snapshot-min-interval') as HTMLInputElement | null;
+  const networkCaptureBodies = document.getElementById('network-capture-bodies') as HTMLInputElement | null;
+  const networkMaxBodyBytes = document.getElementById('network-max-body-bytes') as HTMLInputElement | null;
 
   const allowlist = (allowlistInput?.value ?? '')
     .split(/[\n,]+/g)
@@ -234,8 +244,13 @@ function getConfigFromForm(): CaptureConfig {
 
   const pngPolicy = {
     maxImagesPerSession: Number(maxImagesPerSession?.value ?? 8),
-    maxBytesPerImage: Number(maxBytesPerImage?.value ?? 262144),
+    maxBytesPerImage: Number(maxBytesPerImage?.value ?? 1048576),
     minCaptureIntervalMs: Number(minCaptureIntervalMs?.value ?? 5000),
+  };
+
+  const network = {
+    captureBodies: networkCaptureBodies?.checked === true,
+    maxBodyBytes: Number(networkMaxBodyBytes?.value ?? 262144),
   };
 
   return {
@@ -249,6 +264,7 @@ function getConfigFromForm(): CaptureConfig {
       triggers,
       pngPolicy,
     },
+    network,
   };
 }
 

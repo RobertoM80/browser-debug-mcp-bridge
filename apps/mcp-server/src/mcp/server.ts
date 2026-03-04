@@ -144,6 +144,54 @@ const TOOL_SCHEMAS: Record<string, object> = {
       offset: { type: 'number' },
     },
   },
+  get_network_calls: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      urlContains: { type: 'string' },
+      urlRegex: { type: 'string' },
+      method: { type: 'string' },
+      statusIn: { type: 'array', items: { type: 'number' } },
+      tabId: { type: 'number' },
+      timeFrom: { type: 'number' },
+      timeTo: { type: 'number' },
+      includeBodies: { type: 'boolean' },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
+    },
+  },
+  wait_for_network_call: {
+    type: 'object',
+    required: ['sessionId', 'urlPattern'],
+    properties: {
+      sessionId: { type: 'string' },
+      urlPattern: { type: 'string' },
+      method: { type: 'string' },
+      timeoutMs: { type: 'number' },
+      includeBodies: { type: 'boolean' },
+    },
+  },
+  get_request_trace: {
+    type: 'object',
+    properties: {
+      sessionId: { type: 'string' },
+      requestId: { type: 'string' },
+      traceId: { type: 'string' },
+      includeBodies: { type: 'boolean' },
+      eventLimit: { type: 'number' },
+    },
+  },
+  get_body_chunk: {
+    type: 'object',
+    required: ['chunkRef'],
+    properties: {
+      chunkRef: { type: 'string' },
+      sessionId: { type: 'string' },
+      offset: { type: 'number' },
+      limit: { type: 'number' },
+    },
+  },
   get_element_refs: {
     type: 'object',
     required: ['sessionId', 'selector'],
@@ -277,6 +325,10 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_console_events: 'Read console events for a session',
   get_error_fingerprints: 'List aggregated error fingerprints',
   get_network_failures: 'List network failures and groupings',
+  get_network_calls: 'Query network calls with targeted filters and optional sanitized bodies',
+  wait_for_network_call: 'Wait for the next matching network call and return it deterministically',
+  get_request_trace: 'Get correlated UI/events/network chain by requestId or traceId',
+  get_body_chunk: 'Retrieve a chunk from a stored large body payload',
   get_element_refs: 'Get element references by selector',
   get_dom_subtree: 'Capture a bounded DOM subtree',
   get_dom_document: 'Capture full document as outline or html',
@@ -304,7 +356,17 @@ const DEFAULT_EVENT_LIMIT = 50;
 const MAX_LIMIT = 200;
 const DEFAULT_SNAPSHOT_ASSET_CHUNK_BYTES = 64 * 1024;
 const MAX_SNAPSHOT_ASSET_CHUNK_BYTES = 256 * 1024;
+const DEFAULT_BODY_CHUNK_BYTES = 64 * 1024;
+const MAX_BODY_CHUNK_BYTES = 256 * 1024;
+const DEFAULT_NETWORK_POLL_TIMEOUT_MS = 15_000;
+const MAX_NETWORK_POLL_TIMEOUT_MS = 120_000;
+const DEFAULT_NETWORK_POLL_INTERVAL_MS = 250;
 const LIVE_SESSION_DISCONNECTED_CODE = 'LIVE_SESSION_DISCONNECTED';
+const NETWORK_CALL_SELECT_COLUMNS = `
+  request_id, session_id, trace_id, tab_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class, response_size_est,
+  request_content_type, request_body_text, request_body_json, request_body_bytes, request_body_truncated, request_body_chunk_ref,
+  response_content_type, response_body_text, response_body_json, response_body_bytes, response_body_truncated, response_body_chunk_ref
+`;
 
 const NETWORK_DOMAIN_GROUP_SQL = `
   CASE
@@ -357,6 +419,8 @@ interface ErrorFingerprintRow {
 interface NetworkFailureRow {
   request_id: string;
   session_id: string;
+  trace_id: string | null;
+  tab_id: number | null;
   ts_start: number;
   duration_ms: number | null;
   method: string;
@@ -365,6 +429,47 @@ interface NetworkFailureRow {
   status: number | null;
   initiator: string | null;
   error_class: string | null;
+}
+
+interface NetworkCallRow {
+  request_id: string;
+  session_id: string;
+  trace_id: string | null;
+  tab_id: number | null;
+  ts_start: number;
+  duration_ms: number | null;
+  method: string;
+  url: string;
+  origin: string | null;
+  status: number | null;
+  initiator: string | null;
+  error_class: string | null;
+  response_size_est: number | null;
+  request_content_type: string | null;
+  request_body_text: string | null;
+  request_body_json: string | null;
+  request_body_bytes: number | null;
+  request_body_truncated: number;
+  request_body_chunk_ref: string | null;
+  response_content_type: string | null;
+  response_body_text: string | null;
+  response_body_json: string | null;
+  response_body_bytes: number | null;
+  response_body_truncated: number;
+  response_body_chunk_ref: string | null;
+}
+
+interface BodyChunkRow {
+  chunk_ref: string;
+  session_id: string;
+  request_id: string | null;
+  trace_id: string | null;
+  body_kind: string;
+  content_type: string | null;
+  body_text: string;
+  body_bytes: number;
+  truncated: number;
+  created_at: number;
 }
 
 interface GroupedNetworkFailureRow {
@@ -671,6 +776,172 @@ function resolveDurationMs(value: unknown, fallback: number, maxValue: number): 
   }
 
   return Math.min(floored, maxValue);
+}
+
+function resolveBodyChunkBytes(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_BODY_CHUNK_BYTES;
+  }
+
+  const floored = Math.floor(value);
+  if (floored < 1) {
+    return DEFAULT_BODY_CHUNK_BYTES;
+  }
+
+  return Math.min(floored, MAX_BODY_CHUNK_BYTES);
+}
+
+function resolveTimeoutMs(value: unknown, fallback: number, maxValue: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  const floored = Math.floor(value);
+  if (floored < 100) {
+    return fallback;
+  }
+
+  return Math.min(floored, maxValue);
+}
+
+function normalizeHttpMethod(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value.trim().toUpperCase();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeOptionalString(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeStatusIn(value: unknown): number[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const statuses = value
+    .filter((entry): entry is number => typeof entry === 'number' && Number.isFinite(entry))
+    .map((entry) => Math.floor(entry))
+    .filter((entry) => entry >= 100 && entry <= 599);
+
+  return Array.from(new Set(statuses));
+}
+
+function parseJsonOrUndefined(value: string | null): unknown {
+  if (!value) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
+}
+
+function compileSafeRegex(value: string | undefined): RegExp | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  try {
+    return new RegExp(value);
+  } catch {
+    throw new Error('urlRegex must be a valid regular expression');
+  }
+}
+
+function mapNetworkCallRecord(row: NetworkCallRow, includeBodies: boolean): Record<string, unknown> {
+  const requestBodyJson = parseJsonOrUndefined(row.request_body_json);
+  const responseBodyJson = parseJsonOrUndefined(row.response_body_json);
+  return {
+    requestId: row.request_id,
+    sessionId: row.session_id,
+    traceId: row.trace_id ?? undefined,
+    tabId: row.tab_id ?? undefined,
+    timestamp: row.ts_start,
+    durationMs: row.duration_ms ?? undefined,
+    method: row.method,
+    url: row.url,
+    origin: row.origin ?? undefined,
+    status: row.status ?? undefined,
+    initiator: row.initiator ?? undefined,
+    errorType: classifyNetworkFailure(row.status, row.error_class),
+    responseSizeEst: row.response_size_est ?? undefined,
+    request: {
+      contentType: row.request_content_type ?? undefined,
+      bodyBytes: row.request_body_bytes ?? undefined,
+      truncated: row.request_body_truncated === 1,
+      bodyChunkRef: row.request_body_chunk_ref ?? undefined,
+      bodyJson: includeBodies ? requestBodyJson : undefined,
+      bodyText: includeBodies ? row.request_body_text ?? undefined : undefined,
+    },
+    response: {
+      contentType: row.response_content_type ?? undefined,
+      bodyBytes: row.response_body_bytes ?? undefined,
+      truncated: row.response_body_truncated === 1,
+      bodyChunkRef: row.response_body_chunk_ref ?? undefined,
+      bodyJson: includeBodies ? responseBodyJson : undefined,
+      bodyText: includeBodies ? row.response_body_text ?? undefined : undefined,
+    },
+  };
+}
+
+function mapBodyChunkRecord(row: BodyChunkRow, offset: number, limit: number): Record<string, unknown> {
+  const fullBuffer = Buffer.from(row.body_text, 'utf-8');
+  if (offset >= fullBuffer.byteLength) {
+    return {
+      chunkRef: row.chunk_ref,
+      sessionId: row.session_id,
+      requestId: row.request_id ?? undefined,
+      traceId: row.trace_id ?? undefined,
+      bodyKind: row.body_kind,
+      contentType: row.content_type ?? undefined,
+      totalBytes: fullBuffer.byteLength,
+      offset,
+      returnedBytes: 0,
+      hasMore: false,
+      nextOffset: null,
+      chunkText: '',
+      truncated: row.truncated === 1,
+      createdAt: row.created_at,
+    };
+  }
+
+  const chunkBuffer = fullBuffer.subarray(offset, Math.min(offset + limit, fullBuffer.byteLength));
+  const returnedBytes = chunkBuffer.byteLength;
+  const nextOffset = offset + returnedBytes;
+  const hasMore = nextOffset < fullBuffer.byteLength;
+
+  return {
+    chunkRef: row.chunk_ref,
+    sessionId: row.session_id,
+    requestId: row.request_id ?? undefined,
+    traceId: row.trace_id ?? undefined,
+    bodyKind: row.body_kind,
+    contentType: row.content_type ?? undefined,
+    totalBytes: fullBuffer.byteLength,
+    offset,
+    returnedBytes,
+    hasMore,
+    nextOffset: hasMore ? nextOffset : null,
+    chunkText: chunkBuffer.toString('utf-8'),
+    truncated: row.truncated === 1,
+    createdAt: row.created_at,
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolvePromise) => {
+    setTimeout(resolvePromise, ms);
+  });
 }
 
 function normalizeAssetPath(pathValue: string): string {
@@ -1377,7 +1648,7 @@ export function createV1ToolHandlers(
 
       const rows = db
         .prepare(`
-          SELECT request_id, session_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class
+          SELECT request_id, session_id, trace_id, tab_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class
           FROM network
           ${whereClause}
           ORDER BY ts_start DESC
@@ -1400,6 +1671,8 @@ export function createV1ToolHandlers(
         failures: rows.slice(0, limit).map((row) => ({
           requestId: row.request_id,
           sessionId: row.session_id,
+          traceId: row.trace_id ?? undefined,
+          tabId: row.tab_id ?? undefined,
           timestamp: row.ts_start,
           durationMs: row.duration_ms ?? undefined,
           method: row.method,
@@ -1409,6 +1682,308 @@ export function createV1ToolHandlers(
           initiator: row.initiator ?? undefined,
           errorType: classifyNetworkFailure(row.status, row.error_class),
         })),
+      };
+    },
+
+    get_network_calls: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const includeBodies = input.includeBodies === true;
+      const urlContains = normalizeOptionalString(input.urlContains);
+      const urlRegex = compileSafeRegex(normalizeOptionalString(input.urlRegex));
+      const method = normalizeHttpMethod(input.method);
+      const statusIn = normalizeStatusIn(input.statusIn);
+      const tabId = resolveOptionalTabId(input.tabId);
+      const timeFrom = resolveOptionalTimestamp(input.timeFrom);
+      const timeTo = resolveOptionalTimestamp(input.timeTo);
+      const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
+      const offset = resolveOffset(input.offset);
+      if (timeFrom !== undefined && timeTo !== undefined && timeFrom > timeTo) {
+        throw new Error('timeFrom must be <= timeTo');
+      }
+
+      const where: string[] = ['session_id = ?'];
+      const params: unknown[] = [sessionId];
+      if (urlContains) {
+        where.push('url LIKE ?');
+        params.push(`%${urlContains}%`);
+      }
+      if (method) {
+        where.push('method = ?');
+        params.push(method);
+      }
+      if (statusIn.length > 0) {
+        where.push(`status IN (${statusIn.map(() => '?').join(', ')})`);
+        params.push(...statusIn);
+      }
+      if (tabId !== undefined) {
+        where.push('tab_id = ?');
+        params.push(tabId);
+      }
+      if (timeFrom !== undefined) {
+        where.push('ts_start >= ?');
+        params.push(timeFrom);
+      }
+      if (timeTo !== undefined) {
+        where.push('ts_start <= ?');
+        params.push(timeTo);
+      }
+      const whereClause = `WHERE ${where.join(' AND ')}`;
+
+      if (!urlRegex) {
+        const rows = db.prepare(
+          `SELECT ${NETWORK_CALL_SELECT_COLUMNS}
+           FROM network
+           ${whereClause}
+           ORDER BY ts_start DESC
+           LIMIT ? OFFSET ?`
+        ).all(...params, limit + 1, offset) as NetworkCallRow[];
+
+        const truncated = rows.length > limit;
+        const calls = rows
+          .slice(0, limit)
+          .map((row) => mapNetworkCallRecord(row, includeBodies));
+
+        return {
+          ...createBaseResponse(sessionId),
+          limitsApplied: {
+            maxResults: limit,
+            truncated,
+          },
+          filtersApplied: {
+            sessionId,
+            urlContains,
+            method,
+            statusIn,
+            tabId,
+            timeFrom,
+            timeTo,
+            includeBodies,
+          },
+          pagination: {
+            offset,
+            returned: calls.length,
+          },
+          calls,
+        };
+      }
+
+      const regexScanLimit = Math.min(Math.max(limit + offset + 200, 500), 5000);
+      const regex = urlRegex;
+      const regexRows = db.prepare(
+        `SELECT ${NETWORK_CALL_SELECT_COLUMNS}
+         FROM network
+         ${whereClause}
+         ORDER BY ts_start DESC
+         LIMIT ?`
+      ).all(...params, regexScanLimit) as NetworkCallRow[];
+      const matched = regexRows.filter((row) => regex.test(row.url));
+      const sliced = matched.slice(offset, offset + limit + 1);
+      const truncated = matched.length > offset + limit;
+      const calls = sliced
+        .slice(0, limit)
+        .map((row) => mapNetworkCallRecord(row, includeBodies));
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: limit,
+          truncated,
+        },
+        filtersApplied: {
+          sessionId,
+          urlContains,
+          urlRegex: urlRegex.source,
+          method,
+          statusIn,
+          tabId,
+          timeFrom,
+          timeTo,
+          includeBodies,
+          regexScanLimit,
+        },
+        pagination: {
+          offset,
+          returned: calls.length,
+        },
+        calls,
+      };
+    },
+
+    wait_for_network_call: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const urlPattern = normalizeOptionalString(input.urlPattern);
+      if (!urlPattern) {
+        throw new Error('urlPattern is required');
+      }
+
+      const method = normalizeHttpMethod(input.method);
+      const timeoutMs = resolveTimeoutMs(input.timeoutMs, DEFAULT_NETWORK_POLL_TIMEOUT_MS, MAX_NETWORK_POLL_TIMEOUT_MS);
+      const includeBodies = input.includeBodies === true;
+      const startedAt = Date.now();
+      const deadline = startedAt + timeoutMs;
+      const urlRegex = compileSafeRegex(urlPattern);
+      if (!urlRegex) {
+        throw new Error('urlPattern is required');
+      }
+
+      while (Date.now() <= deadline) {
+        const where: string[] = ['session_id = ?', 'ts_start >= ?'];
+        const params: unknown[] = [sessionId, startedAt];
+        if (method) {
+          where.push('method = ?');
+          params.push(method);
+        }
+
+        const rows = db.prepare(
+          `SELECT ${NETWORK_CALL_SELECT_COLUMNS}
+           FROM network
+           WHERE ${where.join(' AND ')}
+           ORDER BY ts_start ASC
+           LIMIT 200`
+        ).all(...params) as NetworkCallRow[];
+
+        const matched = rows.find((row) => urlRegex.test(row.url));
+        if (matched) {
+          return {
+            ...createBaseResponse(sessionId),
+            limitsApplied: {
+              maxResults: 1,
+              truncated: false,
+            },
+            waitedMs: Date.now() - startedAt,
+            filter: {
+              urlPattern,
+              method,
+              timeoutMs,
+              includeBodies,
+            },
+            call: mapNetworkCallRecord(matched, includeBodies),
+          };
+        }
+
+        await sleep(DEFAULT_NETWORK_POLL_INTERVAL_MS);
+      }
+
+      throw new Error(`No matching network call for pattern "${urlPattern}" within ${timeoutMs}ms.`);
+    },
+
+    get_request_trace: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      const includeBodies = input.includeBodies === true;
+      const requestId = normalizeOptionalString(input.requestId);
+      const traceIdInput = normalizeOptionalString(input.traceId);
+      const eventLimit = resolveLimit(input.eventLimit, DEFAULT_EVENT_LIMIT);
+
+      if (!requestId && !traceIdInput) {
+        throw new Error('requestId or traceId is required');
+      }
+
+      let anchor: NetworkCallRow | undefined;
+      if (requestId) {
+        const params: unknown[] = [requestId];
+        let sql = `SELECT ${NETWORK_CALL_SELECT_COLUMNS} FROM network WHERE request_id = ?`;
+        if (sessionId) {
+          sql += ' AND session_id = ?';
+          params.push(sessionId);
+        }
+        sql += ' LIMIT 1';
+        anchor = db.prepare(sql).get(...params) as NetworkCallRow | undefined;
+        if (!anchor) {
+          throw new Error(`Request not found: ${requestId}`);
+        }
+      }
+
+      const traceId = traceIdInput ?? anchor?.trace_id ?? null;
+      const traceSessionId = sessionId ?? anchor?.session_id;
+      const networkWhere: string[] = [];
+      const networkParams: unknown[] = [];
+      if (traceId) {
+        networkWhere.push('trace_id = ?');
+        networkParams.push(traceId);
+      } else if (requestId) {
+        networkWhere.push('request_id = ?');
+        networkParams.push(requestId);
+      }
+      if (traceSessionId) {
+        networkWhere.push('session_id = ?');
+        networkParams.push(traceSessionId);
+      }
+
+      const networkRows = db.prepare(
+        `SELECT ${NETWORK_CALL_SELECT_COLUMNS}
+         FROM network
+         WHERE ${networkWhere.join(' AND ')}
+         ORDER BY ts_start ASC
+         LIMIT 500`
+      ).all(...networkParams) as NetworkCallRow[];
+
+      const eventRows = traceId
+        ? db.prepare(
+          `SELECT event_id, session_id, ts, type, payload_json, tab_id, origin
+           FROM events
+           WHERE json_extract(payload_json, '$.traceId') = ?
+             ${traceSessionId ? 'AND session_id = ?' : ''}
+           ORDER BY ts ASC
+           LIMIT ?`
+        ).all(...(traceSessionId ? [traceId, traceSessionId, eventLimit + 1] : [traceId, eventLimit + 1])) as EventRow[]
+        : [];
+      const eventsTruncated = eventRows.length > eventLimit;
+      const correlatedEvents = eventRows.slice(0, eventLimit).map((row) => mapEventRecord(row));
+
+      return {
+        ...createBaseResponse(traceSessionId),
+        limitsApplied: {
+          maxResults: eventLimit,
+          truncated: eventsTruncated,
+        },
+        traceId: traceId ?? undefined,
+        requestId: requestId ?? anchor?.request_id ?? undefined,
+        anchorRequest: anchor ? mapNetworkCallRecord(anchor, includeBodies) : undefined,
+        networkCalls: networkRows.map((row) => mapNetworkCallRecord(row, includeBodies)),
+        correlatedEvents,
+      };
+    },
+
+    get_body_chunk: async (input) => {
+      const db = getDb();
+      const chunkRef = normalizeOptionalString(input.chunkRef);
+      if (!chunkRef) {
+        throw new Error('chunkRef is required');
+      }
+
+      const sessionId = getSessionId(input);
+      const offset = resolveOffset(input.offset);
+      const limit = resolveBodyChunkBytes(input.limit);
+      const row = db.prepare(
+        `SELECT chunk_ref, session_id, request_id, trace_id, body_kind, content_type, body_text, body_bytes, truncated, created_at
+         FROM body_chunks
+         WHERE chunk_ref = ?
+           ${sessionId ? 'AND session_id = ?' : ''}
+         LIMIT 1`
+      ).get(...(sessionId ? [chunkRef, sessionId] : [chunkRef])) as BodyChunkRow | undefined;
+
+      if (!row) {
+        throw new Error(`Body chunk not found: ${chunkRef}`);
+      }
+
+      return {
+        ...createBaseResponse(row.session_id),
+        limitsApplied: {
+          maxResults: limit,
+          truncated: offset + limit < row.body_bytes,
+        },
+        ...mapBodyChunkRecord(row, offset, limit),
       };
     },
 
@@ -1478,7 +2053,7 @@ export function createV1ToolHandlers(
 
       const latestNetworkFailure = db
         .prepare(`
-          SELECT request_id, session_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class
+          SELECT request_id, session_id, trace_id, tab_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class
           FROM network
           WHERE session_id = ?
             AND (error_class IS NOT NULL OR COALESCE(status, 0) >= 400)
@@ -1521,7 +2096,7 @@ export function createV1ToolHandlers(
 
       const networkRows = db
         .prepare(`
-          SELECT request_id, session_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class
+          SELECT request_id, session_id, trace_id, tab_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class
           FROM network
           WHERE session_id = ?
             AND ts_start BETWEEN ? AND ?
@@ -1638,7 +2213,7 @@ export function createV1ToolHandlers(
 
       const nearbyNetworkFailures = db
         .prepare(`
-          SELECT request_id, session_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class
+          SELECT request_id, session_id, trace_id, tab_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class
           FROM network
           WHERE session_id = ?
             AND ts_start BETWEEN ? AND ?
