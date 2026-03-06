@@ -63,6 +63,8 @@ thumbs.db
 .codex/
 .cursor/
 .opencode/
+.agents/
+skills*
 opencode.json
 .github/agents/
 .github/prompts/
