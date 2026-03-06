@@ -5,6 +5,7 @@ import { pathToFileURL } from 'url';
 import { WebSocketManager } from './websocket/websocket-server.js';
 import { initializeDatabase, getConnection, getDatabasePath } from './db/index.js';
 import { resetDatabase } from './db/migrations.js';
+import { getRuntimeDataDir } from './runtime-paths.js';
 import {
   exportSessionToJson,
   exportSessionToZip,
@@ -161,8 +162,8 @@ fastify.post('/sessions/:sessionId/export', async (request) => {
   const settings = getRetentionSettings(getConnection().db);
   const format = body.format === 'zip' || body.format === 'json' ? body.format : 'zip';
   const result = format === 'zip'
-    ? await exportSessionToZip(getConnection().db, getDatabasePath(), params.sessionId, process.cwd(), settings.exportPathOverride)
-    : exportSessionToJson(getConnection().db, getDatabasePath(), params.sessionId, process.cwd(), settings.exportPathOverride, {
+    ? await exportSessionToZip(getConnection().db, getDatabasePath(), params.sessionId, getRuntimeDataDir(), settings.exportPathOverride)
+    : exportSessionToJson(getConnection().db, getDatabasePath(), params.sessionId, getRuntimeDataDir(), settings.exportPathOverride, {
       compatibilityMode: body.compatibilityMode,
       includePngBase64: body.includePngBase64,
     });

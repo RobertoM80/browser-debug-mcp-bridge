@@ -8,22 +8,25 @@ import {
   closeConnection,
   getConnection,
   isConnected,
-  resetConnection,
-  getDatabasePath
+  resetConnection
 } from './connection';
 import { initializeSchema, getSchemaVersion, clearDatabase, SCHEMA_VERSION } from './schema';
 import { initializeDatabase, resetDatabase, runMigrations } from './migrations';
+import { getDatabasePath } from '../runtime-paths';
 
 describe('Database Connection', () => {
   let testDbPath: string;
+  const originalEnv = { ...process.env };
 
   beforeEach(() => {
     testDbPath = join(tmpdir(), `test-${Date.now()}.db`);
     resetConnection();
+    process.env = { ...originalEnv };
   });
 
   afterEach(() => {
     closeConnection();
+    process.env = { ...originalEnv };
     if (existsSync(testDbPath)) {
       unlinkSync(testDbPath);
     }
@@ -86,10 +89,23 @@ describe('Database Connection', () => {
       delete process.env.DATA_DIR;
     });
 
-    it('should use cwd when DATA_DIR not set', () => {
+    it('should use a user-local runtime directory when DATA_DIR not set', () => {
       delete process.env.DATA_DIR;
+      delete process.env.XDG_STATE_HOME;
+      delete process.env.XDG_DATA_HOME;
+
+      const homeRoot = join(tmpdir(), `runtime-home-${Date.now()}`);
+      process.env.HOME = homeRoot;
+
+      if (process.platform === 'win32') {
+        process.env.LOCALAPPDATA = join(homeRoot, 'AppData', 'Local');
+        process.env.APPDATA = join(homeRoot, 'AppData', 'Roaming');
+      }
+
       const path = getDatabasePath();
       expect(path).toContain('browser-debug.db');
+      expect(path).not.toContain(`${process.cwd()}\\data`);
+      expect(path).not.toContain(`${process.cwd()}/data`);
     });
   });
 });

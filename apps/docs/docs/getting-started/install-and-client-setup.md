@@ -76,6 +76,7 @@ Notes:
 4. If npm reports `EPERM` under `npm-cache\\_cacache\\tmp\\git-clone...`, use local mode instead.
 5. On Windows, launcher attempts automatic recovery when stale bridge processes still hold port `8065`.
 6. In `mcp-stdio` mode, runtime should stop when the MCP host transport closes.
+7. Runtime state now defaults to a user-local app-data directory instead of the repo/package root. Set `DATA_DIR` only if you want to override it.
 
 Manual stop command (if stale process still occupies `8065`):
 

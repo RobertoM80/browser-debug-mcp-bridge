@@ -248,6 +248,17 @@ Default port is `8065`.
 - If a stale process still remains, stop it explicitly with `node scripts/mcp-start.cjs --stop`.
 - Optional: set `MCP_STARTUP_TIMEOUT_MS` (default `15000`) for slower machines.
 
+## Runtime Storage
+
+By default, the launcher and server store local runtime state in a user-local app-data directory, not in the repo or package root.
+
+- Windows: `%LOCALAPPDATA%\\browser-debug-mcp-bridge`
+- macOS: `~/Library/Application Support/browser-debug-mcp-bridge`
+- Linux: `$XDG_STATE_HOME/browser-debug-mcp-bridge` or `$XDG_DATA_HOME/browser-debug-mcp-bridge`
+- Fallback: `~/.local/share/browser-debug-mcp-bridge`
+
+This keeps SQLite data, snapshot assets, exports, and launcher lock files out of host app roots. To override it explicitly, set `DATA_DIR`.
+
 Useful Windows command:
 
 ```powershell

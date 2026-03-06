@@ -30,6 +30,12 @@ Actions:
 - If a stale bridge process remains, run `node scripts/mcp-start.cjs --stop`
 - If stop reports `MCP_STOP_PORT_OCCUPIED_BY_OTHER_APP`, the listener is not bridge and must be stopped manually
 
+## Runtime files appear in a repo or host app root
+
+- Current launcher defaults should keep runtime state in a user-local app-data directory instead
+- If you still see repo-local state, check whether `DATA_DIR` is set explicitly by your MCP host or shell profile
+- Root `*.log` files are usually manual shell redirections from debugging sessions, not files created by the bridge itself
+
 ## No events in session summary
 
 - Ensure session is started before reproducing issue

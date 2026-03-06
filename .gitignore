@@ -18,6 +18,9 @@ coverage/
 # Misc
 .DS_Store
 *.log
+.tmp_*.log
+tmp-*.log
+mcp-*.log
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -45,6 +48,11 @@ thumbs.db
 
 # Backup
 .ralph_backup/
+
+# Local runtime state
+.browser-debug-mcp-bridge/
+/data/
+**/.mcp-start.lock
 
 # Databases
 *.db

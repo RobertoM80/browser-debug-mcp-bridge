@@ -7,7 +7,7 @@ import type {
   SessionEndMessage,
 } from '../websocket/messages.js';
 import { resolveErrorFingerprint } from './error-fingerprints.js';
-import { getDatabasePath } from './connection.js';
+import { getDatabasePath } from '../runtime-paths.js';
 import { writeSnapshot } from '../retention.js';
 
 const INLINE_BODY_BYTES_THRESHOLD = 16 * 1024;

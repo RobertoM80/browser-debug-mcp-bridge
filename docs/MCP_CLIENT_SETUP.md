@@ -58,6 +58,7 @@ Important:
 - Sessions are tab-bound by default; use popup `Session Tabs` to add/remove tabs for the active session.
 - In `mcp-stdio` mode, runtime should stop when the MCP host process/transport closes.
 - Startup readiness timeout can be tuned with `MCP_STARTUP_TIMEOUT_MS` (default `15000`).
+- Local runtime state now defaults to a user-local app-data directory instead of the repo/package root. Set `DATA_DIR` only if you want to override that location.
 
 Launcher behavior on Windows:
 

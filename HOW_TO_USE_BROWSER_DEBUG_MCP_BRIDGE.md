@@ -164,6 +164,11 @@ Expected result:
 1. Terminal stays running.
 2. No immediate startup error.
 
+Runtime state location:
+1. By default, local SQLite data, exports, snapshot assets, and launcher lock files are stored in a user-local app-data directory.
+2. This avoids writing runtime artifacts into the repo root or into the host app working directory.
+3. Set `DATA_DIR` only if you intentionally want a custom location.
+
 ## Step 4: Generate ready-to-paste MCP config
 
 For local clone mode, from repo root:

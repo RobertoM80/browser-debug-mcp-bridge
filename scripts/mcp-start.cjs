@@ -5,8 +5,10 @@ const { dirname, join, resolve } = require('node:path');
 const { createRequire } = require('node:module');
 const net = require('node:net');
 const http = require('node:http');
+const { homedir } = require('node:os');
 
 const repoRoot = resolve(__dirname, '..');
+const runtimeDirName = 'browser-debug-mcp-bridge';
 const packageJson = join(repoRoot, 'package.json');
 const mcpBridgeDistEntry = join(repoRoot, 'apps', 'mcp-server', 'dist', 'mcp-bridge.js');
 const mainServerDistEntry = join(repoRoot, 'apps', 'mcp-server', 'dist', 'main.js');
@@ -22,9 +24,44 @@ const localRequire = createRequire(join(repoRoot, 'package.json'));
 const supportsColor = Boolean(process.stderr.isTTY) && !process.env.NO_COLOR;
 const greenBackground = '\x1b[42m\x1b[30m';
 const ansiReset = '\x1b[0m';
-const launchLockPath = join(process.env.DATA_DIR ? resolve(process.env.DATA_DIR) : join(repoRoot, 'data'), '.mcp-start.lock');
+const resolvedDataDir = resolveRuntimeDataDir();
+const launchLockPath = join(resolvedDataDir, '.mcp-start.lock');
 
 let launchLockHeld = false;
+
+function resolveRuntimeDataDir() {
+  const explicitDataDir = process.env.DATA_DIR && process.env.DATA_DIR.trim();
+  if (explicitDataDir) {
+    return resolve(explicitDataDir);
+  }
+
+  const home = process.env.HOME || homedir();
+
+  if (process.platform === 'win32') {
+    const appDataRoot = process.env.LOCALAPPDATA || process.env.APPDATA;
+    if (appDataRoot) {
+      return resolve(appDataRoot, runtimeDirName);
+    }
+  }
+
+  if (process.platform === 'darwin' && home) {
+    return resolve(home, 'Library', 'Application Support', runtimeDirName);
+  }
+
+  if (process.env.XDG_STATE_HOME) {
+    return resolve(process.env.XDG_STATE_HOME, runtimeDirName);
+  }
+
+  if (process.env.XDG_DATA_HOME) {
+    return resolve(process.env.XDG_DATA_HOME, runtimeDirName);
+  }
+
+  if (home) {
+    return resolve(home, '.local', 'share', runtimeDirName);
+  }
+
+  return resolve(process.cwd(), '.browser-debug-mcp-bridge');
+}
 
 function resolveRuntimePath(specifier) {
   try {
@@ -506,14 +543,14 @@ async function spawnRuntime(runtime, port) {
           nxBin.endsWith('.cmd') ? ['run', nxTarget] : [nxBin, 'run', nxTarget],
           {
             cwd: repoRoot,
-            env: { ...process.env },
+            env: { ...process.env, DATA_DIR: resolvedDataDir },
             stdio: 'inherit',
           },
         )
       : runtime === 'dist'
         ? spawn(process.execPath, [entryScript], {
             cwd: repoRoot,
-            env: { ...process.env },
+            env: { ...process.env, DATA_DIR: resolvedDataDir },
             stdio: 'inherit',
           })
         : spawn(
@@ -521,7 +558,7 @@ async function spawnRuntime(runtime, port) {
             tsxCli.endsWith('.cmd') ? [entryScript] : [tsxCli, entryScript],
             {
               cwd: repoRoot,
-              env: { ...process.env },
+              env: { ...process.env, DATA_DIR: resolvedDataDir },
               stdio: 'inherit',
             },
           );
