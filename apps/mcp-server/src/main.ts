@@ -19,6 +19,10 @@ import {
   updateRetentionSettings,
   writeSnapshot,
 } from './retention.js';
+import {
+  getOverridePocAssetResponse,
+  getOverridePocConfigSummary,
+} from './override-poc.js';
 
 const fastify = Fastify({
   logger: process.env.MCP_STDIO_MODE === '1' ? false : true
@@ -90,6 +94,52 @@ fastify.get('/stats', async () => {
       lastCleanup: lastCleanupResult,
     },
   };
+});
+
+fastify.get('/overrides/poc/config', async (_request, reply) => {
+  try {
+    return {
+      ok: true,
+      ...getOverridePocConfigSummary(),
+    };
+  } catch (error) {
+    return reply.code(500).send({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Failed to load override POC config',
+    });
+  }
+});
+
+fastify.get('/overrides/poc/asset', async (request, reply) => {
+  const query = (request.query ?? {}) as { assetUrl?: string };
+  const assetUrl = typeof query.assetUrl === 'string' ? query.assetUrl.trim() : '';
+  if (!assetUrl) {
+    return reply.code(400).send({
+      ok: false,
+      error: 'assetUrl query parameter is required',
+    });
+  }
+
+  try {
+    const result = getOverridePocAssetResponse(assetUrl);
+    reply.header('Content-Type', result.contentType);
+    reply.header('Cache-Control', 'no-store, no-cache, must-revalidate');
+    reply.header('X-BDMCP-Override-Poc', '1');
+    reply.header('X-BDMCP-Override-Config', result.summary.configPath);
+    return reply.send(result.buffer);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to resolve override asset';
+    const statusCode = message.includes('disabled')
+      ? 409
+      : message.includes('does not exist') || message.includes('does not match')
+        ? 404
+        : 500;
+
+    return reply.code(statusCode).send({
+      ok: false,
+      error: message,
+    });
+  }
 });
 
 fastify.get('/retention/settings', async () => {

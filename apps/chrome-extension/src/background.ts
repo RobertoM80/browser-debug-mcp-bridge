@@ -20,6 +20,7 @@ import {
   shouldCapturePng,
   SnapshotPngUsage,
 } from './snapshot-capture';
+import { OverridePocController } from './override-poc';
 import { redactSnapshotRecord } from '../../../libs/redaction/src';
 
 type RuntimeRequest =
@@ -60,6 +61,9 @@ type RuntimeRequest =
   | { type: 'SESSION_GET_TAB_SCOPE' }
   | { type: 'SESSION_ADD_TAB_TO_SESSION'; tabId: number }
   | { type: 'SESSION_REMOVE_TAB_FROM_SESSION'; tabId: number }
+  | { type: 'OVERRIDE_POC_GET_STATUS' }
+  | { type: 'OVERRIDE_POC_ENABLE' }
+  | { type: 'OVERRIDE_POC_DISABLE' }
   | { type: 'DB_RESET' };
 
 type RuntimeResponse =
@@ -1010,6 +1014,7 @@ const sessionManager = new SessionManager({
 const LOG_PREFIX = '[BrowserDebug][Background]';
 let captureConfig: CaptureConfig = { ...DEFAULT_CAPTURE_CONFIG };
 const SERVER_BASE_URL = 'http://127.0.0.1:8065';
+const overridePocController = new OverridePocController(SERVER_BASE_URL);
 const captureDiagnostics = {
   received: 0,
   accepted: 0,
@@ -1372,7 +1377,8 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
         }));
 
     case 'SESSION_STOP':
-      return Promise.resolve().then(() => {
+      return Promise.resolve().then(async () => {
+        await overridePocController.disable().catch(() => undefined);
         const activeSessionId = sessionManager.getState().sessionId;
         if (activeSessionId) {
           cleanupSessionLocalState(activeSessionId);
@@ -1472,6 +1478,40 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
         })
         .catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : 'Failed to read tab scope' }));
 
+    case 'OVERRIDE_POC_GET_STATUS':
+      return Promise.resolve()
+        .then(async () => ({
+          ok: true as const,
+          result: await overridePocController.getStatus(),
+        }))
+        .catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : 'Failed to read override POC status' }));
+
+    case 'OVERRIDE_POC_ENABLE':
+      return Promise.resolve()
+        .then(async () => {
+          const sessionState = sessionManager.getState();
+          if (!sessionState.sessionId || !sessionState.isActive || sessionState.isPaused) {
+            throw new Error('Start or resume an active session before enabling the override POC.');
+          }
+
+          const tab = await resolveCaptureTab(sessionState.sessionId);
+          if (!tab || typeof tab.id !== 'number') {
+            throw new Error('No capture tab is available for the active session.');
+          }
+
+          const status = await overridePocController.enableForTab(tab.id);
+          return { ok: true as const, result: status };
+        })
+        .catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : 'Failed to enable override POC' }));
+
+    case 'OVERRIDE_POC_DISABLE':
+      return Promise.resolve()
+        .then(async () => ({
+          ok: true as const,
+          result: await overridePocController.disable(),
+        }))
+        .catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : 'Failed to disable override POC' }));
+
     case 'SESSION_ADD_TAB_TO_SESSION':
       return Promise.resolve()
         .then(async () => {
@@ -1546,6 +1586,7 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
 
           if (scope.allowedTabIds.size === 0) {
             cleanupSessionLocalState(sessionState.sessionId);
+            await overridePocController.disable().catch(() => undefined);
             return { ok: true as const, state: sessionManager.stopSession() };
           }
 
@@ -1695,6 +1736,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 
   cleanupSessionLocalState(state.sessionId);
+  void overridePocController.disable().catch(() => undefined);
   sessionManager.stopSession();
 });
 

@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "targetAssetUrl": "https://<PROD_HOST>/_next/static/chunks/<SETTINGS_PROD_CHUNK>.js",
+  "localFilePath": "C:/Users/bronz/Documents/progetti/pdf-summarizer/.next/static/chunks/528014a82394e7e3.js",
+  "contentType": "application/javascript; charset=utf-8",
+  "autoReload": true
+}

@@ -222,6 +222,29 @@ Expected result:
 1. Session status becomes active.
 2. A session id is visible in popup.
 
+### Optional: run the experimental override POC
+
+This is available only in local clone mode.
+
+1. Edit `override-poc.config.json` in the repo root.
+2. Set the exact production asset URL and the local built file path.
+3. Rebuild:
+
+```bash
+pnpm nx build mcp-server
+pnpm nx build chrome-extension
+```
+
+4. Reload the unpacked extension.
+5. Start or resume the target session.
+6. Open the popup `Override POC` section.
+7. Click **Enable POC**.
+
+What it currently proves:
+1. the bridge can attach CDP to the selected tab
+2. cache and service worker bypass can be applied before reload
+3. one exact production asset can be replaced with local bytes
+
 ## Step 7: Use it from any other project
 
 Open your other project in your MCP-enabled LLM client.

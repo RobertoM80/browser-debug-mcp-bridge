@@ -88,6 +88,37 @@ Start MCP runtime:
 node scripts/mcp-start.cjs
 ```
 
+### Experimental Override POC
+
+Local repo mode now includes a single-asset production override POC.
+
+1. Edit `override-poc.config.json` with:
+   - `enabled`
+   - exact production `targetAssetUrl`
+   - local built `localFilePath`
+   - `contentType`
+   - `autoReload`
+2. Rebuild the server and extension:
+
+```bash
+pnpm nx build mcp-server
+pnpm nx build chrome-extension
+```
+
+3. Reload the unpacked extension in `chrome://extensions`.
+4. Start or resume a live session on the target tab.
+5. Open the popup `Override POC` section and click `Enable POC`.
+
+Current scope:
+
+- one exact asset URL
+- one local file
+- one attached tab
+- cache disabled and service worker bypass enabled through CDP
+- local bytes served by `GET /overrides/poc/asset`
+
+This is intentionally hardcoded and experimental. It validates the core replacement mechanism only; it does not yet include automatic Next.js chunk mapping or robust SRI/CSP handling.
+
 ## MCP Client Configuration
 
 If you are using local repo mode, generate ready-to-paste snippets:

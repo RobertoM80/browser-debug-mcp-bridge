@@ -69,6 +69,25 @@ type SessionTabScope = {
   tabs: SessionScopeTab[];
 };
 
+type OverridePocStatus = {
+  active: boolean;
+  configuredEnabled: boolean;
+  tabId?: number;
+  targetAssetUrl?: string;
+  localFilePath?: string;
+  resolvedLocalFilePath?: string;
+  contentType?: string;
+  autoReload?: boolean;
+  configPath?: string;
+  fileExists?: boolean;
+  fileSizeBytes?: number | null;
+  matchedRequests: number;
+  fulfilledRequests: number;
+  lastMatchedAt?: number;
+  lastFulfilledAt?: number;
+  lastError?: string;
+};
+
 type SessionImportResult = {
   sessionId: string;
   requestedSessionId: string;
@@ -308,6 +327,11 @@ function setRetentionStatus(message: string, tone: StatusTone = 'info'): void {
   setStatusMessage(status, message, tone);
 }
 
+function setOverridePocStatusMessage(message: string, tone: StatusTone = 'info'): void {
+  const status = document.getElementById('override-poc-status');
+  setStatusMessage(status, message, tone);
+}
+
 function getCurrentSessionId(): string | null {
   const sessionId = (document.getElementById('session-id')?.textContent ?? '').trim();
   if (!sessionId || sessionId === '-') {
@@ -453,6 +477,58 @@ function parseSessionTabScope(result: unknown): SessionTabScope | null {
   };
 }
 
+function parseOverridePocStatus(result: unknown): OverridePocStatus | null {
+  if (!result || typeof result !== 'object') {
+    return null;
+  }
+
+  const candidate = result as Partial<OverridePocStatus>;
+  if (candidate.active !== true && candidate.active !== false) {
+    return null;
+  }
+  if (candidate.configuredEnabled !== true && candidate.configuredEnabled !== false) {
+    return null;
+  }
+  if (typeof candidate.matchedRequests !== 'number' || !Number.isFinite(candidate.matchedRequests)) {
+    return null;
+  }
+  if (typeof candidate.fulfilledRequests !== 'number' || !Number.isFinite(candidate.fulfilledRequests)) {
+    return null;
+  }
+
+  const mapOptionalNumber = (value: unknown): number | undefined => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return undefined;
+    }
+    return Math.floor(value);
+  };
+
+  const mapOptionalString = (value: unknown): string | undefined => {
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+  };
+
+  return {
+    active: candidate.active,
+    configuredEnabled: candidate.configuredEnabled,
+    tabId: mapOptionalNumber(candidate.tabId),
+    targetAssetUrl: mapOptionalString(candidate.targetAssetUrl),
+    localFilePath: mapOptionalString(candidate.localFilePath),
+    resolvedLocalFilePath: mapOptionalString(candidate.resolvedLocalFilePath),
+    contentType: mapOptionalString(candidate.contentType),
+    autoReload: typeof candidate.autoReload === 'boolean' ? candidate.autoReload : undefined,
+    configPath: mapOptionalString(candidate.configPath),
+    fileExists: typeof candidate.fileExists === 'boolean' ? candidate.fileExists : undefined,
+    fileSizeBytes: candidate.fileSizeBytes === null
+      ? null
+      : mapOptionalNumber(candidate.fileSizeBytes),
+    matchedRequests: Math.floor(candidate.matchedRequests),
+    fulfilledRequests: Math.floor(candidate.fulfilledRequests),
+    lastMatchedAt: mapOptionalNumber(candidate.lastMatchedAt),
+    lastFulfilledAt: mapOptionalNumber(candidate.lastFulfilledAt),
+    lastError: mapOptionalString(candidate.lastError),
+  };
+}
+
 function renderSessionTabScope(scope: SessionTabScope): void {
   const baseOriginEl = document.getElementById('session-base-origin');
   const tabsListEl = document.getElementById('session-tabs-list');
@@ -504,6 +580,62 @@ function renderSessionTabScope(scope: SessionTabScope): void {
   }
 }
 
+function renderOverridePocStatus(status: OverridePocStatus): void {
+  const targetUrlEl = document.getElementById('override-poc-target-url');
+  const localFileEl = document.getElementById('override-poc-local-file');
+  const configPathEl = document.getElementById('override-poc-config-path');
+  const tabIdEl = document.getElementById('override-poc-tab-id');
+  const matchedEl = document.getElementById('override-poc-matched');
+  const fulfilledEl = document.getElementById('override-poc-fulfilled');
+  const enableButton = document.getElementById('override-poc-enable') as HTMLButtonElement | null;
+  const disableButton = document.getElementById('override-poc-disable') as HTMLButtonElement | null;
+
+  if (targetUrlEl) {
+    targetUrlEl.textContent = status.targetAssetUrl ?? '-';
+  }
+  if (localFileEl) {
+    localFileEl.textContent = status.resolvedLocalFilePath ?? status.localFilePath ?? '-';
+  }
+  if (configPathEl) {
+    configPathEl.textContent = status.configPath ?? '-';
+  }
+  if (tabIdEl) {
+    tabIdEl.textContent = typeof status.tabId === 'number' ? String(status.tabId) : '-';
+  }
+  if (matchedEl) {
+    matchedEl.textContent = String(status.matchedRequests);
+  }
+  if (fulfilledEl) {
+    fulfilledEl.textContent = String(status.fulfilledRequests);
+  }
+
+  let message = 'Override POC ready but inactive.';
+  let tone: StatusTone = 'info';
+
+  if (status.lastError) {
+    message = status.lastError;
+    tone = 'error';
+  } else if (!status.configuredEnabled) {
+    message = 'Disabled in override-poc.config.json.';
+    tone = 'warning';
+  } else if (status.fileExists === false) {
+    message = 'Configured local file was not found on disk.';
+    tone = 'warning';
+  } else if (status.active) {
+    message = `Attached to tab ${status.tabId ?? '-'}; matched ${status.matchedRequests}, fulfilled ${status.fulfilledRequests}.`;
+    tone = 'success';
+  }
+
+  setOverridePocStatusMessage(message, tone);
+
+  if (enableButton) {
+    enableButton.disabled = status.active || !status.configuredEnabled || status.fileExists === false;
+  }
+  if (disableButton) {
+    disableButton.disabled = !status.active;
+  }
+}
+
 async function refreshSessionTabScope(): Promise<void> {
   const result = await sendRuntimeMessage({ type: 'SESSION_GET_TAB_SCOPE' });
   if (result.ok && 'result' in result) {
@@ -519,6 +651,23 @@ async function refreshSessionTabScope(): Promise<void> {
     setStatusMessage(baseOriginEl, 'Error: ' + result.error, 'error');
   } else {
     setStatusMessage(baseOriginEl, 'Unexpected tab scope response.', 'warning');
+  }
+}
+
+async function refreshOverridePocStatus(): Promise<void> {
+  const result = await sendRuntimeMessage({ type: 'OVERRIDE_POC_GET_STATUS' });
+  if (result.ok && 'result' in result) {
+    const parsed = parseOverridePocStatus(result.result);
+    if (parsed) {
+      renderOverridePocStatus(parsed);
+      return;
+    }
+  }
+
+  if (!result.ok) {
+    setOverridePocStatusMessage(`Error: ${result.error}`, 'error');
+  } else {
+    setOverridePocStatusMessage('Unexpected override POC response.', 'warning');
   }
 }
 
@@ -596,6 +745,7 @@ async function refreshState(): Promise<void> {
   if (result.ok && 'state' in result) {
     renderSessionState(result.state);
     await refreshSessionTabScope();
+    await refreshOverridePocStatus();
     return;
   }
 
@@ -647,6 +797,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const showDbEntriesButton = document.getElementById('show-db-entries');
   const refreshSessionTabsButton = document.getElementById('refresh-session-tabs');
   const sessionTabsList = document.getElementById('session-tabs-list');
+  const overridePocEnableButton = document.getElementById('override-poc-enable');
+  const overridePocDisableButton = document.getElementById('override-poc-disable');
+  const overridePocRefreshButton = document.getElementById('override-poc-refresh');
 
   startButton?.addEventListener('click', async () => {
     const result = await sendRuntimeMessage({ type: 'SESSION_START' });
@@ -712,6 +865,32 @@ document.addEventListener('DOMContentLoaded', () => {
 
   refreshSessionTabsButton?.addEventListener('click', async () => {
     await refreshSessionTabScope();
+  });
+
+  overridePocEnableButton?.addEventListener('click', async () => {
+    setOverridePocStatusMessage('Enabling override POC...', 'info');
+    const result = await sendRuntimeMessage({ type: 'OVERRIDE_POC_ENABLE' });
+    if (!result.ok) {
+      setOverridePocStatusMessage(result.error, 'error');
+      return;
+    }
+
+    await refreshOverridePocStatus();
+  });
+
+  overridePocDisableButton?.addEventListener('click', async () => {
+    setOverridePocStatusMessage('Disabling override POC...', 'info');
+    const result = await sendRuntimeMessage({ type: 'OVERRIDE_POC_DISABLE' });
+    if (!result.ok) {
+      setOverridePocStatusMessage(result.error, 'error');
+      return;
+    }
+
+    await refreshOverridePocStatus();
+  });
+
+  overridePocRefreshButton?.addEventListener('click', async () => {
+    await refreshOverridePocStatus();
   });
 
   sessionTabsList?.addEventListener('change', async (event) => {
@@ -958,6 +1137,7 @@ document.addEventListener('DOMContentLoaded', () => {
   refreshPausedSessionOptions();
   refreshConfig();
   refreshRetention();
+  refreshOverridePocStatus();
   startStatePolling();
 
   window.addEventListener('unload', () => {

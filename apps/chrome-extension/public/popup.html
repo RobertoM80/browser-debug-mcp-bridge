@@ -38,6 +38,23 @@
       <div id="session-tabs-list" class="session-tabs-list" aria-live="polite"></div>
       <button id="refresh-session-tabs" type="button">Refresh tabs</button>
     </details>
+    <details class="settings override-poc" open>
+      <summary>Override POC</summary>
+      <div id="override-poc-status" class="config-status" aria-live="polite"></div>
+      <div class="override-poc-grid">
+        <div><strong>Target asset:</strong> <span id="override-poc-target-url">-</span></div>
+        <div><strong>Local file:</strong> <span id="override-poc-local-file">-</span></div>
+        <div><strong>Config:</strong> <span id="override-poc-config-path">-</span></div>
+        <div><strong>Attached tab:</strong> <span id="override-poc-tab-id">-</span></div>
+        <div><strong>Matched:</strong> <span id="override-poc-matched">0</span></div>
+        <div><strong>Fulfilled:</strong> <span id="override-poc-fulfilled">0</span></div>
+      </div>
+      <div class="controls">
+        <button id="override-poc-enable" type="button">Enable POC</button>
+        <button id="override-poc-disable" type="button">Disable POC</button>
+      </div>
+      <button id="override-poc-refresh" type="button">Refresh override status</button>
+    </details>
     <button id="show-db-entries" type="button" class="open-db-btn">Open DB entries</button>
     <div class="settings">
       <label class="toggle" for="safe-mode">
