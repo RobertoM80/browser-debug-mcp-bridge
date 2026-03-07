@@ -14,6 +14,7 @@ All tool responses include:
 - **V3 correlation tools** for reasoned timelines across events
 - **V4 snapshot tools** for snapshot timelines and bounded asset retrieval
 - **V5 live automation tools** for one-at-a-time UI actions inside the already bound extension session
+- **V6 automation history tools** for first-class automation run and step analysis from dedicated tables
 
 ## Request/response conventions
 
@@ -35,3 +36,4 @@ Continue with:
 - [V3 correlation tools](./v3-correlation.md)
 - [V4 snapshot tools](./v4-snapshot-tools.md)
 - [V5 live automation tools](./v5-live-automation.md)
+- [V6 automation history tools](./v6-automation-history.md)

@@ -316,6 +316,33 @@ export const GetSnapshotAssetSchema = z.object({
     .describe('Chunk encoding mode'),
 });
 
+export const ListAutomationRunsSchema = z.object({
+  sessionId: z.string().describe('Session identifier'),
+  status: z.enum(['requested', 'started', 'succeeded', 'failed', 'rejected', 'stopped']).optional()
+    .describe('Optional run status filter'),
+  action: z.enum(['click', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload']).optional()
+    .describe('Optional action filter'),
+  traceId: z.string().optional()
+    .describe('Optional trace identifier filter'),
+  limit: z.number().int().min(1).max(200).optional()
+    .describe('Maximum number of automation runs to return'),
+  offset: z.number().int().min(0).optional()
+    .describe('Pagination offset for result set'),
+  maxResponseBytes: z.number().int().min(1024).max(524288).optional()
+    .describe('Soft byte budget for returned rows before truncation'),
+});
+
+export const GetAutomationRunSchema = z.object({
+  sessionId: z.string().describe('Session identifier'),
+  runId: z.string().describe('Automation run identifier'),
+  stepLimit: z.number().int().min(1).max(200).optional()
+    .describe('Maximum number of steps to return'),
+  stepOffset: z.number().int().min(0).optional()
+    .describe('Pagination offset for steps'),
+  maxResponseBytes: z.number().int().min(1024).max(524288).optional()
+    .describe('Soft byte budget for returned step rows before truncation'),
+});
+
 const ExecuteUIActionFailureCaptureSchema = z.object({
   enabled: z.boolean().optional()
     .describe('Capture snapshot evidence only when the action result is rejected or failed'),

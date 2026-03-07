@@ -54,6 +54,8 @@ export const SNAPSHOT_TOOLS = {
 } as const;
 
 export const AUTOMATION_TOOLS = {
+  LIST_AUTOMATION_RUNS: 'list_automation_runs',
+  GET_AUTOMATION_RUN: 'get_automation_run',
   EXECUTE_UI_ACTION: 'execute_ui_action',
 } as const;
 

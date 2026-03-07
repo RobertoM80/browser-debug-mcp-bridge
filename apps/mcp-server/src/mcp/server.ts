@@ -447,6 +447,30 @@ const TOOL_SCHEMAS: Record<string, object> = {
       encoding: { type: 'string' },
     },
   },
+  list_automation_runs: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      status: { type: 'string', enum: ['requested', 'started', 'succeeded', 'failed', 'rejected', 'stopped'] },
+      action: { type: 'string', enum: ['click', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload'] },
+      traceId: { type: 'string' },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
+    },
+  },
+  get_automation_run: {
+    type: 'object',
+    required: ['sessionId', 'runId'],
+    properties: {
+      sessionId: { type: 'string' },
+      runId: { type: 'string' },
+      stepLimit: { type: 'number' },
+      stepOffset: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
+    },
+  },
   execute_ui_action: {
     type: 'object',
     required: ['sessionId', 'action'],
@@ -509,6 +533,8 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   list_snapshots: 'List snapshot metadata by session/time/trigger',
   get_snapshot_for_event: 'Find snapshot most related to an event',
   get_snapshot_asset: 'Read bounded binary chunks for snapshot assets',
+  list_automation_runs: 'List first-class automation runs from dedicated automation tables',
+  get_automation_run: 'Inspect one automation run with bounded step details',
   execute_ui_action: 'Execute one live UI action in the current bound extension session',
 };
 
@@ -670,6 +696,49 @@ interface SnapshotRow {
   styles_truncated: number;
   png_truncated: number;
   created_at: number;
+}
+
+interface AutomationRunRow {
+  run_id: string;
+  session_id: string;
+  trace_id: string | null;
+  action: string | null;
+  tab_id: number | null;
+  selector: string | null;
+  status: string;
+  started_at: number;
+  completed_at: number | null;
+  stop_reason: string | null;
+  target_summary_json: string | null;
+  failure_json: string | null;
+  redaction_json: string | null;
+  created_at: number;
+  updated_at: number;
+  step_count: number;
+  last_step_at: number | null;
+}
+
+interface AutomationStepRow {
+  step_id: string;
+  run_id: string;
+  session_id: string;
+  step_order: number;
+  trace_id: string | null;
+  action: string;
+  selector: string | null;
+  status: string;
+  started_at: number | null;
+  finished_at: number | null;
+  duration_ms: number | null;
+  tab_id: number | null;
+  target_summary_json: string | null;
+  redaction_json: string | null;
+  failure_json: string | null;
+  input_metadata_json: string | null;
+  event_type: string;
+  event_id: string | null;
+  created_at: number;
+  updated_at: number;
 }
 
 interface CorrelationCandidate {
@@ -1291,6 +1360,59 @@ function mapSnapshotMetadata(row: SnapshotRow): Record<string, unknown> {
       png: row.png_truncated === 1,
     },
     createdAt: row.created_at,
+  };
+}
+
+function mapAutomationRunRecord(row: AutomationRunRow): Record<string, unknown> {
+  return {
+    runId: row.run_id,
+    sessionId: row.session_id,
+    traceId: row.trace_id ?? undefined,
+    action: row.action ?? undefined,
+    tabId: row.tab_id ?? undefined,
+    selector: row.selector ?? undefined,
+    status: row.status,
+    startedAt: row.started_at,
+    completedAt: row.completed_at ?? undefined,
+    durationMs:
+      typeof row.completed_at === 'number'
+        ? Math.max(0, row.completed_at - row.started_at)
+        : undefined,
+    stopReason: row.stop_reason ?? undefined,
+    target: parseJsonOrUndefined(row.target_summary_json),
+    failure: parseJsonOrUndefined(row.failure_json),
+    redaction: parseJsonOrUndefined(row.redaction_json),
+    stepCount: row.step_count,
+    lastStepAt: row.last_step_at ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    source: 'automation_runs',
+  };
+}
+
+function mapAutomationStepRecord(row: AutomationStepRow): Record<string, unknown> {
+  return {
+    stepId: row.step_id,
+    runId: row.run_id,
+    sessionId: row.session_id,
+    stepOrder: row.step_order,
+    traceId: row.trace_id ?? undefined,
+    action: row.action,
+    selector: row.selector ?? undefined,
+    status: row.status,
+    startedAt: row.started_at ?? undefined,
+    finishedAt: row.finished_at ?? undefined,
+    durationMs: row.duration_ms ?? undefined,
+    tabId: row.tab_id ?? undefined,
+    target: parseJsonOrUndefined(row.target_summary_json),
+    redaction: parseJsonOrUndefined(row.redaction_json),
+    failure: parseJsonOrUndefined(row.failure_json),
+    inputMetadata: parseJsonOrUndefined(row.input_metadata_json),
+    eventType: row.event_type,
+    eventId: row.event_id ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    source: 'automation_steps',
   };
 }
 
@@ -3175,6 +3297,189 @@ export function createV1ToolHandlers(
         encoding,
         chunk: encoding === 'raw' ? Array.from(chunkBuffer.values()) : undefined,
         chunkBase64: encoding === 'base64' ? chunkBuffer.toString('base64') : undefined,
+      };
+    },
+
+    list_automation_runs: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const status = normalizeOptionalString(input.status);
+      const action = normalizeOptionalString(input.action);
+      const traceId = normalizeOptionalString(input.traceId);
+      const limit = resolveLimit(input.limit, DEFAULT_LIST_LIMIT);
+      const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
+
+      const where: string[] = ['r.session_id = ?'];
+      const params: unknown[] = [sessionId];
+      if (status) {
+        where.push('r.status = ?');
+        params.push(status);
+      }
+      if (action) {
+        where.push('r.action = ?');
+        params.push(action);
+      }
+      if (traceId) {
+        where.push('r.trace_id = ?');
+        params.push(traceId);
+      }
+
+      const rows = db.prepare(
+        `SELECT
+           r.run_id,
+           r.session_id,
+           r.trace_id,
+           r.action,
+           r.tab_id,
+           r.selector,
+           r.status,
+           r.started_at,
+           r.completed_at,
+           r.stop_reason,
+           r.target_summary_json,
+           r.failure_json,
+           r.redaction_json,
+           r.created_at,
+           r.updated_at,
+           COALESCE(step_stats.step_count, 0) AS step_count,
+           step_stats.last_step_at
+         FROM automation_runs r
+         LEFT JOIN (
+           SELECT
+             run_id,
+             COUNT(*) AS step_count,
+             MAX(COALESCE(finished_at, started_at, created_at)) AS last_step_at
+           FROM automation_steps
+           GROUP BY run_id
+         ) step_stats ON step_stats.run_id = r.run_id
+         WHERE ${where.join(' AND ')}
+         ORDER BY r.started_at DESC, r.run_id DESC
+         LIMIT ? OFFSET ?`
+      ).all(...params, limit + 1, offset) as AutomationRunRow[];
+
+      const truncatedByLimit = rows.length > limit;
+      const runs = rows.slice(0, limit).map((row) => mapAutomationRunRecord(row));
+      const bytePage = applyByteBudget(runs, maxResponseBytes);
+      const truncated = truncatedByLimit || bytePage.truncatedByBytes;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: limit,
+          truncated,
+        },
+        filtersApplied: {
+          sessionId,
+          status,
+          action,
+          traceId,
+        },
+        pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+        responseBytes: bytePage.responseBytes,
+        runs: bytePage.items,
+      };
+    },
+
+    get_automation_run: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const runId = normalizeOptionalString(input.runId);
+      if (!runId) {
+        throw new Error('runId is required');
+      }
+
+      const stepLimit = resolveLimit(input.stepLimit, DEFAULT_LIST_LIMIT);
+      const stepOffset = resolveOffset(input.stepOffset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
+
+      const run = db.prepare(
+        `SELECT
+           r.run_id,
+           r.session_id,
+           r.trace_id,
+           r.action,
+           r.tab_id,
+           r.selector,
+           r.status,
+           r.started_at,
+           r.completed_at,
+           r.stop_reason,
+           r.target_summary_json,
+           r.failure_json,
+           r.redaction_json,
+           r.created_at,
+           r.updated_at,
+           COALESCE(step_stats.step_count, 0) AS step_count,
+           step_stats.last_step_at
+         FROM automation_runs r
+         LEFT JOIN (
+           SELECT
+             run_id,
+             COUNT(*) AS step_count,
+             MAX(COALESCE(finished_at, started_at, created_at)) AS last_step_at
+           FROM automation_steps
+           GROUP BY run_id
+         ) step_stats ON step_stats.run_id = r.run_id
+         WHERE r.session_id = ? AND r.run_id = ?
+         LIMIT 1`
+      ).get(sessionId, runId) as AutomationRunRow | undefined;
+
+      if (!run) {
+        throw new Error(`Automation run not found: ${runId}`);
+      }
+
+      const stepRows = db.prepare(
+        `SELECT
+           step_id,
+           run_id,
+           session_id,
+           step_order,
+           trace_id,
+           action,
+           selector,
+           status,
+           started_at,
+           finished_at,
+           duration_ms,
+           tab_id,
+           target_summary_json,
+           redaction_json,
+           failure_json,
+           input_metadata_json,
+           event_type,
+           event_id,
+           created_at,
+           updated_at
+         FROM automation_steps
+         WHERE session_id = ? AND run_id = ?
+         ORDER BY step_order ASC, created_at ASC
+         LIMIT ? OFFSET ?`
+      ).all(sessionId, runId, stepLimit + 1, stepOffset) as AutomationStepRow[];
+
+      const truncatedByLimit = stepRows.length > stepLimit;
+      const steps = stepRows.slice(0, stepLimit).map((row) => mapAutomationStepRecord(row));
+      const bytePage = applyByteBudget(steps, maxResponseBytes);
+      const truncated = truncatedByLimit || bytePage.truncatedByBytes;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: stepLimit,
+          truncated,
+        },
+        run: mapAutomationRunRecord(run),
+        steps: bytePage.items,
+        pagination: buildOffsetPagination(stepOffset, bytePage.items.length, truncated, maxResponseBytes),
+        responseBytes: bytePage.responseBytes,
       };
     },
   };

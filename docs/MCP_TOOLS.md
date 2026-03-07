@@ -327,6 +327,48 @@ Important limits and safeguards:
 - The extension shows a red in-page automation indicator while armed/executing and exposes an emergency stop in both the page overlay and popup
 - Failures return structured `failureDetails`, `traceId`, `tabContext`, and optional `postActionEvidence` when `captureOnFailure` is enabled
 
+## V6 Automation history tools
+
+These tools read from the dedicated `automation_runs` and `automation_steps` tables, so historical automation analysis no longer depends on reconstructing flows from generic `ui` event breadcrumbs.
+
+### list_automation_runs
+
+Lists first-class automation runs for one session with optional status/action filters.
+
+```json
+{
+  "name": "list_automation_runs",
+  "arguments": {
+    "sessionId": "sess_123",
+    "status": "failed",
+    "limit": 20,
+    "offset": 0
+  }
+}
+```
+
+### get_automation_run
+
+Returns one automation run plus bounded step details from `automation_steps`.
+
+```json
+{
+  "name": "get_automation_run",
+  "arguments": {
+    "sessionId": "sess_123",
+    "runId": "sess_123:trace-live-1",
+    "stepLimit": 50,
+    "stepOffset": 0
+  }
+}
+```
+
+Response highlights:
+
+- `run`: run-level status, selector, trace id, failure/redaction metadata, and step count
+- `steps`: ordered step records with event linkage and redacted input metadata
+- `pagination`: step pagination metadata for larger runs
+
 ### Live capture disconnection behavior
 
 When a listed session is not currently connected, live tools return a normalized disconnection error that starts with:

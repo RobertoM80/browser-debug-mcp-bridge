@@ -1120,6 +1120,137 @@ describe('mcp/server V1 query tools', () => {
     db.close();
     rmSync(tempRoot, { recursive: true, force: true });
   });
+
+  it('lists automation runs from dedicated automation tables', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-automation', 1000, 0)
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO automation_runs (
+          run_id, session_id, trace_id, action, tab_id, selector, status, started_at, completed_at,
+          stop_reason, target_summary_json, failure_json, redaction_json, created_at, updated_at
+        ) VALUES
+          ('run-new', 'session-automation', 'trace-new', 'click', 7, '#checkout', 'succeeded', 3000, 3050,
+           NULL, '{"resolvedSelector":"#checkout"}', NULL, '{"fields":0}', 3000, 3050),
+          ('run-old', 'session-automation', 'trace-old', 'input', 7, '#email', 'failed', 2000, 2100,
+           'field_blocked', '{"resolvedSelector":"#email"}', '{"code":"blocked"}', '{"fields":1}', 2000, 2100)
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO automation_steps (
+          step_id, run_id, session_id, step_order, trace_id, action, selector, status, started_at,
+          finished_at, duration_ms, tab_id, target_summary_json, redaction_json, failure_json,
+          input_metadata_json, event_type, event_id, created_at, updated_at
+        ) VALUES
+          ('run-new:1', 'run-new', 'session-automation', 1, 'trace-new', 'click', '#checkout', 'succeeded', 3000,
+           3050, 50, 7, '{"resolvedSelector":"#checkout"}', '{"fields":0}', NULL,
+           NULL, 'automation_succeeded', NULL, 3000, 3050),
+          ('run-old:1', 'run-old', 'session-automation', 1, 'trace-old', 'input', '#email', 'failed', 2000,
+           2100, 100, 7, '{"resolvedSelector":"#email"}', '{"fields":1}', '{"code":"blocked"}',
+           '{"valueLength":12}', 'automation_failed', NULL, 2000, 2100)
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'list_automation_runs', {
+      sessionId: 'session-automation',
+      status: 'failed',
+      limit: 5,
+    });
+
+    expect(response.sessionId).toBe('session-automation');
+    expect(response.limitsApplied).toEqual({ maxResults: 5, truncated: false });
+    expect(response.runs).toHaveLength(1);
+    expect((response.runs as Array<Record<string, unknown>>)[0]).toMatchObject({
+      runId: 'run-old',
+      status: 'failed',
+      action: 'input',
+      stepCount: 1,
+      source: 'automation_runs',
+    });
+
+    db.close();
+  });
+
+  it('returns one automation run with paginated steps', async () => {
+    const db = createTestDb();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('session-automation-detail', 1000, 0)
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO automation_runs (
+          run_id, session_id, trace_id, action, tab_id, selector, status, started_at, completed_at,
+          stop_reason, target_summary_json, failure_json, redaction_json, created_at, updated_at
+        ) VALUES (
+          'run-detail', 'session-automation-detail', 'trace-detail', 'click', 9, '#submit', 'failed', 4000, 4200,
+          'action_failed', '{"resolvedSelector":"#submit"}', '{"code":"action_failed"}', '{"fields":1}', 4000, 4200
+        )
+      `
+    ).run();
+
+    db.prepare(
+      `
+        INSERT INTO automation_steps (
+          step_id, run_id, session_id, step_order, trace_id, action, selector, status, started_at,
+          finished_at, duration_ms, tab_id, target_summary_json, redaction_json, failure_json,
+          input_metadata_json, event_type, event_id, created_at, updated_at
+        ) VALUES
+          ('run-detail:1', 'run-detail', 'session-automation-detail', 1, 'trace-detail', 'click', '#submit', 'started', 4000,
+           NULL, NULL, 9, '{"resolvedSelector":"#submit"}', '{"fields":0}', NULL,
+           NULL, 'automation_started', NULL, 4000, 4000),
+          ('run-detail:2', 'run-detail', 'session-automation-detail', 2, 'trace-detail', 'click', '#submit', 'failed', 4100,
+           4200, 100, 9, '{"resolvedSelector":"#submit"}', '{"fields":1}', '{"code":"action_failed"}',
+           '{"valueLength":0}', 'automation_failed', NULL, 4100, 4200)
+      `
+    ).run();
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_automation_run', {
+      sessionId: 'session-automation-detail',
+      runId: 'run-detail',
+      stepLimit: 1,
+      stepOffset: 1,
+    });
+
+    expect(response.sessionId).toBe('session-automation-detail');
+    expect((response.run as Record<string, unknown>)).toMatchObject({
+      runId: 'run-detail',
+      status: 'failed',
+      stepCount: 2,
+      source: 'automation_runs',
+    });
+    expect(response.steps).toHaveLength(1);
+    expect((response.steps as Array<Record<string, unknown>>)[0]).toMatchObject({
+      stepId: 'run-detail:2',
+      stepOrder: 2,
+      status: 'failed',
+      eventType: 'automation_failed',
+      source: 'automation_steps',
+    });
+    expect(response.pagination).toMatchObject({
+      offset: 1,
+      returned: 1,
+      hasMore: false,
+      nextOffset: null,
+    });
+
+    db.close();
+  });
 });
 
 describe('mcp/server V2 capture tools', () => {

@@ -690,7 +690,7 @@
       "Flow debugging no longer depends on reconstructing everything from generic UI event rows.",
       "The dedicated automation model becomes the default source of truth for historical run analysis."
     ],
-    "passes": false,
+    "passes": true,
     "id": "PRD-115",
     "depends_on": [
       "PRD-114"

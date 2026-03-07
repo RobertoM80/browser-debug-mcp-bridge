@@ -348,3 +348,11 @@
   - Updated `apps/mcp-server/src/db/events-repository.ts` to persist automation lifecycle events into both the generic UI event stream and the new dedicated automation tables
   - Added migration/schema/foreign-key coverage in `apps/mcp-server/src/db/db.spec.ts` and dual-write lifecycle coverage in `apps/mcp-server/src/db/events-repository.spec.ts`
   - Verified with `pnpm nx test mcp-server`, `pnpm test`, `pnpm typecheck`, `pnpm lint`, and `pnpm build`
+
+### Completed: 2026-03-07
+- [Add run-centric MCP queries and move automation analysis from generic events to first-class automation records] - COMPLETED
+  - Added `list_automation_runs` and `get_automation_run` MCP contracts plus server handlers in `libs/mcp-contracts/src/lib/tool-definitions.ts`, `libs/mcp-contracts/src/lib/tool-schemas.ts`, and `apps/mcp-server/src/mcp/server.ts`
+  - Wired the new tools to read from dedicated `automation_runs` and `automation_steps` tables, including bounded pagination and byte budgets for step inspection
+  - Added MCP coverage for run history filtering and paginated step inspection in `apps/mcp-server/src/mcp/server.spec.ts`
+  - Documented the new automation-history workflow in `docs/MCP_TOOLS.md`, `apps/docs/docs/mcp-tools/overview.md`, and `apps/docs/docs/mcp-tools/v6-automation-history.md`
+  - Marked `PRD-115` as passing in `prd.json`
