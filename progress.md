@@ -289,3 +289,12 @@
   - Added MCP integration test to validate click -> snapshot lookup -> failure timeline reconstruction in `apps/mcp-server/src/mcp/server.spec.ts`
   - Extended `docs/TROUBLESHOOTING.md` with snapshot-specific diagnosis guidance for opt-in, throttle/quota, truncation, privacy redaction, and MCP verification flow
   - Marked `PRD-107` as passing in `prd.json`
+
+### Completed: 2026-03-07
+- [Extend the existing live-session command pipeline so MCP can execute UI actions inside the currently bound extension session without opening any new browser session] - COMPLETED
+  - Added shared live-action request/result schemas and trace-id helper in `libs/mcp-contracts/src/lib/live-actions.ts`
+  - Extended websocket and extension command contracts to accept `EXECUTE_UI_ACTION` alongside the existing live-session command channel
+  - Added extension-side policy checks for bound tabs and allowlist enforcement before forwarding live UI actions to the active session tab
+  - Added top-document-only V1 rejection handling with structured action results including action, traceId, timestamps, target summary, and failure reason in `apps/chrome-extension/src/content-script.ts`
+  - Added unit/integration coverage for contract parsing, session-manager command handling, content-script result shape, and websocket round-trips
+  - Verified with `pnpm test`, `pnpm nx run-many -t lint`, and `pnpm nx run-many -t build`

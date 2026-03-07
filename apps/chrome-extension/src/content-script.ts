@@ -1,3 +1,10 @@
+import {
+  LiveUIActionRequest,
+  LiveUIActionRequestSchema,
+  LiveUIActionResult,
+  createLiveUIActionTraceId,
+} from '../../../libs/mcp-contracts/src';
+
 export const BRIDGE_SOURCE = 'browser-debug-mcp-bridge';
 export const BRIDGE_KIND = 'bridge-event';
 export const BRIDGE_CONTROL_KIND = 'bridge-control';
@@ -14,7 +21,8 @@ type CaptureCommandType =
   | 'CAPTURE_DOM_DOCUMENT'
   | 'CAPTURE_COMPUTED_STYLES'
   | 'CAPTURE_LAYOUT_METRICS'
-  | 'CAPTURE_UI_SNAPSHOT';
+  | 'CAPTURE_UI_SNAPSHOT'
+  | 'EXECUTE_UI_ACTION';
 
 type SnapshotStyleMode = 'computed-lite' | 'computed-full';
 
@@ -94,6 +102,52 @@ function getClickSelector(target: Element): string | null {
 
 function getElementSelector(target: Element): string {
   return getClickSelector(target) ?? target.tagName.toLowerCase();
+}
+
+function getElementTextPreview(target: Element | null): string | undefined {
+  const text = target?.textContent?.replace(/\s+/g, ' ').trim();
+  if (!text) {
+    return undefined;
+  }
+
+  return text.slice(0, 80);
+}
+
+function buildLiveActionTargetSummary(
+  target: Element | null,
+  request: LiveUIActionRequest,
+): LiveUIActionResult['target'] {
+  return {
+    matched: target instanceof Element,
+    selector: request.target?.selector,
+    resolvedSelector: target instanceof Element ? getElementSelector(target) : undefined,
+    tagName: target instanceof Element ? target.tagName.toLowerCase() : undefined,
+    textPreview: getElementTextPreview(target),
+    frameId: request.target?.frameId ?? 0,
+    url: request.target?.url,
+  };
+}
+
+function buildRejectedLiveActionResult(
+  request: LiveUIActionRequest,
+  target: Element | null,
+  startedAt: number,
+  code: string,
+  message: string,
+): LiveUIActionResult {
+  return {
+    action: request.action,
+    traceId: request.traceId ?? createLiveUIActionTraceId(),
+    status: 'rejected',
+    executionScope: 'top-document-v1',
+    startedAt,
+    finishedAt: Date.now(),
+    target: buildLiveActionTargetSummary(target, request),
+    failureReason: {
+      code,
+      message,
+    },
+  };
 }
 
 function isSensitiveSelector(selector: string): boolean {
@@ -613,6 +667,59 @@ export function executeCaptureCommand(
           styles: stylesTruncated,
         },
       },
+    };
+  }
+
+  if (command === 'EXECUTE_UI_ACTION') {
+    const parsed = LiveUIActionRequestSchema.safeParse(payload);
+    if (!parsed.success) {
+      throw new Error(`Invalid live UI action payload: ${parsed.error.issues[0]?.message ?? 'unknown error'}`);
+    }
+
+    const request = parsed.data;
+    const startedAt = Date.now();
+    const selector = request.target?.selector;
+    const target = selector
+      ? win.document.querySelector(selector)
+      : (win.document.activeElement instanceof Element ? win.document.activeElement : null)
+        ?? win.document.body
+        ?? win.document.documentElement;
+
+    if ((request.target?.frameId ?? 0) !== 0) {
+      return {
+        truncated: false,
+        result: buildRejectedLiveActionResult(
+          request,
+          target,
+          startedAt,
+          'unsupported_target_frame',
+          'V1 live UI actions only support the top document; iframe targets are unsupported.',
+        ),
+      };
+    }
+
+    if (!target && request.action !== 'reload') {
+      return {
+        truncated: false,
+        result: buildRejectedLiveActionResult(
+          request,
+          null,
+          startedAt,
+          'target_not_found',
+          'No matching top-document element was found for this live UI action.',
+        ),
+      };
+    }
+
+    return {
+      truncated: false,
+      result: buildRejectedLiveActionResult(
+        request,
+        target,
+        startedAt,
+        'action_not_implemented',
+        `Live UI action \"${request.action}\" reached the extension target, but execution is deferred until the async executor lands.`,
+      ),
     };
   }
 

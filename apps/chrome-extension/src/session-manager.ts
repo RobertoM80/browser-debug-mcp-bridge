@@ -37,7 +37,8 @@ export type CaptureCommandType =
   | 'CAPTURE_COMPUTED_STYLES'
   | 'CAPTURE_LAYOUT_METRICS'
   | 'CAPTURE_UI_SNAPSHOT'
-  | 'CAPTURE_GET_LIVE_CONSOLE_LOGS';
+  | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+  | 'EXECUTE_UI_ACTION';
 
 interface CaptureCommandMessage {
   type: 'capture_command';
@@ -537,6 +538,7 @@ export class SessionManager {
         && message.command !== 'CAPTURE_LAYOUT_METRICS'
         && message.command !== 'CAPTURE_UI_SNAPSHOT'
         && message.command !== 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+        && message.command !== 'EXECUTE_UI_ACTION'
       ) {
         return null;
       }

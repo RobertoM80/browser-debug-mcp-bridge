@@ -495,5 +495,206 @@
       "PRD-106"
     ],
     "estimate": "L"
+  },
+  {
+    "category": "automation/runtime",
+    "description": "Extend the existing live-session command pipeline so MCP can execute UI actions inside the currently bound extension session without opening any new browser session",
+    "owner": "backend/extension",
+    "priority": "high",
+    "steps": [
+      "Extend MCP, websocket, and extension command contracts to support live UI action execution over the current session channel.",
+      "Use a single generic action command shape with an action enum and typed payload instead of creating a new transport command per action.",
+      "Reject execution when the session is paused, disconnected, not allowlisted, or not bound to the target tab.",
+      "Keep V1 limited to the top document in the current tab and explicitly return unsupported errors for iframe targets.",
+      "Return structured action results with action name, target summary, traceId, timestamps, and failure reason.",
+      "Implementation sequence (file-level): 1) libs/mcp-contracts/src, 2) apps/mcp-server/src/websocket/messages.ts, 3) apps/mcp-server/src/websocket/websocket-server.ts, 4) apps/chrome-extension/src/session-manager.ts, 5) apps/chrome-extension/src/background.ts, 6) apps/chrome-extension/src/content-script.ts."
+    ],
+    "acceptance_criteria": [
+      "UI actions travel through the existing MCP -> server -> websocket -> extension path.",
+      "No new browser profile, Playwright runtime, or external automation session is introduced.",
+      "The contract explicitly supports top-document execution only for V1."
+    ],
+    "passes": true,
+    "id": "PRD-108",
+    "depends_on": [
+      "PRD-105"
+    ],
+    "estimate": "M"
+  },
+  {
+    "category": "automation/safety",
+    "description": "Add explicit user controls, second opt-in for sensitive fields, and visible warnings for dangerous live automation",
+    "owner": "extension/frontend",
+    "priority": "high",
+    "steps": [
+      "Add a popup setting `Allow live automation` with default OFF.",
+      "Add a second opt-in setting `Allow sensitive field automation` with default OFF.",
+      "Extend extension config storage and config sync so automation state is pushed to bound session tabs.",
+      "Add a red in-page indicator when automation is armed or executing.",
+      "Add extension badge and popup status state for automation mode.",
+      "Add an emergency stop control in the popup and in the in-page indicator.",
+      "Implementation sequence (file-level): 1) apps/chrome-extension/src/capture-controls.ts, 2) apps/chrome-extension/src/background.ts, 3) apps/chrome-extension/src/popup.ts, 4) apps/chrome-extension/public/popup.html, 5) apps/chrome-extension/public/popup.css, 6) apps/chrome-extension/src/content-script.ts."
+    ],
+    "acceptance_criteria": [
+      "No live action can run unless `Allow live automation` is enabled.",
+      "Sensitive field automation is blocked by default and allowed only with the second opt-in.",
+      "Users can clearly see when automation is armed or executing and can stop it immediately."
+    ],
+    "passes": false,
+    "id": "PRD-109",
+    "depends_on": [
+      "PRD-108"
+    ],
+    "estimate": "M"
+  },
+  {
+    "category": "automation/executor",
+    "description": "Implement the async extension-side executor for real page interaction inside the existing debug session",
+    "owner": "extension",
+    "priority": "high",
+    "steps": [
+      "Refactor the content-script command executor from capture-only synchronous behavior to async action execution.",
+      "Implement V1 actions: `click`, `input`, `focus`, `blur`, `scroll`, `press_key`, `submit`, and `reload`.",
+      "Execute DOM actions in the content script and browser-level reload in the background layer.",
+      "Reuse the current selector resolution and target validation logic for action targeting.",
+      "Dispatch realistic DOM events after interactions so page frameworks observe the changes.",
+      "Block password, payment, auth, and similar sensitive fields unless the second opt-in is enabled.",
+      "Implementation sequence (file-level): 1) apps/chrome-extension/src/content-script.ts, 2) apps/chrome-extension/src/background.ts, 3) apps/chrome-extension/src/session-manager.ts, 4) libs/selectors/src."
+    ],
+    "acceptance_criteria": [
+      "The extension can click, type, focus, blur, scroll, submit, press keys, and reload in the current bound tab.",
+      "Action execution is observable by the real page application code.",
+      "Sensitive field automation remains blocked unless the second opt-in is enabled."
+    ],
+    "passes": false,
+    "id": "PRD-110",
+    "depends_on": [
+      "PRD-108",
+      "PRD-109"
+    ],
+    "estimate": "L"
+  },
+  {
+    "category": "data/persistence",
+    "description": "Persist V1 automation activity using the existing events table with explicit automation event types",
+    "owner": "backend/extension",
+    "priority": "high",
+    "steps": [
+      "Extend the event contracts to include explicit automation event names such as `automation_requested`, `automation_started`, `automation_succeeded`, `automation_failed`, and `automation_stopped`.",
+      "Store V1 automation activity in the existing events table instead of creating new automation tables.",
+      "Map V1 automation records into the existing DB event bucket strategy while preserving the explicit automation event name in the event payload.",
+      "Include traceId, action, selector, timing, status, and redaction flags in automation event payloads.",
+      "Persist only redacted metadata for input actions such as field type, sensitivity flag, and value length, never the raw typed value.",
+      "Implementation sequence (file-level): 1) libs/shared/src, 2) apps/mcp-server/src/db/events-repository.ts, 3) apps/mcp-server/src/db/schema.ts if required for contract alignment, 4) apps/chrome-extension/src/background.ts, 5) apps/chrome-extension/src/content-script.ts."
+    ],
+    "acceptance_criteria": [
+      "Automation activity is queryable from the existing session timeline without adding new DB tables.",
+      "Automation failures can be correlated with later network calls, console logs, snapshots, and errors.",
+      "No raw sensitive input value is persisted."
+    ],
+    "passes": false,
+    "id": "PRD-111",
+    "depends_on": [
+      "PRD-110"
+    ],
+    "estimate": "M"
+  },
+  {
+    "category": "automation/mcp",
+    "description": "Expose live UI automation through MCP so the LLM can drive and debug full flows in the existing session",
+    "owner": "backend",
+    "priority": "high",
+    "steps": [
+      "Add an MCP tool `execute_ui_action` using an action enum and action-specific payload.",
+      "Return structured results including matched target summary, traceId, timing, tab context, and failure details.",
+      "Reuse existing tools such as `wait_for_network_call`, `get_dom_document`, `get_layout_metrics`, `capture_ui_snapshot`, `get_live_console_logs`, and `explain_last_failure` for post-action debugging.",
+      "Support optional post-action evidence capture on failure using the existing snapshot path.",
+      "Document tool contract for top-document-only V1 behavior and no-new-session guarantee.",
+      "Implementation sequence (file-level): 1) apps/mcp-server/src/mcp/server.ts, 2) libs/mcp-contracts/src, 3) apps/docs/docs/mcp-tools/, 4) docs/TROUBLESHOOTING.md."
+    ],
+    "acceptance_criteria": [
+      "The LLM can execute one live action at a time inside the existing extension session.",
+      "The LLM can combine action execution with existing debug tools to test end-to-end flows.",
+      "Action failures return enough structured context to continue debugging deterministically."
+    ],
+    "passes": false,
+    "id": "PRD-112",
+    "depends_on": [
+      "PRD-110",
+      "PRD-111"
+    ],
+    "estimate": "M"
+  },
+  {
+    "category": "testing/verification",
+    "description": "Validate the extension-native automation flow end-to-end with policy checks, sensitive-field gating, observability, and MCP execution",
+    "owner": "qa/backend",
+    "priority": "high",
+    "steps": [
+      "Add unit and integration coverage for protocol validation, policy checks, sensitive-field gating, action execution, and event persistence.",
+      "Add end-to-end coverage for the live extension-managed automation path.",
+      "Document the new settings, danger model, red indicator, emergency stop, top-document-only limitation, and sensitive-field opt-in.",
+      "Update troubleshooting and MCP tool documentation with automation-specific failure modes.",
+      "Implementation sequence (file-level): 1) apps/chrome-extension/src/*.spec.ts, 2) apps/mcp-server/src/websocket/*.spec.ts, 3) apps/mcp-server/src/mcp/server.spec.ts, 4) apps/e2e-playwright/tests, 5) docs/MCP_TOOLS.md, 6) docs/TROUBLESHOOTING.md, 7) docs/SECURITY.md."
+    ],
+    "acceptance_criteria": [
+      "Automation runtime behavior is covered by tests.",
+      "User-facing docs explain exactly how to enable, observe, and stop automation.",
+      "The documented V1 limitations match the actual implementation."
+    ],
+    "passes": false,
+    "id": "PRD-113",
+    "depends_on": [
+      "PRD-112"
+    ],
+    "estimate": "M"
+  },
+  {
+    "category": "data/persistence",
+    "description": "Add dedicated automation tables once the action model and result contract stabilize",
+    "owner": "backend",
+    "priority": "medium",
+    "steps": [
+      "Add DB migrations for `automation_runs` and `automation_steps`.",
+      "Store run-level metadata such as runId, sessionId, tabId, startedAt, completedAt, status, and stop reason.",
+      "Store step-level metadata such as step order, action, selector, traceId, status, duration, redaction flags, and failure details.",
+      "Dual-write automation records to both the dedicated tables and the existing events table during the stabilization period.",
+      "Implementation sequence (file-level): 1) apps/mcp-server/src/db/schema.ts, 2) apps/mcp-server/src/db/migrations.ts, 3) apps/mcp-server/src/db/events-repository.ts or dedicated repositories, 4) apps/mcp-server/src/mcp/server.ts."
+    ],
+    "acceptance_criteria": [
+      "A full automation flow can be reconstructed from dedicated run and step tables.",
+      "V1 event-based observability still works during the migration period.",
+      "The new schema does not store raw sensitive input values."
+    ],
+    "passes": false,
+    "id": "PRD-114",
+    "depends_on": [
+      "PRD-113"
+    ],
+    "estimate": "M"
+  },
+  {
+    "category": "automation/mcp",
+    "description": "Add run-centric MCP queries and move automation analysis from generic events to first-class automation records",
+    "owner": "backend",
+    "priority": "medium",
+    "steps": [
+      "Add MCP read tools for automation run history and step inspection.",
+      "Use dedicated automation tables as the primary source for flow auditing and debugging.",
+      "Keep only high-signal automation breadcrumbs in the generic events stream after the dedicated model is trusted.",
+      "Optionally expose automation run summaries in existing local inspection surfaces.",
+      "Implementation sequence (file-level): 1) apps/mcp-server/src/mcp/server.ts, 2) libs/mcp-contracts/src, 3) apps/docs/docs/mcp-tools/, 4) apps/mcp-server/src/mcp/server.spec.ts."
+    ],
+    "acceptance_criteria": [
+      "Automation runs and steps are directly queryable through MCP.",
+      "Flow debugging no longer depends on reconstructing everything from generic UI event rows.",
+      "The dedicated automation model becomes the default source of truth for historical run analysis."
+    ],
+    "passes": false,
+    "id": "PRD-115",
+    "depends_on": [
+      "PRD-114"
+    ],
+    "estimate": "M"
   }
 ]

@@ -74,8 +74,8 @@ describe('WebSocket Server', () => {
     port = (fastify.server.address() as { port: number }).port;
 
     wsManager = new WebSocketManager();
-    wsManager.setRepository(new EventsRepository(conn.db));
-    wsManager.initialize(fastify);
+    wsManager!.setRepository(new EventsRepository(conn.db));
+    wsManager!.initialize(fastify);
     
     // Store conn for use in tests
     (global as { testDbConn?: { db: Database.Database } }).testDbConn = conn;
@@ -129,7 +129,7 @@ describe('WebSocket Server', () => {
         new Promise<void>(resolve => ws2.on('open', resolve)),
       ]);
 
-      const stats = wsManager.getConnectionStats();
+      const stats = wsManager!.getConnectionStats();
       expect(stats.total).toBe(2);
       expect(stats.withSession).toBe(0);
 
@@ -146,7 +146,7 @@ describe('WebSocket Server', () => {
         await new Promise<void>(resolve => ws.on('open', resolve));
       }
 
-      const stats = wsManager.getConnectionStats();
+      const stats = wsManager!.getConnectionStats();
       expect(stats.total).toBe(5);
 
       connections.forEach(ws => ws.close());
@@ -222,14 +222,14 @@ describe('WebSocket Server', () => {
       ws.send(JSON.stringify(sessionStart));
       await wait(100);
 
-      const liveState = wsManager.getSessionConnectionState('test-session-live-state');
+      const liveState = wsManager!.getSessionConnectionState('test-session-live-state');
       expect(liveState).toBeDefined();
       expect(liveState?.connected).toBe(true);
 
       ws.close();
       await wait(150);
 
-      const disconnectedState = wsManager.getSessionConnectionState('test-session-live-state');
+      const disconnectedState = wsManager!.getSessionConnectionState('test-session-live-state');
       expect(disconnectedState).toBeDefined();
       expect(disconnectedState?.connected).toBe(false);
 
@@ -707,7 +707,7 @@ describe('WebSocket Server', () => {
       ws.send(JSON.stringify(sessionStart));
       await wait(100);
 
-      const commandPromise = wsManager.sendCaptureCommand(
+      const commandPromise = wsManager!.sendCaptureCommand(
         'capture-test-session',
         'CAPTURE_DOM_SUBTREE',
         { selector: '#app', maxDepth: 2, maxBytes: 4000 },
@@ -839,7 +839,7 @@ describe('WebSocket Server', () => {
       ws.send(JSON.stringify(sessionStart));
       await wait(100);
 
-      const commandPromise = wsManager.sendCaptureCommand(
+      const commandPromise = wsManager!.sendCaptureCommand(
         'capture-live-logs-session',
         'CAPTURE_GET_LIVE_CONSOLE_LOGS',
         { contains: '[auth]', limit: 5 },
@@ -868,6 +868,72 @@ describe('WebSocket Server', () => {
       const result = await commandPromise;
       expect(result.ok).toBe(true);
       expect(Array.isArray(result.payload?.logs)).toBe(true);
+
+      ws.close();
+    });
+
+    it('sends live UI action commands and resolves structured results', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      await new Promise<void>((resolve) => ws.on('open', resolve));
+
+      const sessionStart: SessionStartMessage = {
+        type: 'session_start',
+        sessionId: 'live-action-session',
+        url: 'https://example.com',
+        timestamp: Date.now(),
+        safeMode: false,
+      };
+
+      ws.send(JSON.stringify(sessionStart));
+      await wait(100);
+
+      const commandPromise = wsManager!.sendCaptureCommand(
+        'live-action-session',
+        'EXECUTE_UI_ACTION',
+        {
+          action: 'click',
+          traceId: 'trace-action-1',
+          target: { selector: '#buy-now', frameId: 0 },
+        },
+        2000,
+      );
+
+      const commandMessage = await waitForMessage(ws) as CaptureCommandMessage;
+      expect(commandMessage.type).toBe('capture_command');
+      expect(commandMessage.command).toBe('EXECUTE_UI_ACTION');
+
+      ws.send(
+        JSON.stringify({
+          type: 'capture_result',
+          commandId: commandMessage.commandId,
+          sessionId: 'live-action-session',
+          ok: true,
+          payload: {
+            action: 'click',
+            traceId: 'trace-action-1',
+            status: 'rejected',
+            executionScope: 'top-document-v1',
+            target: {
+              matched: true,
+              selector: '#buy-now',
+              frameId: 0,
+            },
+            failureReason: {
+              code: 'action_not_implemented',
+              message: 'Execution is not implemented yet.',
+            },
+          },
+          truncated: false,
+          timestamp: Date.now(),
+        }),
+      );
+
+      const result = await commandPromise;
+      expect(result.ok).toBe(true);
+      expect(result.payload?.action).toBe('click');
+      expect(result.payload?.failureReason).toMatchObject({
+        code: 'action_not_implemented',
+      });
 
       ws.close();
     });

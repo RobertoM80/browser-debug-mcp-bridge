@@ -1,6 +1,12 @@
 import { SessionManager, SessionState, CaptureCommandType } from './session-manager';
 import { LiveConsoleBufferStore } from './live-console-buffer';
 import {
+  LiveUIActionRequest,
+  LiveUIActionRequestSchema,
+  LiveUIActionResult,
+  createLiveUIActionTraceId,
+} from '../../../libs/mcp-contracts/src';
+import {
   applySafeModeRestrictions,
   canCaptureSnapshot,
   CaptureConfig,
@@ -270,6 +276,60 @@ function resolveLiveConsoleLevels(value: unknown): string[] | undefined {
   );
 
   return normalized.length > 0 ? normalized : undefined;
+}
+
+function buildRejectedLiveActionResult(
+  request: LiveUIActionRequest,
+  startedAt: number,
+  code: string,
+  message: string,
+  targetOverrides: Partial<LiveUIActionResult['target']> = {},
+): LiveUIActionResult {
+  return {
+    action: request.action,
+    traceId: request.traceId ?? createLiveUIActionTraceId(),
+    status: 'rejected',
+    executionScope: 'top-document-v1',
+    startedAt,
+    finishedAt: Date.now(),
+    target: {
+      matched: false,
+      selector: request.target?.selector,
+      tabId: request.target?.tabId,
+      frameId: request.target?.frameId ?? 0,
+      url: request.target?.url,
+      ...targetOverrides,
+    },
+    failureReason: {
+      code,
+      message,
+    },
+  };
+}
+
+function withLiveActionTabContext(
+  result: Record<string, unknown>,
+  request: LiveUIActionRequest,
+  tab: chrome.tabs.Tab & { id: number },
+): Record<string, unknown> {
+  const target = result.target && typeof result.target === 'object'
+    ? (result.target as Record<string, unknown>)
+    : {};
+
+  return {
+    ...result,
+    traceId:
+      typeof result.traceId === 'string' && result.traceId.length > 0
+        ? result.traceId
+        : (request.traceId ?? createLiveUIActionTraceId()),
+    target: {
+      selector: request.target?.selector,
+      tabId: tab.id,
+      frameId: request.target?.frameId ?? 0,
+      url: tab.url ?? request.target?.url,
+      ...target,
+    },
+  };
 }
 
 function setSessionTabScope(sessionId: string, baseUrl: string, tabId?: number): void {
@@ -774,6 +834,95 @@ async function executeCaptureCommand(
   payload: Record<string, unknown>,
   context: { sessionId: string; commandId: string }
 ): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  if (command === 'EXECUTE_UI_ACTION') {
+    const parsed = LiveUIActionRequestSchema.safeParse(payload);
+    if (!parsed.success) {
+      throw new Error(`Invalid live UI action payload: ${parsed.error.issues[0]?.message ?? 'unknown error'}`);
+    }
+
+    const request = parsed.data;
+    const startedAt = Date.now();
+    const requestedTabId = request.target?.tabId;
+    const sessionScope = getSessionTabScope(context.sessionId);
+
+    if (requestedTabId !== undefined && sessionScope && !sessionScope.allowedTabIds.has(requestedTabId)) {
+      return {
+        payload: buildRejectedLiveActionResult(
+          request,
+          startedAt,
+          'tab_not_bound',
+          `tabId ${requestedTabId} is not bound to this session`,
+          { tabId: requestedTabId },
+        ) as unknown as Record<string, unknown>,
+      };
+    }
+
+    let tab: chrome.tabs.Tab | undefined;
+    if (requestedTabId !== undefined) {
+      try {
+        tab = await chrome.tabs.get(requestedTabId);
+      } catch {
+        tab = undefined;
+      }
+    } else {
+      tab = await resolveCaptureTab(context.sessionId);
+    }
+
+    if (!tab || typeof tab.id !== 'number') {
+      throw new Error('No tab available for this session action');
+    }
+
+    const resolvedTab = tab as chrome.tabs.Tab & { id: number };
+
+    if (!isTabAllowedForSession(context.sessionId, resolvedTab.id)) {
+      return {
+        payload: buildRejectedLiveActionResult(
+          request,
+          startedAt,
+          'tab_not_bound',
+          `tabId ${resolvedTab.id} is not bound to this session`,
+          { tabId: resolvedTab.id, url: resolvedTab.url ?? request.target?.url },
+        ) as unknown as Record<string, unknown>,
+      };
+    }
+
+    if (!isUrlAllowed(resolvedTab.url ?? '', captureConfig.allowlist)) {
+      return {
+        payload: buildRejectedLiveActionResult(
+          request,
+          startedAt,
+          'target_not_allowlisted',
+          'Live UI actions are blocked because the target tab is no longer allowlisted.',
+          { tabId: resolvedTab.id, url: resolvedTab.url ?? request.target?.url },
+        ) as unknown as Record<string, unknown>,
+      };
+    }
+
+    rememberCaptureTabForSession(context.sessionId, resolvedTab);
+
+    const contentReady = await ensureContentScriptReady(resolvedTab.id);
+    if (!contentReady) {
+      throw new Error('Target tab for this session is unavailable for live action execution');
+    }
+
+    const actionPayload: Record<string, unknown> = {
+      ...request,
+      traceId: request.traceId ?? createLiveUIActionTraceId(),
+      target: {
+        ...request.target,
+        tabId: resolvedTab.id,
+        frameId: request.target?.frameId ?? 0,
+        url: resolvedTab.url ?? request.target?.url,
+      },
+    };
+
+    const actionResult = await sendCaptureCommandToTab(resolvedTab.id, 'EXECUTE_UI_ACTION', actionPayload);
+    return {
+      payload: withLiveActionTabContext(actionResult.payload, request, resolvedTab),
+      truncated: actionResult.truncated,
+    };
+  }
+
   if (command === 'CAPTURE_GET_LIVE_CONSOLE_LOGS') {
     const requestedTabId = resolveLiveConsoleTabId(payload.tabId);
     const requestedOrigin = normalizeHttpOrigin(payload.origin ?? payload.url);

@@ -401,6 +401,57 @@ describe('SessionManager', () => {
     expect(response.payload.logs[0]?.message).toContain('[auth]');
   });
 
+  it('accepts live UI action commands from server', async () => {
+    const ws = new MockWebSocket();
+    const manager = new SessionManager({
+      createSessionId: () => 'session-live-action',
+      createWebSocket: () => ws,
+      now: () => 1700000000000,
+      handleCaptureCommand: async (command, payload) => ({
+        payload: {
+          command,
+          action: payload.action,
+          traceId: payload.traceId,
+          status: 'rejected',
+        },
+      }),
+    });
+
+    manager.startSession({ url: 'https://example.com' });
+    ws.open();
+    ws.sentMessages.length = 0;
+
+    ws.receive(
+      JSON.stringify({
+        type: 'capture_command',
+        commandId: 'cmd-action-1',
+        sessionId: 'session-live-action',
+        command: 'EXECUTE_UI_ACTION',
+        payload: {
+          action: 'click',
+          traceId: 'trace-action-1',
+          target: { selector: '#buy-now' },
+        },
+      }),
+    );
+
+    await Promise.resolve();
+
+    expect(ws.sentMessages).toHaveLength(1);
+    const response = JSON.parse(ws.sentMessages[0]) as {
+      type: string;
+      commandId: string;
+      ok: boolean;
+      payload: { command: string; action: string; traceId: string; status: string };
+    };
+    expect(response.type).toBe('capture_result');
+    expect(response.commandId).toBe('cmd-action-1');
+    expect(response.ok).toBe(true);
+    expect(response.payload.command).toBe('EXECUTE_UI_ACTION');
+    expect(response.payload.action).toBe('click');
+    expect(response.payload.traceId).toBe('trace-action-1');
+  });
+
   it('uses readable default session ids with date hints', () => {
     const manager = new SessionManager({
       createWebSocket: () => new MockWebSocket(),

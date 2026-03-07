@@ -371,4 +371,35 @@ describe('content-script capture', () => {
       Object.keys(downgradedStyles.styles.chain[0].properties).length
     );
   });
+
+  it('returns a structured rejection for live UI actions targeting iframes', () => {
+    document.body.innerHTML = '<main><button id="buy-now">Buy now</button></main>';
+
+    const output = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'click',
+      traceId: 'trace-live-1',
+      target: {
+        selector: '#buy-now',
+        frameId: 2,
+      },
+      input: {
+        clickCount: 1,
+      },
+    });
+
+    expect(output.truncated).toBe(false);
+    expect(output.result).toMatchObject({
+      action: 'click',
+      traceId: 'trace-live-1',
+      status: 'rejected',
+      executionScope: 'top-document-v1',
+      target: {
+        selector: '#buy-now',
+        frameId: 2,
+      },
+      failureReason: {
+        code: 'unsupported_target_frame',
+      },
+    });
+  });
 });
