@@ -315,3 +315,11 @@
   - Routed `reload` through the background layer in `apps/chrome-extension/src/background.ts` so the active bound tab reloads without introducing a new browser session
   - Added unit coverage for successful live-action execution and non-editable target rejection in `apps/chrome-extension/src/content-script.spec.ts`
   - Verified with `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm build`, and `pnpm test:e2e`
+
+### Completed: 2026-03-07
+- [Persist V1 automation activity using the existing events table with explicit automation event types] - COMPLETED
+  - Added automation lifecycle payload builders in `apps/chrome-extension/src/automation-events.ts` so requested, started, succeeded, failed, and stopped events persist only redacted metadata for live actions
+  - Updated `apps/chrome-extension/src/background.ts` to emit automation lifecycle events during policy rejection, execution start, success/failure completion, and emergency stop
+  - Extended event contracts and persistence mapping for `automation_*` event types in `apps/mcp-server/src/websocket/messages.ts`, `apps/mcp-server/src/db/events-repository.ts`, and `libs/shared/src/lib/*`
+  - Added unit coverage for automation payload redaction and stop events in `apps/chrome-extension/src/automation-events.spec.ts`, plus server persistence coverage in `apps/mcp-server/src/db/events-repository.spec.ts` and websocket validation coverage in `apps/mcp-server/src/websocket/websocket.spec.ts`
+  - Verified with `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm build`, and `pnpm test:e2e`

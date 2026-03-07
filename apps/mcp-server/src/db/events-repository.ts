@@ -276,6 +276,11 @@ export class EventsRepository {
       blur: 'ui',
       keydown: 'ui',
       ui_snapshot: 'ui',
+      automation_requested: 'ui',
+      automation_started: 'ui',
+      automation_succeeded: 'ui',
+      automation_failed: 'ui',
+      automation_stopped: 'ui',
       custom: 'ui',
     };
     return mapping[eventType] || 'ui';

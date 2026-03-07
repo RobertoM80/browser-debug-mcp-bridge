@@ -14,6 +14,11 @@ export const EventTypeSchema = z.enum([
   'blur',
   'keydown',
   'ui_snapshot',
+  'automation_requested',
+  'automation_started',
+  'automation_succeeded',
+  'automation_failed',
+  'automation_stopped',
   'custom',
 ]);
 

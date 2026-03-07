@@ -18,6 +18,7 @@ import {
   SnapshotStyleMode,
   saveCaptureConfig,
 } from './capture-controls';
+import { buildAutomationEventPayload, buildAutomationStoppedPayload } from './automation-events';
 import {
   evaluatePngCapturePolicy,
   normalizeSnapshotMode,
@@ -349,6 +350,45 @@ function withLiveActionTabContext(
       ...target,
     },
   };
+}
+
+function queueAutomationEvent(
+  eventType: 'automation_requested' | 'automation_started' | 'automation_succeeded' | 'automation_failed',
+  request: LiveUIActionRequest,
+  options: { startedAt: number; result?: LiveUIActionResult; tab?: chrome.tabs.Tab & { id: number } },
+): void {
+  const payload = buildAutomationEventPayload({
+    eventType,
+    request,
+    startedAt: options.startedAt,
+    result: options.result,
+    tabId: options.tab?.id,
+    url: options.tab?.url ?? request.target?.url,
+  });
+  sessionManager.queueEvent(eventType, payload, {
+    tabId: options.tab?.id,
+    origin: normalizeHttpOrigin(options.tab?.url ?? request.target?.url) ?? sessionManager.getState().baseOrigin,
+  });
+}
+
+function queueAutomationStoppedEvent(reason: string): void {
+  const state = sessionManager.getState();
+  if (!state.sessionId) {
+    return;
+  }
+
+  const rememberedTab = captureTabBySession.get(state.sessionId);
+  const payload = buildAutomationStoppedPayload({
+    action: automationUiState.action,
+    traceId: automationUiState.traceId,
+    sessionId: state.sessionId,
+    tabId: rememberedTab?.tabId,
+    reason,
+  });
+  sessionManager.queueEvent('automation_stopped', payload, {
+    tabId: rememberedTab?.tabId,
+    origin: state.baseOrigin,
+  });
 }
 
 async function reloadTab(tabId: number, ignoreCache: boolean): Promise<void> {
@@ -923,25 +963,37 @@ async function executeCaptureCommand(
     const startedAt = Date.now();
 
     if (!canExecuteLiveAutomation(captureConfig)) {
+      queueAutomationEvent('automation_requested', request, { startedAt });
+      const rejectedResult = buildRejectedLiveActionResult(
+        request,
+        startedAt,
+        'automation_disabled',
+        'Live automation is disabled in extension settings.',
+      );
+      queueAutomationEvent('automation_failed', request, {
+        startedAt,
+        result: rejectedResult,
+      });
       return {
-        payload: buildRejectedLiveActionResult(
-          request,
-          startedAt,
-          'automation_disabled',
-          'Live automation is disabled in extension settings.',
-        ) as unknown as Record<string, unknown>,
+        payload: rejectedResult as unknown as Record<string, unknown>,
       };
     }
 
     if (!captureConfig.automation.allowSensitiveFields
       && requiresSensitiveAutomationOptIn({ selector: request.target?.selector, action: request.action })) {
+      queueAutomationEvent('automation_requested', request, { startedAt });
+      const rejectedResult = buildRejectedLiveActionResult(
+        request,
+        startedAt,
+        'sensitive_field_opt_in_required',
+        'Sensitive field automation is blocked until the second opt-in is enabled.',
+      );
+      queueAutomationEvent('automation_failed', request, {
+        startedAt,
+        result: rejectedResult,
+      });
       return {
-        payload: buildRejectedLiveActionResult(
-          request,
-          startedAt,
-          'sensitive_field_opt_in_required',
-          'Sensitive field automation is blocked until the second opt-in is enabled.',
-        ) as unknown as Record<string, unknown>,
+        payload: rejectedResult as unknown as Record<string, unknown>,
       };
     }
 
@@ -949,14 +1001,20 @@ async function executeCaptureCommand(
     const sessionScope = getSessionTabScope(context.sessionId);
 
     if (requestedTabId !== undefined && sessionScope && !sessionScope.allowedTabIds.has(requestedTabId)) {
+      queueAutomationEvent('automation_requested', request, { startedAt });
+      const rejectedResult = buildRejectedLiveActionResult(
+        request,
+        startedAt,
+        'tab_not_bound',
+        `tabId ${requestedTabId} is not bound to this session`,
+        { tabId: requestedTabId },
+      );
+      queueAutomationEvent('automation_failed', request, {
+        startedAt,
+        result: rejectedResult,
+      });
       return {
-        payload: buildRejectedLiveActionResult(
-          request,
-          startedAt,
-          'tab_not_bound',
-          `tabId ${requestedTabId} is not bound to this session`,
-          { tabId: requestedTabId },
-        ) as unknown as Record<string, unknown>,
+        payload: rejectedResult as unknown as Record<string, unknown>,
       };
     }
 
@@ -978,26 +1036,40 @@ async function executeCaptureCommand(
     const resolvedTab = tab as chrome.tabs.Tab & { id: number };
 
     if (!isTabAllowedForSession(context.sessionId, resolvedTab.id)) {
+      queueAutomationEvent('automation_requested', request, { startedAt, tab: resolvedTab });
+      const rejectedResult = buildRejectedLiveActionResult(
+        request,
+        startedAt,
+        'tab_not_bound',
+        `tabId ${resolvedTab.id} is not bound to this session`,
+        { tabId: resolvedTab.id, url: resolvedTab.url ?? request.target?.url },
+      );
+      queueAutomationEvent('automation_failed', request, {
+        startedAt,
+        result: rejectedResult,
+        tab: resolvedTab,
+      });
       return {
-        payload: buildRejectedLiveActionResult(
-          request,
-          startedAt,
-          'tab_not_bound',
-          `tabId ${resolvedTab.id} is not bound to this session`,
-          { tabId: resolvedTab.id, url: resolvedTab.url ?? request.target?.url },
-        ) as unknown as Record<string, unknown>,
+        payload: rejectedResult as unknown as Record<string, unknown>,
       };
     }
 
     if (!isUrlAllowed(resolvedTab.url ?? '', captureConfig.allowlist)) {
+      queueAutomationEvent('automation_requested', request, { startedAt, tab: resolvedTab });
+      const rejectedResult = buildRejectedLiveActionResult(
+        request,
+        startedAt,
+        'target_not_allowlisted',
+        'Live UI actions are blocked because the target tab is no longer allowlisted.',
+        { tabId: resolvedTab.id, url: resolvedTab.url ?? request.target?.url },
+      );
+      queueAutomationEvent('automation_failed', request, {
+        startedAt,
+        result: rejectedResult,
+        tab: resolvedTab,
+      });
       return {
-        payload: buildRejectedLiveActionResult(
-          request,
-          startedAt,
-          'target_not_allowlisted',
-          'Live UI actions are blocked because the target tab is no longer allowlisted.',
-          { tabId: resolvedTab.id, url: resolvedTab.url ?? request.target?.url },
-        ) as unknown as Record<string, unknown>,
+        payload: rejectedResult as unknown as Record<string, unknown>,
       };
     }
 
@@ -1018,6 +1090,12 @@ async function executeCaptureCommand(
         url: resolvedTab.url ?? request.target?.url,
       },
     };
+    const requestWithResolvedTarget = actionPayload as unknown as LiveUIActionRequest;
+
+    queueAutomationEvent('automation_requested', requestWithResolvedTarget, {
+      startedAt,
+      tab: resolvedTab,
+    });
 
     if (request.action === 'reload') {
       const traceId = String(actionPayload.traceId);
@@ -1031,12 +1109,45 @@ async function executeCaptureCommand(
       await syncCaptureConfigToSessionTabs(context.sessionId);
 
       try {
+        queueAutomationEvent('automation_started', requestWithResolvedTarget, {
+          startedAt,
+          tab: resolvedTab,
+        });
         await reloadTab(resolvedTab.id, request.input?.ignoreCache === true);
+        const successResult: LiveUIActionResult = {
+          action: 'reload',
+          traceId,
+          status: 'succeeded',
+          executionScope: 'top-document-v1',
+          startedAt,
+          finishedAt: Date.now(),
+          target: {
+            matched: true,
+            selector: request.target?.selector,
+            tabId: resolvedTab.id,
+            frameId: request.target?.frameId ?? 0,
+            url: resolvedTab.url ?? request.target?.url,
+          },
+          result: {
+            reloaded: true,
+            ignoreCache: request.input?.ignoreCache === true,
+          },
+        };
+        queueAutomationEvent('automation_succeeded', requestWithResolvedTarget, {
+          startedAt,
+          result: successResult,
+          tab: resolvedTab,
+        });
         return {
-          payload: {
+          payload: successResult,
+        };
+      } catch (error) {
+        queueAutomationEvent('automation_failed', requestWithResolvedTarget, {
+          startedAt,
+          result: {
             action: 'reload',
             traceId,
-            status: 'succeeded',
+            status: 'failed',
             executionScope: 'top-document-v1',
             startedAt,
             finishedAt: Date.now(),
@@ -1047,12 +1158,14 @@ async function executeCaptureCommand(
               frameId: request.target?.frameId ?? 0,
               url: resolvedTab.url ?? request.target?.url,
             },
-            result: {
-              reloaded: true,
-              ignoreCache: request.input?.ignoreCache === true,
+            failureReason: {
+              code: 'action_execution_failed',
+              message: error instanceof Error ? error.message : 'Live UI action execution failed.',
             },
           },
-        };
+          tab: resolvedTab,
+        });
+        throw error;
       } finally {
         automationUiState = {
           status: canExecuteLiveAutomation(captureConfig) ? 'armed' : 'idle',
@@ -1073,11 +1186,50 @@ async function executeCaptureCommand(
     await syncCaptureConfigToSessionTabs(context.sessionId);
 
     try {
+      queueAutomationEvent('automation_started', requestWithResolvedTarget, {
+        startedAt,
+        tab: resolvedTab,
+      });
       const actionResult = await sendCaptureCommandToTab(resolvedTab.id, 'EXECUTE_UI_ACTION', actionPayload);
+      const liveResult = withLiveActionTabContext(actionResult.payload, request, resolvedTab) as LiveUIActionResult;
+      queueAutomationEvent(
+        liveResult.status === 'succeeded' ? 'automation_succeeded' : 'automation_failed',
+        requestWithResolvedTarget,
+        {
+          startedAt,
+          result: liveResult,
+          tab: resolvedTab,
+        },
+      );
       return {
-        payload: withLiveActionTabContext(actionResult.payload, request, resolvedTab),
+        payload: liveResult,
         truncated: actionResult.truncated,
       };
+    } catch (error) {
+      queueAutomationEvent('automation_failed', requestWithResolvedTarget, {
+        startedAt,
+        result: {
+          action: request.action,
+          traceId: requestWithResolvedTarget.traceId ?? createLiveUIActionTraceId(),
+          status: 'failed',
+          executionScope: 'top-document-v1',
+          startedAt,
+          finishedAt: Date.now(),
+          target: {
+            matched: false,
+            selector: request.target?.selector,
+            tabId: resolvedTab.id,
+            frameId: request.target?.frameId ?? 0,
+            url: resolvedTab.url ?? request.target?.url,
+          },
+          failureReason: {
+            code: 'action_execution_failed',
+            message: error instanceof Error ? error.message : 'Live UI action execution failed.',
+          },
+        },
+        tab: resolvedTab,
+      });
+      throw error;
     } finally {
       automationUiState = {
         status: canExecuteLiveAutomation(captureConfig) ? 'armed' : 'idle',
@@ -1895,6 +2047,7 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
       })
         .then(async (saved) => {
           captureConfig = saved;
+          queueAutomationStoppedEvent('emergency_stop');
           automationUiState = { status: 'idle' };
           syncAutomationBadge();
           const sessionId = sessionManager.getState().sessionId;
