@@ -333,3 +333,10 @@
   - Documented the new live automation tool contract in `apps/docs/docs/mcp-tools/overview.md` and `apps/docs/docs/mcp-tools/v5-live-automation.md`
   - Verified `pnpm nx test mcp-contracts`, `pnpm nx test mcp-server`, and `pnpm nx build mcp-server`
   - Ran `pnpm test`; it still fails in unrelated existing e2e test `apps/e2e-playwright/tests/full.extension-db.spec.ts` (`Timed out waiting for expected DB entries`)
+
+### Completed: 2026-03-07
+- [Validate the extension-native automation flow end-to-end with policy checks, sensitive-field gating, observability, and MCP execution] - COMPLETED
+  - Extended Playwright popup coverage in `apps/e2e-playwright/tests/full.extension-ui-controls.spec.ts` to validate live automation arming defaults, saved config state, status messaging, and emergency stop behavior
+  - Updated `docs/MCP_TOOLS.md` with the `execute_ui_action` contract, top-document-only limitation, popup opt-ins, emergency stop, and failure evidence behavior
+  - Extended `docs/TROUBLESHOOTING.md` with automation-specific rejection and recovery guidance for disabled automation, sensitive-field blocks, iframe limits, and post-failure debugging
+  - Expanded `docs/SECURITY.md` with live automation guardrails covering default-off behavior, second opt-in requirements, visible warnings, emergency stop, and input redaction guarantees

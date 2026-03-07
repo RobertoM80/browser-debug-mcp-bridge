@@ -304,6 +304,29 @@ When `mode: "png"` is used, defaults are metadata-first:
 
 Override these only when full payloads are explicitly needed.
 
+### execute_ui_action
+
+Executes one live UI action in the already bound extension session without creating a new browser runtime.
+
+```json
+{
+  "name": "execute_ui_action",
+  "arguments": {
+    "sessionId": "sess_123",
+    "action": "click",
+    "target": { "selector": "#checkout-submit" }
+  }
+}
+```
+
+Important limits and safeguards:
+
+- V1 only supports the top document in the currently bound tab; iframe targets return an unsupported error
+- `Allow live automation` must be enabled in the extension popup before any action can run
+- Sensitive selectors and input-like actions require the second `Allow sensitive field automation` opt-in
+- The extension shows a red in-page automation indicator while armed/executing and exposes an emergency stop in both the page overlay and popup
+- Failures return structured `failureDetails`, `traceId`, `tabContext`, and optional `postActionEvidence` when `captureOnFailure` is enabled
+
 ### Live capture disconnection behavior
 
 When a listed session is not currently connected, live tools return a normalized disconnection error that starts with:

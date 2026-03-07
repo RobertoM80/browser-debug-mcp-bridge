@@ -73,6 +73,14 @@ For PNG snapshots, prefer metadata-first mode:
 
 - `capture_ui_snapshot` with `mode: "png"` (defaults to `includeDom=false`, `includeStyles=false`, `includePngDataUrl=false`)
 
+## Live automation is rejected or stops unexpectedly
+
+- If `execute_ui_action` returns `automation_disabled`, enable `Allow live automation` in the extension popup and save settings again
+- If it returns `sensitive_field_opt_in_required`, leave the default block in place unless you are intentionally testing a sensitive field flow; then enable the second opt-in explicitly
+- If it returns an unsupported iframe/top-document error, retarget the action to an element in the top document; V1 does not execute inside iframes
+- Look for the red in-page automation indicator to confirm the tab is armed; use its stop button or the popup emergency stop to disarm immediately
+- After any rejected/failed action, inspect `get_recent_events` for `automation_*` rows and use `capture_ui_snapshot` or `explain_last_failure` for follow-up evidence
+
 ## Tests fail locally
 
 - Run `pnpm install` to ensure dependencies are synced

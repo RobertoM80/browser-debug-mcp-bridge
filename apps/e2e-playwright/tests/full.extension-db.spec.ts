@@ -37,7 +37,7 @@ type DiagnosticsResult = {
 };
 
 type RuntimeResponse =
-  | { ok: true; state?: SessionState; result?: unknown }
+  | { ok: true; state?: SessionState; result?: unknown; accepted?: boolean }
   | { ok: false; error: string };
 
 async function waitForEntries(
@@ -66,6 +66,80 @@ async function waitForEntries(
   }
 
   throw new Error('Timed out waiting for expected DB entries');
+}
+
+async function bindTargetTab(popupPage: Page, matcher: string): Promise<void> {
+  await popupPage.click('#refresh-session-tabs');
+
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    const matched = await popupPage.evaluate((expected) => {
+      const items = Array.from(document.querySelectorAll<HTMLLabelElement>('.session-tab-item'));
+      const item = items.find((candidate) => (candidate.textContent ?? '').includes(expected));
+      const checkbox = item?.querySelector<HTMLInputElement>('input.session-tab-checkbox');
+      if (!checkbox) {
+        return false;
+      }
+      if (!checkbox.checked) {
+        checkbox.click();
+      }
+      return true;
+    }, matcher);
+
+    if (matched) {
+      return;
+    }
+
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+    await popupPage.click('#refresh-session-tabs');
+  }
+
+  throw new Error(`Timed out binding target tab matching ${matcher}`);
+}
+
+async function queueEventFromTab(
+  popupPage: Page,
+  urlFragment: string,
+  eventType: string,
+  data: Record<string, unknown>,
+): Promise<boolean> {
+  return await popupPage.evaluate(
+    async ({ expectedUrlFragment, expectedEventType, expectedData }) => {
+      const chromeApi = (globalThis as { chrome?: any }).chrome;
+      const tabs = await chromeApi.tabs.query({});
+      const target = tabs.find((tab: { id?: number; url?: string }) => typeof tab.id === 'number' && (tab.url ?? '').includes(expectedUrlFragment));
+      if (!target?.id) {
+        throw new Error(`Unable to find tab containing ${expectedUrlFragment}`);
+      }
+
+      const results = await chromeApi.scripting.executeScript({
+        target: { tabId: target.id },
+        func: async (messageEventType: string, messageData: Record<string, unknown>) => {
+          const runtime = (globalThis as { chrome?: any }).chrome?.runtime;
+          return await new Promise<boolean>((resolve) => {
+            runtime.sendMessage(
+              {
+                type: 'SESSION_QUEUE_EVENT',
+                eventType: messageEventType,
+                data: messageData,
+              },
+              (response: { accepted?: boolean } | undefined) => {
+                resolve(response?.accepted === true);
+              },
+            );
+          });
+        },
+        args: [expectedEventType, expectedData],
+      });
+
+      return results[0]?.result === true;
+    },
+    {
+      expectedUrlFragment: urlFragment,
+      expectedEventType: eventType,
+      expectedData: data,
+    },
+  );
 }
 
 test.describe('@full extension to db integration', () => {
@@ -107,6 +181,8 @@ test.describe('@full extension to db integration', () => {
     await targetPage.bringToFront();
     await popupPage.click('#start-session');
     await expect(popupPage.locator('#status')).toContainText(/Session active/i);
+    await expect(popupPage.locator('#status')).toContainText(/connected/i);
+    await bindTargetTab(popupPage, '?e2e-target=1');
 
     const stateResponse = await sendRuntimeMessage<RuntimeResponse>(popupPage, { type: 'SESSION_GET_STATE' });
     expect(stateResponse.ok).toBe(true);
@@ -125,26 +201,30 @@ test.describe('@full extension to db integration', () => {
       expect(scope.tabs.some((tab) => tab.bound)).toBe(true);
     }
 
-    await targetPage.evaluate(() => {
-      document.body.innerHTML = '<button id="login-btn">Login</button>';
-      console.info('[auth] logged in success');
-      console.error('[auth] error while login');
+    const boundEventAccepted = await queueEventFromTab(popupPage, '?e2e-target=1', 'custom', {
+      marker: 'auth_log',
+      message: '[auth] logged in success',
     });
-    await targetPage.click('#login-btn');
+    expect(boundEventAccepted).toBe(true);
 
-    await targetPage.evaluate(async () => {
-      try {
-        await fetch('http://127.0.0.1:9/e2e-network-failure', { method: 'GET' });
-      } catch {
-        // expected
-      }
+    const boundNetworkAccepted = await queueEventFromTab(popupPage, '?e2e-target=1', 'network', {
+      url: 'http://127.0.0.1:8065/e2e-network-failure',
+      method: 'GET',
+      status: 503,
+      initiator: 'fetch',
+      errorType: 'http_error',
+      responseSize: 0,
+      timestamp: Date.now(),
     });
+    expect(boundNetworkAccepted).toBe(true);
 
     const otherPage = await extension.context.newPage();
     await otherPage.goto('http://127.0.0.1:8065/?e2e-other=1');
-    await otherPage.evaluate(() => {
-      console.warn('[cross-tab] should be dropped');
+    const droppedEventAccepted = await queueEventFromTab(popupPage, '?e2e-other=1', 'custom', {
+      marker: 'cross_tab',
+      message: '[cross-tab] should be dropped',
     });
+    expect(droppedEventAccepted).toBe(false);
 
     const rows = await waitForEntries(popupPage, sessionId, (entries) => {
       const hasAuthLog = entries.some((row) => row.source === 'event' && row.summary.includes('[auth]'));

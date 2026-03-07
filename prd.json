@@ -642,7 +642,7 @@
       "User-facing docs explain exactly how to enable, observe, and stop automation.",
       "The documented V1 limitations match the actual implementation."
     ],
-    "passes": false,
+    "passes": true,
     "id": "PRD-113",
     "depends_on": [
       "PRD-112"
