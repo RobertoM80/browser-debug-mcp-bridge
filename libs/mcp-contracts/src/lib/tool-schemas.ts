@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { LiveUIActionRequestSchema } from './live-actions';
 
 export const ListSessionsSchema = z.object({
   sinceMinutes: z.number().int().min(1).max(1440).default(60)
@@ -314,3 +315,34 @@ export const GetSnapshotAssetSchema = z.object({
   encoding: z.enum(['raw', 'base64']).default('base64')
     .describe('Chunk encoding mode'),
 });
+
+const ExecuteUIActionFailureCaptureSchema = z.object({
+  enabled: z.boolean().optional()
+    .describe('Capture snapshot evidence only when the action result is rejected or failed'),
+  selector: z.string().optional()
+    .describe('Optional selector override for failure snapshot capture'),
+  mode: z.enum(['dom', 'png', 'both']).optional()
+    .describe('Failure snapshot mode; defaults to dom'),
+  styleMode: z.enum(['computed-lite', 'computed-full']).optional()
+    .describe('Failure snapshot style detail level; full mode must be explicitly requested'),
+  maxDepth: z.number().int().min(1).max(10).optional()
+    .describe('Maximum DOM depth for failure capture'),
+  maxBytes: z.number().int().min(1000).max(1000000).optional()
+    .describe('Maximum bytes for failure capture payload sections'),
+  maxAncestors: z.number().int().min(0).max(8).optional()
+    .describe('Maximum ancestor chain length for failure style capture'),
+  includeDom: z.boolean().optional()
+    .describe('Include DOM section in failure capture response payload'),
+  includeStyles: z.boolean().optional()
+    .describe('Include styles section in failure capture response payload'),
+  includePngDataUrl: z.boolean().optional()
+    .describe('Include inline PNG data URL in failure capture response payload'),
+});
+
+export const ExecuteUIActionSchema = z.intersection(
+  z.object({
+    sessionId: z.string().describe('Connected session identifier'),
+    captureOnFailure: ExecuteUIActionFailureCaptureSchema.optional(),
+  }),
+  LiveUIActionRequestSchema,
+);

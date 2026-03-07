@@ -4,6 +4,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import type { Database } from 'better-sqlite3';
 import { existsSync, readFileSync } from 'fs';
 import { dirname, resolve } from 'path';
+import { z } from 'zod';
 import { getConnection } from '../db/connection.js';
 
 type ToolInput = Record<string, unknown>;
@@ -78,6 +79,95 @@ function createDefaultMcpLogger(): MCPLogger {
     },
   };
 }
+
+const LiveUIActionTargetSchema = z.object({
+  selector: z.string().min(1).optional(),
+  tabId: z.number().int().min(0).optional(),
+  frameId: z.number().int().min(0).optional(),
+  url: z.string().url().optional(),
+});
+
+const LiveUIActionBaseSchema = z.object({
+  traceId: z.string().min(1).optional(),
+  target: LiveUIActionTargetSchema.optional(),
+});
+
+const LiveUIActionRequestSchema = z.discriminatedUnion('action', [
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('click'),
+    input: z.object({
+      button: z.enum(['left', 'middle', 'right']).optional(),
+      clickCount: z.number().int().min(1).max(3).optional(),
+    }).optional(),
+  }),
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('input'),
+    input: z.object({
+      value: z.string(),
+    }),
+  }),
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('focus'),
+    input: z.object({}).optional(),
+  }),
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('blur'),
+    input: z.object({}).optional(),
+  }),
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('scroll'),
+    input: z.object({
+      x: z.number().optional(),
+      y: z.number().optional(),
+      behavior: z.enum(['auto', 'smooth']).optional(),
+    }).optional(),
+  }),
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('press_key'),
+    input: z.object({
+      key: z.string().min(1),
+      altKey: z.boolean().optional(),
+      ctrlKey: z.boolean().optional(),
+      metaKey: z.boolean().optional(),
+      shiftKey: z.boolean().optional(),
+    }),
+  }),
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('submit'),
+    input: z.object({}).optional(),
+  }),
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('reload'),
+    input: z.object({
+      ignoreCache: z.boolean().optional(),
+    }).optional(),
+  }),
+]);
+
+type LiveUIActionRequest = z.infer<typeof LiveUIActionRequestSchema>;
+type LiveUIActionResult = {
+  action: LiveUIActionRequest['action'];
+  traceId: string;
+  status: 'succeeded' | 'rejected' | 'failed';
+  executionScope: 'top-document-v1';
+  startedAt: number;
+  finishedAt: number;
+  target: {
+    matched: boolean;
+    selector?: string;
+    resolvedSelector?: string;
+    tagName?: string;
+    textPreview?: string;
+    tabId?: number;
+    frameId?: number;
+    url?: string;
+  };
+  failureReason?: {
+    code: string;
+    message: string;
+  };
+  result?: Record<string, unknown>;
+};
 
 const TOOL_SCHEMAS: Record<string, object> = {
   list_sessions: {
@@ -357,6 +447,40 @@ const TOOL_SCHEMAS: Record<string, object> = {
       encoding: { type: 'string' },
     },
   },
+  execute_ui_action: {
+    type: 'object',
+    required: ['sessionId', 'action'],
+    properties: {
+      sessionId: { type: 'string' },
+      action: { type: 'string', enum: ['click', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload'] },
+      traceId: { type: 'string' },
+      target: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string' },
+          tabId: { type: 'number' },
+          frameId: { type: 'number' },
+          url: { type: 'string' },
+        },
+      },
+      input: { type: 'object' },
+      captureOnFailure: {
+        type: 'object',
+        properties: {
+          enabled: { type: 'boolean' },
+          selector: { type: 'string' },
+          mode: { type: 'string', enum: ['dom', 'png', 'both'] },
+          styleMode: { type: 'string', enum: ['computed-lite', 'computed-full'] },
+          maxDepth: { type: 'number' },
+          maxBytes: { type: 'number' },
+          maxAncestors: { type: 'number' },
+          includeDom: { type: 'boolean' },
+          includeStyles: { type: 'boolean' },
+          includePngDataUrl: { type: 'boolean' },
+        },
+      },
+    },
+  },
 };
 
 const TOOL_DESCRIPTIONS: Record<string, string> = {
@@ -385,6 +509,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   list_snapshots: 'List snapshot metadata by session/time/trigger',
   get_snapshot_for_event: 'Find snapshot most related to an event',
   get_snapshot_asset: 'Read bounded binary chunks for snapshot assets',
+  execute_ui_action: 'Execute one live UI action in the current bound extension session',
 };
 
 const ALL_TOOLS = Object.keys(TOOL_SCHEMAS);
@@ -581,10 +706,28 @@ export interface CaptureCommandClient {
       | 'CAPTURE_COMPUTED_STYLES'
       | 'CAPTURE_LAYOUT_METRICS'
       | 'CAPTURE_UI_SNAPSHOT'
-      | 'CAPTURE_GET_LIVE_CONSOLE_LOGS',
+      | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+      | 'EXECUTE_UI_ACTION',
     payload: Record<string, unknown>,
     timeoutMs?: number,
   ): Promise<CaptureClientResult>;
+}
+
+interface SnapshotResponseOptions {
+  includeDom: boolean;
+  includeStyles: boolean;
+  includePngDataUrl: boolean;
+}
+
+interface FailureEvidenceCaptureOptions extends SnapshotResponseOptions {
+  enabled: boolean;
+  selector?: string;
+  mode: 'dom' | 'png' | 'both';
+  styleMode: 'computed-lite' | 'computed-full';
+  explicitStyleMode: boolean;
+  maxDepth: number;
+  maxBytes: number;
+  maxAncestors: number;
 }
 
 class LiveSessionDisconnectedError extends Error {
@@ -1388,7 +1531,8 @@ async function executeLiveCapture(
     | 'CAPTURE_COMPUTED_STYLES'
     | 'CAPTURE_LAYOUT_METRICS'
     | 'CAPTURE_UI_SNAPSHOT'
-    | 'CAPTURE_GET_LIVE_CONSOLE_LOGS',
+    | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+    | 'EXECUTE_UI_ACTION',
   payload: Record<string, unknown>,
   timeoutMs: number,
 ): Promise<CaptureClientResult> {
@@ -1405,6 +1549,102 @@ function ensureCaptureSuccess(result: CaptureClientResult, sessionId: string): R
   }
 
   return result.payload ?? {};
+}
+
+function normalizeSnapshotResponsePayload(
+  payload: Record<string, unknown>,
+  options: SnapshotResponseOptions,
+): Record<string, unknown> {
+  const snapshotRecord = structuredClone(payload);
+  const snapshotRoot = snapshotRecord.snapshot;
+  if (typeof snapshotRoot === 'object' && snapshotRoot !== null) {
+    const snapshotObject = snapshotRoot as Record<string, unknown>;
+    if (!options.includeDom) {
+      delete snapshotObject.dom;
+    }
+    if (!options.includeStyles) {
+      delete snapshotObject.styles;
+    }
+  }
+
+  const png = snapshotRecord.png;
+  if (!options.includePngDataUrl && typeof png === 'object' && png !== null) {
+    delete (png as Record<string, unknown>).dataUrl;
+  }
+
+  return snapshotRecord;
+}
+
+function resolveFailureEvidenceCaptureOptions(input: ToolInput): FailureEvidenceCaptureOptions {
+  const raw = isRecord(input.captureOnFailure) ? input.captureOnFailure : undefined;
+  const enabled = raw !== undefined ? raw.enabled !== false : false;
+  const mode = raw?.mode === 'png' || raw?.mode === 'both' || raw?.mode === 'dom' ? raw.mode : 'dom';
+  const styleMode = raw?.styleMode === 'computed-full' || raw?.styleMode === 'computed-lite'
+    ? raw.styleMode
+    : 'computed-lite';
+  return {
+    enabled,
+    selector: typeof raw?.selector === 'string' && raw.selector.trim().length > 0 ? raw.selector.trim() : undefined,
+    mode,
+    styleMode,
+    explicitStyleMode: raw?.styleMode === 'computed-full' || raw?.styleMode === 'computed-lite',
+    maxDepth: resolveCaptureDepth(raw?.maxDepth, 3),
+    maxBytes: resolveCaptureBytes(raw?.maxBytes, 50_000),
+    maxAncestors: resolveCaptureAncestors(raw?.maxAncestors, 4),
+    includeDom: typeof raw?.includeDom === 'boolean' ? raw.includeDom : mode !== 'png',
+    includeStyles: typeof raw?.includeStyles === 'boolean' ? raw.includeStyles : mode !== 'png',
+    includePngDataUrl: typeof raw?.includePngDataUrl === 'boolean' ? raw.includePngDataUrl : mode !== 'png',
+  };
+}
+
+async function captureFailureEvidence(
+  captureClient: CaptureCommandClient,
+  sessionId: string,
+  request: LiveUIActionRequest,
+  options: FailureEvidenceCaptureOptions,
+): Promise<Record<string, unknown> | undefined> {
+  if (!options.enabled) {
+    return undefined;
+  }
+
+  try {
+    const capture = await executeLiveCapture(
+      captureClient,
+      sessionId,
+      'CAPTURE_UI_SNAPSHOT',
+      {
+        selector: options.selector ?? request.target?.selector,
+        trigger: 'error',
+        mode: options.mode,
+        styleMode: options.styleMode,
+        explicitStyleMode: options.explicitStyleMode,
+        maxDepth: options.maxDepth,
+        maxBytes: options.maxBytes,
+        maxAncestors: options.maxAncestors,
+        includeDom: options.includeDom,
+        includeStyles: options.includeStyles,
+        includePngDataUrl: options.includePngDataUrl,
+        llmRequested: true,
+      },
+      5_000,
+    );
+    const payload = ensureCaptureSuccess(capture, sessionId);
+
+    return {
+      captured: true,
+      limitsApplied: {
+        maxBytes: options.maxBytes,
+        truncated: capture.truncated ?? false,
+      },
+      snapshot: normalizeSnapshotResponsePayload(payload, options),
+    };
+  } catch (error) {
+    const normalized = normalizeCaptureError(sessionId, error);
+    return {
+      captured: false,
+      error: normalized.message,
+    };
+  }
 }
 
 export function createV1ToolHandlers(
@@ -3128,23 +3368,11 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
       );
 
       const payload = ensureCaptureSuccess(capture, sessionId);
-      const snapshotRecord = structuredClone(payload);
-
-      const snapshotRoot = snapshotRecord.snapshot;
-      if (typeof snapshotRoot === 'object' && snapshotRoot !== null) {
-        const snapshotObject = snapshotRoot as Record<string, unknown>;
-        if (!includeDom) {
-          delete snapshotObject.dom;
-        }
-        if (!includeStyles) {
-          delete snapshotObject.styles;
-        }
-      }
-
-      const png = snapshotRecord.png;
-      if (!includePngDataUrl && typeof png === 'object' && png !== null) {
-        delete (png as Record<string, unknown>).dataUrl;
-      }
+      const snapshotRecord = normalizeSnapshotResponsePayload(payload, {
+        includeDom,
+        includeStyles,
+        includePngDataUrl,
+      });
 
       return {
         ...createBaseResponse(sessionId),
@@ -3236,6 +3464,74 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
               dedupeWindowMs,
             },
         bufferStats: payload.bufferStats,
+      };
+    },
+
+    execute_ui_action: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const actionInput: Record<string, unknown> = { ...input };
+      delete actionInput.sessionId;
+      delete actionInput.captureOnFailure;
+
+      const request = LiveUIActionRequestSchema.parse(actionInput);
+      const failureCaptureOptions = resolveFailureEvidenceCaptureOptions(input);
+      const capture = await executeLiveCapture(
+        captureClient,
+        sessionId,
+        'EXECUTE_UI_ACTION',
+        request as unknown as Record<string, unknown>,
+        5_000,
+      );
+      const payload = ensureCaptureSuccess(capture, sessionId);
+      const actionResult = payload as LiveUIActionResult & Record<string, unknown>;
+      const failed = actionResult.status === 'failed' || actionResult.status === 'rejected';
+      const failureEvidence = failed
+        ? await captureFailureEvidence(captureClient, sessionId, request, failureCaptureOptions)
+        : undefined;
+      const evidenceTruncated = Boolean(
+        failureEvidence
+        && typeof failureEvidence === 'object'
+        && failureEvidence !== null
+        && typeof (failureEvidence as { limitsApplied?: { truncated?: unknown } }).limitsApplied?.truncated === 'boolean'
+        && (failureEvidence as { limitsApplied: { truncated: boolean } }).limitsApplied.truncated,
+      );
+      const target = typeof actionResult.target === 'object' && actionResult.target !== null
+        ? actionResult.target as Record<string, unknown>
+        : {};
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: (capture.truncated ?? false) || evidenceTruncated,
+        },
+        action: actionResult.action,
+        status: actionResult.status,
+        traceId: actionResult.traceId,
+        startedAt: actionResult.startedAt,
+        finishedAt: actionResult.finishedAt,
+        durationMs:
+          typeof actionResult.startedAt === 'number' && typeof actionResult.finishedAt === 'number'
+            ? Math.max(0, actionResult.finishedAt - actionResult.startedAt)
+            : undefined,
+        actionResult,
+        target,
+        tabContext: {
+          tabId: typeof target.tabId === 'number' ? target.tabId : undefined,
+          frameId: typeof target.frameId === 'number' ? target.frameId : 0,
+          url: typeof target.url === 'string' ? target.url : undefined,
+        },
+        failureDetails: actionResult.failureReason,
+        postActionEvidence: failureEvidence,
+        supportedScopes: {
+          executionScope: actionResult.executionScope,
+          topDocumentOnly: true,
+          opensNewBrowserSession: false,
+        },
       };
     },
   };

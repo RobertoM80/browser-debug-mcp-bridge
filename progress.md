@@ -323,3 +323,13 @@
   - Extended event contracts and persistence mapping for `automation_*` event types in `apps/mcp-server/src/websocket/messages.ts`, `apps/mcp-server/src/db/events-repository.ts`, and `libs/shared/src/lib/*`
   - Added unit coverage for automation payload redaction and stop events in `apps/chrome-extension/src/automation-events.spec.ts`, plus server persistence coverage in `apps/mcp-server/src/db/events-repository.spec.ts` and websocket validation coverage in `apps/mcp-server/src/websocket/websocket.spec.ts`
   - Verified with `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm build`, and `pnpm test:e2e`
+
+### Completed: 2026-03-07
+- [Expose live UI automation through MCP so the LLM can drive and debug full flows in the existing session] - COMPLETED
+  - Added `execute_ui_action` to MCP contracts and tool discovery in `libs/mcp-contracts/src/lib/tool-definitions.ts`, `libs/mcp-contracts/src/lib/tool-schemas.ts`, and `apps/e2e-playwright/tests/utils/mcp-client.ts`
+  - Implemented the MCP handler in `apps/mcp-server/src/mcp/server.ts` to validate typed action payloads, execute actions over the existing live-session command channel, and return structured action/tab context plus failure details
+  - Added optional `captureOnFailure` evidence capture that reuses the existing snapshot path when an action is rejected or fails
+  - Added MCP server coverage for successful action execution and failure-evidence capture in `apps/mcp-server/src/mcp/server.spec.ts`
+  - Documented the new live automation tool contract in `apps/docs/docs/mcp-tools/overview.md` and `apps/docs/docs/mcp-tools/v5-live-automation.md`
+  - Verified `pnpm nx test mcp-contracts`, `pnpm nx test mcp-server`, and `pnpm nx build mcp-server`
+  - Ran `pnpm test`; it still fails in unrelated existing e2e test `apps/e2e-playwright/tests/full.extension-db.spec.ts` (`Timed out waiting for expected DB entries`)

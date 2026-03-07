@@ -7,6 +7,7 @@ import {
   CAPTURE_TOOLS,
   CORRELATION_TOOLS,
   SNAPSHOT_TOOLS,
+  AUTOMATION_TOOLS,
 } from './tool-definitions';
 
 describe('tool-definitions', () => {
@@ -56,5 +57,9 @@ describe('tool-definitions', () => {
     expect(SNAPSHOT_TOOLS.LIST_SNAPSHOTS).toBe('list_snapshots');
     expect(SNAPSHOT_TOOLS.GET_SNAPSHOT_FOR_EVENT).toBe('get_snapshot_for_event');
     expect(SNAPSHOT_TOOLS.GET_SNAPSHOT_ASSET).toBe('get_snapshot_asset');
+  });
+
+  it('should define automation tools', () => {
+    expect(AUTOMATION_TOOLS.EXECUTE_UI_ACTION).toBe('execute_ui_action');
   });
 });

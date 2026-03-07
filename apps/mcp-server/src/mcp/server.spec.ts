@@ -1388,6 +1388,169 @@ describe('mcp/server V2 capture tools', () => {
     expect((response.logs as Array<{ message: string }>)[0]?.message).toContain('[auth]');
   });
 
+  it('executes live ui actions through the existing session command path', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          return {
+            ok: true,
+            payload: {
+              action: 'click',
+              traceId: 'trace-live-1',
+              status: 'succeeded',
+              executionScope: 'top-document-v1',
+              startedAt: 1700000000000,
+              finishedAt: 1700000000020,
+              target: {
+                matched: true,
+                selector: '#submit',
+                resolvedSelector: '#submit',
+                tagName: 'button',
+                tabId: 9,
+                frameId: 0,
+                url: 'http://localhost:3000/checkout',
+              },
+              result: {
+                button: 'left',
+                clickCount: 1,
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'execute_ui_action', {
+      sessionId: 'session-v2',
+      action: 'click',
+      target: {
+        selector: '#submit',
+        tabId: 9,
+      },
+      input: {
+        clickCount: 1,
+      },
+    });
+
+    expect(captureCalls).toHaveLength(1);
+    expect(captureCalls[0]).toMatchObject({
+      command: 'EXECUTE_UI_ACTION',
+      payload: {
+        action: 'click',
+        target: {
+          selector: '#submit',
+          tabId: 9,
+        },
+      },
+    });
+    expect(response.status).toBe('succeeded');
+    expect(response.traceId).toBe('trace-live-1');
+    expect(response.tabContext).toEqual({
+      tabId: 9,
+      frameId: 0,
+      url: 'http://localhost:3000/checkout',
+    });
+    expect(response.supportedScopes).toEqual({
+      executionScope: 'top-document-v1',
+      topDocumentOnly: true,
+      opensNewBrowserSession: false,
+    });
+  });
+
+  it('captures snapshot evidence when a live ui action fails', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          if (command === 'EXECUTE_UI_ACTION') {
+            return {
+              ok: true,
+              payload: {
+                action: 'input',
+                traceId: 'trace-live-2',
+                status: 'failed',
+                executionScope: 'top-document-v1',
+                startedAt: 1700000000100,
+                finishedAt: 1700000000200,
+                target: {
+                  matched: true,
+                  selector: '#email',
+                  resolvedSelector: '#email',
+                  tagName: 'input',
+                  tabId: 4,
+                  frameId: 0,
+                  url: 'http://localhost:3000/login',
+                },
+                failureReason: {
+                  code: 'action_execution_failed',
+                  message: 'Mutation observer blocked the field update.',
+                },
+              },
+              truncated: false,
+            };
+          }
+
+          return {
+            ok: true,
+            payload: {
+              timestamp: 1700000000300,
+              trigger: 'error',
+              selector: '#email',
+              snapshot: {
+                dom: { html: '<input id="email" />' },
+                styles: { chain: [] },
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'execute_ui_action', {
+      sessionId: 'session-v2',
+      action: 'input',
+      target: {
+        selector: '#email',
+      },
+      input: {
+        value: 'person@example.com',
+      },
+      captureOnFailure: {
+        enabled: true,
+        mode: 'dom',
+        styleMode: 'computed-lite',
+      },
+    });
+
+    expect(captureCalls).toHaveLength(2);
+    expect(captureCalls[1]).toMatchObject({
+      command: 'CAPTURE_UI_SNAPSHOT',
+      payload: {
+        selector: '#email',
+        trigger: 'error',
+        mode: 'dom',
+        styleMode: 'computed-lite',
+      },
+    });
+    expect(response.status).toBe('failed');
+    expect(response.failureDetails).toEqual({
+      code: 'action_execution_failed',
+      message: 'Mutation observer blocked the field update.',
+    });
+    expect(response.postActionEvidence).toMatchObject({
+      captured: true,
+      snapshot: {
+        selector: '#email',
+        trigger: 'error',
+      },
+    });
+  });
+
   it('supports compact live console profile with byte-budget truncation', async () => {
     const tools = createToolRegistry(
       createV2ToolHandlers({

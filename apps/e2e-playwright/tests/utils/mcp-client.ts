@@ -133,6 +133,7 @@ export const EXPECTED_TOOL_NAMES = [
   'get_layout_metrics',
   'capture_ui_snapshot',
   'get_live_console_logs',
+  'execute_ui_action',
   'explain_last_failure',
   'get_event_correlation',
   'list_snapshots',

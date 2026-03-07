@@ -53,6 +53,10 @@ export const SNAPSHOT_TOOLS = {
   GET_SNAPSHOT_ASSET: 'get_snapshot_asset',
 } as const;
 
+export const AUTOMATION_TOOLS = {
+  EXECUTE_UI_ACTION: 'execute_ui_action',
+} as const;
+
 export const ALL_TOOLS = [
   ...Object.values(SESSION_TOOLS),
   ...Object.values(ERROR_TOOLS),
@@ -60,4 +64,5 @@ export const ALL_TOOLS = [
   ...Object.values(CAPTURE_TOOLS),
   ...Object.values(CORRELATION_TOOLS),
   ...Object.values(SNAPSHOT_TOOLS),
+  ...Object.values(AUTOMATION_TOOLS),
 ];

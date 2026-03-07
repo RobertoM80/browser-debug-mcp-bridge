@@ -617,7 +617,7 @@
       "The LLM can combine action execution with existing debug tools to test end-to-end flows.",
       "Action failures return enough structured context to continue debugging deterministically."
     ],
-    "passes": false,
+    "passes": true,
     "id": "PRD-112",
     "depends_on": [
       "PRD-110",
