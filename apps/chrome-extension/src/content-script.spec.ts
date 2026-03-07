@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { BRIDGE_KIND, BRIDGE_SOURCE, executeCaptureCommand, installContentCapture } from './content-script';
+import {
+  applyAutomationIndicatorUpdate,
+  BRIDGE_KIND,
+  BRIDGE_SOURCE,
+  executeCaptureCommand,
+  installContentCapture,
+} from './content-script';
 
 function createRuntimeMock(
   sendMessage: (message: unknown, callback?: () => void) => void
@@ -401,5 +407,55 @@ describe('content-script capture', () => {
         code: 'unsupported_target_frame',
       },
     });
+  });
+
+  it('renders an in-page automation indicator with emergency stop while armed', () => {
+    const sendMessage = vi.fn((_message: unknown, callback?: () => void) => {
+      callback?.();
+    });
+    const runtime = createRuntimeMock(sendMessage);
+
+    applyAutomationIndicatorUpdate(window, runtime, {
+      automation: {
+        enabled: true,
+        allowSensitiveFields: false,
+        status: 'armed',
+        sessionId: 'sess-1',
+      },
+    });
+
+    const indicator = document.getElementById('__bdmcp_automation_indicator__');
+    expect(indicator?.textContent).toContain('Automation armed');
+    expect(indicator?.textContent).toContain('Sensitive-field automation is still blocked.');
+
+    const stopButton = indicator?.querySelector('button');
+    expect(stopButton).toBeTruthy();
+    stopButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'AUTOMATION_EMERGENCY_STOP' }, expect.any(Function));
+  });
+
+  it('removes the in-page automation indicator when automation returns to idle', () => {
+    const runtime = createRuntimeMock(() => undefined);
+
+    applyAutomationIndicatorUpdate(window, runtime, {
+      automation: {
+        enabled: true,
+        allowSensitiveFields: false,
+        status: 'executing',
+        action: 'click',
+      },
+    });
+    expect(document.getElementById('__bdmcp_automation_indicator__')).toBeTruthy();
+
+    applyAutomationIndicatorUpdate(window, runtime, {
+      automation: {
+        enabled: false,
+        allowSensitiveFields: false,
+        status: 'idle',
+      },
+    });
+
+    expect(document.getElementById('__bdmcp_automation_indicator__')).toBeNull();
   });
 });

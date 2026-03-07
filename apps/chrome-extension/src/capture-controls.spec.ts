@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   applySafeModeRestrictions,
+  canExecuteLiveAutomation,
   canCaptureSnapshot,
   DEFAULT_CAPTURE_CONFIG,
   isUrlAllowed,
   loadCaptureConfig,
   normalizeCaptureConfig,
   parseAllowlistInput,
+  requiresSensitiveAutomationOptIn,
   saveCaptureConfig,
 } from './capture-controls';
 
@@ -103,6 +105,10 @@ describe('capture controls', () => {
         captureBodies: true,
         maxBodyBytes: 123456,
       },
+      automation: {
+        enabled: true,
+        allowSensitiveFields: true,
+      },
     });
 
     expect(saved).toEqual({
@@ -127,6 +133,10 @@ describe('capture controls', () => {
         captureBodies: true,
         maxBodyBytes: 123456,
       },
+      automation: {
+        enabled: true,
+        allowSensitiveFields: true,
+      },
     });
 
     const loaded = await loadCaptureConfig(storage);
@@ -139,6 +149,7 @@ describe('capture controls', () => {
       allowlist: [],
       snapshots: DEFAULT_CAPTURE_CONFIG.snapshots,
       network: DEFAULT_CAPTURE_CONFIG.network,
+      automation: DEFAULT_CAPTURE_CONFIG.automation,
     });
   });
 
@@ -287,5 +298,34 @@ describe('capture controls', () => {
       captureBodies: true,
       maxBodyBytes: 5 * 1024 * 1024,
     });
+  });
+
+  it('keeps live automation off by default and supports sensitive opt-in', () => {
+    const defaults = normalizeCaptureConfig({
+      automation: {
+        enabled: 'yes',
+      },
+    });
+
+    expect(defaults.automation).toEqual({
+      enabled: false,
+      allowSensitiveFields: false,
+    });
+
+    const enabled = normalizeCaptureConfig({
+      automation: {
+        enabled: true,
+        allowSensitiveFields: true,
+      },
+    });
+
+    expect(canExecuteLiveAutomation(enabled)).toBe(true);
+    expect(enabled.automation.allowSensitiveFields).toBe(true);
+  });
+
+  it('flags sensitive automation targets for second opt-in', () => {
+    expect(requiresSensitiveAutomationOptIn({ selector: '#email' })).toBe(true);
+    expect(requiresSensitiveAutomationOptIn({ selector: '#buy-now', action: 'click' })).toBe(false);
+    expect(requiresSensitiveAutomationOptIn({ action: 'input' })).toBe(true);
   });
 });

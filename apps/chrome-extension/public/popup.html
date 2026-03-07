@@ -113,6 +113,23 @@
         </div>
       </details>
 
+      <details class="automation-settings" open>
+        <summary>Live automation</summary>
+        <div class="automation-warning">
+          Live automation can click, type, and submit in the current tab. Keep this off unless you are actively supervising the session.
+        </div>
+        <label class="toggle" for="automation-enabled">
+          <input id="automation-enabled" type="checkbox">
+          <span>Allow live automation</span>
+        </label>
+        <label class="toggle" for="automation-sensitive-fields">
+          <input id="automation-sensitive-fields" type="checkbox">
+          <span>Allow sensitive field automation</span>
+        </label>
+        <div id="automation-status" class="config-status" aria-live="polite"></div>
+        <button id="automation-emergency-stop" type="button" class="danger-button">Emergency stop automation</button>
+      </details>
+
       <button id="save-config" type="button">Save Settings</button>
       <div id="config-status" class="config-status" aria-live="polite"></div>
     </div>

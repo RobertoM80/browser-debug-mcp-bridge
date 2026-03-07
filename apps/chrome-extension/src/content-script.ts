@@ -43,6 +43,14 @@ interface CaptureConfigUpdateRequest {
       captureBodies?: unknown;
       maxBodyBytes?: unknown;
     };
+    automation?: {
+      enabled?: unknown;
+      allowSensitiveFields?: unknown;
+      status?: unknown;
+      sessionId?: unknown;
+      traceId?: unknown;
+      action?: unknown;
+    };
   };
 }
 
@@ -59,6 +67,17 @@ interface CaptureCommandResponse {
   truncated?: boolean;
   error?: string;
 }
+
+interface AutomationIndicatorState {
+  enabled: boolean;
+  allowSensitiveFields: boolean;
+  status: 'idle' | 'armed' | 'executing';
+  sessionId?: string;
+  traceId?: string;
+  action?: string;
+}
+
+const AUTOMATION_INDICATOR_ID = '__bdmcp_automation_indicator__';
 
 function getClickableTarget(event: Event): Element | null {
   const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
@@ -152,6 +171,100 @@ function buildRejectedLiveActionResult(
 
 function isSensitiveSelector(selector: string): boolean {
   return /(password|passwd|pwd|token|secret|auth|session|email|card|cvv|cvc|ssn|iban|payment)/i.test(selector);
+}
+
+function normalizeAutomationIndicatorState(value: CaptureConfigUpdateRequest['payload']): AutomationIndicatorState {
+  const input = value?.automation;
+  const rawStatus = input?.status;
+  return {
+    enabled: input?.enabled === true,
+    allowSensitiveFields: input?.allowSensitiveFields === true,
+    status: rawStatus === 'armed' || rawStatus === 'executing' ? rawStatus : 'idle',
+    sessionId: typeof input?.sessionId === 'string' ? input.sessionId : undefined,
+    traceId: typeof input?.traceId === 'string' ? input.traceId : undefined,
+    action: typeof input?.action === 'string' ? input.action : undefined,
+  };
+}
+
+function removeAutomationIndicator(win: Window): void {
+  win.document.getElementById(AUTOMATION_INDICATOR_ID)?.remove();
+}
+
+function renderAutomationIndicator(win: Window, runtime: RuntimeMessenger, state: AutomationIndicatorState): void {
+  if (state.status === 'idle') {
+    removeAutomationIndicator(win);
+    return;
+  }
+
+  const doc = win.document;
+  const root = doc.documentElement ?? doc.body;
+  if (!root) {
+    return;
+  }
+
+  let container = doc.getElementById(AUTOMATION_INDICATOR_ID) as HTMLDivElement | null;
+  if (!container) {
+    container = doc.createElement('div');
+    container.id = AUTOMATION_INDICATOR_ID;
+    root.appendChild(container);
+  }
+
+  const heading = state.status === 'executing' ? 'Automation executing' : 'Automation armed';
+  const detail = state.status === 'executing'
+    ? `Action in progress${state.action ? `: ${state.action}` : ''}.`
+    : state.allowSensitiveFields
+      ? 'Sensitive-field automation is enabled.'
+      : 'Sensitive-field automation is still blocked.';
+
+  container.setAttribute('style', [
+    'position:fixed',
+    'right:12px',
+    'bottom:12px',
+    'z-index:2147483647',
+    'max-width:280px',
+    'padding:12px',
+    'border:2px solid #8f261d',
+    'border-radius:12px',
+    'background:#fff3f1',
+    'color:#441611',
+    'box-shadow:0 14px 28px rgba(40, 10, 8, 0.25)',
+    'font:12px/1.4 "Segoe UI", sans-serif',
+  ].join(';'));
+  container.innerHTML = '';
+
+  const title = doc.createElement('div');
+  title.textContent = heading;
+  title.setAttribute('style', 'font-weight:700; text-transform:uppercase; letter-spacing:0.04em; margin-bottom:4px;');
+
+  const text = doc.createElement('div');
+  text.textContent = detail;
+  text.setAttribute('style', 'margin-bottom:8px;');
+
+  const stopButton = doc.createElement('button');
+  stopButton.type = 'button';
+  stopButton.textContent = 'Emergency stop';
+  stopButton.setAttribute('style', [
+    'border:0',
+    'border-radius:8px',
+    'padding:8px 10px',
+    'background:#8f261d',
+    'color:#ffffff',
+    'font:700 12px/1.2 "Segoe UI", sans-serif',
+    'cursor:pointer',
+  ].join(';'));
+  stopButton.addEventListener('click', () => {
+    runtime.sendMessage({ type: 'AUTOMATION_EMERGENCY_STOP' }, () => undefined);
+  });
+
+  container.append(title, text, stopButton);
+}
+
+export function applyAutomationIndicatorUpdate(
+  win: Window,
+  runtime: RuntimeMessenger,
+  payload?: CaptureConfigUpdateRequest['payload'],
+): void {
+  renderAutomationIndicator(win, runtime, normalizeAutomationIndicatorState(payload));
 }
 
 interface ContentCaptureOptions {
@@ -1006,6 +1119,7 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
 
     if (request && request.type === 'CAPTURE_CONFIG_UPDATE') {
       postNetworkCaptureConfigToInjectedScript(request.payload);
+      applyAutomationIndicatorUpdate(win, runtime, request.payload);
       sendResponse({ ok: true, updated: true });
       return true;
     }
@@ -1084,6 +1198,7 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
     win.removeEventListener('focusin', onFocusInCapture, true);
     win.removeEventListener('focusout', onFocusOutCapture, true);
     win.removeEventListener('keydown', onKeydown, true);
+    removeAutomationIndicator(win);
     if (typeof chrome !== 'undefined' && chrome.runtime?.onMessage) {
       chrome.runtime.onMessage.removeListener(onRuntimeCommand);
     }

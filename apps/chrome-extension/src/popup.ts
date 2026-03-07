@@ -29,6 +29,10 @@ type CaptureConfig = {
     captureBodies: boolean;
     maxBodyBytes: number;
   };
+  automation: {
+    enabled: boolean;
+    allowSensitiveFields: boolean;
+  };
 };
 
 type SessionResponse =
@@ -90,6 +94,8 @@ type RecentSession = {
 type StatusTone = 'info' | 'success' | 'warning' | 'error';
 
 let statePollTimer: number | null = null;
+let latestSessionState: SessionState | null = null;
+let latestCaptureConfig: CaptureConfig | null = null;
 const MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024;
 const STATUS_LABELS: Record<StatusTone, string> = {
   info: 'INFO',
@@ -146,6 +152,7 @@ function sendRuntimeMessage(message: unknown): Promise<SessionResponse> {
 }
 
 function renderSessionState(state: SessionState): void {
+  latestSessionState = state;
   const statusEl = document.getElementById('status');
   const sessionIdEl = document.getElementById('session-id');
   const queueEl = document.getElementById('queue-size');
@@ -195,9 +202,12 @@ function renderSessionState(state: SessionState): void {
   if (resumeByIdButton) {
     resumeByIdButton.disabled = state.isActive;
   }
+
+  renderAutomationStatus();
 }
 
 function renderConfig(config: CaptureConfig): void {
+  latestCaptureConfig = config;
   const safeModeCheckbox = document.getElementById('safe-mode') as HTMLInputElement | null;
   const allowlistInput = document.getElementById('allowlist-domains') as HTMLTextAreaElement | null;
   const snapshotsEnabled = document.getElementById('snapshots-enabled') as HTMLInputElement | null;
@@ -213,6 +223,8 @@ function renderConfig(config: CaptureConfig): void {
   const minCaptureIntervalMs = document.getElementById('snapshot-min-interval') as HTMLInputElement | null;
   const networkCaptureBodies = document.getElementById('network-capture-bodies') as HTMLInputElement | null;
   const networkMaxBodyBytes = document.getElementById('network-max-body-bytes') as HTMLInputElement | null;
+  const automationEnabled = document.getElementById('automation-enabled') as HTMLInputElement | null;
+  const automationSensitive = document.getElementById('automation-sensitive-fields') as HTMLInputElement | null;
 
   if (safeModeCheckbox) {
     safeModeCheckbox.checked = config.safeMode;
@@ -235,6 +247,10 @@ function renderConfig(config: CaptureConfig): void {
   if (minCaptureIntervalMs) minCaptureIntervalMs.value = String(config.snapshots.pngPolicy.minCaptureIntervalMs);
   if (networkCaptureBodies) networkCaptureBodies.checked = config.network.captureBodies;
   if (networkMaxBodyBytes) networkMaxBodyBytes.value = String(config.network.maxBodyBytes);
+  if (automationEnabled) automationEnabled.checked = config.automation.enabled;
+  if (automationSensitive) automationSensitive.checked = config.automation.allowSensitiveFields;
+
+  renderAutomationStatus();
 }
 
 function getConfigFromForm(): CaptureConfig {
@@ -253,6 +269,8 @@ function getConfigFromForm(): CaptureConfig {
   const minCaptureIntervalMs = document.getElementById('snapshot-min-interval') as HTMLInputElement | null;
   const networkCaptureBodies = document.getElementById('network-capture-bodies') as HTMLInputElement | null;
   const networkMaxBodyBytes = document.getElementById('network-max-body-bytes') as HTMLInputElement | null;
+  const automationEnabled = document.getElementById('automation-enabled') as HTMLInputElement | null;
+  const automationSensitive = document.getElementById('automation-sensitive-fields') as HTMLInputElement | null;
 
   const allowlist = (allowlistInput?.value ?? '')
     .split(/[\n,]+/g)
@@ -295,7 +313,47 @@ function getConfigFromForm(): CaptureConfig {
       pngPolicy,
     },
     network,
+    automation: {
+      enabled: automationEnabled?.checked === true,
+      allowSensitiveFields: automationSensitive?.checked === true,
+    },
   };
+}
+
+function renderAutomationStatus(): void {
+  const statusEl = document.getElementById('automation-status');
+  const stopButton = document.getElementById('automation-emergency-stop') as HTMLButtonElement | null;
+  const config = latestCaptureConfig;
+  const state = latestSessionState;
+
+  if (!config) {
+    setStatusMessage(statusEl, 'Loading live automation settings...', 'info');
+    if (stopButton) {
+      stopButton.disabled = true;
+    }
+    return;
+  }
+
+  if (!config.automation.enabled) {
+    setStatusMessage(statusEl, 'Live automation is off. Actions stay blocked until you explicitly arm it.', 'info');
+    if (stopButton) {
+      stopButton.disabled = true;
+    }
+    return;
+  }
+
+  const baseMessage = config.automation.allowSensitiveFields
+    ? 'Live automation armed, including sensitive-field actions.'
+    : 'Live automation armed. Sensitive-field actions remain blocked.';
+  const hasRunnableSession = Boolean(state?.isActive && !state.isPaused);
+  setStatusMessage(
+    statusEl,
+    hasRunnableSession ? baseMessage : `${baseMessage} Start or resume a session before actions can run.`,
+    hasRunnableSession ? 'warning' : 'info'
+  );
+  if (stopButton) {
+    stopButton.disabled = false;
+  }
 }
 
 function setConfigStatus(message: string, tone: StatusTone = 'info'): void {
@@ -637,6 +695,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const resumeByIdButton = document.getElementById('resume-selected-session');
   const resumeByIdSelect = document.getElementById('resume-session-id') as HTMLSelectElement | null;
   const saveConfigButton = document.getElementById('save-config');
+  const automationEmergencyStopButton = document.getElementById('automation-emergency-stop');
   const saveRetentionButton = document.getElementById('save-retention');
   const runCleanupButton = document.getElementById('run-cleanup-now');
   const pinSessionButton = document.getElementById('pin-session');
@@ -761,6 +820,18 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     setConfigStatus(result.ok ? 'Unable to save settings' : result.error, 'error');
+  });
+
+  automationEmergencyStopButton?.addEventListener('click', async () => {
+    setConfigStatus('Stopping live automation...', 'warning');
+    const result = await sendRuntimeMessage({ type: 'AUTOMATION_EMERGENCY_STOP' });
+    if (result.ok && 'config' in result) {
+      renderConfig(result.config);
+      setConfigStatus('Live automation stopped.', 'success');
+      return;
+    }
+
+    setConfigStatus(result.ok ? 'Unable to stop live automation' : result.error, 'error');
   });
 
   saveRetentionButton?.addEventListener('click', async () => {

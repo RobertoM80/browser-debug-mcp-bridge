@@ -298,3 +298,12 @@
   - Added top-document-only V1 rejection handling with structured action results including action, traceId, timestamps, target summary, and failure reason in `apps/chrome-extension/src/content-script.ts`
   - Added unit/integration coverage for contract parsing, session-manager command handling, content-script result shape, and websocket round-trips
   - Verified with `pnpm test`, `pnpm nx run-many -t lint`, and `pnpm nx run-many -t build`
+
+### Completed: 2026-03-07
+- [Add explicit user controls, second opt-in for sensitive fields, and visible warnings for dangerous live automation] - COMPLETED
+  - Added persistent automation settings in `apps/chrome-extension/src/capture-controls.ts` with safe defaults: live automation OFF and sensitive-field automation OFF
+  - Added popup controls, warning copy, live automation status, and an emergency-stop button in `apps/chrome-extension/public/popup.html`, `apps/chrome-extension/public/popup.css`, and `apps/chrome-extension/src/popup.ts`
+  - Extended background config sync in `apps/chrome-extension/src/background.ts` so active session tabs receive automation policy/status updates, live actions are blocked unless enabled, sensitive selectors require the second opt-in, and emergency stop disables automation immediately
+  - Added a red in-page automation indicator with an emergency-stop action in `apps/chrome-extension/src/content-script.ts` plus extension badge state for armed/executing automation
+  - Added unit coverage for automation config normalization and indicator behavior in `apps/chrome-extension/src/capture-controls.spec.ts` and `apps/chrome-extension/src/content-script.spec.ts`
+  - Verified with `pnpm test`, `pnpm nx run-many -t lint`, and `pnpm nx run-many -t build`

@@ -340,6 +340,49 @@ summary::-webkit-details-marker {
   gap: 8px;
 }
 
+.automation-settings {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  padding: 9px;
+  background: linear-gradient(155deg, #f9fbfc, #f4f6f7);
+}
+
+.automation-settings summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-main);
+}
+
+.automation-settings summary::after {
+  content: "\25BE";
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.automation-settings[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.automation-settings[open] summary::after {
+  transform: rotate(180deg);
+}
+
+.automation-warning {
+  border: 1px solid var(--line-strong);
+  border-left: 4px solid #8a3b2f;
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-main);
+  background: linear-gradient(150deg, #fff6f3, #f8eeea);
+}
+
 .retention-settings {
   border-color: var(--line-soft);
 }

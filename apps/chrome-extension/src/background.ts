@@ -8,11 +8,13 @@ import {
 } from '../../../libs/mcp-contracts/src';
 import {
   applySafeModeRestrictions,
+  canExecuteLiveAutomation,
   canCaptureSnapshot,
   CaptureConfig,
   DEFAULT_CAPTURE_CONFIG,
   isUrlAllowed,
   loadCaptureConfig,
+  requiresSensitiveAutomationOptIn,
   SnapshotStyleMode,
   saveCaptureConfig,
 } from './capture-controls';
@@ -66,6 +68,7 @@ type RuntimeRequest =
   | { type: 'SESSION_GET_TAB_SCOPE' }
   | { type: 'SESSION_ADD_TAB_TO_SESSION'; tabId: number }
   | { type: 'SESSION_REMOVE_TAB_FROM_SESSION'; tabId: number }
+  | { type: 'AUTOMATION_EMERGENCY_STOP' }
   | { type: 'DB_RESET' };
 
 type RuntimeResponse =
@@ -92,6 +95,21 @@ interface CaptureConfigUpdatePayload {
     captureBodies: boolean;
     maxBodyBytes: number;
   };
+  automation: {
+    enabled: boolean;
+    allowSensitiveFields: boolean;
+    status: 'idle' | 'armed' | 'executing';
+    sessionId?: string;
+    traceId?: string;
+    action?: LiveUIActionRequest['action'];
+  };
+}
+
+interface AutomationUiState {
+  status: 'idle' | 'armed' | 'executing';
+  sessionId?: string;
+  traceId?: string;
+  action?: LiveUIActionRequest['action'];
 }
 
 interface SessionTabScope {
@@ -103,6 +121,7 @@ const snapshotPngUsageBySession = new Map<string, SnapshotPngUsage>();
 const captureTabBySession = new Map<string, { tabId: number; windowId?: number }>();
 const sessionTabScopeBySession = new Map<string, SessionTabScope>();
 const liveConsoleBufferStore = new LiveConsoleBufferStore();
+let automationUiState: AutomationUiState = { status: 'idle' };
 const FULL_PAGE_CAPTURE_SCROLL_SETTLE_MS = 120;
 const MAX_STITCHED_PNG_PIXELS = 40_000_000;
 
@@ -366,6 +385,43 @@ function cleanupSessionLocalState(sessionId: string): void {
   captureTabBySession.delete(sessionId);
   sessionTabScopeBySession.delete(sessionId);
   liveConsoleBufferStore.clearSession(sessionId);
+  if (automationUiState.sessionId === sessionId) {
+    automationUiState = { status: 'idle' };
+  }
+}
+
+function getAutomationStatus(): AutomationUiState['status'] {
+  const sessionState = sessionManager.getState();
+  if (automationUiState.status === 'executing' && captureConfig.automation.enabled) {
+    return 'executing';
+  }
+
+  if (captureConfig.automation.enabled && sessionState.isActive && !sessionState.isPaused && sessionState.sessionId) {
+    return 'armed';
+  }
+
+  return 'idle';
+}
+
+function syncAutomationBadge(): void {
+  if (!chrome.action) {
+    return;
+  }
+
+  const status = getAutomationStatus();
+  const text = status === 'executing' ? 'RUN' : status === 'armed' ? 'AUTO' : '';
+  const title = status === 'executing'
+    ? 'Live automation executing'
+    : status === 'armed'
+      ? 'Live automation armed'
+      : 'Live automation disabled';
+
+  chrome.action.setBadgeText({ text });
+  chrome.action.setTitle({ title });
+
+  if (text) {
+    chrome.action.setBadgeBackgroundColor({ color: status === 'executing' ? '#a12d22' : '#8a5a12' });
+  }
 }
 
 async function buildSessionTabScopeResult(sessionId: string): Promise<Record<string, unknown>> {
@@ -759,11 +815,20 @@ async function sendCaptureCommandToTab(
   }
 }
 
-function buildCaptureConfigUpdatePayload(): CaptureConfigUpdatePayload {
+function buildCaptureConfigUpdatePayload(sessionId?: string): CaptureConfigUpdatePayload {
+  const automationStatus = getAutomationStatus();
   return {
     network: {
       captureBodies: captureConfig.network.captureBodies === true,
       maxBodyBytes: captureConfig.network.maxBodyBytes,
+    },
+    automation: {
+      enabled: captureConfig.automation.enabled,
+      allowSensitiveFields: captureConfig.automation.allowSensitiveFields,
+      status: automationStatus,
+      sessionId: automationUiState.sessionId ?? sessionId,
+      traceId: automationStatus === 'executing' ? automationUiState.traceId : undefined,
+      action: automationStatus === 'executing' ? automationUiState.action : undefined,
     },
   };
 }
@@ -807,7 +872,7 @@ function getSessionBoundTabIds(sessionId: string): number[] {
 }
 
 async function syncCaptureConfigToSessionTabs(sessionId: string): Promise<void> {
-  const payload = buildCaptureConfigUpdatePayload();
+  const payload = buildCaptureConfigUpdatePayload(sessionId);
   const tabIds = getSessionBoundTabIds(sessionId);
   if (tabIds.length === 0) {
     return;
@@ -842,6 +907,30 @@ async function executeCaptureCommand(
 
     const request = parsed.data;
     const startedAt = Date.now();
+
+    if (!canExecuteLiveAutomation(captureConfig)) {
+      return {
+        payload: buildRejectedLiveActionResult(
+          request,
+          startedAt,
+          'automation_disabled',
+          'Live automation is disabled in extension settings.',
+        ) as unknown as Record<string, unknown>,
+      };
+    }
+
+    if (!captureConfig.automation.allowSensitiveFields
+      && requiresSensitiveAutomationOptIn({ selector: request.target?.selector, action: request.action })) {
+      return {
+        payload: buildRejectedLiveActionResult(
+          request,
+          startedAt,
+          'sensitive_field_opt_in_required',
+          'Sensitive field automation is blocked until the second opt-in is enabled.',
+        ) as unknown as Record<string, unknown>,
+      };
+    }
+
     const requestedTabId = request.target?.tabId;
     const sessionScope = getSessionTabScope(context.sessionId);
 
@@ -916,11 +1005,29 @@ async function executeCaptureCommand(
       },
     };
 
-    const actionResult = await sendCaptureCommandToTab(resolvedTab.id, 'EXECUTE_UI_ACTION', actionPayload);
-    return {
-      payload: withLiveActionTabContext(actionResult.payload, request, resolvedTab),
-      truncated: actionResult.truncated,
+    automationUiState = {
+      status: 'executing',
+      sessionId: context.sessionId,
+      traceId: String(actionPayload.traceId),
+      action: request.action,
     };
+    syncAutomationBadge();
+    await syncCaptureConfigToSessionTabs(context.sessionId);
+
+    try {
+      const actionResult = await sendCaptureCommandToTab(resolvedTab.id, 'EXECUTE_UI_ACTION', actionPayload);
+      return {
+        payload: withLiveActionTabContext(actionResult.payload, request, resolvedTab),
+        truncated: actionResult.truncated,
+      };
+    } finally {
+      automationUiState = {
+        status: canExecuteLiveAutomation(captureConfig) ? 'armed' : 'idle',
+        sessionId: context.sessionId,
+      };
+      syncAutomationBadge();
+      await syncCaptureConfigToSessionTabs(context.sessionId);
+    }
   }
 
   if (command === 'CAPTURE_GET_LIVE_CONSOLE_LOGS') {
@@ -1176,6 +1283,7 @@ const captureDiagnostics = {
 
 void loadCaptureConfig(chrome.storage.local).then((loaded) => {
   captureConfig = loaded;
+  syncAutomationBadge();
 });
 
 async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
@@ -1311,6 +1419,10 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
       return saveCaptureConfig(chrome.storage.local, request.config)
         .then(async (saved) => {
           captureConfig = saved;
+          if (!saved.automation.enabled) {
+            automationUiState = { status: 'idle' };
+          }
+          syncAutomationBadge();
           const sessionId = sessionManager.getState().sessionId;
           if (sessionId) {
             await syncCaptureConfigToSessionTabs(sessionId);
@@ -1366,6 +1478,8 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
             snapshotPngUsageBySession.delete(started.sessionId);
           }
 
+          syncAutomationBadge();
+
           return { ok: true as const, state: started };
         })
         .catch((error) => ({
@@ -1384,7 +1498,9 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
           return { ok: true as const, state };
         }
 
-        return { ok: true as const, state: sessionManager.pauseSession() };
+        const paused = sessionManager.pauseSession();
+        syncAutomationBadge();
+        return { ok: true as const, state: paused };
       }).catch((error) => ({
         ok: false,
         error: error instanceof Error ? error.message : 'Failed to pause session',
@@ -1451,6 +1567,8 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
             origin: baseOrigin,
           });
 
+          syncAutomationBadge();
+
           return { ok: true as const, state: resumed };
         })
         .catch((error) => ({
@@ -1513,6 +1631,8 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
             origin: allowlisted.baseOrigin,
           });
 
+          syncAutomationBadge();
+
           return { ok: true as const, state: resumed };
         })
         .catch((error) => ({
@@ -1526,7 +1646,9 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
         if (activeSessionId) {
           cleanupSessionLocalState(activeSessionId);
         }
-        return { ok: true as const, state: sessionManager.stopSession() };
+        const stopped = sessionManager.stopSession();
+        syncAutomationBadge();
+        return { ok: true as const, state: stopped };
       });
 
     case 'SESSION_QUEUE_EVENT': {
@@ -1695,13 +1817,35 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
 
           if (scope.allowedTabIds.size === 0) {
             cleanupSessionLocalState(sessionState.sessionId);
-            return { ok: true as const, state: sessionManager.stopSession() };
+            const stopped = sessionManager.stopSession();
+            syncAutomationBadge();
+            return { ok: true as const, state: stopped };
           }
 
           const result = await buildSessionTabScopeResult(sessionState.sessionId);
           return { ok: true as const, result: { isActive: true, ...result } };
         })
         .catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : 'Failed to remove tab from session' }));
+
+    case 'AUTOMATION_EMERGENCY_STOP':
+      return saveCaptureConfig(chrome.storage.local, {
+        ...captureConfig,
+        automation: {
+          ...captureConfig.automation,
+          enabled: false,
+        },
+      })
+        .then(async (saved) => {
+          captureConfig = saved;
+          automationUiState = { status: 'idle' };
+          syncAutomationBadge();
+          const sessionId = sessionManager.getState().sessionId;
+          if (sessionId) {
+            await syncCaptureConfigToSessionTabs(sessionId);
+          }
+          return { ok: true as const, config: saved };
+        })
+        .catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : 'Failed to stop automation' }));
 
     case 'RETENTION_GET_SETTINGS':
       return fetchServer('/retention/settings')
@@ -1845,6 +1989,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
   cleanupSessionLocalState(state.sessionId);
   sessionManager.stopSession();
+  syncAutomationBadge();
 });
 
 console.log(`${LOG_PREFIX} Service worker started`);

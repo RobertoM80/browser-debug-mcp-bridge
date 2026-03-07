@@ -540,7 +540,7 @@
       "Sensitive field automation is blocked by default and allowed only with the second opt-in.",
       "Users can clearly see when automation is armed or executing and can stop it immediately."
     ],
-    "passes": false,
+    "passes": true,
     "id": "PRD-109",
     "depends_on": [
       "PRD-108"
