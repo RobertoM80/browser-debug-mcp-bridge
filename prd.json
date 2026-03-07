@@ -566,7 +566,7 @@
       "Action execution is observable by the real page application code.",
       "Sensitive field automation remains blocked unless the second opt-in is enabled."
     ],
-    "passes": false,
+    "passes": true,
     "id": "PRD-110",
     "depends_on": [
       "PRD-108",

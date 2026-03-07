@@ -351,6 +351,20 @@ function withLiveActionTabContext(
   };
 }
 
+async function reloadTab(tabId: number, ignoreCache: boolean): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    chrome.tabs.reload(tabId, { bypassCache: ignoreCache }, () => {
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError) {
+        reject(new Error(runtimeError.message));
+        return;
+      }
+
+      resolve();
+    });
+  });
+}
+
 function setSessionTabScope(sessionId: string, baseUrl: string, tabId?: number): void {
   const allowedTabIds = new Set<number>();
   if (typeof tabId === 'number') {
@@ -1004,6 +1018,50 @@ async function executeCaptureCommand(
         url: resolvedTab.url ?? request.target?.url,
       },
     };
+
+    if (request.action === 'reload') {
+      const traceId = String(actionPayload.traceId);
+      automationUiState = {
+        status: 'executing',
+        sessionId: context.sessionId,
+        traceId,
+        action: request.action,
+      };
+      syncAutomationBadge();
+      await syncCaptureConfigToSessionTabs(context.sessionId);
+
+      try {
+        await reloadTab(resolvedTab.id, request.input?.ignoreCache === true);
+        return {
+          payload: {
+            action: 'reload',
+            traceId,
+            status: 'succeeded',
+            executionScope: 'top-document-v1',
+            startedAt,
+            finishedAt: Date.now(),
+            target: {
+              matched: true,
+              selector: request.target?.selector,
+              tabId: resolvedTab.id,
+              frameId: request.target?.frameId ?? 0,
+              url: resolvedTab.url ?? request.target?.url,
+            },
+            result: {
+              reloaded: true,
+              ignoreCache: request.input?.ignoreCache === true,
+            },
+          },
+        };
+      } finally {
+        automationUiState = {
+          status: canExecuteLiveAutomation(captureConfig) ? 'armed' : 'idle',
+          sessionId: context.sessionId,
+        };
+        syncAutomationBadge();
+        await syncCaptureConfigToSessionTabs(context.sessionId);
+      }
+    }
 
     automationUiState = {
       status: 'executing',

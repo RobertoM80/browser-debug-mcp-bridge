@@ -307,3 +307,11 @@
   - Added a red in-page automation indicator with an emergency-stop action in `apps/chrome-extension/src/content-script.ts` plus extension badge state for armed/executing automation
   - Added unit coverage for automation config normalization and indicator behavior in `apps/chrome-extension/src/capture-controls.spec.ts` and `apps/chrome-extension/src/content-script.spec.ts`
   - Verified with `pnpm test`, `pnpm nx run-many -t lint`, and `pnpm nx run-many -t build`
+
+### Completed: 2026-03-07
+- [Implement the async extension-side executor for real page interaction inside the existing debug session] - COMPLETED
+  - Replaced the placeholder live-action rejection path in `apps/chrome-extension/src/content-script.ts` with a real top-document executor for `click`, `input`, `focus`, `blur`, `scroll`, `press_key`, and `submit`
+  - Added realistic DOM event dispatch plus editable-field mutation so page code observes the same interaction flow as live users, while keeping input results redacted to metadata only
+  - Routed `reload` through the background layer in `apps/chrome-extension/src/background.ts` so the active bound tab reloads without introducing a new browser session
+  - Added unit coverage for successful live-action execution and non-editable target rejection in `apps/chrome-extension/src/content-script.spec.ts`
+  - Verified with `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm build`, and `pnpm test:e2e`

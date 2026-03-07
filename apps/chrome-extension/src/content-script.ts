@@ -79,6 +79,8 @@ interface AutomationIndicatorState {
 
 const AUTOMATION_INDICATOR_ID = '__bdmcp_automation_indicator__';
 
+type EditableActionTarget = HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement;
+
 function getClickableTarget(event: Event): Element | null {
   const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
   const firstPathTarget = path.find((entry) => entry instanceof Element);
@@ -169,8 +171,379 @@ function buildRejectedLiveActionResult(
   };
 }
 
+function buildSucceededLiveActionResult(
+  request: LiveUIActionRequest,
+  target: Element | null,
+  startedAt: number,
+  result: Record<string, unknown> = {},
+): LiveUIActionResult {
+  return {
+    action: request.action,
+    traceId: request.traceId ?? createLiveUIActionTraceId(),
+    status: 'succeeded',
+    executionScope: 'top-document-v1',
+    startedAt,
+    finishedAt: Date.now(),
+    target: buildLiveActionTargetSummary(target, request),
+    result,
+  };
+}
+
+function buildFailedLiveActionResult(
+  request: LiveUIActionRequest,
+  target: Element | null,
+  startedAt: number,
+  code: string,
+  message: string,
+): LiveUIActionResult {
+  return {
+    action: request.action,
+    traceId: request.traceId ?? createLiveUIActionTraceId(),
+    status: 'failed',
+    executionScope: 'top-document-v1',
+    startedAt,
+    finishedAt: Date.now(),
+    target: buildLiveActionTargetSummary(target, request),
+    failureReason: {
+      code,
+      message,
+    },
+  };
+}
+
 function isSensitiveSelector(selector: string): boolean {
   return /(password|passwd|pwd|token|secret|auth|session|email|card|cvv|cvc|ssn|iban|payment)/i.test(selector);
+}
+
+function isEditableElement(target: Element | null): target is EditableActionTarget {
+  return Boolean(
+    target instanceof HTMLInputElement
+    || target instanceof HTMLTextAreaElement
+    || target instanceof HTMLSelectElement
+    || (target instanceof HTMLElement && target.isContentEditable),
+  );
+}
+
+function getNativeValueSetter(target: HTMLInputElement | HTMLTextAreaElement): ((this: HTMLInputElement | HTMLTextAreaElement, value: string) => void) | undefined {
+  const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(target), 'value');
+  return descriptor?.set as ((this: HTMLInputElement | HTMLTextAreaElement, value: string) => void) | undefined;
+}
+
+function setEditableElementValue(target: EditableActionTarget, value: string): void {
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+    const setter = getNativeValueSetter(target);
+    if (setter) {
+      setter.call(target, value);
+    } else {
+      target.value = value;
+    }
+    return;
+  }
+
+  if (target instanceof HTMLSelectElement) {
+    const matchingOption = Array.from(target.options).find((option) => option.value === value || option.text === value);
+    if (matchingOption) {
+      target.value = matchingOption.value;
+      return;
+    }
+
+    target.value = value;
+    return;
+  }
+
+  target.textContent = value;
+}
+
+function getEditableElementValueLength(target: EditableActionTarget): number {
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) {
+    return target.value.length;
+  }
+
+  return target.textContent?.length ?? 0;
+}
+
+function dispatchBubbledEvent(target: EventTarget, event: Event): boolean {
+  return target.dispatchEvent(event);
+}
+
+function dispatchMouseClick(target: Element, button: 'left' | 'middle' | 'right' = 'left', clickCount = 1): void {
+  const buttonCode = button === 'middle' ? 1 : button === 'right' ? 2 : 0;
+
+  if (target instanceof HTMLElement) {
+    target.focus();
+  }
+
+  for (let index = 1; index <= clickCount; index += 1) {
+    dispatchBubbledEvent(target, new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: buttonCode, buttons: 1, detail: index }));
+    dispatchBubbledEvent(target, new MouseEvent('mouseup', { bubbles: true, cancelable: true, button: buttonCode, buttons: 0, detail: index }));
+    if (button === 'left' && target instanceof HTMLElement && typeof target.click === 'function') {
+      target.click();
+    } else {
+      dispatchBubbledEvent(target, new MouseEvent('click', { bubbles: true, cancelable: true, button: buttonCode, detail: index }));
+    }
+  }
+
+  if (clickCount >= 2) {
+    dispatchBubbledEvent(target, new MouseEvent('dblclick', { bubbles: true, cancelable: true, button: buttonCode, detail: clickCount }));
+  }
+}
+
+function dispatchInputValue(target: EditableActionTarget, value: string): { fieldType: string; valueLength: number } {
+  setEditableElementValue(target, value);
+
+  const beforeInput = typeof InputEvent === 'function'
+    ? new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' })
+    : new Event('beforeinput', { bubbles: true, cancelable: true });
+  dispatchBubbledEvent(target, beforeInput);
+
+  const inputEvent = typeof InputEvent === 'function'
+    ? new InputEvent('input', { bubbles: true, data: value, inputType: 'insertText' })
+    : new Event('input', { bubbles: true });
+  dispatchBubbledEvent(target, inputEvent);
+  dispatchBubbledEvent(target, new Event('change', { bubbles: true }));
+
+  const fieldType = target instanceof HTMLElement && target.isContentEditable
+    ? 'contenteditable'
+    : resolveFieldType(target as FormFieldElement);
+
+  return {
+    fieldType,
+    valueLength: getEditableElementValueLength(target),
+  };
+}
+
+function dispatchFocusAction(target: Element): void {
+  if (target instanceof HTMLElement) {
+    target.focus();
+  }
+  dispatchBubbledEvent(target, new FocusEvent('focus', { bubbles: false }));
+  dispatchBubbledEvent(target, new FocusEvent('focusin', { bubbles: true }));
+}
+
+function dispatchBlurAction(target: Element): void {
+  if (target instanceof HTMLElement) {
+    target.blur();
+  }
+  dispatchBubbledEvent(target, new FocusEvent('blur', { bubbles: false }));
+  dispatchBubbledEvent(target, new FocusEvent('focusout', { bubbles: true }));
+}
+
+function dispatchScrollAction(win: Window, target: Element | null, x?: number, y?: number, behavior: ScrollBehavior = 'auto'): Record<string, unknown> {
+  const resolvedX = typeof x === 'number' && Number.isFinite(x) ? x : 0;
+  const resolvedY = typeof y === 'number' && Number.isFinite(y) ? y : 0;
+
+  if (!target || target === win.document.documentElement || target === win.document.body) {
+    win.scrollTo({ left: resolvedX, top: resolvedY, behavior });
+    return {
+      scrollTarget: 'window',
+      x: win.scrollX,
+      y: win.scrollY,
+      behavior,
+    };
+  }
+
+  if (target instanceof HTMLElement) {
+    target.scrollTo({ left: resolvedX, top: resolvedY, behavior });
+    dispatchBubbledEvent(target, new Event('scroll', { bubbles: true }));
+    return {
+      scrollTarget: getElementSelector(target),
+      x: target.scrollLeft,
+      y: target.scrollTop,
+      behavior,
+    };
+  }
+
+  throw new Error('Resolved target does not support scrolling');
+}
+
+function applyKeyboardMutation(target: EditableActionTarget, key: string): void {
+  if (target instanceof HTMLSelectElement) {
+    return;
+  }
+
+  const currentValue = target instanceof HTMLElement && target.isContentEditable
+    ? (target.textContent ?? '')
+    : (target as HTMLInputElement | HTMLTextAreaElement).value;
+
+  let nextValue = currentValue;
+  if (key === 'Backspace') {
+    nextValue = currentValue.slice(0, -1);
+  } else if (key === 'Enter') {
+    nextValue = `${currentValue}${target instanceof HTMLInputElement ? '' : '\n'}`;
+  } else if (key.length === 1) {
+    nextValue = `${currentValue}${key}`;
+  } else {
+    return;
+  }
+
+  setEditableElementValue(target, nextValue);
+  dispatchBubbledEvent(
+    target,
+    typeof InputEvent === 'function'
+      ? new InputEvent('input', { bubbles: true, data: key.length === 1 ? key : null, inputType: key === 'Backspace' ? 'deleteContentBackward' : 'insertText' })
+      : new Event('input', { bubbles: true }),
+  );
+}
+
+function dispatchKeyboardAction(target: Element, payload: Extract<LiveUIActionRequest, { action: 'press_key' }>['input']): Record<string, unknown> {
+  if (target instanceof HTMLElement) {
+    target.focus();
+  }
+
+  const eventInit: KeyboardEventInit = {
+    bubbles: true,
+    cancelable: true,
+    key: payload.key,
+    altKey: payload.altKey === true,
+    ctrlKey: payload.ctrlKey === true,
+    metaKey: payload.metaKey === true,
+    shiftKey: payload.shiftKey === true,
+  };
+
+  dispatchBubbledEvent(target, new KeyboardEvent('keydown', eventInit));
+  if (payload.key.length === 1 || payload.key === 'Enter') {
+    dispatchBubbledEvent(target, new KeyboardEvent('keypress', eventInit));
+  }
+
+  if (!eventInit.altKey && !eventInit.ctrlKey && !eventInit.metaKey && isEditableElement(target)) {
+    applyKeyboardMutation(target, payload.key);
+  }
+
+  dispatchBubbledEvent(target, new KeyboardEvent('keyup', eventInit));
+
+  return {
+    key: payload.key,
+    modifiers: {
+      altKey: eventInit.altKey,
+      ctrlKey: eventInit.ctrlKey,
+      metaKey: eventInit.metaKey,
+      shiftKey: eventInit.shiftKey,
+    },
+  };
+}
+
+function resolveFormTarget(target: Element): HTMLFormElement | null {
+  if (target instanceof HTMLFormElement) {
+    return target;
+  }
+
+  if (target instanceof HTMLButtonElement || target instanceof HTMLInputElement) {
+    return target.form;
+  }
+
+  return target.closest('form');
+}
+
+function requestFormSubmit(form: HTMLFormElement): void {
+  if (typeof form.requestSubmit === 'function') {
+    form.requestSubmit();
+    return;
+  }
+
+  const event = new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter: undefined });
+  dispatchBubbledEvent(form, event);
+}
+
+function executeLiveUiAction(win: Window, request: LiveUIActionRequest, startedAt: number, target: Element | null): LiveUIActionResult {
+  try {
+    if (request.action === 'click') {
+      if (!target) {
+        return buildRejectedLiveActionResult(request, null, startedAt, 'target_not_found', 'No matching top-document element was found for this live UI action.');
+      }
+
+      dispatchMouseClick(target, request.input?.button, request.input?.clickCount ?? 1);
+      return buildSucceededLiveActionResult(request, target, startedAt, {
+        clickCount: request.input?.clickCount ?? 1,
+        button: request.input?.button ?? 'left',
+      });
+    }
+
+    if (request.action === 'input') {
+      if (!target) {
+        return buildRejectedLiveActionResult(request, null, startedAt, 'target_not_found', 'No matching top-document element was found for this live UI action.');
+      }
+      if (!isEditableElement(target)) {
+        return buildRejectedLiveActionResult(request, target, startedAt, 'target_not_editable', 'The resolved target does not accept text input.');
+      }
+
+      if (target instanceof HTMLElement) {
+        target.focus();
+      }
+      const inputResult = dispatchInputValue(target, request.input.value);
+      return buildSucceededLiveActionResult(request, target, startedAt, inputResult);
+    }
+
+    if (request.action === 'focus') {
+      if (!target) {
+        return buildRejectedLiveActionResult(request, null, startedAt, 'target_not_found', 'No matching top-document element was found for this live UI action.');
+      }
+
+      dispatchFocusAction(target);
+      return buildSucceededLiveActionResult(request, target, startedAt, {
+        focused: true,
+      });
+    }
+
+    if (request.action === 'blur') {
+      if (!target) {
+        return buildRejectedLiveActionResult(request, null, startedAt, 'target_not_found', 'No matching top-document element was found for this live UI action.');
+      }
+
+      dispatchBlurAction(target);
+      return buildSucceededLiveActionResult(request, target, startedAt, {
+        blurred: true,
+      });
+    }
+
+    if (request.action === 'scroll') {
+      const scrollResult = dispatchScrollAction(win, target, request.input?.x, request.input?.y, request.input?.behavior ?? 'auto');
+      return buildSucceededLiveActionResult(request, target, startedAt, scrollResult);
+    }
+
+    if (request.action === 'press_key') {
+      const keyboardTarget = target ?? (win.document.activeElement instanceof Element ? win.document.activeElement : null) ?? win.document.body;
+      if (!keyboardTarget) {
+        return buildRejectedLiveActionResult(request, null, startedAt, 'target_not_found', 'No keyboard target is available for this live UI action.');
+      }
+
+      const keyResult = dispatchKeyboardAction(keyboardTarget, request.input);
+      return buildSucceededLiveActionResult(request, keyboardTarget, startedAt, keyResult);
+    }
+
+    if (request.action === 'submit') {
+      if (!target) {
+        return buildRejectedLiveActionResult(request, null, startedAt, 'target_not_found', 'No matching top-document element was found for this live UI action.');
+      }
+
+      const form = resolveFormTarget(target);
+      if (!form) {
+        return buildRejectedLiveActionResult(request, target, startedAt, 'form_not_found', 'The resolved target is not associated with a form.');
+      }
+
+      requestFormSubmit(form);
+      return buildSucceededLiveActionResult(request, form, startedAt, {
+        submitted: true,
+        method: (form.method || 'get').toLowerCase(),
+        action: form.action || win.location.href,
+      });
+    }
+
+    return buildRejectedLiveActionResult(
+      request,
+      target,
+      startedAt,
+      'action_not_supported',
+      `Live UI action "${request.action}" is not supported in the top-document executor.`,
+    );
+  } catch (error) {
+    return buildFailedLiveActionResult(
+      request,
+      target,
+      startedAt,
+      'action_execution_failed',
+      error instanceof Error ? error.message : 'Live UI action execution failed.',
+    );
+  }
 }
 
 function normalizeAutomationIndicatorState(value: CaptureConfigUpdateRequest['payload']): AutomationIndicatorState {
@@ -826,13 +1199,7 @@ export function executeCaptureCommand(
 
     return {
       truncated: false,
-      result: buildRejectedLiveActionResult(
-        request,
-        target,
-        startedAt,
-        'action_not_implemented',
-        `Live UI action \"${request.action}\" reached the extension target, but execution is deferred until the async executor lands.`,
-      ),
+      result: executeLiveUiAction(win, request, startedAt, target),
     };
   }
 

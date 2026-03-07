@@ -409,6 +409,180 @@ describe('content-script capture', () => {
     });
   });
 
+  it('executes click actions and dispatches DOM click events', () => {
+    document.body.innerHTML = '<button id="action-target">Run</button>';
+    const button = document.getElementById('action-target') as HTMLButtonElement | null;
+    expect(button).toBeTruthy();
+
+    let clickCount = 0;
+    button?.addEventListener('click', () => {
+      clickCount += 1;
+    });
+
+    const output = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'click',
+      traceId: 'trace-click-1',
+      target: {
+        selector: '#action-target',
+      },
+      input: {
+        clickCount: 2,
+      },
+    });
+
+    expect(clickCount).toBe(2);
+    expect(output.result).toMatchObject({
+      action: 'click',
+      traceId: 'trace-click-1',
+      status: 'succeeded',
+      result: {
+        clickCount: 2,
+        button: 'left',
+      },
+    });
+  });
+
+  it('executes input actions without exposing raw values in the result', () => {
+    document.body.innerHTML = '<input id="username" type="text" value="" />';
+    const input = document.getElementById('username') as HTMLInputElement | null;
+    expect(input).toBeTruthy();
+
+    let inputEvents = 0;
+    let changeEvents = 0;
+    input?.addEventListener('input', () => {
+      inputEvents += 1;
+    });
+    input?.addEventListener('change', () => {
+      changeEvents += 1;
+    });
+
+    const output = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'input',
+      target: {
+        selector: '#username',
+      },
+      input: {
+        value: 'hello world',
+      },
+    });
+
+    expect(input?.value).toBe('hello world');
+    expect(inputEvents).toBeGreaterThan(0);
+    expect(changeEvents).toBeGreaterThan(0);
+    expect(output.result).toMatchObject({
+      action: 'input',
+      status: 'succeeded',
+      result: {
+        fieldType: 'text',
+        valueLength: 11,
+      },
+    });
+    expect((output.result.result as Record<string, unknown>).value).toBeUndefined();
+  });
+
+  it('rejects input actions for non-editable targets', () => {
+    document.body.innerHTML = '<div id="readonly">No typing</div>';
+
+    const output = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'input',
+      target: {
+        selector: '#readonly',
+      },
+      input: {
+        value: 'blocked',
+      },
+    });
+
+    expect(output.result).toMatchObject({
+      action: 'input',
+      status: 'rejected',
+      failureReason: {
+        code: 'target_not_editable',
+      },
+    });
+  });
+
+  it('executes focus, blur, keyboard, scroll, and submit actions on the live target', () => {
+    document.body.innerHTML = [
+      '<div id="scroll-box" style="overflow:auto;height:40px;width:40px"><div style="height:200px;width:200px"></div></div>',
+      '<form id="live-form" method="post" action="/submit"><input id="live-input" type="text" /></form>',
+    ].join('');
+
+    const scrollBox = document.getElementById('scroll-box') as HTMLElement | null;
+    const input = document.getElementById('live-input') as HTMLInputElement | null;
+    const form = document.getElementById('live-form') as HTMLFormElement | null;
+    expect(scrollBox).toBeTruthy();
+    expect(input).toBeTruthy();
+    expect(form).toBeTruthy();
+
+    let focusCount = 0;
+    let blurCount = 0;
+    let keydownCount = 0;
+    let submitCount = 0;
+    input?.addEventListener('focusin', () => {
+      focusCount += 1;
+    });
+    input?.addEventListener('focusout', () => {
+      blurCount += 1;
+    });
+    input?.addEventListener('keydown', () => {
+      keydownCount += 1;
+    });
+    form?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      submitCount += 1;
+    });
+
+    Object.defineProperty(scrollBox, 'scrollTo', {
+      configurable: true,
+      value: ({ left, top }: { left?: number; top?: number }) => {
+        Object.defineProperty(scrollBox, 'scrollLeft', { configurable: true, value: left ?? 0 });
+        Object.defineProperty(scrollBox, 'scrollTop', { configurable: true, value: top ?? 0 });
+      },
+    });
+
+    const focusResult = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'focus',
+      target: { selector: '#live-input' },
+    });
+    const keyResult = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'press_key',
+      target: { selector: '#live-input' },
+      input: { key: 'A' },
+    });
+    const blurResult = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'blur',
+      target: { selector: '#live-input' },
+    });
+    const scrollResult = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'scroll',
+      target: { selector: '#scroll-box' },
+      input: { x: 5, y: 80, behavior: 'smooth' },
+    });
+    const submitResult = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'submit',
+      target: { selector: '#live-form' },
+    });
+
+    expect(focusCount).toBeGreaterThan(0);
+    expect(blurCount).toBeGreaterThan(0);
+    expect(keydownCount).toBeGreaterThan(0);
+    expect(input?.value).toBe('A');
+    expect(scrollBox?.scrollTop).toBe(80);
+    expect(submitCount).toBe(1);
+    expect(focusResult.result).toMatchObject({ status: 'succeeded', result: { focused: true } });
+    expect(keyResult.result).toMatchObject({ status: 'succeeded', result: { key: 'A' } });
+    expect(blurResult.result).toMatchObject({ status: 'succeeded', result: { blurred: true } });
+    expect(scrollResult.result).toMatchObject({ status: 'succeeded', result: { y: 80, behavior: 'smooth' } });
+    expect(submitResult.result).toMatchObject({
+      status: 'succeeded',
+      result: {
+        submitted: true,
+        method: 'post',
+      },
+    });
+  });
+
   it('renders an in-page automation indicator with emergency stop while armed', () => {
     const sendMessage = vi.fn((_message: unknown, callback?: () => void) => {
       callback?.();
