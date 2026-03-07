@@ -340,3 +340,11 @@
   - Updated `docs/MCP_TOOLS.md` with the `execute_ui_action` contract, top-document-only limitation, popup opt-ins, emergency stop, and failure evidence behavior
   - Extended `docs/TROUBLESHOOTING.md` with automation-specific rejection and recovery guidance for disabled automation, sensitive-field blocks, iframe limits, and post-failure debugging
   - Expanded `docs/SECURITY.md` with live automation guardrails covering default-off behavior, second opt-in requirements, visible warnings, emergency stop, and input redaction guarantees
+
+### Completed: 2026-03-07
+- [Add dedicated automation tables once the action model and result contract stabilize] - COMPLETED
+  - Added dedicated `automation_runs` and `automation_steps` schema support in `apps/mcp-server/src/db/schema.ts` with migration/backfill logic in `apps/mcp-server/src/db/migrations.ts`
+  - Added `apps/mcp-server/src/db/automation-repository.ts` to dual-write automation lifecycle events into first-class run/step records while keeping the existing `events` timeline intact
+  - Updated `apps/mcp-server/src/db/events-repository.ts` to persist automation lifecycle events into both the generic UI event stream and the new dedicated automation tables
+  - Added migration/schema/foreign-key coverage in `apps/mcp-server/src/db/db.spec.ts` and dual-write lifecycle coverage in `apps/mcp-server/src/db/events-repository.spec.ts`
+  - Verified with `pnpm nx test mcp-server`, `pnpm test`, `pnpm typecheck`, `pnpm lint`, and `pnpm build`

@@ -666,7 +666,7 @@
       "V1 event-based observability still works during the migration period.",
       "The new schema does not store raw sensitive input values."
     ],
-    "passes": false,
+    "passes": true,
     "id": "PRD-114",
     "depends_on": [
       "PRD-113"

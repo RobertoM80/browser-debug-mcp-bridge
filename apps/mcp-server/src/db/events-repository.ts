@@ -9,6 +9,7 @@ import type {
 import { resolveErrorFingerprint } from './error-fingerprints.js';
 import { getDatabasePath } from '../runtime-paths.js';
 import { writeSnapshot } from '../retention.js';
+import { AutomationRepository, isAutomationLifecycleEventType } from './automation-repository.js';
 
 const INLINE_BODY_BYTES_THRESHOLD = 16 * 1024;
 const BODY_KIND_REQUEST = 'request';
@@ -128,6 +129,8 @@ export class EventsRepository {
         sample_stack = COALESCE(error_fingerprints.sample_stack, excluded.sample_stack)
     `);
 
+    const automationRepository = new AutomationRepository(this.db);
+
     const runBatch = this.db.transaction((batch: EventMessage[]) => {
       for (const message of batch) {
         const eventId = `${message.sessionId}-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
@@ -169,6 +172,17 @@ export class EventsRepository {
 
         if (message.eventType === 'ui_snapshot') {
           this.insertSnapshotPrepared(message.sessionId, eventId, sanitizedData);
+        }
+
+        if (isAutomationLifecycleEventType(message.eventType)) {
+          automationRepository.upsertLifecycleEvent({
+            eventId,
+            eventType: message.eventType,
+            sessionId: message.sessionId,
+            timestamp: message.timestamp ?? Date.now(),
+            tabId: eventTabId,
+            payload: sanitizedData,
+          });
         }
       }
     });

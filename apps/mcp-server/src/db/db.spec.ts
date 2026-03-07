@@ -160,6 +160,14 @@ describe('Database Schema', () => {
       expect(result).toBeDefined();
     });
 
+    it('should create automation tables', () => {
+      initializeSchema(db);
+      const runs = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='automation_runs'").get();
+      const steps = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='automation_steps'").get();
+      expect(runs).toBeDefined();
+      expect(steps).toBeDefined();
+    });
+
     it('should create schema_version table', () => {
       initializeSchema(db);
       const result = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'").get();
@@ -220,6 +228,23 @@ describe('Database Schema', () => {
       expect(indexNames).toContain('idx_snapshots_session_ts');
       expect(indexNames).toContain('idx_snapshots_session_trigger_ts');
       expect(indexNames).toContain('idx_snapshots_png_path');
+    });
+
+    it('should create indexes on automation tables', () => {
+      initializeSchema(db);
+      const runIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='automation_runs'").all() as { name: string }[];
+      const stepIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='automation_steps'").all() as { name: string }[];
+
+      expect(runIndexes.map((index) => index.name)).toEqual(expect.arrayContaining([
+        'idx_automation_runs_session_started',
+        'idx_automation_runs_session_status',
+        'idx_automation_runs_trace_id',
+      ]));
+      expect(stepIndexes.map((index) => index.name)).toEqual(expect.arrayContaining([
+        'idx_automation_steps_run_order',
+        'idx_automation_steps_session_started',
+        'idx_automation_steps_trace_id',
+      ]));
     });
 
     it('should record schema version when using migrations', () => {
@@ -300,6 +325,8 @@ describe('Database Migrations', () => {
       expect(tableNames).toContain('body_chunks');
       expect(tableNames).toContain('error_fingerprints');
       expect(tableNames).toContain('snapshots');
+      expect(tableNames).toContain('automation_runs');
+      expect(tableNames).toContain('automation_steps');
       expect(tableNames).toContain('schema_version');
     });
 
@@ -317,6 +344,95 @@ describe('Database Migrations', () => {
       const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='sessions'").all() as { name: string }[];
       const indexNames = indexes.map((index) => index.name);
       expect(indexNames).toContain('idx_sessions_paused_at');
+    });
+
+    it('should backfill automation tables from existing lifecycle events during migration', () => {
+      db.exec(`
+        CREATE TABLE sessions (
+          session_id TEXT PRIMARY KEY,
+          created_at INTEGER NOT NULL,
+          safe_mode INTEGER NOT NULL DEFAULT 0
+        );
+
+        CREATE TABLE events (
+          event_id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          ts INTEGER NOT NULL,
+          type TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          tab_id INTEGER,
+          origin TEXT,
+          FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE schema_version (
+          version INTEGER PRIMARY KEY,
+          applied_at INTEGER NOT NULL
+        );
+      `);
+
+      db.prepare(`INSERT INTO sessions (session_id, created_at, safe_mode) VALUES (?, ?, ?)`)
+        .run('sess-legacy', 1000, 0);
+      db.prepare(`INSERT INTO events (event_id, session_id, ts, type, payload_json, tab_id) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(
+          'evt-1',
+          'sess-legacy',
+          2000,
+          'ui',
+          JSON.stringify({
+            eventType: 'automation_requested',
+            action: 'click',
+            traceId: 'trace-legacy',
+            selector: '#submit',
+            status: 'requested',
+            startedAt: 2000,
+            target: { matched: true, selector: '#submit', tabId: 7 },
+          }),
+          7,
+        );
+      db.prepare(`INSERT INTO events (event_id, session_id, ts, type, payload_json, tab_id) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(
+          'evt-2',
+          'sess-legacy',
+          2050,
+          'ui',
+          JSON.stringify({
+            eventType: 'automation_succeeded',
+            action: 'click',
+            traceId: 'trace-legacy',
+            selector: '#submit',
+            status: 'succeeded',
+            startedAt: 2000,
+            finishedAt: 2050,
+            durationMs: 50,
+            redaction: { inputValueRedacted: false, sensitiveTarget: false },
+            target: { matched: true, selector: '#submit', tabId: 7 },
+          }),
+          7,
+        );
+      db.prepare(`INSERT INTO schema_version (version, applied_at) VALUES (?, ?)`)
+        .run(6, 999);
+
+      runMigrations(db);
+
+      const run = db.prepare(`SELECT * FROM automation_runs WHERE session_id = ?`).get('sess-legacy') as {
+        run_id: string;
+        trace_id: string;
+        status: string;
+        completed_at: number;
+      };
+      const step = db.prepare(`SELECT * FROM automation_steps WHERE run_id = ?`).get(run.run_id) as {
+        status: string;
+        duration_ms: number;
+        event_type: string;
+      };
+
+      expect(run.trace_id).toBe('trace-legacy');
+      expect(run.status).toBe('succeeded');
+      expect(run.completed_at).toBe(2050);
+      expect(step.status).toBe('succeeded');
+      expect(step.duration_ms).toBe(50);
+      expect(step.event_type).toBe('automation_succeeded');
     });
   });
 
@@ -404,6 +520,30 @@ describe('Database Integration', () => {
         db.prepare(`
           INSERT INTO snapshots (snapshot_id, session_id, ts, trigger, mode, created_at)
           VALUES ('snap-1', 'non-existent', 123456789, 'manual', 'dom', 123456789)
+        `).run();
+      }).toThrow();
+    });
+
+    it('should enforce foreign key on automation_runs.session_id', () => {
+      expect(() => {
+        db.prepare(`
+          INSERT INTO automation_runs (run_id, session_id, status, started_at, created_at, updated_at)
+          VALUES ('run-1', 'non-existent', 'requested', 123456789, 123456789, 123456789)
+        `).run();
+      }).toThrow();
+    });
+
+    it('should enforce foreign key on automation_steps.run_id', () => {
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('sess-1', 123456789, 0)
+      `).run();
+
+      expect(() => {
+        db.prepare(`
+          INSERT INTO automation_steps (
+            step_id, run_id, session_id, step_order, action, status, event_type, created_at, updated_at
+          ) VALUES ('step-1', 'missing-run', 'sess-1', 1, 'click', 'requested', 'automation_requested', 123456789, 123456789)
         `).run();
       }).toThrow();
     });
