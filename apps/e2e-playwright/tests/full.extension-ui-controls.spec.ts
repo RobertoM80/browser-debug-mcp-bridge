@@ -1,9 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
 import {
   createTempDataDir,
+  getFreePort,
+  getServerBaseUrl,
   launchExtensionContext,
   openExtensionPage,
   sendRuntimeMessage,
+  setExtensionServerBaseUrl,
   startHttpServer,
   type ExtensionContextHandle,
   type ManagedServerProcess,
@@ -23,16 +26,20 @@ type RuntimeResponse =
 
 test.describe('@full extension popup and db-viewer controls', () => {
   let server: ManagedServerProcess | undefined;
+  let serverBaseUrl = '';
   let extension: ExtensionContextHandle | undefined;
   let popupPage: Page | undefined;
   let targetPage: Page | undefined;
 
   test.beforeAll(async () => {
-    server = await startHttpServer(createTempDataDir('bdmcp-e2e-full-ui-data-'));
+    const port = await getFreePort();
+    server = await startHttpServer(createTempDataDir('bdmcp-e2e-full-ui-data-'), port);
+    serverBaseUrl = getServerBaseUrl(port);
     extension = await launchExtensionContext();
-    targetPage = await extension.context.newPage();
-    await targetPage.goto('http://127.0.0.1:8065/?e2e-ui=1');
     popupPage = await openExtensionPage(extension.context, extension.extensionId, 'popup.html');
+    await setExtensionServerBaseUrl(popupPage, serverBaseUrl);
+    targetPage = await extension.context.newPage();
+    await targetPage.goto(`${serverBaseUrl}/?e2e-ui=1`);
   });
 
   test.afterAll(async () => {

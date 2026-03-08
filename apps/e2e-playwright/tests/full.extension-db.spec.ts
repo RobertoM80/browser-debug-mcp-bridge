@@ -1,9 +1,12 @@
 import { expect, test, type Page } from '@playwright/test';
 import {
   createTempDataDir,
+  getFreePort,
+  getServerBaseUrl,
   launchExtensionContext,
   openExtensionPage,
   sendRuntimeMessage,
+  setExtensionServerBaseUrl,
   startHttpServer,
   type ExtensionContextHandle,
   type ManagedServerProcess,
@@ -144,16 +147,20 @@ async function queueEventFromTab(
 
 test.describe('@full extension to db integration', () => {
   let server: ManagedServerProcess | undefined;
+  let serverBaseUrl = '';
   let extension: ExtensionContextHandle | undefined;
   let popupPage: Page | undefined;
   let targetPage: Page | undefined;
 
   test.beforeAll(async () => {
-    server = await startHttpServer(createTempDataDir('bdmcp-e2e-full-ext-data-'));
+    const port = await getFreePort();
+    server = await startHttpServer(createTempDataDir('bdmcp-e2e-full-ext-data-'), port);
+    serverBaseUrl = getServerBaseUrl(port);
     extension = await launchExtensionContext();
-    targetPage = await extension.context.newPage();
-    await targetPage.goto('http://127.0.0.1:8065/?e2e-target=1');
     popupPage = await openExtensionPage(extension.context, extension.extensionId, 'popup.html');
+    await setExtensionServerBaseUrl(popupPage, serverBaseUrl);
+    targetPage = await extension.context.newPage();
+    await targetPage.goto(`${serverBaseUrl}/?e2e-target=1`);
   });
 
   test.afterAll(async () => {
@@ -208,7 +215,7 @@ test.describe('@full extension to db integration', () => {
     expect(boundEventAccepted).toBe(true);
 
     const boundNetworkAccepted = await queueEventFromTab(popupPage, '?e2e-target=1', 'network', {
-      url: 'http://127.0.0.1:8065/e2e-network-failure',
+      url: `${serverBaseUrl}/e2e-network-failure`,
       method: 'GET',
       status: 503,
       initiator: 'fetch',
@@ -219,7 +226,7 @@ test.describe('@full extension to db integration', () => {
     expect(boundNetworkAccepted).toBe(true);
 
     const otherPage = await extension.context.newPage();
-    await otherPage.goto('http://127.0.0.1:8065/?e2e-other=1');
+    await otherPage.goto(`${serverBaseUrl}/?e2e-other=1`);
     const droppedEventAccepted = await queueEventFromTab(popupPage, '?e2e-other=1', 'custom', {
       marker: 'cross_tab',
       message: '[cross-tab] should be dropped',

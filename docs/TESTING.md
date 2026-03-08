@@ -47,3 +47,9 @@ Default E2E execution is headless. Use `pnpm test:e2e:head` only when you need a
 - Use unit/integration tests for contracts, schemas, persistence, and core logic.
 - Use E2E smoke tests for extension popup wiring and MCP connectivity sanity.
 - Use E2E full tests for extension-to-server-to-DB data flow and tool outputs.
+
+## E2E Runtime Isolation
+
+- Extension E2E tests keep the normal user default bridge URL on `127.0.0.1:8065`.
+- The Playwright harness uses a hidden test-only runtime override so each test server can run on a free dynamic port.
+- This avoids port collisions with a manually running local bridge without adding any extra user-facing setup.
