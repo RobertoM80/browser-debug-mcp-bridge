@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.9.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.8.0...browser-debug-mcp-bridge-v1.9.0) (2026-03-04)
+
+
+### Features
+
+* **mcp:** reduce context payloads and add summary-first diagnostics ([cb97f1d](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/cb97f1d440b9afc4168b3efb665526c699c30f3e))
+* **session:** merged to main ([f64da61](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/f64da612a7247d061941dd7aab2cbe0a566348af))
+
+
+### Bug Fixes
+
+* **ci:** install playwright chromium in release and harden e2e teardown ([7bca051](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/7bca051ff4e20ab3ab3de023269f419c2513b79e))
+
 ## [1.8.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.7.0...browser-debug-mcp-bridge-v1.8.0) (2026-03-04)
 
 
