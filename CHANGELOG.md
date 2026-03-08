@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.10.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.9.0...browser-debug-mcp-bridge-v1.10.0) (2026-03-08)
+
+
+### Features
+
+* merge branch 'main' ([61cbe62](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/61cbe623bdda95c518985b530dbc75872bbfa72c))
+* **test:** add automated test flow ([3515b87](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/3515b872d09844e891e02e54f3a92f2b38ecad1a))
+* **test:** add automated test flow ([e9361e4](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/e9361e461d08883c787af60cacd96fc50f68179b))
+* **test:** add automated test flow ([f020bbf](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/f020bbf81a1df69d6c6a314ccf81fc6230f915d3))
+* **test:** add automated test flow ([0bd7bde](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/0bd7bdea08333ab0b038cd73039e79fd1c2f738c))
+* **test:** add automated test flow ([fc265df](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/fc265df92d747448fcddb1388503698fed080b0d))
+* **test:** add automated test flow ([1b59107](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/1b59107e9a03d0cdd802bc5d9afdd3bc552b9dc6))
+* **test:** add automated test flow ([9ced690](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/9ced690bf706fe024fac9531c383f7aad1d976a9))
+* **test:** add automated test flow ([deac367](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/deac3674fd778131056b985791013420ecb15874))
+* **test:** add automated test flow ([8274a17](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/8274a17f5cd9e54011dd6a9a6973f3d7f5c31b63))
+* **test:** add automated test flow ([801f6ed](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/801f6edcee64f2e04fc7defbf3eff11be84a52af))
+* **test:** add automated test flow ([195dfe3](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/195dfe33c0ccb6aded764643987301002701ab94))
+* **test:** add automated test flow ([b56c886](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/b56c886c79989b083072340e6f99490bc61c16ca))
+* **test:** add automated test flow ([55ae35d](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/55ae35d37fbf519851febce111a5ddcabc71ca79))
+* **test:** add automated test flow ([992bf5a](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/992bf5a400ccf2ccce5b0530c8f88763de650cd6))
+
 ## [1.9.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.8.0...browser-debug-mcp-bridge-v1.9.0) (2026-03-04)
 
 
