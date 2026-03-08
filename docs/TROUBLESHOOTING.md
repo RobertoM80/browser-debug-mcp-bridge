@@ -33,6 +33,14 @@ Manual recovery:
 ## Extension cannot connect to server
 
 - Ensure server is running locally before starting a session
+- Open the extension popup and inspect `Bridge Health` first:
+  - `Transport` should settle on `connected`
+  - `Session` should show an active session id after start/resume
+  - `Content script` should show `Ready` or `Ready via fallback injection`
+- Use popup recovery actions before deeper manual recovery:
+  - `Recover session` when capture is being rejected as inactive or the session is paused/stale
+  - `Retry content script` when the bound tab lost the content script
+  - `Open bound tab` when you need to jump back to the tab the session is attached to
 - Verify background logs in extension service worker console
 - Confirm WebSocket endpoint is reachable at `ws://127.0.0.1:8065/ws`
 
@@ -51,7 +59,18 @@ Why this happens:
 What to do:
 
 - Run `list_sessions` and pick a session where `liveConnection.connected` is `true`
-- If none are connected, start/restart session from extension popup and retry
+- If a bridge/server restart happened, give the extension a moment to reconnect; active sessions now re-announce themselves automatically
+- If the same browser tab still exists, the extension now prefers rebinding that remembered session tab before falling back to the currently active tab
+- Remembered session-tab bindings are now persisted across extension service-worker reloads, so short extension/background restarts should not require re-picking the tab
+- Use popup `Bridge Health` to distinguish the failure mode quickly:
+  - `Transport` disconnected/reconnecting means bridge connectivity is still unstable
+  - `Content script` unavailable means the tab needs reload or fallback reinjection
+  - rising `allowlist`, `scope`, or `safe` reject counts indicate guardrail blocks rather than transport failure
+- Prefer popup recovery actions before restarting the bridge:
+  - `Recover session` to resume/start from the current popup state
+  - `Retry content script` to re-arm the bound tab
+  - `Open bound tab` to verify the correct page is still attached
+- If none are connected after reconnect settles, then resume or restart the session from the extension popup and retry
 
 ## No events appear in MCP responses
 
@@ -93,6 +112,7 @@ For PNG snapshots, prefer metadata-first mode:
 - Remove `dist/` and rerun build targets
 - Rebuild extension with `pnpm nx build chrome-extension`
 - Rebuild server with `pnpm nx build mcp-server`
+- If popup UI changes do not appear in Chrome, reload the unpacked extension in `chrome://extensions` and reopen the popup
 
 ## Need more diagnostics
 

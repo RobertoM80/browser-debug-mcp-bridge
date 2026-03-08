@@ -59,6 +59,22 @@ Important:
 - In `mcp-stdio` mode, runtime should stop when the MCP host process/transport closes.
 - Startup readiness timeout can be tuned with `MCP_STARTUP_TIMEOUT_MS` (default `15000`).
 - Local runtime state now defaults to a user-local app-data directory instead of the repo/package root. Set `DATA_DIR` only if you want to override that location.
+- If a standalone bridge is already running on `127.0.0.1:8065`, new MCP stdio launches now attach to it instead of killing and replacing it.
+
+Recommended durable workflow:
+
+1. Keep one long-lived bridge running in a terminal:
+
+```bash
+node scripts/mcp-start.cjs --standalone
+```
+
+2. Point Codex or another MCP host at the normal launcher:
+
+- command: `node`
+- args: `["<ABSOLUTE_PATH_TO_REPO>\\scripts\\mcp-start.cjs"]`
+
+Each new MCP host session will attach to the existing standalone bridge on `8065`.
 
 Launcher behavior on Windows:
 
@@ -74,6 +90,33 @@ node scripts/mcp-start.cjs --stop
 ```
 
 Use this when a stale bridge process is still occupying port `8065`.
+
+One-command diagnostics:
+
+```bash
+pnpm mcp:doctor
+```
+
+This performs an active standalone smoke test and prints a compact status report for:
+
+- backend bridge HTTP health
+- MCP launcher/runtime viability
+- sessions API reachability
+- current live browser session state
+- Codex config presence
+- Codex current-chat MCP transport as a host-dependent manual check
+
+Machine-readable output:
+
+```bash
+pnpm mcp:doctor:json
+```
+
+Standalone startup smoke only:
+
+```bash
+pnpm mcp:smoke
+```
 
 Example Windows path:
 
@@ -206,6 +249,19 @@ If the host accepts JSON-style MCP server entries, use:
 7. Ask LLM to call `capture_ui_snapshot` with that `sessionId`.
 8. Verify with `list_snapshots` or extension DB Viewer snapshots table.
 9. Optional filter check: call `get_recent_events` with `{ "url": "http://localhost:3000" }` to scope by origin.
+
+If the flow is unclear, run:
+
+```bash
+pnpm mcp:doctor
+```
+
+Typical fix commands shown by the diagnostic script include:
+
+- `node scripts/mcp-start.cjs`
+- `node scripts/mcp-start.cjs --stop`
+- `pnpm nx build mcp-server`
+- `netstat -ano | findstr :8065`
 
 ## CI safety check (stdio guard)
 

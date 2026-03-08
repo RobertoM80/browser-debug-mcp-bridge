@@ -29,6 +29,21 @@ export interface SessionState {
   reconnectAttempts: number;
 }
 
+interface ActiveSessionContext {
+  url: string;
+  tabId?: number;
+  windowId?: number;
+  baseOrigin?: string;
+  allowedTabIds?: number[];
+  userAgent?: string;
+  viewport?: {
+    width: number;
+    height: number;
+  };
+  dpr?: number;
+  safeMode?: boolean;
+}
+
 type WsEventType = 'open' | 'close' | 'error' | 'message';
 
 export type CaptureCommandType =
@@ -36,8 +51,10 @@ export type CaptureCommandType =
   | 'CAPTURE_DOM_DOCUMENT'
   | 'CAPTURE_COMPUTED_STYLES'
   | 'CAPTURE_LAYOUT_METRICS'
+  | 'CAPTURE_PAGE_STATE'
   | 'CAPTURE_UI_SNAPSHOT'
   | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+  | 'SET_VIEWPORT'
   | 'EXECUTE_UI_ACTION';
 
 interface CaptureCommandMessage {
@@ -170,7 +187,7 @@ function createDefaultSessionId(): string {
 }
 
 export class SessionManager {
-  private readonly wsUrl: string;
+  private wsUrl: string;
   private readonly maxBufferSize: number;
   private readonly createSessionId: () => string;
   private readonly createWebSocket: (url: string) => WebSocketLike;
@@ -194,6 +211,7 @@ export class SessionManager {
   private manualStopRequested = false;
   private activeBaseOrigin: string | null = null;
   private activeAllowedTabIds: number[] = [];
+  private activeSessionContext: ActiveSessionContext | null = null;
 
   constructor(options: SessionManagerOptions = {}) {
     this.wsUrl = options.wsUrl ?? 'ws://127.0.0.1:8065/ws';
@@ -204,6 +222,10 @@ export class SessionManager {
     this.maxBatchSize = options.maxBatchSize ?? 20;
     this.redactionEngine = options.redactionEngine ?? new RedactionEngine();
     this.handleCaptureCommand = options.handleCaptureCommand;
+  }
+
+  setWsUrl(wsUrl: string): void {
+    this.wsUrl = wsUrl;
   }
 
   startSession(context: SessionStartContext): SessionState {
@@ -221,6 +243,7 @@ export class SessionManager {
     this.isPaused = false;
     this.activeBaseOrigin = typeof context.baseOrigin === 'string' ? context.baseOrigin : null;
     this.activeAllowedTabIds = this.normalizeAllowedTabIds(context.allowedTabIds);
+    this.activeSessionContext = this.normalizeSessionContext(context);
     this.ensureConnection();
     this.startHeartbeat();
 
@@ -264,6 +287,7 @@ export class SessionManager {
     this.sessionId = null;
     this.activeBaseOrigin = null;
     this.activeAllowedTabIds = [];
+    this.activeSessionContext = null;
     return this.getState();
   }
 
@@ -317,6 +341,12 @@ export class SessionManager {
     if (Array.isArray(context.allowedTabIds)) {
       this.activeAllowedTabIds = this.normalizeAllowedTabIds(context.allowedTabIds);
     }
+    this.activeSessionContext = this.normalizeSessionContext({
+      ...this.activeSessionContext,
+      ...context,
+      baseOrigin: this.activeBaseOrigin ?? context.baseOrigin,
+      allowedTabIds: this.activeAllowedTabIds,
+    });
 
     this.ensureConnection();
     this.startHeartbeat();
@@ -386,6 +416,13 @@ export class SessionManager {
     if (Array.isArray(scope.allowedTabIds)) {
       this.activeAllowedTabIds = this.normalizeAllowedTabIds(scope.allowedTabIds);
     }
+    if (this.activeSessionContext) {
+      this.activeSessionContext = {
+        ...this.activeSessionContext,
+        baseOrigin: this.activeBaseOrigin ?? undefined,
+        allowedTabIds: this.activeAllowedTabIds.slice(),
+      };
+    }
   }
 
   private ensureConnection(): void {
@@ -397,12 +434,20 @@ export class SessionManager {
     this.ws = this.createWebSocket(this.wsUrl);
 
     this.ws.addEventListener('open', () => {
+      const reopeningActiveSession = this.isActive
+        && !!this.sessionId
+        && (this.connectionStatus === 'reconnecting'
+          || this.reconnectAttempts > 0
+          || this.reconnectStartedAt !== null);
       this.connectionStatus = 'connected';
       this.reconnectAttempts = 0;
       this.reconnectEligible = false;
       this.reconnectStartedAt = null;
       this.clearReconnectTimer();
       this.startHeartbeat();
+      if (reopeningActiveSession) {
+        this.reannounceActiveSession();
+      }
       this.flushBuffer();
     });
 
@@ -536,8 +581,10 @@ export class SessionManager {
         && message.command !== 'CAPTURE_DOM_DOCUMENT'
         && message.command !== 'CAPTURE_COMPUTED_STYLES'
         && message.command !== 'CAPTURE_LAYOUT_METRICS'
+        && message.command !== 'CAPTURE_PAGE_STATE'
         && message.command !== 'CAPTURE_UI_SNAPSHOT'
         && message.command !== 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+        && message.command !== 'SET_VIEWPORT'
         && message.command !== 'EXECUTE_UI_ACTION'
       ) {
         return null;
@@ -713,5 +760,47 @@ export class SessionManager {
         ),
       ),
     );
+  }
+
+  private normalizeSessionContext(context: Partial<SessionStartContext>): ActiveSessionContext {
+    return {
+      url: typeof context.url === 'string' ? context.url : this.activeSessionContext?.url ?? 'about:blank',
+      tabId: context.tabId,
+      windowId: context.windowId,
+      baseOrigin: context.baseOrigin,
+      allowedTabIds: this.normalizeAllowedTabIds(context.allowedTabIds),
+      userAgent: context.userAgent,
+      viewport: context.viewport,
+      dpr: context.dpr,
+      safeMode: context.safeMode,
+    };
+  }
+
+  private reannounceActiveSession(): void {
+    if (!this.ws || this.ws.readyState !== WS_OPEN || !this.isActive || !this.sessionId) {
+      return;
+    }
+
+    const context = this.activeSessionContext ?? {
+      url: this.activeBaseOrigin ?? 'about:blank',
+      baseOrigin: this.activeBaseOrigin ?? undefined,
+      allowedTabIds: this.activeAllowedTabIds,
+    };
+
+    const message: OutboundMessage = {
+      type: this.isPaused ? 'session_pause' : 'session_resume',
+      sessionId: this.sessionId,
+      timestamp: this.now(),
+      url: context.url,
+      origin: context.baseOrigin ?? this.activeBaseOrigin ?? undefined,
+      tabId: context.tabId,
+      windowId: context.windowId,
+      userAgent: context.userAgent,
+      viewport: context.viewport,
+      dpr: context.dpr,
+      safeMode: context.safeMode,
+    };
+
+    this.ws.send(JSON.stringify(this.redactOutboundMessage(message)));
   }
 }

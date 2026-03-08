@@ -91,11 +91,30 @@ type RecentSession = {
   status?: string;
 };
 
+type CaptureDiagnostics = {
+  received: number;
+  accepted: number;
+  rejectedAllowlist: number;
+  rejectedSafeMode: number;
+  rejectedTabScope: number;
+  rejectedInactive: number;
+  lastEventType: string;
+  lastSenderUrl: string;
+  lastUpdatedAt: number;
+  contentScriptReady: boolean;
+  fallbackInjected: boolean;
+  lastInjectError: string;
+  allowlist: string[];
+  safeMode: boolean;
+  sessionState: SessionState;
+};
+
 type StatusTone = 'info' | 'success' | 'warning' | 'error';
 
 let statePollTimer: number | null = null;
 let latestSessionState: SessionState | null = null;
 let latestCaptureConfig: CaptureConfig | null = null;
+let latestCaptureDiagnostics: CaptureDiagnostics | null = null;
 const MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024;
 const STATUS_LABELS: Record<StatusTone, string> = {
   info: 'INFO',
@@ -366,6 +385,11 @@ function setRetentionStatus(message: string, tone: StatusTone = 'info'): void {
   setStatusMessage(status, message, tone);
 }
 
+function setHealthActionStatus(message: string, tone: StatusTone = 'info'): void {
+  const status = document.getElementById('health-action-status');
+  setStatusMessage(status, message, tone);
+}
+
 function getCurrentSessionId(): string | null {
   const sessionId = (document.getElementById('session-id')?.textContent ?? '').trim();
   if (!sessionId || sessionId === '-') {
@@ -562,6 +586,213 @@ function renderSessionTabScope(scope: SessionTabScope): void {
   }
 }
 
+function parseCaptureDiagnostics(result: unknown): CaptureDiagnostics | null {
+  if (!result || typeof result !== 'object') {
+    return null;
+  }
+
+  const candidate = result as Partial<CaptureDiagnostics>;
+  const sessionStateCandidate =
+    candidate.sessionState && typeof candidate.sessionState === 'object'
+      ? (candidate.sessionState as Partial<SessionState>)
+      : null;
+
+  if (
+    !sessionStateCandidate ||
+    typeof sessionStateCandidate.isActive !== 'boolean' ||
+    typeof sessionStateCandidate.isPaused !== 'boolean' ||
+    typeof sessionStateCandidate.connectionStatus !== 'string' ||
+    typeof sessionStateCandidate.queuedEvents !== 'number' ||
+    typeof sessionStateCandidate.droppedEvents !== 'number' ||
+    typeof sessionStateCandidate.reconnectAttempts !== 'number'
+  ) {
+    return null;
+  }
+
+  return {
+    received: Number(candidate.received ?? 0),
+    accepted: Number(candidate.accepted ?? 0),
+    rejectedAllowlist: Number(candidate.rejectedAllowlist ?? 0),
+    rejectedSafeMode: Number(candidate.rejectedSafeMode ?? 0),
+    rejectedTabScope: Number(candidate.rejectedTabScope ?? 0),
+    rejectedInactive: Number(candidate.rejectedInactive ?? 0),
+    lastEventType: typeof candidate.lastEventType === 'string' ? candidate.lastEventType : '',
+    lastSenderUrl: typeof candidate.lastSenderUrl === 'string' ? candidate.lastSenderUrl : '',
+    lastUpdatedAt: Number(candidate.lastUpdatedAt ?? 0),
+    contentScriptReady: candidate.contentScriptReady === true,
+    fallbackInjected: candidate.fallbackInjected === true,
+    lastInjectError: typeof candidate.lastInjectError === 'string' ? candidate.lastInjectError : '',
+    allowlist: Array.isArray(candidate.allowlist)
+      ? candidate.allowlist.filter((entry): entry is string => typeof entry === 'string')
+      : [],
+    safeMode: candidate.safeMode === true,
+    sessionState: {
+      isActive: sessionStateCandidate.isActive,
+      isPaused: sessionStateCandidate.isPaused,
+      sessionId: typeof sessionStateCandidate.sessionId === 'string' ? sessionStateCandidate.sessionId : null,
+      baseOrigin: typeof sessionStateCandidate.baseOrigin === 'string'
+        ? sessionStateCandidate.baseOrigin
+        : undefined,
+      allowedTabIds: Array.isArray(sessionStateCandidate.allowedTabIds)
+        ? sessionStateCandidate.allowedTabIds.filter((entry): entry is number => typeof entry === 'number')
+        : [],
+      connectionStatus:
+        sessionStateCandidate.connectionStatus === 'connecting' ||
+        sessionStateCandidate.connectionStatus === 'connected' ||
+        sessionStateCandidate.connectionStatus === 'reconnecting' ||
+        sessionStateCandidate.connectionStatus === 'disconnected'
+          ? sessionStateCandidate.connectionStatus
+          : 'disconnected',
+      queuedEvents: sessionStateCandidate.queuedEvents,
+      droppedEvents: sessionStateCandidate.droppedEvents,
+      reconnectAttempts: sessionStateCandidate.reconnectAttempts,
+    },
+  };
+}
+
+function setHealthValue(id: string, text: string): void {
+  const element = document.getElementById(id);
+  if (element) {
+    element.textContent = text;
+  }
+}
+
+function summarizeGuardrails(diagnostics: CaptureDiagnostics): string {
+  const allowlistState = diagnostics.allowlist.length > 0
+    ? `${diagnostics.allowlist.length} allowlisted`
+    : 'allowlist empty';
+  return `${diagnostics.safeMode ? 'safe mode on' : 'safe mode off'} | ${allowlistState}`;
+}
+
+function summarizeCaptureCounts(diagnostics: CaptureDiagnostics): string {
+  return [
+    `accepted ${diagnostics.accepted}/${diagnostics.received}`,
+    `inactive ${diagnostics.rejectedInactive}`,
+    `scope ${diagnostics.rejectedTabScope}`,
+    `allowlist ${diagnostics.rejectedAllowlist}`,
+    `safe ${diagnostics.rejectedSafeMode}`,
+  ].join(' | ');
+}
+
+function formatHealthTimestamp(timestamp: number): string {
+  if (!timestamp || !Number.isFinite(timestamp)) {
+    return 'No events yet';
+  }
+
+  return new Date(timestamp).toLocaleTimeString();
+}
+
+function getCaptureStaleMs(diagnostics: CaptureDiagnostics): number | null {
+  if (!diagnostics.lastUpdatedAt || !Number.isFinite(diagnostics.lastUpdatedAt)) {
+    return null;
+  }
+
+  return Math.max(0, Date.now() - diagnostics.lastUpdatedAt);
+}
+
+function getHealthTargetSessionId(): string | null {
+  const diagnosticsSessionId = latestCaptureDiagnostics?.sessionState.sessionId;
+  if (typeof diagnosticsSessionId === 'string' && diagnosticsSessionId.trim().length > 0) {
+    return diagnosticsSessionId;
+  }
+
+  const stateSessionId = latestSessionState?.sessionId;
+  if (typeof stateSessionId === 'string' && stateSessionId.trim().length > 0) {
+    return stateSessionId;
+  }
+
+  return null;
+}
+
+function renderHealthActions(diagnostics: CaptureDiagnostics): void {
+  const recoverButton = document.getElementById('health-recover-session') as HTMLButtonElement | null;
+  const retryButton = document.getElementById('health-retry-content-script') as HTMLButtonElement | null;
+  const focusButton = document.getElementById('health-focus-tab') as HTMLButtonElement | null;
+  const hasKnownSession = Boolean(getHealthTargetSessionId());
+  const sessionState = diagnostics.sessionState;
+
+  if (recoverButton) {
+    recoverButton.disabled = false;
+    recoverButton.textContent = sessionState.isActive
+      ? sessionState.isPaused
+        ? 'Resume session'
+        : 'Session running'
+      : hasKnownSession
+        ? 'Resume session'
+        : 'Start session';
+    if (sessionState.isActive && !sessionState.isPaused) {
+      recoverButton.disabled = true;
+    }
+  }
+
+  if (retryButton) {
+    retryButton.disabled = !hasKnownSession;
+  }
+
+  if (focusButton) {
+    focusButton.disabled = !hasKnownSession;
+  }
+}
+
+function renderHealthDiagnostics(diagnostics: CaptureDiagnostics): void {
+  latestCaptureDiagnostics = diagnostics;
+  const summaryEl = document.getElementById('health-summary');
+  const sessionState = diagnostics.sessionState;
+  const staleMs = getCaptureStaleMs(diagnostics);
+  const hasStaleCapture = Boolean(
+    sessionState.isActive
+      && sessionState.connectionStatus === 'connected'
+      && staleMs !== null
+      && staleMs > 60_000
+  );
+  const transportTone = diagnostics.rejectedInactive > 0 && !sessionState.isActive
+    ? 'warning'
+    : hasStaleCapture
+      ? 'warning'
+    : sessionState.connectionStatus === 'connected'
+      ? 'success'
+      : sessionState.connectionStatus === 'connecting' || sessionState.connectionStatus === 'reconnecting'
+        ? 'warning'
+        : sessionState.isActive
+          ? 'error'
+          : 'info';
+  const transportLabel = sessionState.connectionStatus === 'reconnecting'
+    ? `reconnecting (${sessionState.reconnectAttempts})`
+    : sessionState.connectionStatus;
+  const summaryMessage = diagnostics.rejectedInactive > 0 && !sessionState.isActive
+    ? 'Bridge connected, but capture is being rejected because no session is active. Recover or resume the session.'
+    : hasStaleCapture
+      ? `Bridge ${transportLabel}, but no fresh capture activity has arrived for ${Math.round((staleMs ?? 0) / 1000)}s. Reopen the bound tab or retry the content script if the page looks stalled.`
+    : sessionState.isActive
+      ? `Bridge ${transportLabel}. ${diagnostics.contentScriptReady ? 'Content script ready.' : 'Content script unavailable.'}`
+      : `Bridge ${transportLabel}. No active session is bound.`;
+
+  setStatusMessage(summaryEl, summaryMessage, transportTone);
+  renderHealthActions(diagnostics);
+  setHealthValue('health-transport', transportLabel);
+  setHealthValue(
+    'health-session',
+    sessionState.sessionId
+      ? `${sessionState.sessionId}${sessionState.isPaused ? ' | paused' : ''}`
+      : 'No active session'
+  );
+  setHealthValue(
+    'health-content-script',
+    diagnostics.contentScriptReady
+      ? diagnostics.fallbackInjected
+        ? 'Ready via fallback injection'
+        : 'Ready'
+      : diagnostics.lastInjectError
+        ? `Unavailable | ${diagnostics.lastInjectError}`
+        : 'Unavailable'
+  );
+  setHealthValue('health-guardrails', summarizeGuardrails(diagnostics));
+  setHealthValue('health-capture', summarizeCaptureCounts(diagnostics));
+  setHealthValue('health-last-event', diagnostics.lastEventType || 'No events yet');
+  setHealthValue('health-last-sender', diagnostics.lastSenderUrl || 'No sender recorded');
+  setHealthValue('health-last-updated', formatHealthTimestamp(diagnostics.lastUpdatedAt));
+}
+
 async function refreshSessionTabScope(): Promise<void> {
   const result = await sendRuntimeMessage({ type: 'SESSION_GET_TAB_SCOPE' });
   if (result.ok && 'result' in result) {
@@ -654,12 +885,31 @@ async function refreshState(): Promise<void> {
   if (result.ok && 'state' in result) {
     renderSessionState(result.state);
     await refreshSessionTabScope();
+    await refreshHealthDiagnostics();
     return;
   }
 
   const statusEl = document.getElementById('status');
   if (statusEl && !result.ok) {
     setStatusMessage(statusEl, 'Error: ' + result.error, 'error');
+  }
+}
+
+async function refreshHealthDiagnostics(): Promise<void> {
+  const result = await sendRuntimeMessage({ type: 'SESSION_CAPTURE_DIAGNOSTICS' });
+  const summaryEl = document.getElementById('health-summary');
+  if (result.ok && 'result' in result) {
+    const diagnostics = parseCaptureDiagnostics(result.result);
+    if (diagnostics) {
+      renderHealthDiagnostics(diagnostics);
+      return;
+    }
+    setStatusMessage(summaryEl, 'Unexpected health diagnostics response.', 'warning');
+    return;
+  }
+
+  if (!result.ok) {
+    setStatusMessage(summaryEl, 'Error: ' + result.error, 'error');
   }
 }
 
@@ -692,6 +942,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const pauseButton = document.getElementById('pause-session');
   const resumeCurrentButton = document.getElementById('resume-session');
   const stopButton = document.getElementById('stop-session');
+  const recoverHealthButton = document.getElementById('health-recover-session');
+  const retryHealthButton = document.getElementById('health-retry-content-script');
+  const focusHealthButton = document.getElementById('health-focus-tab');
   const resumeByIdButton = document.getElementById('resume-selected-session');
   const resumeByIdSelect = document.getElementById('resume-session-id') as HTMLSelectElement | null;
   const saveConfigButton = document.getElementById('save-config');
@@ -767,6 +1020,53 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     setConfigStatus(result.ok ? 'Unable to stop session' : result.error, 'error');
+  });
+
+  recoverHealthButton?.addEventListener('click', async () => {
+    setHealthActionStatus('Recovering session...', 'info');
+    const result = await sendRuntimeMessage({
+      type: 'SESSION_RECOVER_HEALTH',
+      sessionId: getHealthTargetSessionId() ?? undefined,
+    });
+    if (result.ok && 'state' in result) {
+      renderSessionState(result.state);
+      await refreshSessionTabScope();
+      await refreshPausedSessionOptions();
+      await refreshHealthDiagnostics();
+      setHealthActionStatus(result.state.isActive ? 'Session is active again.' : 'Session recovery ran.', 'success');
+      return;
+    }
+
+    setHealthActionStatus(result.ok ? 'Unable to recover session' : result.error, 'error');
+  });
+
+  retryHealthButton?.addEventListener('click', async () => {
+    setHealthActionStatus('Retrying content script...', 'info');
+    const result = await sendRuntimeMessage({
+      type: 'SESSION_RETRY_CONTENT_SCRIPT',
+      sessionId: getHealthTargetSessionId() ?? undefined,
+    });
+    if (result.ok) {
+      await refreshHealthDiagnostics();
+      setHealthActionStatus('Content script check completed.', 'success');
+      return;
+    }
+
+    setHealthActionStatus(result.error, 'error');
+  });
+
+  focusHealthButton?.addEventListener('click', async () => {
+    setHealthActionStatus('Opening bound tab...', 'info');
+    const result = await sendRuntimeMessage({
+      type: 'SESSION_FOCUS_CAPTURE_TAB',
+      sessionId: getHealthTargetSessionId() ?? undefined,
+    });
+    if (result.ok) {
+      setHealthActionStatus('Bound tab focused.', 'success');
+      return;
+    }
+
+    setHealthActionStatus(result.error, 'error');
   });
 
   refreshSessionTabsButton?.addEventListener('click', async () => {

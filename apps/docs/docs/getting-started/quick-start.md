@@ -49,6 +49,7 @@ node scripts/mcp-start.cjs --stop
 2. Open `chrome://extensions`
 3. Enable Developer mode
 4. Load unpacked from `dist/apps/chrome-extension`
+5. After later rebuilds, click the extension `Reload` action in `chrome://extensions` before reopening the popup
 
 ## Verify baseline health
 

@@ -3,7 +3,15 @@
 ## Extension cannot connect to server
 
 - Confirm server is running on `127.0.0.1:8065`
-- Check popup connection state and background logs
+- Check popup `Bridge Health` first:
+  - `Transport` should be connected
+  - `Session` should show the active session after start/resume
+  - `Content script` should be ready
+- Try the popup recovery actions before deeper debugging:
+  - `Recover session`
+  - `Retry content script`
+  - `Open bound tab`
+- Then check background logs if the health panel still looks wrong
 - Verify extension has active allowlisted domain
 
 ## Live tools fail on a listed session
@@ -16,13 +24,25 @@ Symptoms:
 Actions:
 
 - Run `list_sessions` and select a session where `liveConnection.connected` is `true`
-- If none are connected, restart session from extension popup and retry
+- If the MCP bridge/server was restarted, wait briefly for the extension to reconnect; active sessions now re-announce themselves automatically
+- Resume now prefers the remembered session tab when it still exists, instead of forcing the current active tab
+- Remembered session-tab bindings are persisted across extension service-worker reloads, reducing the need to recreate the tab/session after a background restart
+- Use popup `Bridge Health` to separate transport issues from guardrail issues:
+  - disconnected/reconnecting transport means wait or resume
+  - unavailable content script means reload/reinject path
+  - growing reject counts point to allowlist, safe-mode, inactive-session, or tab-scope blocks
+- Prefer the popup recovery actions first:
+  - `Recover session` for inactive or paused capture state
+  - `Retry content script` for the reinjection path
+  - `Open bound tab` to jump back to the session tab
+- If none are connected after reconnect settles, restart or resume the session from the extension popup and retry
 
 ## Server start fails with port conflict
 
 - Launcher (`node scripts/mcp-start.cjs`) auto-recovers stale bridge processes on Windows when possible
 - If launcher prints `MCP_STARTUP_PORT_IN_USE`, reserve/free MCP port `8065` for the bridge and retry
 - If startup still fails on port `8065`, stop non-bridge listener processes manually and retry
+- If Codex or another MCP host logs `MCP_STARTUP_LOCKED`, an older `--standalone` launcher still owns the bridge lock. Stop it with `node scripts/mcp-start.cjs --stop` or restart the MCP host after the launcher auto-replaces it.
 
 ## MCP process remains alive after host closes
 

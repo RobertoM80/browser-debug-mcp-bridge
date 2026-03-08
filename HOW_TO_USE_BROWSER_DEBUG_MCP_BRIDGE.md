@@ -169,6 +169,17 @@ Runtime state location:
 2. This avoids writing runtime artifacts into the repo root or into the host app working directory.
 3. Set `DATA_DIR` only if you intentionally want a custom location.
 
+Recommended persistent-host workflow:
+1. Keep one long-lived bridge terminal running with:
+
+```bash
+node scripts/mcp-start.cjs --standalone
+```
+
+2. Keep your MCP client config pointing at the normal launcher:
+   - `node <path-to-repo>/scripts/mcp-start.cjs`
+3. New Codex/MCP sessions will attach to the existing bridge on `127.0.0.1:8065` instead of replacing it.
+
 ## Step 4: Generate ready-to-paste MCP config
 
 For local clone mode, from repo root:
@@ -221,6 +232,11 @@ In extension popup:
 Expected result:
 1. Session status becomes active.
 2. A session id is visible in popup.
+3. The popup `Bridge Health` panel updates live with transport, content-script readiness, guardrails, and last-event diagnostics.
+4. If the panel shows a stale/inactive state, you can use:
+   - `Recover session`
+   - `Retry content script`
+   - `Open bound tab`
 
 ## Step 7: Use it from any other project
 
@@ -262,17 +278,24 @@ Then reload extension in `chrome://extensions`.
 If no sessions appear:
 1. Session was not started in extension popup.
 2. Current site is not in allowlist.
+3. Popup `Bridge Health` shows disconnected transport, unavailable content script, or repeated rejected capture counts.
+4. Use the popup recovery actions before restarting everything:
+   - `Recover session` for inactive/paused session state
+   - `Retry content script` when the content script is unavailable
+   - `Open bound tab` to return to the tab currently associated with the session
 
 If snapshot calls fail:
 1. No active session.
 2. Snapshot settings disabled.
 3. Extension not connected to local server.
+4. Popup `Bridge Health` shows the content script is unavailable or the transport is reconnecting/disconnected.
 
 If MCP client shows no tools:
 1. Wrong repo path in MCP config.
 2. Wrong MCP command/args for selected mode.
 3. MCP process failed to start.
 4. Another process already uses port `8065`.
+5. A previous `node scripts/mcp-start.cjs --standalone` session still owns the bridge lock. Stop it with `node scripts/mcp-start.cjs --stop` or restart the MCP host after the launcher replaces it.
 
 ## Distribution modes summary
 
