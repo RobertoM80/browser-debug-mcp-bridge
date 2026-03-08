@@ -1,25 +1,45 @@
 import { expect, test, type Page } from '@playwright/test';
 import {
   createTempDataDir,
+  getFreePort,
+  getServerBaseUrl,
   launchExtensionContext,
   openExtensionPage,
+  sendRuntimeMessage,
+  setExtensionServerBaseUrl,
   startHttpServer,
   type ExtensionContextHandle,
   type ManagedServerProcess,
 } from './utils/runtime';
 
+type RuntimeResponse =
+  | {
+      ok: true;
+      config?: {
+        automation?: {
+          enabled?: boolean;
+          allowSensitiveFields?: boolean;
+        };
+      };
+    }
+  | { ok: false; error: string };
+
 test.describe('@full extension popup and db-viewer controls', () => {
   let server: ManagedServerProcess | undefined;
+  let serverBaseUrl = '';
   let extension: ExtensionContextHandle | undefined;
   let popupPage: Page | undefined;
   let targetPage: Page | undefined;
 
   test.beforeAll(async () => {
-    server = await startHttpServer(createTempDataDir('bdmcp-e2e-full-ui-data-'));
+    const port = await getFreePort();
+    server = await startHttpServer(createTempDataDir('bdmcp-e2e-full-ui-data-'), port);
+    serverBaseUrl = getServerBaseUrl(port);
     extension = await launchExtensionContext();
-    targetPage = await extension.context.newPage();
-    await targetPage.goto('http://127.0.0.1:8065/?e2e-ui=1');
     popupPage = await openExtensionPage(extension.context, extension.extensionId, 'popup.html');
+    await setExtensionServerBaseUrl(popupPage, serverBaseUrl);
+    targetPage = await extension.context.newPage();
+    await targetPage.goto(`${serverBaseUrl}/?e2e-ui=1`);
   });
 
   test.afterAll(async () => {
@@ -42,6 +62,7 @@ test.describe('@full extension popup and db-viewer controls', () => {
     await popupPage.fill('#allowlist-domains', '127.0.0.1');
     await popupPage.uncheck('#safe-mode');
     await popupPage.check('#snapshots-enabled');
+    await popupPage.check('#automation-enabled');
     await popupPage.selectOption('#snapshot-mode', 'both');
     await popupPage.selectOption('#snapshot-style-mode', 'computed-full');
     await popupPage.check('#snapshot-trigger-navigation');
@@ -51,6 +72,14 @@ test.describe('@full extension popup and db-viewer controls', () => {
     await popupPage.fill('#snapshot-min-interval', '1000');
     await popupPage.click('#save-config');
     await expect(popupPage.locator('#config-status')).toContainText(/Settings saved/i);
+    await expect(popupPage.locator('#automation-status')).toContainText(/Sensitive-field actions remain blocked/i);
+
+    const configResponse = await sendRuntimeMessage<RuntimeResponse>(popupPage, { type: 'SESSION_GET_CONFIG' });
+    expect(configResponse.ok).toBe(true);
+    if (configResponse.ok && configResponse.config?.automation) {
+      expect(configResponse.config.automation.enabled).toBe(true);
+      expect(configResponse.config.automation.allowSensitiveFields).toBe(false);
+    }
 
     await targetPage.bringToFront();
     await popupPage.click('#start-session');
@@ -108,6 +137,9 @@ test.describe('@full extension popup and db-viewer controls', () => {
 
     await popupPage.click('#stop-session');
     await expect(popupPage.locator('#status')).toContainText(/No active session/i);
+
+    await popupPage.click('#automation-emergency-stop');
+    await expect(popupPage.locator('#automation-status')).toContainText(/Live automation is off/i);
 
     const dangerPanel = popupPage.locator('details.danger-zone');
     if (!(await dangerPanel.evaluate((node) => (node as HTMLDetailsElement).open))) {

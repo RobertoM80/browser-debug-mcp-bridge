@@ -1,5 +1,6 @@
 import { Database } from 'better-sqlite3';
 import { initializeSchema, getSchemaVersion, clearDatabase, SCHEMA_VERSION } from './schema.js';
+import { AutomationRepository, isAutomationLifecycleEventType } from './automation-repository.js';
 
 export interface Migration {
   version: number;
@@ -299,6 +300,107 @@ const migrations: Migration[] = [
       db.exec(`
         CREATE INDEX IF NOT EXISTS idx_sessions_paused_at ON sessions(paused_at);
       `);
+    },
+  },
+  {
+    version: 7,
+    name: 'automation_run_tables',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS automation_runs (
+          run_id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          trace_id TEXT,
+          action TEXT,
+          tab_id INTEGER,
+          selector TEXT,
+          status TEXT NOT NULL,
+          started_at INTEGER NOT NULL,
+          completed_at INTEGER,
+          stop_reason TEXT,
+          target_summary_json TEXT,
+          failure_json TEXT,
+          redaction_json TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_automation_runs_session_started ON automation_runs(session_id, started_at);
+        CREATE INDEX IF NOT EXISTS idx_automation_runs_session_status ON automation_runs(session_id, status);
+        CREATE INDEX IF NOT EXISTS idx_automation_runs_trace_id ON automation_runs(trace_id);
+
+        CREATE TABLE IF NOT EXISTS automation_steps (
+          step_id TEXT PRIMARY KEY,
+          run_id TEXT NOT NULL,
+          session_id TEXT NOT NULL,
+          step_order INTEGER NOT NULL,
+          trace_id TEXT,
+          action TEXT NOT NULL,
+          selector TEXT,
+          status TEXT NOT NULL,
+          started_at INTEGER,
+          finished_at INTEGER,
+          duration_ms INTEGER,
+          tab_id INTEGER,
+          target_summary_json TEXT,
+          redaction_json TEXT,
+          failure_json TEXT,
+          input_metadata_json TEXT,
+          event_type TEXT NOT NULL,
+          event_id TEXT,
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (run_id) REFERENCES automation_runs(run_id) ON DELETE CASCADE,
+          FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE,
+          FOREIGN KEY (event_id) REFERENCES events(event_id) ON DELETE SET NULL,
+          UNIQUE(run_id, step_order)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_automation_steps_run_order ON automation_steps(run_id, step_order);
+        CREATE INDEX IF NOT EXISTS idx_automation_steps_session_started ON automation_steps(session_id, started_at);
+        CREATE INDEX IF NOT EXISTS idx_automation_steps_trace_id ON automation_steps(trace_id);
+      `);
+
+      const automationRepository = new AutomationRepository(db);
+      const rows = db.prepare(`
+        SELECT event_id, session_id, ts, payload_json, tab_id
+        FROM events
+        WHERE type = 'ui'
+        ORDER BY ts ASC, rowid ASC
+      `).all() as Array<{
+        event_id: string;
+        session_id: string;
+        ts: number;
+        payload_json: string;
+        tab_id: number | null;
+      }>;
+
+      for (const row of rows) {
+        let payload: Record<string, unknown> = {};
+        try {
+          const parsed = JSON.parse(row.payload_json) as unknown;
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            payload = parsed as Record<string, unknown>;
+          }
+        } catch {
+          payload = {};
+        }
+
+        const eventType = typeof payload.eventType === 'string' ? payload.eventType : '';
+        if (!isAutomationLifecycleEventType(eventType)) {
+          continue;
+        }
+
+        automationRepository.upsertLifecycleEvent({
+          eventId: row.event_id,
+          eventType,
+          sessionId: row.session_id,
+          timestamp: row.ts,
+          tabId: row.tab_id,
+          payload,
+        });
+      }
     },
   },
 ];

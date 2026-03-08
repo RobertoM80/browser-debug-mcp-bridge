@@ -3,6 +3,7 @@ export interface CaptureConfig {
   allowlist: string[];
   snapshots: SnapshotCaptureConfig;
   network: NetworkCaptureConfig;
+  automation: AutomationConfig;
 }
 
 export type SnapshotMode = 'dom' | 'png' | 'both';
@@ -13,6 +14,11 @@ export type SnapshotPrivacyProfile = 'strict' | 'standard';
 export interface NetworkCaptureConfig {
   captureBodies: boolean;
   maxBodyBytes: number;
+}
+
+export interface AutomationConfig {
+  enabled: boolean;
+  allowSensitiveFields: boolean;
 }
 
 export interface SnapshotCaptureConfig {
@@ -77,6 +83,10 @@ export const DEFAULT_CAPTURE_CONFIG: CaptureConfig = {
     captureBodies: false,
     maxBodyBytes: 262144,
   },
+  automation: {
+    enabled: false,
+    allowSensitiveFields: false,
+  },
 };
 
 export function normalizeCaptureConfig(value: unknown): CaptureConfig {
@@ -90,7 +100,24 @@ export function normalizeCaptureConfig(value: unknown): CaptureConfig {
     allowlist: normalizeAllowlist(config.allowlist ?? DEFAULT_CAPTURE_CONFIG.allowlist),
     snapshots: normalizeSnapshotCaptureConfig(config.snapshots),
     network: normalizeNetworkCaptureConfig(config.network),
+    automation: normalizeAutomationConfig(config.automation),
   };
+}
+
+export function canExecuteLiveAutomation(config: CaptureConfig): boolean {
+  return config.automation.enabled;
+}
+
+export function requiresSensitiveAutomationOptIn(target: {
+  selector?: string;
+  action?: string;
+}): boolean {
+  const selector = typeof target.selector === 'string' ? target.selector : '';
+  if (selector && /(password|passwd|pwd|token|secret|auth|session|email|card|cvv|cvc|ssn|iban|payment)/i.test(selector)) {
+    return true;
+  }
+
+  return target.action === 'input' && selector.length === 0;
 }
 
 export function canCaptureSnapshot(
@@ -225,6 +252,17 @@ function normalizeNetworkCaptureConfig(value: unknown): NetworkCaptureConfig {
       4096,
       5 * 1024 * 1024,
     ),
+  };
+}
+
+function normalizeAutomationConfig(value: unknown): AutomationConfig {
+  const input = value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Partial<AutomationConfig>)
+    : {};
+
+  return {
+    enabled: input.enabled === true,
+    allowSensitiveFields: input.allowSensitiveFields === true,
   };
 }
 

@@ -14,6 +14,11 @@ export const EventTypeSchema = z.enum([
   'blur',
   'keydown',
   'ui_snapshot',
+  'automation_requested',
+  'automation_started',
+  'automation_succeeded',
+  'automation_failed',
+  'automation_stopped',
   'custom',
 ]);
 
@@ -36,8 +41,11 @@ export const CaptureCommandSchema = z.enum([
   'CAPTURE_DOM_DOCUMENT',
   'CAPTURE_COMPUTED_STYLES',
   'CAPTURE_LAYOUT_METRICS',
+  'CAPTURE_PAGE_STATE',
   'CAPTURE_UI_SNAPSHOT',
   'CAPTURE_GET_LIVE_CONSOLE_LOGS',
+  'SET_VIEWPORT',
+  'EXECUTE_UI_ACTION',
 ]);
 
 export const BaseWebSocketMessageSchema = z.object({

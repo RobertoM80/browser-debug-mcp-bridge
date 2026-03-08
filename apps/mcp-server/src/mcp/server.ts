@@ -4,6 +4,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprot
 import type { Database } from 'better-sqlite3';
 import { existsSync, readFileSync } from 'fs';
 import { dirname, resolve } from 'path';
+import { z } from 'zod';
 import { getConnection } from '../db/connection.js';
 
 type ToolInput = Record<string, unknown>;
@@ -77,6 +78,286 @@ function createDefaultMcpLogger(): MCPLogger {
       write('debug', message ?? '[MCPServer][MCP][debug]', payload);
     },
   };
+}
+
+const LiveUIActionTargetSchema = z.object({
+  selector: z.string().min(1).optional(),
+  elementRef: z.string().min(1).optional(),
+  tabId: z.number().int().min(0).optional(),
+  frameId: z.number().int().min(0).optional(),
+  url: z.string().url().optional(),
+});
+
+const LiveUIActionBaseSchema = z.object({
+  traceId: z.string().min(1).optional(),
+  target: LiveUIActionTargetSchema.optional(),
+});
+
+const LiveUIActionRequestSchema = z.discriminatedUnion('action', [
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('click'),
+    input: z.object({
+      button: z.enum(['left', 'middle', 'right']).optional(),
+      clickCount: z.number().int().min(1).max(3).optional(),
+    }).optional(),
+  }),
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('input'),
+    input: z.object({
+      value: z.string(),
+    }),
+  }),
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('focus'),
+    input: z.object({}).optional(),
+  }),
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('blur'),
+    input: z.object({}).optional(),
+  }),
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('scroll'),
+    input: z.object({
+      x: z.number().optional(),
+      y: z.number().optional(),
+      behavior: z.enum(['auto', 'smooth']).optional(),
+    }).optional(),
+  }),
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('press_key'),
+    input: z.object({
+      key: z.string().min(1),
+      altKey: z.boolean().optional(),
+      ctrlKey: z.boolean().optional(),
+      metaKey: z.boolean().optional(),
+      shiftKey: z.boolean().optional(),
+    }),
+  }),
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('submit'),
+    input: z.object({}).optional(),
+  }),
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('reload'),
+    input: z.object({
+      ignoreCache: z.boolean().optional(),
+    }).optional(),
+  }),
+]);
+
+type LiveUIActionRequest = z.infer<typeof LiveUIActionRequestSchema>;
+type LiveUIActionResult = {
+  action: LiveUIActionRequest['action'];
+  traceId: string;
+  status: 'succeeded' | 'rejected' | 'failed';
+  executionScope: 'top-document-v1';
+  startedAt: number;
+  finishedAt: number;
+  target: {
+    matched: boolean;
+    selector?: string;
+    resolvedSelector?: string;
+    tagName?: string;
+    textPreview?: string;
+    tabId?: number;
+    frameId?: number;
+    url?: string;
+  };
+  failureReason?: {
+    code: string;
+    message: string;
+  };
+  result?: Record<string, unknown>;
+};
+
+const UIWorkflowModeSchema = z.enum(['safe', 'fast']);
+const UIWorkflowFailureStrategySchema = z.enum(['stop', 'continue', 'retry_once']);
+const UIWorkflowActionTargetScopeSchema = z.enum(['buttons', 'inputs', 'modals', 'focused']);
+
+const UIWorkflowActionTargetSchema = z.object({
+  selector: z.string().min(1).optional(),
+  elementRef: z.string().min(1).optional(),
+  tabId: z.number().int().min(0).optional(),
+  frameId: z.number().int().min(0).optional(),
+  url: z.string().url().optional(),
+  testId: z.string().min(1).optional(),
+  scope: UIWorkflowActionTargetScopeSchema.optional(),
+  textContains: z.string().min(1).optional(),
+  labelContains: z.string().min(1).optional(),
+  titleContains: z.string().min(1).optional(),
+  tagName: z.string().min(1).optional(),
+  type: z.string().min(1).optional(),
+  disabled: z.boolean().optional(),
+  selected: z.boolean().optional(),
+  pressed: z.boolean().optional(),
+  expanded: z.boolean().optional(),
+  readOnly: z.boolean().optional(),
+  requiredField: z.boolean().optional(),
+}).superRefine((value, ctx) => {
+  if (
+    !value.selector
+    && !value.elementRef
+    && !value.testId
+    && !value.textContains
+    && !value.labelContains
+    && !value.titleContains
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'target requires selector, elementRef, testId, textContains, labelContains, or titleContains',
+      path: ['target'],
+    });
+  }
+});
+
+const UIWorkflowFailureCaptureSchema = z.object({
+  enabled: z.boolean().optional(),
+  selector: z.string().min(1).optional(),
+  mode: z.enum(['dom', 'png', 'both']).optional(),
+  styleMode: z.enum(['computed-lite', 'computed-full']).optional(),
+  maxDepth: z.number().int().min(1).max(10).optional(),
+  maxBytes: z.number().int().min(1_000).max(200_000).optional(),
+  maxAncestors: z.number().int().min(0).max(10).optional(),
+  includeDom: z.boolean().optional(),
+  includeStyles: z.boolean().optional(),
+  includePngDataUrl: z.boolean().optional(),
+});
+
+const UIWorkflowFailurePolicySchema = z.object({
+  strategy: UIWorkflowFailureStrategySchema.optional(),
+  capture: UIWorkflowFailureCaptureSchema.optional(),
+});
+
+const UIWorkflowStepBaseSchema = z.object({
+  id: z.string().min(1).optional(),
+  note: z.string().min(1).optional(),
+  onFailure: UIWorkflowFailurePolicySchema.optional(),
+});
+
+const UIWorkflowActionBaseSchema = UIWorkflowStepBaseSchema.extend({
+  kind: z.literal('action'),
+  traceId: z.string().min(1).optional(),
+  target: UIWorkflowActionTargetSchema.optional(),
+});
+
+const UIWorkflowActionStepSchema = z.discriminatedUnion('action', [
+  UIWorkflowActionBaseSchema.extend({
+    action: z.literal('click'),
+    input: z.object({
+      button: z.enum(['left', 'middle', 'right']).optional(),
+      clickCount: z.number().int().min(1).max(3).optional(),
+    }).optional(),
+  }),
+  UIWorkflowActionBaseSchema.extend({
+    action: z.literal('input'),
+    input: z.object({
+      value: z.string(),
+    }),
+  }),
+  UIWorkflowActionBaseSchema.extend({
+    action: z.literal('focus'),
+    input: z.object({}).optional(),
+  }),
+  UIWorkflowActionBaseSchema.extend({
+    action: z.literal('blur'),
+    input: z.object({}).optional(),
+  }),
+  UIWorkflowActionBaseSchema.extend({
+    action: z.literal('scroll'),
+    input: z.object({
+      x: z.number().optional(),
+      y: z.number().optional(),
+      behavior: z.enum(['auto', 'smooth']).optional(),
+    }).optional(),
+  }),
+  UIWorkflowActionBaseSchema.extend({
+    action: z.literal('press_key'),
+    input: z.object({
+      key: z.string().min(1),
+      altKey: z.boolean().optional(),
+      ctrlKey: z.boolean().optional(),
+      metaKey: z.boolean().optional(),
+      shiftKey: z.boolean().optional(),
+    }),
+  }),
+  UIWorkflowActionBaseSchema.extend({
+    action: z.literal('submit'),
+    input: z.object({}).optional(),
+  }),
+  UIWorkflowActionBaseSchema.extend({
+    action: z.literal('reload'),
+    input: z.object({
+      ignoreCache: z.boolean().optional(),
+    }).optional(),
+  }),
+]);
+
+const UIWorkflowPageStateMatcherSchema = z.object({
+  scope: z.enum(['buttons', 'inputs', 'modals', 'focused', 'page']),
+  selector: z.string().optional(),
+  testId: z.string().optional(),
+  textContains: z.string().optional(),
+  labelContains: z.string().optional(),
+  titleContains: z.string().optional(),
+  urlContains: z.string().optional(),
+  language: z.string().optional(),
+  disabled: z.boolean().optional(),
+  selected: z.boolean().optional(),
+  pressed: z.boolean().optional(),
+  expanded: z.boolean().optional(),
+  readOnly: z.boolean().optional(),
+  requiredField: z.boolean().optional(),
+  tagName: z.string().optional(),
+  type: z.string().optional(),
+  countExactly: z.number().int().min(0).optional(),
+  countAtLeast: z.number().int().min(0).optional(),
+  maxItems: z.number().int().min(1).max(100).optional(),
+  maxTextLength: z.number().int().min(8).max(200).optional(),
+}).superRefine((value, ctx) => {
+  if (value.countExactly !== undefined && value.countAtLeast !== undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'countExactly and countAtLeast cannot both be set',
+      path: ['countExactly'],
+    });
+  }
+});
+
+const UIWorkflowWaitForStepSchema = UIWorkflowStepBaseSchema.extend({
+  kind: z.literal('waitFor'),
+  matcher: UIWorkflowPageStateMatcherSchema.extend({
+    timeoutMs: z.number().int().min(100).max(30000).optional(),
+    pollIntervalMs: z.number().int().min(50).max(2000).optional(),
+  }),
+});
+
+const UIWorkflowAssertStepSchema = UIWorkflowStepBaseSchema.extend({
+  kind: z.literal('assert'),
+  matcher: UIWorkflowPageStateMatcherSchema,
+});
+
+const UIWorkflowStepSchema = z.discriminatedUnion('kind', [
+  UIWorkflowActionStepSchema,
+  UIWorkflowWaitForStepSchema,
+  UIWorkflowAssertStepSchema,
+]);
+
+const RunUIStepsSchema = z.object({
+  sessionId: z.string().min(1),
+  mode: UIWorkflowModeSchema.default('safe'),
+  stopOnFailure: z.boolean().default(true),
+  defaultTimeoutMs: z.number().int().min(100).max(30000).optional(),
+  defaultPollIntervalMs: z.number().int().min(50).max(2000).optional(),
+  steps: z.array(UIWorkflowStepSchema).min(1).max(50),
+});
+
+type UIWorkflowActionTarget = z.infer<typeof UIWorkflowActionTargetSchema>;
+type UIWorkflowActionStep = z.infer<typeof UIWorkflowActionStepSchema>;
+type UIWorkflowStep = z.infer<typeof UIWorkflowStepSchema>;
+type RunUIStepsRequest = z.infer<typeof RunUIStepsSchema>;
+
+function createUIWorkflowTraceId(): string {
+  return `uiworkflow-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 const TOOL_SCHEMAS: Record<string, object> = {
@@ -271,6 +552,103 @@ const TOOL_SCHEMAS: Record<string, object> = {
       selector: { type: 'string' },
     },
   },
+  get_page_state: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      maxItems: { type: 'number' },
+      maxTextLength: { type: 'number' },
+      includeButtons: { type: 'boolean' },
+      includeInputs: { type: 'boolean' },
+      includeModals: { type: 'boolean' },
+    },
+  },
+  get_interactive_elements: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      kinds: {
+        type: 'array',
+        items: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused'] },
+      },
+      maxItems: { type: 'number' },
+      maxTextLength: { type: 'number' },
+    },
+  },
+  get_live_session_health: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+    },
+  },
+  set_viewport: {
+    type: 'object',
+    required: ['sessionId', 'width', 'height'],
+    properties: {
+      sessionId: { type: 'string' },
+      width: { type: 'number' },
+      height: { type: 'number' },
+    },
+  },
+  assert_page_state: {
+    type: 'object',
+    required: ['sessionId', 'scope'],
+    properties: {
+      sessionId: { type: 'string' },
+      scope: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused', 'page'] },
+      selector: { type: 'string' },
+      testId: { type: 'string' },
+      textContains: { type: 'string' },
+      labelContains: { type: 'string' },
+      titleContains: { type: 'string' },
+      urlContains: { type: 'string' },
+      language: { type: 'string' },
+      disabled: { type: 'boolean' },
+      selected: { type: 'boolean' },
+      pressed: { type: 'boolean' },
+      expanded: { type: 'boolean' },
+      readOnly: { type: 'boolean' },
+      requiredField: { type: 'boolean' },
+      tagName: { type: 'string' },
+      type: { type: 'string' },
+      countExactly: { type: 'number' },
+      countAtLeast: { type: 'number' },
+      maxItems: { type: 'number' },
+      maxTextLength: { type: 'number' },
+    },
+  },
+  wait_for_page_state: {
+    type: 'object',
+    required: ['sessionId', 'scope'],
+    properties: {
+      sessionId: { type: 'string' },
+      scope: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused', 'page'] },
+      selector: { type: 'string' },
+      testId: { type: 'string' },
+      textContains: { type: 'string' },
+      labelContains: { type: 'string' },
+      titleContains: { type: 'string' },
+      urlContains: { type: 'string' },
+      language: { type: 'string' },
+      disabled: { type: 'boolean' },
+      selected: { type: 'boolean' },
+      pressed: { type: 'boolean' },
+      expanded: { type: 'boolean' },
+      readOnly: { type: 'boolean' },
+      requiredField: { type: 'boolean' },
+      tagName: { type: 'string' },
+      type: { type: 'string' },
+      countExactly: { type: 'number' },
+      countAtLeast: { type: 'number' },
+      maxItems: { type: 'number' },
+      maxTextLength: { type: 'number' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
   capture_ui_snapshot: {
     type: 'object',
     required: ['sessionId'],
@@ -357,6 +735,191 @@ const TOOL_SCHEMAS: Record<string, object> = {
       encoding: { type: 'string' },
     },
   },
+  list_automation_runs: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      status: { type: 'string', enum: ['requested', 'started', 'succeeded', 'failed', 'rejected', 'stopped'] },
+      action: { type: 'string', enum: ['click', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload'] },
+      traceId: { type: 'string' },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
+    },
+  },
+  get_automation_run: {
+    type: 'object',
+    required: ['sessionId', 'runId'],
+    properties: {
+      sessionId: { type: 'string' },
+      runId: { type: 'string' },
+      stepLimit: { type: 'number' },
+      stepOffset: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
+    },
+  },
+  execute_ui_action: {
+    type: 'object',
+    required: ['sessionId', 'action'],
+    properties: {
+      sessionId: { type: 'string' },
+      action: { type: 'string', enum: ['click', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload'] },
+      traceId: { type: 'string' },
+      target: {
+        type: 'object',
+        properties: {
+          selector: { type: 'string' },
+          elementRef: { type: 'string' },
+          tabId: { type: 'number' },
+          frameId: { type: 'number' },
+          url: { type: 'string' },
+        },
+      },
+      input: { type: 'object' },
+      captureOnFailure: {
+        type: 'object',
+        properties: {
+          enabled: { type: 'boolean' },
+          selector: { type: 'string' },
+          mode: { type: 'string', enum: ['dom', 'png', 'both'] },
+          styleMode: { type: 'string', enum: ['computed-lite', 'computed-full'] },
+          maxDepth: { type: 'number' },
+          maxBytes: { type: 'number' },
+          maxAncestors: { type: 'number' },
+          includeDom: { type: 'boolean' },
+          includeStyles: { type: 'boolean' },
+          includePngDataUrl: { type: 'boolean' },
+        },
+      },
+      waitForPageState: {
+        type: 'object',
+        required: ['scope'],
+        properties: {
+          scope: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused', 'page'] },
+          selector: { type: 'string' },
+          testId: { type: 'string' },
+          textContains: { type: 'string' },
+          labelContains: { type: 'string' },
+          titleContains: { type: 'string' },
+          urlContains: { type: 'string' },
+          language: { type: 'string' },
+          disabled: { type: 'boolean' },
+          selected: { type: 'boolean' },
+          pressed: { type: 'boolean' },
+          expanded: { type: 'boolean' },
+          readOnly: { type: 'boolean' },
+          requiredField: { type: 'boolean' },
+          tagName: { type: 'string' },
+          type: { type: 'string' },
+          countExactly: { type: 'number' },
+          countAtLeast: { type: 'number' },
+          maxItems: { type: 'number' },
+          maxTextLength: { type: 'number' },
+          timeoutMs: { type: 'number' },
+          pollIntervalMs: { type: 'number' },
+        },
+      },
+    },
+  },
+  run_ui_steps: {
+    type: 'object',
+    required: ['sessionId', 'steps'],
+    properties: {
+      sessionId: { type: 'string' },
+      mode: { type: 'string', enum: ['safe', 'fast'] },
+      stopOnFailure: { type: 'boolean' },
+      defaultTimeoutMs: { type: 'number' },
+      defaultPollIntervalMs: { type: 'number' },
+      steps: {
+        type: 'array',
+        minItems: 1,
+        items: {
+          type: 'object',
+          required: ['kind'],
+          properties: {
+            id: { type: 'string' },
+            note: { type: 'string' },
+            kind: { type: 'string', enum: ['action', 'waitFor', 'assert'] },
+            action: { type: 'string' },
+            traceId: { type: 'string' },
+            target: {
+              type: 'object',
+              properties: {
+                selector: { type: 'string' },
+                elementRef: { type: 'string' },
+                tabId: { type: 'number' },
+                frameId: { type: 'number' },
+                url: { type: 'string' },
+                testId: { type: 'string' },
+                scope: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused'] },
+                textContains: { type: 'string' },
+                labelContains: { type: 'string' },
+                titleContains: { type: 'string' },
+                tagName: { type: 'string' },
+                type: { type: 'string' },
+                disabled: { type: 'boolean' },
+                selected: { type: 'boolean' },
+                pressed: { type: 'boolean' },
+                expanded: { type: 'boolean' },
+                readOnly: { type: 'boolean' },
+                requiredField: { type: 'boolean' },
+              },
+            },
+            input: { type: 'object' },
+            onFailure: {
+              type: 'object',
+              properties: {
+                strategy: { type: 'string', enum: ['stop', 'continue', 'retry_once'] },
+                capture: {
+                  type: 'object',
+                  properties: {
+                    enabled: { type: 'boolean' },
+                    selector: { type: 'string' },
+                    mode: { type: 'string', enum: ['dom', 'png', 'both'] },
+                    styleMode: { type: 'string', enum: ['computed-lite', 'computed-full'] },
+                    maxDepth: { type: 'number' },
+                    maxBytes: { type: 'number' },
+                    maxAncestors: { type: 'number' },
+                    includeDom: { type: 'boolean' },
+                    includeStyles: { type: 'boolean' },
+                    includePngDataUrl: { type: 'boolean' },
+                  },
+                },
+              },
+            },
+            matcher: {
+              type: 'object',
+              properties: {
+                scope: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused', 'page'] },
+                selector: { type: 'string' },
+                testId: { type: 'string' },
+                textContains: { type: 'string' },
+                labelContains: { type: 'string' },
+                titleContains: { type: 'string' },
+                urlContains: { type: 'string' },
+                language: { type: 'string' },
+                disabled: { type: 'boolean' },
+                selected: { type: 'boolean' },
+                pressed: { type: 'boolean' },
+                expanded: { type: 'boolean' },
+                readOnly: { type: 'boolean' },
+                requiredField: { type: 'boolean' },
+                tagName: { type: 'string' },
+                type: { type: 'string' },
+                countExactly: { type: 'number' },
+                countAtLeast: { type: 'number' },
+                maxItems: { type: 'number' },
+                maxTextLength: { type: 'number' },
+                timeoutMs: { type: 'number' },
+                pollIntervalMs: { type: 'number' },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
 };
 
 const TOOL_DESCRIPTIONS: Record<string, string> = {
@@ -378,6 +941,12 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_dom_document: 'Capture full document as outline or html',
   get_computed_styles: 'Read computed CSS styles for an element',
   get_layout_metrics: 'Read viewport and element layout metrics',
+  get_page_state: 'Read a compact structured page model for forms, buttons, modals, and viewport state',
+  get_interactive_elements: 'Read compact live element references for buttons, inputs, modals, and focused elements',
+  get_live_session_health: 'Read live transport health and session binding details for one session',
+  set_viewport: 'Resize the live browser window for a session and return the resulting viewport metrics',
+  assert_page_state: 'Assert compact page-state conditions without pulling raw DOM payloads',
+  wait_for_page_state: 'Poll compact page state until a structured assertion becomes true',
   capture_ui_snapshot: 'Capture redacted UI snapshot (DOM/styles/optional PNG) and persist it',
   get_live_console_logs: 'Read in-memory live console logs for a connected session',
   explain_last_failure: 'Explain the latest failure timeline',
@@ -385,6 +954,10 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   list_snapshots: 'List snapshot metadata by session/time/trigger',
   get_snapshot_for_event: 'Find snapshot most related to an event',
   get_snapshot_asset: 'Read bounded binary chunks for snapshot assets',
+  list_automation_runs: 'List first-class automation runs from dedicated automation tables',
+  get_automation_run: 'Inspect one automation run with bounded step details',
+  execute_ui_action: 'Execute one live UI action in the current bound extension session',
+  run_ui_steps: 'Run a small generic UI workflow locally in the bridge using actions, waits, and assertions',
 };
 
 const ALL_TOOLS = Object.keys(TOOL_SCHEMAS);
@@ -547,6 +1120,49 @@ interface SnapshotRow {
   created_at: number;
 }
 
+interface AutomationRunRow {
+  run_id: string;
+  session_id: string;
+  trace_id: string | null;
+  action: string | null;
+  tab_id: number | null;
+  selector: string | null;
+  status: string;
+  started_at: number;
+  completed_at: number | null;
+  stop_reason: string | null;
+  target_summary_json: string | null;
+  failure_json: string | null;
+  redaction_json: string | null;
+  created_at: number;
+  updated_at: number;
+  step_count: number;
+  last_step_at: number | null;
+}
+
+interface AutomationStepRow {
+  step_id: string;
+  run_id: string;
+  session_id: string;
+  step_order: number;
+  trace_id: string | null;
+  action: string;
+  selector: string | null;
+  status: string;
+  started_at: number | null;
+  finished_at: number | null;
+  duration_ms: number | null;
+  tab_id: number | null;
+  target_summary_json: string | null;
+  redaction_json: string | null;
+  failure_json: string | null;
+  input_metadata_json: string | null;
+  event_type: string;
+  event_id: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
 interface CorrelationCandidate {
   eventId: string;
   type: string;
@@ -580,11 +1196,31 @@ export interface CaptureCommandClient {
       | 'CAPTURE_DOM_DOCUMENT'
       | 'CAPTURE_COMPUTED_STYLES'
       | 'CAPTURE_LAYOUT_METRICS'
+      | 'CAPTURE_PAGE_STATE'
       | 'CAPTURE_UI_SNAPSHOT'
-      | 'CAPTURE_GET_LIVE_CONSOLE_LOGS',
+      | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+      | 'SET_VIEWPORT'
+      | 'EXECUTE_UI_ACTION',
     payload: Record<string, unknown>,
     timeoutMs?: number,
   ): Promise<CaptureClientResult>;
+}
+
+interface SnapshotResponseOptions {
+  includeDom: boolean;
+  includeStyles: boolean;
+  includePngDataUrl: boolean;
+}
+
+interface FailureEvidenceCaptureOptions extends SnapshotResponseOptions {
+  enabled: boolean;
+  selector?: string;
+  mode: 'dom' | 'png' | 'both';
+  styleMode: 'computed-lite' | 'computed-full';
+  explicitStyleMode: boolean;
+  maxDepth: number;
+  maxBytes: number;
+  maxAncestors: number;
 }
 
 class LiveSessionDisconnectedError extends Error {
@@ -1151,6 +1787,59 @@ function mapSnapshotMetadata(row: SnapshotRow): Record<string, unknown> {
   };
 }
 
+function mapAutomationRunRecord(row: AutomationRunRow): Record<string, unknown> {
+  return {
+    runId: row.run_id,
+    sessionId: row.session_id,
+    traceId: row.trace_id ?? undefined,
+    action: row.action ?? undefined,
+    tabId: row.tab_id ?? undefined,
+    selector: row.selector ?? undefined,
+    status: row.status,
+    startedAt: row.started_at,
+    completedAt: row.completed_at ?? undefined,
+    durationMs:
+      typeof row.completed_at === 'number'
+        ? Math.max(0, row.completed_at - row.started_at)
+        : undefined,
+    stopReason: row.stop_reason ?? undefined,
+    target: parseJsonOrUndefined(row.target_summary_json),
+    failure: parseJsonOrUndefined(row.failure_json),
+    redaction: parseJsonOrUndefined(row.redaction_json),
+    stepCount: row.step_count,
+    lastStepAt: row.last_step_at ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    source: 'automation_runs',
+  };
+}
+
+function mapAutomationStepRecord(row: AutomationStepRow): Record<string, unknown> {
+  return {
+    stepId: row.step_id,
+    runId: row.run_id,
+    sessionId: row.session_id,
+    stepOrder: row.step_order,
+    traceId: row.trace_id ?? undefined,
+    action: row.action,
+    selector: row.selector ?? undefined,
+    status: row.status,
+    startedAt: row.started_at ?? undefined,
+    finishedAt: row.finished_at ?? undefined,
+    durationMs: row.duration_ms ?? undefined,
+    tabId: row.tab_id ?? undefined,
+    target: parseJsonOrUndefined(row.target_summary_json),
+    redaction: parseJsonOrUndefined(row.redaction_json),
+    failure: parseJsonOrUndefined(row.failure_json),
+    inputMetadata: parseJsonOrUndefined(row.input_metadata_json),
+    eventType: row.event_type,
+    eventId: row.event_id ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    source: 'automation_steps',
+  };
+}
+
 function formatUrlPath(url: string): string {
   try {
     const parsed = new URL(url);
@@ -1271,6 +1960,807 @@ function resolveCaptureAncestors(value: unknown, fallback: number): number {
   return Math.min(floored, 8);
 }
 
+function resolveStructuredMaxItems(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  const floored = Math.floor(value);
+  if (floored < 1) {
+    return fallback;
+  }
+
+  return Math.min(floored, 100);
+}
+
+function resolveStructuredTextLength(value: unknown, fallback: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  const floored = Math.floor(value);
+  if (floored < 8) {
+    return fallback;
+  }
+
+  return Math.min(floored, 200);
+}
+
+function resolveViewportDimension(value: unknown, axis: 'width' | 'height'): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`${axis} must be a finite number`);
+  }
+
+  const floored = Math.floor(value);
+  const min = axis === 'width' ? 320 : 200;
+  const max = axis === 'width' ? 5120 : 4320;
+  if (floored < min || floored > max) {
+    throw new Error(`${axis} must be between ${min} and ${max}`);
+  }
+
+  return floored;
+}
+
+type PageStateScope = 'buttons' | 'inputs' | 'modals' | 'focused' | 'page';
+
+interface PageStateMatcher {
+  scope: PageStateScope;
+  selector?: string;
+  testId?: string;
+  textContains?: string;
+  labelContains?: string;
+  titleContains?: string;
+  urlContains?: string;
+  language?: string;
+  disabled?: boolean;
+  selected?: boolean;
+  pressed?: boolean;
+  expanded?: boolean;
+  readOnly?: boolean;
+  requiredField?: boolean;
+  tagName?: string;
+  type?: string;
+  countExactly?: number;
+  countAtLeast?: number;
+}
+
+interface PageStateWaitResult {
+  limitsApplied: { maxResults: number; truncated: boolean };
+  matcher: PageStateMatcher;
+  matched: boolean;
+  matchCount: number;
+  expectedCount: { countExactly?: number; countAtLeast?: number };
+  sampledMatches: Record<string, unknown>[];
+  pageSummary: Record<string, unknown> | undefined;
+  page?:
+    | {
+      url: unknown;
+      title: unknown;
+      language: unknown;
+      viewport: unknown;
+    }
+    | undefined;
+  waitedMs: number;
+  attempts: number;
+  pollIntervalMs: number;
+  timeoutMs?: number;
+}
+
+interface UIWorkflowStepResult {
+  id: string;
+  kind: UIWorkflowStep['kind'];
+  status: 'succeeded' | 'failed' | 'skipped';
+  durationMs: number;
+  action?: UIWorkflowActionStep['action'];
+  traceId?: string;
+  target?: Record<string, unknown>;
+  matcher?: Record<string, unknown>;
+  matchCount?: number;
+  waitedMs?: number;
+  attempts?: number;
+  executionAttempts?: number;
+  failurePolicy?: {
+    strategy: 'stop' | 'continue' | 'retry_once';
+    captureEnabled: boolean;
+  };
+  failureEvidence?: Record<string, unknown>;
+  recommendedAction?: string;
+  pageChangeSummary?: Record<string, unknown>;
+  error?: {
+    code: string;
+    message: string;
+  };
+}
+
+interface UIWorkflowResolvedFailurePolicy {
+  strategy: 'stop' | 'continue' | 'retry_once';
+  captureOptions?: FailureEvidenceCaptureOptions;
+}
+
+type PageStateCaptureResult = {
+  limitsApplied: { maxResults: number; truncated: boolean };
+  payload: Record<string, unknown>;
+};
+
+interface DetailedPageStateWaitResult extends PageStateWaitResult {
+  lastCapture?: PageStateCaptureResult;
+}
+
+class WorkflowTargetResolutionError extends Error {
+  readonly code: string;
+  readonly details: Record<string, unknown>;
+
+  constructor(code: string, message: string, details: Record<string, unknown>) {
+    super(message);
+    this.name = 'WorkflowTargetResolutionError';
+    this.code = code;
+    this.details = details;
+  }
+}
+
+function resolveOptionalMatcherString(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function resolveOptionalMatcherBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+function resolveOptionalMatcherCount(value: unknown, field: 'countExactly' | 'countAtLeast'): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined;
+  }
+
+  const floored = Math.floor(value);
+  if (floored < 0) {
+    throw new Error(`${field} must be greater than or equal to 0`);
+  }
+
+  return floored;
+}
+
+function resolvePageStateScope(value: unknown): PageStateScope {
+  if (value === 'buttons' || value === 'inputs' || value === 'modals' || value === 'focused' || value === 'page') {
+    return value;
+  }
+
+  throw new Error('scope must be one of buttons, inputs, modals, focused, or page');
+}
+
+function resolvePageStateMatcher(input: ToolInput): PageStateMatcher {
+  const matcher: PageStateMatcher = {
+    scope: resolvePageStateScope(input.scope),
+    selector: resolveOptionalMatcherString(input.selector),
+    testId: resolveOptionalMatcherString(input.testId),
+    textContains: resolveOptionalMatcherString(input.textContains),
+    labelContains: resolveOptionalMatcherString(input.labelContains),
+    titleContains: resolveOptionalMatcherString(input.titleContains),
+    urlContains: resolveOptionalMatcherString(input.urlContains),
+    language: resolveOptionalMatcherString(input.language),
+    disabled: resolveOptionalMatcherBoolean(input.disabled),
+    selected: resolveOptionalMatcherBoolean(input.selected),
+    pressed: resolveOptionalMatcherBoolean(input.pressed),
+    expanded: resolveOptionalMatcherBoolean(input.expanded),
+    readOnly: resolveOptionalMatcherBoolean(input.readOnly),
+    requiredField: resolveOptionalMatcherBoolean(input.requiredField),
+    tagName: resolveOptionalMatcherString(input.tagName)?.toLowerCase(),
+    type: resolveOptionalMatcherString(input.type)?.toLowerCase(),
+    countExactly: resolveOptionalMatcherCount(input.countExactly, 'countExactly'),
+    countAtLeast: resolveOptionalMatcherCount(input.countAtLeast, 'countAtLeast'),
+  };
+
+  if (matcher.countExactly !== undefined && matcher.countAtLeast !== undefined) {
+    throw new Error('countExactly and countAtLeast cannot both be set');
+  }
+
+  return matcher;
+}
+
+function includesNormalized(value: unknown, needle: string | undefined): boolean {
+  if (!needle) {
+    return true;
+  }
+
+  return typeof value === 'string' && value.toLowerCase().includes(needle.toLowerCase());
+}
+
+function equalsNormalized(value: unknown, expected: string | undefined): boolean {
+  if (!expected) {
+    return true;
+  }
+
+  return typeof value === 'string' && value.toLowerCase() === expected.toLowerCase();
+}
+
+function equalsOptionalBoolean(value: unknown, expected: boolean | undefined): boolean {
+  if (expected === undefined) {
+    return true;
+  }
+
+  return value === expected;
+}
+
+function pickPageStateScopeItems(payload: Record<string, unknown>, scope: PageStateScope): Record<string, unknown>[] {
+  if (scope === 'buttons' || scope === 'inputs' || scope === 'modals') {
+    const value = payload[scope];
+    return asRecordArray(value);
+  }
+
+  if (scope === 'focused') {
+    const focused = payload.focused;
+    return typeof focused === 'object' && focused !== null ? [focused as Record<string, unknown>] : [];
+  }
+
+  return [payload];
+}
+
+function matchesPageStateItem(item: Record<string, unknown>, matcher: PageStateMatcher): boolean {
+  return (
+    includesNormalized(item.selector, matcher.selector)
+    && equalsNormalized(item.testId, matcher.testId)
+    && includesNormalized(item.text, matcher.textContains)
+    && includesNormalized(item.label, matcher.labelContains)
+    && includesNormalized(item.title, matcher.titleContains)
+    && includesNormalized(item.url, matcher.urlContains)
+    && equalsNormalized(item.language, matcher.language)
+    && equalsNormalized(item.tagName, matcher.tagName)
+    && equalsNormalized(item.type, matcher.type)
+    && equalsOptionalBoolean(item.disabled, matcher.disabled)
+    && equalsOptionalBoolean(item.selected, matcher.selected)
+    && equalsOptionalBoolean(item.pressed, matcher.pressed)
+    && equalsOptionalBoolean(item.expanded, matcher.expanded)
+    && equalsOptionalBoolean(item.readOnly, matcher.readOnly)
+    && equalsOptionalBoolean(item.required, matcher.requiredField)
+  );
+}
+
+function evaluatePageStateAssertion(
+  payload: Record<string, unknown>,
+  matcher: PageStateMatcher,
+): {
+  matched: boolean;
+  matchCount: number;
+  sampledMatches: Record<string, unknown>[];
+  expectedCount: { countExactly?: number; countAtLeast?: number };
+  summary: Record<string, unknown> | undefined;
+} {
+  const scopeItems = pickPageStateScopeItems(payload, matcher.scope);
+  const matchingItems = scopeItems.filter((item) => matchesPageStateItem(item, matcher));
+  const matchCount = matchingItems.length;
+  const matched =
+    matcher.countExactly !== undefined
+      ? matchCount === matcher.countExactly
+      : matcher.countAtLeast !== undefined
+        ? matchCount >= matcher.countAtLeast
+        : matchCount >= 1;
+
+  return {
+    matched,
+    matchCount,
+    sampledMatches: matchingItems.slice(0, 5),
+    expectedCount: {
+      countExactly: matcher.countExactly,
+      countAtLeast: matcher.countAtLeast,
+    },
+    summary:
+      typeof payload.summary === 'object' && payload.summary !== null
+        ? payload.summary as Record<string, unknown>
+        : undefined,
+  };
+}
+
+function extractPageSummarySnapshot(
+  capture: PageStateCaptureResult | undefined,
+): {
+  url?: string;
+  language?: string;
+  summary?: Record<string, unknown>;
+  focusedText?: string;
+} | undefined {
+  if (!capture) {
+    return undefined;
+  }
+
+  const summary =
+    typeof capture.payload.summary === 'object' && capture.payload.summary !== null
+      ? capture.payload.summary as Record<string, unknown>
+      : undefined;
+  const focused =
+    typeof capture.payload.focused === 'object' && capture.payload.focused !== null
+      ? capture.payload.focused as Record<string, unknown>
+      : undefined;
+
+  return {
+    url: typeof capture.payload.url === 'string' ? capture.payload.url : undefined,
+    language: typeof capture.payload.language === 'string' ? capture.payload.language : undefined,
+    summary,
+    focusedText: typeof focused?.text === 'string' ? focused.text : undefined,
+  };
+}
+
+function createPageChangeSummary(
+  previousCapture: PageStateCaptureResult | undefined,
+  currentCapture: PageStateCaptureResult | undefined,
+): Record<string, unknown> | undefined {
+  const previous = extractPageSummarySnapshot(previousCapture);
+  const current = extractPageSummarySnapshot(currentCapture);
+  if (!current) {
+    return undefined;
+  }
+
+  const changes: string[] = [];
+  const previousSummary = previous?.summary;
+  const currentSummary = current.summary;
+  const summaryDelta: Record<string, { previous?: number; current?: number }> = {};
+
+  for (const key of ['buttons', 'inputs', 'modals']) {
+    const previousValue = typeof previousSummary?.[key] === 'number' ? previousSummary[key] as number : undefined;
+    const currentValue = typeof currentSummary?.[key] === 'number' ? currentSummary[key] as number : undefined;
+    if (previousValue !== currentValue && currentValue !== undefined) {
+      summaryDelta[key] = {
+        previous: previousValue,
+        current: currentValue,
+      };
+      changes.push(`${key} ${previousValue ?? 0} -> ${currentValue}`);
+    }
+  }
+
+  if (previous?.url && current.url && previous.url !== current.url) {
+    changes.push(`url changed`);
+  }
+  if (previous?.language && current.language && previous.language !== current.language) {
+    changes.push(`language ${previous.language} -> ${current.language}`);
+  }
+  if ((previous?.focusedText ?? '') !== (current.focusedText ?? '') && current.focusedText) {
+    changes.push('focused element changed');
+  }
+
+  return {
+    changes,
+    previous: previous ?? null,
+    current,
+    summaryDelta,
+  };
+}
+
+function resolveInteractiveKinds(value: unknown): Array<'buttons' | 'inputs' | 'modals' | 'focused'> {
+  if (!Array.isArray(value) || value.length === 0) {
+    return ['buttons', 'inputs', 'modals', 'focused'];
+  }
+
+  const allowed = new Set(['buttons', 'inputs', 'modals', 'focused']);
+  const kinds = value
+    .filter((entry): entry is string => typeof entry === 'string' && allowed.has(entry))
+    .map((entry) => entry as 'buttons' | 'inputs' | 'modals' | 'focused');
+
+  return kinds.length > 0 ? Array.from(new Set(kinds)) : ['buttons', 'inputs', 'modals', 'focused'];
+}
+
+function collectInteractiveElementRefs(
+  payload: Record<string, unknown>,
+  kinds: Array<'buttons' | 'inputs' | 'modals' | 'focused'>,
+  maxItems: number,
+): Array<Record<string, unknown>> {
+  const refs: Array<Record<string, unknown>> = [];
+  for (const kind of kinds) {
+    if (kind === 'focused') {
+      const focused = typeof payload.focused === 'object' && payload.focused !== null
+        ? payload.focused as Record<string, unknown>
+        : undefined;
+      if (focused?.elementRef) {
+        refs.push({
+          kind,
+          ...focused,
+        });
+      }
+      continue;
+    }
+
+    for (const item of asRecordArray(payload[kind])) {
+      refs.push({
+        kind,
+        ...item,
+      });
+      if (refs.length >= maxItems) {
+        return refs.slice(0, maxItems);
+      }
+    }
+  }
+
+  return refs.slice(0, maxItems);
+}
+
+async function waitForPageStateConditionDetailed(
+  sessionId: string,
+  input: ToolInput,
+  capturePageState: (
+    sessionId: string,
+    input: ToolInput,
+  ) => Promise<PageStateCaptureResult>,
+  initialCapture?: PageStateCaptureResult,
+): Promise<DetailedPageStateWaitResult> {
+  const matcher = resolvePageStateMatcher(input);
+  const timeoutMs = resolveTimeoutMs(input.timeoutMs, 5_000, 30_000);
+  const pollIntervalMs = resolveDurationMs(input.pollIntervalMs, 50, 2_000) ?? 200;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let attempts = 0;
+  let lastCapture: PageStateCaptureResult | undefined = initialCapture;
+  let lastAssertion:
+    | ReturnType<typeof evaluatePageStateAssertion>
+    | undefined;
+
+  if (lastCapture) {
+    lastAssertion = evaluatePageStateAssertion(lastCapture.payload, matcher);
+    if (lastAssertion.matched) {
+      return {
+        limitsApplied: lastCapture.limitsApplied,
+        matcher,
+        matched: true,
+        matchCount: lastAssertion.matchCount,
+        expectedCount: lastAssertion.expectedCount,
+        sampledMatches: lastAssertion.sampledMatches,
+        pageSummary: lastAssertion.summary,
+        page: {
+          url: lastCapture.payload.url,
+          title: lastCapture.payload.title,
+          language: lastCapture.payload.language,
+          viewport: lastCapture.payload.viewport,
+        },
+        waitedMs: 0,
+        attempts,
+        pollIntervalMs,
+        lastCapture,
+      };
+    }
+  }
+
+  while (Date.now() <= deadline) {
+    attempts += 1;
+    lastCapture = await capturePageState(sessionId, input);
+    lastAssertion = evaluatePageStateAssertion(lastCapture.payload, matcher);
+    if (lastAssertion.matched) {
+      return {
+        limitsApplied: lastCapture.limitsApplied,
+        matcher,
+        matched: true,
+        matchCount: lastAssertion.matchCount,
+        expectedCount: lastAssertion.expectedCount,
+        sampledMatches: lastAssertion.sampledMatches,
+        pageSummary: lastAssertion.summary,
+        page: {
+          url: lastCapture.payload.url,
+          title: lastCapture.payload.title,
+          language: lastCapture.payload.language,
+          viewport: lastCapture.payload.viewport,
+        },
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        pollIntervalMs,
+        lastCapture,
+      };
+    }
+
+    await sleep(pollIntervalMs);
+  }
+
+  return {
+    limitsApplied: lastCapture?.limitsApplied ?? { maxResults: 0, truncated: false },
+    matcher,
+    matched: false,
+    matchCount: lastAssertion?.matchCount ?? 0,
+    expectedCount: lastAssertion?.expectedCount ?? {
+      countExactly: matcher.countExactly,
+      countAtLeast: matcher.countAtLeast,
+    },
+    sampledMatches: lastAssertion?.sampledMatches ?? [],
+    pageSummary: lastAssertion?.summary,
+    page: lastCapture
+      ? {
+          url: lastCapture.payload.url,
+          title: lastCapture.payload.title,
+          language: lastCapture.payload.language,
+          viewport: lastCapture.payload.viewport,
+        }
+      : undefined,
+    waitedMs: Date.now() - startedAt,
+    attempts,
+    pollIntervalMs,
+    timeoutMs,
+    lastCapture,
+  };
+}
+
+async function waitForPageStateCondition(
+  sessionId: string,
+  input: ToolInput,
+  capturePageState: (
+    sessionId: string,
+    input: ToolInput,
+  ) => Promise<PageStateCaptureResult>,
+): Promise<PageStateWaitResult> {
+  const detailed = await waitForPageStateConditionDetailed(sessionId, input, capturePageState);
+  const { lastCapture: _lastCapture, ...waited } = detailed;
+  return waited;
+}
+
+function candidateTextForWorkflowTarget(item: Record<string, unknown>): string {
+  return [item.text, item.label, item.title]
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .join(' ')
+    .trim();
+}
+
+function describeWorkflowTargetCandidate(item: Record<string, unknown>): Record<string, unknown> {
+  return {
+    text: candidateTextForWorkflowTarget(item) || undefined,
+    testId: typeof item.testId === 'string' ? item.testId : undefined,
+    selector: typeof item.selector === 'string' ? item.selector : undefined,
+    tagName: typeof item.tagName === 'string' ? item.tagName : undefined,
+    type: typeof item.type === 'string' ? item.type : undefined,
+    disabled: typeof item.disabled === 'boolean' ? item.disabled : undefined,
+    selected: typeof item.selected === 'boolean' ? item.selected : undefined,
+  };
+}
+
+function pickWorkflowTargetItems(
+  payload: Record<string, unknown>,
+  scope: UIWorkflowActionTarget['scope'],
+): Record<string, unknown>[] {
+  if (scope) {
+    return pickPageStateScopeItems(payload, scope);
+  }
+
+  return [
+    ...pickPageStateScopeItems(payload, 'buttons'),
+    ...pickPageStateScopeItems(payload, 'inputs'),
+    ...pickPageStateScopeItems(payload, 'modals'),
+    ...pickPageStateScopeItems(payload, 'focused'),
+  ];
+}
+
+function matchesWorkflowActionTarget(
+  item: Record<string, unknown>,
+  target: UIWorkflowActionTarget,
+): boolean {
+  return (
+    equalsNormalized(item.testId, target.testId)
+    && includesNormalized(item.text, target.textContains)
+    && includesNormalized(item.label, target.labelContains)
+    && includesNormalized(item.title, target.titleContains)
+    && equalsNormalized(item.tagName, target.tagName)
+    && equalsNormalized(item.type, target.type)
+    && equalsOptionalBoolean(item.disabled, target.disabled)
+    && equalsOptionalBoolean(item.selected, target.selected)
+    && equalsOptionalBoolean(item.pressed, target.pressed)
+    && equalsOptionalBoolean(item.expanded, target.expanded)
+    && equalsOptionalBoolean(item.readOnly, target.readOnly)
+    && equalsOptionalBoolean(item.required, target.requiredField)
+    && (typeof item.elementRef === 'string' || typeof item.selector === 'string')
+  );
+}
+
+function summarizeWorkflowTargetMatcher(target: UIWorkflowActionTarget): Record<string, unknown> {
+  return {
+    scope: target.scope,
+    selector: target.selector,
+    elementRef: target.elementRef,
+    testId: target.testId,
+    textContains: target.textContains,
+    labelContains: target.labelContains,
+    titleContains: target.titleContains,
+    tagName: target.tagName,
+    type: target.type,
+    disabled: target.disabled,
+    selected: target.selected,
+    pressed: target.pressed,
+    expanded: target.expanded,
+    readOnly: target.readOnly,
+    requiredField: target.requiredField,
+  };
+}
+
+async function resolveWorkflowActionTarget(
+  sessionId: string,
+  target: UIWorkflowActionTarget | undefined,
+  capturePageState: (
+    sessionId: string,
+    input: ToolInput,
+  ) => Promise<PageStateCaptureResult>,
+  existingCapture?: PageStateCaptureResult,
+): Promise<{
+  target?: z.infer<typeof LiveUIActionTargetSchema>;
+  resolution: Record<string, unknown>;
+  pageCapture?: PageStateCaptureResult;
+}> {
+  if (!target) {
+    return {
+      resolution: {
+        strategy: 'none',
+      },
+    };
+  }
+
+  if (target.elementRef || target.selector) {
+    return {
+      target: {
+        elementRef: target.elementRef,
+        selector: target.selector,
+        tabId: target.tabId,
+        frameId: target.frameId,
+        url: target.url,
+      },
+      resolution: {
+        strategy: target.elementRef ? 'elementRef' : 'selector',
+        matcher: summarizeWorkflowTargetMatcher(target),
+      },
+    };
+  }
+
+  const capture = existingCapture ?? await capturePageState(sessionId, {
+    includeButtons: target.scope ? target.scope === 'buttons' : true,
+    includeInputs: target.scope ? target.scope === 'inputs' : true,
+    includeModals: target.scope ? target.scope === 'modals' : true,
+    maxItems: 100,
+    maxTextLength: 120,
+  });
+  const candidates = pickWorkflowTargetItems(capture.payload, target.scope)
+    .filter((item) => matchesWorkflowActionTarget(item, target));
+
+  if (candidates.length === 0) {
+    throw new WorkflowTargetResolutionError(
+      'workflow_target_not_found',
+      'No interactive element matched the workflow target.',
+      {
+        matcher: summarizeWorkflowTargetMatcher(target),
+        searchedScope: target.scope ?? 'all-interactive',
+        sampledCandidates: pickWorkflowTargetItems(capture.payload, target.scope)
+          .slice(0, 5)
+          .map((item) => describeWorkflowTargetCandidate(item)),
+      },
+    );
+  }
+
+  if (candidates.length > 1) {
+    throw new WorkflowTargetResolutionError(
+      'workflow_target_ambiguous',
+      `Workflow target matched ${candidates.length} elements; refine the matcher.`,
+      {
+        matcher: summarizeWorkflowTargetMatcher(target),
+        matchedCandidateCount: candidates.length,
+        sampledCandidates: candidates.slice(0, 5).map((item) => describeWorkflowTargetCandidate(item)),
+      },
+    );
+  }
+
+  const candidate = candidates[0];
+    return {
+      target: {
+        elementRef: typeof candidate.elementRef === 'string' ? candidate.elementRef : undefined,
+      selector: typeof candidate.selector === 'string' ? candidate.selector : undefined,
+      tabId: target.tabId,
+      frameId: target.frameId,
+      url: target.url,
+    },
+      resolution: {
+        strategy: typeof candidate.elementRef === 'string' ? 'semantic_elementRef' : 'semantic_selector',
+        matcher: summarizeWorkflowTargetMatcher(target),
+        matchedCandidateCount: candidates.length,
+        matched: describeWorkflowTargetCandidate(candidate),
+      },
+      pageCapture: capture,
+    };
+}
+
+function createWorkflowStepId(step: UIWorkflowStep, index: number): string {
+  return step.id ?? `step_${index + 1}`;
+}
+
+async function captureWorkflowPageState(
+  sessionId: string,
+  capturePageState: (
+    sessionId: string,
+    input: ToolInput,
+  ) => Promise<PageStateCaptureResult>,
+  mode: 'safe' | 'fast',
+): Promise<PageStateCaptureResult> {
+  const maxItems = mode === 'fast' ? 12 : 20;
+  const maxTextLength = mode === 'fast' ? 60 : 80;
+  return capturePageState(sessionId, {
+    includeButtons: true,
+    includeInputs: true,
+    includeModals: true,
+    maxItems,
+    maxTextLength,
+  });
+}
+
+function normalizeWorkflowError(error: unknown): { code: string; message: string } {
+  if (error instanceof WorkflowTargetResolutionError) {
+    return {
+      code: error.code,
+      message: `${error.message} ${JSON.stringify(error.details)}`,
+    };
+  }
+
+  if (error instanceof z.ZodError) {
+    return {
+      code: 'invalid_workflow_step',
+      message: error.issues.map((issue) => issue.message).join('; '),
+    };
+  }
+
+  if (error instanceof Error) {
+    return {
+      code: 'workflow_step_failed',
+      message: error.message,
+    };
+  }
+
+  return {
+    code: 'workflow_step_failed',
+    message: 'Unknown workflow step failure',
+  };
+}
+
+function resolveWorkflowRecommendedAction(error: { code: string; message: string } | undefined): string | undefined {
+  if (!error) {
+    return undefined;
+  }
+
+  if (
+    error.code === LIVE_SESSION_DISCONNECTED_CODE
+    || error.message.includes(LIVE_SESSION_DISCONNECTED_CODE)
+    || error.message.toLowerCase().includes('transport closed')
+  ) {
+    return 'reconnect_session';
+  }
+  if (error.code === 'target_not_found') {
+    return 'inspect_page_state';
+  }
+  if (error.code === 'click_intercepted') {
+    return 'retry_step';
+  }
+  if (error.code === 'workflow_target_ambiguous') {
+    return 'refine_target';
+  }
+  if (error.code === 'workflow_target_not_found') {
+    return 'inspect_page_state';
+  }
+  if (error.code === 'page_state_not_matched' || error.code === 'page_state_assertion_failed') {
+    return 'inspect_page_state';
+  }
+
+  return undefined;
+}
+
+function resolveWorkflowFailureSelector(
+  step: UIWorkflowStep,
+  stepResultTarget: Record<string, unknown> | undefined,
+): string | undefined {
+  if (step.kind === 'action') {
+    if (typeof step.target?.selector === 'string' && step.target.selector.trim().length > 0) {
+      return step.target.selector.trim();
+    }
+    const actionTarget = isRecord(stepResultTarget?.actionTarget) ? stepResultTarget?.actionTarget : undefined;
+    if (typeof actionTarget?.selector === 'string' && actionTarget.selector.trim().length > 0) {
+      return actionTarget.selector.trim();
+    }
+    const resolution = isRecord(stepResultTarget?.resolution) ? stepResultTarget?.resolution : undefined;
+    const matched = isRecord(resolution?.matched) ? resolution.matched : undefined;
+    if (typeof matched?.selector === 'string' && matched.selector.trim().length > 0) {
+      return matched.selector.trim();
+    }
+  }
+
+  return undefined;
+}
+
 function asStringArray(value: unknown, maxItems: number): string[] {
   if (!Array.isArray(value)) {
     return [];
@@ -1387,8 +2877,11 @@ async function executeLiveCapture(
     | 'CAPTURE_DOM_DOCUMENT'
     | 'CAPTURE_COMPUTED_STYLES'
     | 'CAPTURE_LAYOUT_METRICS'
+    | 'CAPTURE_PAGE_STATE'
     | 'CAPTURE_UI_SNAPSHOT'
-    | 'CAPTURE_GET_LIVE_CONSOLE_LOGS',
+    | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+    | 'SET_VIEWPORT'
+    | 'EXECUTE_UI_ACTION',
   payload: Record<string, unknown>,
   timeoutMs: number,
 ): Promise<CaptureClientResult> {
@@ -1405,6 +2898,137 @@ function ensureCaptureSuccess(result: CaptureClientResult, sessionId: string): R
   }
 
   return result.payload ?? {};
+}
+
+function normalizeSnapshotResponsePayload(
+  payload: Record<string, unknown>,
+  options: SnapshotResponseOptions,
+): Record<string, unknown> {
+  const snapshotRecord = structuredClone(payload);
+  const snapshotRoot = snapshotRecord.snapshot;
+  if (typeof snapshotRoot === 'object' && snapshotRoot !== null) {
+    const snapshotObject = snapshotRoot as Record<string, unknown>;
+    if (!options.includeDom) {
+      delete snapshotObject.dom;
+    }
+    if (!options.includeStyles) {
+      delete snapshotObject.styles;
+    }
+  }
+
+  const png = snapshotRecord.png;
+  if (!options.includePngDataUrl && typeof png === 'object' && png !== null) {
+    delete (png as Record<string, unknown>).dataUrl;
+  }
+
+  return snapshotRecord;
+}
+
+function resolveFailureEvidenceCaptureOptions(input: ToolInput): FailureEvidenceCaptureOptions {
+  const raw = isRecord(input.captureOnFailure) ? input.captureOnFailure : undefined;
+  const enabled = raw !== undefined ? raw.enabled !== false : false;
+  const mode = raw?.mode === 'png' || raw?.mode === 'both' || raw?.mode === 'dom' ? raw.mode : 'dom';
+  const styleMode = raw?.styleMode === 'computed-full' || raw?.styleMode === 'computed-lite'
+    ? raw.styleMode
+    : 'computed-lite';
+  return {
+    enabled,
+    selector: typeof raw?.selector === 'string' && raw.selector.trim().length > 0 ? raw.selector.trim() : undefined,
+    mode,
+    styleMode,
+    explicitStyleMode: raw?.styleMode === 'computed-full' || raw?.styleMode === 'computed-lite',
+    maxDepth: resolveCaptureDepth(raw?.maxDepth, 3),
+    maxBytes: resolveCaptureBytes(raw?.maxBytes, 50_000),
+    maxAncestors: resolveCaptureAncestors(raw?.maxAncestors, 4),
+    includeDom: typeof raw?.includeDom === 'boolean' ? raw.includeDom : mode !== 'png',
+    includeStyles: typeof raw?.includeStyles === 'boolean' ? raw.includeStyles : mode !== 'png',
+    includePngDataUrl: typeof raw?.includePngDataUrl === 'boolean' ? raw.includePngDataUrl : mode !== 'png',
+  };
+}
+
+function resolveWorkflowFailurePolicy(
+  step: UIWorkflowStep,
+  stopOnFailure: boolean | undefined,
+): UIWorkflowResolvedFailurePolicy {
+  const raw = isRecord(step.onFailure) ? step.onFailure : undefined;
+  const strategy = raw?.strategy === 'continue' || raw?.strategy === 'retry_once' || raw?.strategy === 'stop'
+    ? raw.strategy
+    : stopOnFailure === false
+      ? 'continue'
+      : 'stop';
+
+  const captureRaw = raw && isRecord(raw.capture)
+    ? {
+        captureOnFailure: {
+          ...raw.capture,
+          enabled: raw.capture.enabled ?? true,
+        },
+      }
+    : undefined;
+
+  return {
+    strategy,
+    captureOptions: captureRaw ? resolveFailureEvidenceCaptureOptions(captureRaw) : undefined,
+  };
+}
+
+async function captureFailureSnapshot(
+  captureClient: CaptureCommandClient,
+  sessionId: string,
+  selector: string | undefined,
+  options: FailureEvidenceCaptureOptions,
+): Promise<Record<string, unknown> | undefined> {
+  if (!options.enabled) {
+    return undefined;
+  }
+
+  try {
+    const capture = await executeLiveCapture(
+      captureClient,
+      sessionId,
+      'CAPTURE_UI_SNAPSHOT',
+      {
+        selector: options.selector ?? selector,
+        trigger: 'error',
+        mode: options.mode,
+        styleMode: options.styleMode,
+        explicitStyleMode: options.explicitStyleMode,
+        maxDepth: options.maxDepth,
+        maxBytes: options.maxBytes,
+        maxAncestors: options.maxAncestors,
+        includeDom: options.includeDom,
+        includeStyles: options.includeStyles,
+        includePngDataUrl: options.includePngDataUrl,
+        llmRequested: true,
+      },
+      5_000,
+    );
+    const payload = ensureCaptureSuccess(capture, sessionId);
+
+    return {
+      captured: true,
+      limitsApplied: {
+        maxBytes: options.maxBytes,
+        truncated: capture.truncated ?? false,
+      },
+      snapshot: normalizeSnapshotResponsePayload(payload, options),
+    };
+  } catch (error) {
+    const normalized = normalizeCaptureError(sessionId, error);
+    return {
+      captured: false,
+      error: normalized.message,
+    };
+  }
+}
+
+async function captureFailureEvidence(
+  captureClient: CaptureCommandClient,
+  sessionId: string,
+  request: LiveUIActionRequest,
+  options: FailureEvidenceCaptureOptions,
+): Promise<Record<string, unknown> | undefined> {
+  return captureFailureSnapshot(captureClient, sessionId, request.target?.selector, options);
 }
 
 export function createV1ToolHandlers(
@@ -1504,6 +3128,94 @@ export function createV1ToolHandlers(
         pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
         responseBytes: bytePage.responseBytes,
         sessions: bytePage.items,
+      };
+    },
+
+    get_live_session_health: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const session = db
+        .prepare(`
+          SELECT
+            session_id,
+            created_at,
+            paused_at,
+            ended_at,
+            tab_id,
+            window_id,
+            url_start,
+            url_last,
+            viewport_w,
+            viewport_h,
+            dpr,
+            safe_mode,
+            pinned
+          FROM sessions
+          WHERE session_id = ?
+          LIMIT 1
+        `)
+        .get(sessionId) as SessionRow | undefined;
+
+      if (!session) {
+        throw new Error(`Session not found: ${sessionId}`);
+      }
+
+      const connection = getSessionConnectionState?.(sessionId);
+      const now = Date.now();
+      const lastSeenAt = connection?.connected
+        ? connection.lastHeartbeatAt
+        : connection?.disconnectedAt ?? session.ended_at ?? session.paused_at ?? session.created_at;
+      const staleForMs = lastSeenAt ? Math.max(0, now - lastSeenAt) : undefined;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        session: {
+          sessionId: session.session_id,
+          createdAt: session.created_at,
+          pausedAt: session.paused_at ?? undefined,
+          endedAt: session.ended_at ?? undefined,
+          status: session.ended_at ? 'ended' : session.paused_at ? 'paused' : 'active',
+          tabId: session.tab_id ?? undefined,
+          windowId: session.window_id ?? undefined,
+          urlStart: session.url_start ?? undefined,
+          urlLast: session.url_last ?? undefined,
+          viewport:
+            session.viewport_w !== null && session.viewport_h !== null
+              ? {
+                  width: session.viewport_w,
+                  height: session.viewport_h,
+                }
+              : undefined,
+          dpr: session.dpr ?? undefined,
+          safeMode: session.safe_mode === 1,
+          pinned: session.pinned === 1,
+        },
+        liveConnection: connection
+          ? {
+              connected: connection.connected,
+              connectedAt: connection.connectedAt,
+              lastHeartbeatAt: connection.lastHeartbeatAt,
+              disconnectedAt: connection.disconnectedAt,
+              disconnectReason: connection.disconnectReason,
+              staleForMs,
+            }
+          : {
+              connected: false,
+              staleForMs,
+            },
+        recommendedAction: connection?.connected
+          ? 'ready'
+          : session.ended_at
+            ? 'start_new_session'
+            : 'reconnect_extension',
       };
     },
 
@@ -2937,10 +4649,225 @@ export function createV1ToolHandlers(
         chunkBase64: encoding === 'base64' ? chunkBuffer.toString('base64') : undefined,
       };
     },
+
+    list_automation_runs: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const status = normalizeOptionalString(input.status);
+      const action = normalizeOptionalString(input.action);
+      const traceId = normalizeOptionalString(input.traceId);
+      const limit = resolveLimit(input.limit, DEFAULT_LIST_LIMIT);
+      const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
+
+      const where: string[] = ['r.session_id = ?'];
+      const params: unknown[] = [sessionId];
+      if (status) {
+        where.push('r.status = ?');
+        params.push(status);
+      }
+      if (action) {
+        where.push('r.action = ?');
+        params.push(action);
+      }
+      if (traceId) {
+        where.push('r.trace_id = ?');
+        params.push(traceId);
+      }
+
+      const rows = db.prepare(
+        `SELECT
+           r.run_id,
+           r.session_id,
+           r.trace_id,
+           r.action,
+           r.tab_id,
+           r.selector,
+           r.status,
+           r.started_at,
+           r.completed_at,
+           r.stop_reason,
+           r.target_summary_json,
+           r.failure_json,
+           r.redaction_json,
+           r.created_at,
+           r.updated_at,
+           COALESCE(step_stats.step_count, 0) AS step_count,
+           step_stats.last_step_at
+         FROM automation_runs r
+         LEFT JOIN (
+           SELECT
+             run_id,
+             COUNT(*) AS step_count,
+             MAX(COALESCE(finished_at, started_at, created_at)) AS last_step_at
+           FROM automation_steps
+           GROUP BY run_id
+         ) step_stats ON step_stats.run_id = r.run_id
+         WHERE ${where.join(' AND ')}
+         ORDER BY r.started_at DESC, r.run_id DESC
+         LIMIT ? OFFSET ?`
+      ).all(...params, limit + 1, offset) as AutomationRunRow[];
+
+      const truncatedByLimit = rows.length > limit;
+      const runs = rows.slice(0, limit).map((row) => mapAutomationRunRecord(row));
+      const bytePage = applyByteBudget(runs, maxResponseBytes);
+      const truncated = truncatedByLimit || bytePage.truncatedByBytes;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: limit,
+          truncated,
+        },
+        filtersApplied: {
+          sessionId,
+          status,
+          action,
+          traceId,
+        },
+        pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+        responseBytes: bytePage.responseBytes,
+        runs: bytePage.items,
+      };
+    },
+
+    get_automation_run: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const runId = normalizeOptionalString(input.runId);
+      if (!runId) {
+        throw new Error('runId is required');
+      }
+
+      const stepLimit = resolveLimit(input.stepLimit, DEFAULT_LIST_LIMIT);
+      const stepOffset = resolveOffset(input.stepOffset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
+
+      const run = db.prepare(
+        `SELECT
+           r.run_id,
+           r.session_id,
+           r.trace_id,
+           r.action,
+           r.tab_id,
+           r.selector,
+           r.status,
+           r.started_at,
+           r.completed_at,
+           r.stop_reason,
+           r.target_summary_json,
+           r.failure_json,
+           r.redaction_json,
+           r.created_at,
+           r.updated_at,
+           COALESCE(step_stats.step_count, 0) AS step_count,
+           step_stats.last_step_at
+         FROM automation_runs r
+         LEFT JOIN (
+           SELECT
+             run_id,
+             COUNT(*) AS step_count,
+             MAX(COALESCE(finished_at, started_at, created_at)) AS last_step_at
+           FROM automation_steps
+           GROUP BY run_id
+         ) step_stats ON step_stats.run_id = r.run_id
+         WHERE r.session_id = ? AND r.run_id = ?
+         LIMIT 1`
+      ).get(sessionId, runId) as AutomationRunRow | undefined;
+
+      if (!run) {
+        throw new Error(`Automation run not found: ${runId}`);
+      }
+
+      const stepRows = db.prepare(
+        `SELECT
+           step_id,
+           run_id,
+           session_id,
+           step_order,
+           trace_id,
+           action,
+           selector,
+           status,
+           started_at,
+           finished_at,
+           duration_ms,
+           tab_id,
+           target_summary_json,
+           redaction_json,
+           failure_json,
+           input_metadata_json,
+           event_type,
+           event_id,
+           created_at,
+           updated_at
+         FROM automation_steps
+         WHERE session_id = ? AND run_id = ?
+         ORDER BY step_order ASC, created_at ASC
+         LIMIT ? OFFSET ?`
+      ).all(sessionId, runId, stepLimit + 1, stepOffset) as AutomationStepRow[];
+
+      const truncatedByLimit = stepRows.length > stepLimit;
+      const steps = stepRows.slice(0, stepLimit).map((row) => mapAutomationStepRecord(row));
+      const bytePage = applyByteBudget(steps, maxResponseBytes);
+      const truncated = truncatedByLimit || bytePage.truncatedByBytes;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: stepLimit,
+          truncated,
+        },
+        run: mapAutomationRunRecord(run),
+        steps: bytePage.items,
+        pagination: buildOffsetPagination(stepOffset, bytePage.items.length, truncated, maxResponseBytes),
+        responseBytes: bytePage.responseBytes,
+      };
+    },
   };
 }
 
 export function createV2ToolHandlers(captureClient: CaptureCommandClient): Partial<Record<string, ToolHandler>> {
+  const capturePageState = async (
+    sessionId: string,
+    input: ToolInput,
+  ): Promise<{ limitsApplied: { maxResults: number; truncated: boolean }; payload: Record<string, unknown> }> => {
+    const maxItems = resolveStructuredMaxItems(input.maxItems, 40);
+    const maxTextLength = resolveStructuredTextLength(input.maxTextLength, 80);
+    const includeButtons = input.includeButtons !== false;
+    const includeInputs = input.includeInputs !== false;
+    const includeModals = input.includeModals !== false;
+    const capture = await executeLiveCapture(
+      captureClient,
+      sessionId,
+      'CAPTURE_PAGE_STATE',
+      {
+        maxItems,
+        maxTextLength,
+        includeButtons,
+        includeInputs,
+        includeModals,
+      },
+      4_000,
+    );
+
+    return {
+      limitsApplied: {
+        maxResults: maxItems,
+        truncated: capture.truncated ?? false,
+      },
+      payload: ensureCaptureSuccess(capture, sessionId),
+  };
+};
+
   return {
     get_dom_subtree: async (input) => {
       const sessionId = getSessionId(input);
@@ -3081,6 +5008,416 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
       };
     },
 
+    get_page_state: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const capture = await capturePageState(sessionId, input);
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: capture.limitsApplied,
+        ...capture.payload,
+      };
+    },
+
+    get_interactive_elements: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const kinds = resolveInteractiveKinds(input.kinds);
+      const normalizedInput: ToolInput = {
+        ...input,
+        includeButtons: kinds.includes('buttons'),
+        includeInputs: kinds.includes('inputs'),
+        includeModals: kinds.includes('modals'),
+      };
+      const capture = await capturePageState(sessionId, normalizedInput);
+      const refs = collectInteractiveElementRefs(capture.payload, kinds, capture.limitsApplied.maxResults);
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: capture.limitsApplied.maxResults,
+          truncated: capture.limitsApplied.truncated || refs.length >= capture.limitsApplied.maxResults,
+        },
+        kinds,
+        refs,
+        page: {
+          url: capture.payload.url,
+          title: capture.payload.title,
+          language: capture.payload.language,
+          viewport: capture.payload.viewport,
+        },
+        pageSummary:
+          typeof capture.payload.summary === 'object' && capture.payload.summary !== null
+            ? capture.payload.summary
+            : undefined,
+      };
+    },
+
+    set_viewport: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const width = resolveViewportDimension(input.width, 'width');
+      const height = resolveViewportDimension(input.height, 'height');
+      const capture = await executeLiveCapture(
+        captureClient,
+        sessionId,
+        'SET_VIEWPORT',
+        {
+          width,
+          height,
+        },
+        5_000,
+      );
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: capture.truncated ?? false,
+        },
+        ...ensureCaptureSuccess(capture, sessionId),
+      };
+    },
+
+    assert_page_state: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const matcher = resolvePageStateMatcher(input);
+      const capture = await capturePageState(sessionId, input);
+      const assertion = evaluatePageStateAssertion(capture.payload, matcher);
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: capture.limitsApplied,
+        matcher,
+        matched: assertion.matched,
+        matchCount: assertion.matchCount,
+        expectedCount: assertion.expectedCount,
+        sampledMatches: assertion.sampledMatches,
+        pageSummary: assertion.summary,
+        page: {
+          url: capture.payload.url,
+          title: capture.payload.title,
+          language: capture.payload.language,
+          viewport: capture.payload.viewport,
+        },
+      };
+    },
+
+    wait_for_page_state: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const waited = await waitForPageStateCondition(sessionId, input, capturePageState);
+      return {
+        ...createBaseResponse(sessionId),
+        ...waited,
+      };
+    },
+
+    run_ui_steps: async (input) => {
+      const request = RunUIStepsSchema.parse(input) as RunUIStepsRequest;
+      const workflowTraceId = createUIWorkflowTraceId();
+      const workflowStartedAt = Date.now();
+      const stepResults: UIWorkflowStepResult[] = [];
+      let lastPageCapture: PageStateCaptureResult | undefined;
+      let failedStepId: string | undefined;
+      let stoppedAtIndex = request.steps.length;
+      let stateCaptureCount = 0;
+      let failureCaptureCount = 0;
+      let retryCount = 0;
+      const workflowCapturePageState = async (sessionId: string, toolInput: ToolInput): Promise<PageStateCaptureResult> => {
+        stateCaptureCount += 1;
+        return capturePageState(sessionId, toolInput);
+      };
+
+      for (const [index, step] of request.steps.entries()) {
+        const stepId = createWorkflowStepId(step, index);
+        const failurePolicy = resolveWorkflowFailurePolicy(step, request.stopOnFailure);
+        let executionAttempts = 0;
+        let finalStepResult: UIWorkflowStepResult | undefined;
+        let stepFailed = false;
+
+        while (true) {
+          executionAttempts += 1;
+          const startedAt = Date.now();
+          const previousCapture = lastPageCapture;
+
+          try {
+            if (step.kind === 'action') {
+              const resolvedTarget = await resolveWorkflowActionTarget(
+                request.sessionId,
+                step.target,
+                workflowCapturePageState,
+                request.mode === 'fast' ? lastPageCapture : undefined,
+              );
+              const liveRequest = LiveUIActionRequestSchema.parse({
+                action: step.action,
+                target: resolvedTarget.target,
+                traceId: step.traceId ?? `${workflowTraceId}:${stepId}`,
+                ...(step.input ? { input: step.input } : {}),
+              });
+              const capture = await executeLiveCapture(
+                captureClient,
+                request.sessionId,
+                'EXECUTE_UI_ACTION',
+                liveRequest as unknown as Record<string, unknown>,
+                5_000,
+              );
+              const payload = ensureCaptureSuccess(capture, request.sessionId);
+              const actionResult = payload as LiveUIActionResult & Record<string, unknown>;
+              const failed = actionResult.status === 'failed' || actionResult.status === 'rejected';
+              let currentCapture = resolvedTarget.pageCapture ?? lastPageCapture;
+              if (!failed && request.mode === 'fast') {
+                await sleep(75);
+                currentCapture = await captureWorkflowPageState(
+                  request.sessionId,
+                  workflowCapturePageState,
+                  request.mode,
+                );
+              }
+              lastPageCapture = currentCapture;
+
+              finalStepResult = {
+                id: stepId,
+                kind: step.kind,
+                status: failed ? 'failed' : 'succeeded',
+                durationMs: Math.max(0, Date.now() - startedAt),
+                action: step.action,
+                traceId: actionResult.traceId,
+                target: {
+                  resolution: resolvedTarget.resolution,
+                  actionTarget:
+                    typeof actionResult.target === 'object' && actionResult.target !== null
+                      ? actionResult.target as Record<string, unknown>
+                      : undefined,
+                },
+                error: failed && actionResult.failureReason
+                  ? {
+                      code: actionResult.failureReason.code,
+                      message: actionResult.failureReason.message,
+                    }
+                  : undefined,
+                pageChangeSummary: createPageChangeSummary(previousCapture, currentCapture),
+              };
+            } else if (step.kind === 'waitFor') {
+              const waitInput: ToolInput = {
+                ...step.matcher,
+                timeoutMs: step.matcher.timeoutMs ?? request.defaultTimeoutMs,
+                pollIntervalMs: step.matcher.pollIntervalMs ?? request.defaultPollIntervalMs,
+              };
+              const waited = await waitForPageStateConditionDetailed(
+                request.sessionId,
+                waitInput,
+                workflowCapturePageState,
+                request.mode === 'fast' ? lastPageCapture : undefined,
+              );
+              lastPageCapture = waited.lastCapture ?? lastPageCapture;
+
+              finalStepResult = {
+                id: stepId,
+                kind: step.kind,
+                status: waited.matched ? 'succeeded' : 'failed',
+                durationMs: Math.max(0, Date.now() - startedAt),
+                matcher: waited.matcher as unknown as Record<string, unknown>,
+                matchCount: waited.matchCount,
+                waitedMs: waited.waitedMs,
+                attempts: waited.attempts,
+                error: waited.matched
+                  ? undefined
+                  : {
+                      code: 'page_state_not_matched',
+                      message: 'Workflow wait step timed out before the requested page state appeared.',
+                    },
+                pageChangeSummary: createPageChangeSummary(previousCapture, waited.lastCapture),
+              };
+            } else {
+              const capture = request.mode === 'fast' && lastPageCapture
+                ? lastPageCapture
+                : await workflowCapturePageState(request.sessionId, step.matcher);
+              const assertion = evaluatePageStateAssertion(capture.payload, resolvePageStateMatcher(step.matcher as ToolInput));
+              lastPageCapture = capture;
+
+              finalStepResult = {
+                id: stepId,
+                kind: step.kind,
+                status: assertion.matched ? 'succeeded' : 'failed',
+                durationMs: Math.max(0, Date.now() - startedAt),
+                matcher: step.matcher,
+                matchCount: assertion.matchCount,
+                error: assertion.matched
+                  ? undefined
+                  : {
+                      code: 'page_state_assertion_failed',
+                      message: 'Workflow assert step did not match the requested page state.',
+                    },
+                pageChangeSummary: createPageChangeSummary(previousCapture, capture),
+              };
+            }
+          } catch (error) {
+            const workflowError = error instanceof WorkflowTargetResolutionError ? error : undefined;
+            finalStepResult = {
+              id: stepId,
+              kind: step.kind,
+              status: 'failed',
+              durationMs: Math.max(0, Date.now() - startedAt),
+              action: step.kind === 'action' ? step.action : undefined,
+              target:
+                step.kind === 'action' && workflowError
+                  ? workflowError.details
+                  : undefined,
+              matcher: step.kind === 'action' ? undefined : step.matcher,
+              error: normalizeWorkflowError(error),
+            };
+          }
+
+          stepFailed = finalStepResult.status === 'failed';
+          if (stepFailed && failurePolicy.strategy === 'retry_once' && executionAttempts === 1) {
+            retryCount += 1;
+            await sleep(100);
+            continue;
+          }
+
+          break;
+        }
+
+        finalStepResult.executionAttempts = executionAttempts;
+        finalStepResult.failurePolicy = {
+          strategy: failurePolicy.strategy,
+          captureEnabled: Boolean(failurePolicy.captureOptions?.enabled),
+        };
+        finalStepResult.recommendedAction = resolveWorkflowRecommendedAction(finalStepResult.error);
+
+        if (stepFailed && failurePolicy.captureOptions) {
+          const evidence = await captureFailureSnapshot(
+            captureClient,
+            request.sessionId,
+            resolveWorkflowFailureSelector(step, finalStepResult.target),
+            failurePolicy.captureOptions,
+          );
+          if (evidence) {
+            failureCaptureCount += 1;
+            finalStepResult.failureEvidence = evidence;
+          }
+        }
+
+        stepResults.push(finalStepResult);
+
+        if (stepFailed) {
+          failedStepId ??= stepId;
+          if (failurePolicy.strategy !== 'continue') {
+            stoppedAtIndex = index + 1;
+            break;
+          }
+        }
+      }
+
+      if (failedStepId && stoppedAtIndex < request.steps.length) {
+        for (const [index, step] of request.steps.slice(stoppedAtIndex).entries()) {
+          stepResults.push({
+            id: createWorkflowStepId(step, stoppedAtIndex + index),
+            kind: step.kind,
+            status: 'skipped',
+            durationMs: 0,
+            action: step.kind === 'action' ? step.action : undefined,
+            matcher: step.kind === 'action' ? undefined : step.matcher,
+            pageChangeSummary: undefined,
+            error: {
+              code: 'workflow_stopped_early',
+              message: `Skipped because workflow stopped after failed step "${failedStepId}".`,
+            },
+          });
+        }
+      }
+
+      let finalPageSummary: Record<string, unknown> | undefined;
+      let finalPage:
+        | {
+          url: unknown;
+          title: unknown;
+          language: unknown;
+          viewport: unknown;
+        }
+        | undefined;
+      let finalCaptureTruncated = false;
+      try {
+        const finalCapture = lastPageCapture ?? await captureWorkflowPageState(
+          request.sessionId,
+          workflowCapturePageState,
+          request.mode,
+        );
+        finalPageSummary =
+          typeof finalCapture.payload.summary === 'object' && finalCapture.payload.summary !== null
+            ? finalCapture.payload.summary as Record<string, unknown>
+            : undefined;
+        finalPage = {
+          url: finalCapture.payload.url,
+          title: finalCapture.payload.title,
+          language: finalCapture.payload.language,
+          viewport: finalCapture.payload.viewport,
+        };
+        finalCaptureTruncated = finalCapture.limitsApplied.truncated;
+      } catch {
+        finalPageSummary = undefined;
+        finalPage = undefined;
+      }
+      const workflowFinishedAt = Date.now();
+      const succeededSteps = stepResults.filter((step) => step.status === 'succeeded').length;
+      const failedSteps = stepResults.filter((step) => step.status === 'failed').length;
+      const skippedSteps = stepResults.filter((step) => step.status === 'skipped').length;
+      const failedStep = failedStepId
+        ? stepResults.find((step) => step.id === failedStepId && step.status === 'failed')
+        : undefined;
+
+      return {
+        ...createBaseResponse(request.sessionId),
+        limitsApplied: {
+          maxResults: request.steps.length,
+          truncated: finalCaptureTruncated,
+        },
+        traceId: workflowTraceId,
+        mode: request.mode,
+        status: failedStepId ? 'failed' : 'succeeded',
+        startedAt: workflowStartedAt,
+        finishedAt: workflowFinishedAt,
+        durationMs: Math.max(0, workflowFinishedAt - workflowStartedAt),
+        requestedStepCount: request.steps.length,
+        completedStepCount: succeededSteps,
+        failedStepId,
+        stoppedEarly: Boolean(failedStepId && stoppedAtIndex < request.steps.length),
+        recommendedAction: failedStep?.recommendedAction,
+        stepCounts: {
+          succeeded: succeededSteps,
+          failed: failedSteps,
+          skipped: skippedSteps,
+        },
+        workflowDiagnostics: {
+          retryCount,
+          stateCaptureCount,
+          failureCaptureCount,
+          usedCachedState: request.mode === 'fast',
+        },
+        steps: stepResults,
+        finalPageSummary,
+        finalPage,
+      };
+    },
+
     capture_ui_snapshot: async (input) => {
       const sessionId = getSessionId(input);
       if (!sessionId) {
@@ -3128,23 +5465,11 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
       );
 
       const payload = ensureCaptureSuccess(capture, sessionId);
-      const snapshotRecord = structuredClone(payload);
-
-      const snapshotRoot = snapshotRecord.snapshot;
-      if (typeof snapshotRoot === 'object' && snapshotRoot !== null) {
-        const snapshotObject = snapshotRoot as Record<string, unknown>;
-        if (!includeDom) {
-          delete snapshotObject.dom;
-        }
-        if (!includeStyles) {
-          delete snapshotObject.styles;
-        }
-      }
-
-      const png = snapshotRecord.png;
-      if (!includePngDataUrl && typeof png === 'object' && png !== null) {
-        delete (png as Record<string, unknown>).dataUrl;
-      }
+      const snapshotRecord = normalizeSnapshotResponsePayload(payload, {
+        includeDom,
+        includeStyles,
+        includePngDataUrl,
+      });
 
       return {
         ...createBaseResponse(sessionId),
@@ -3236,6 +5561,88 @@ export function createV2ToolHandlers(captureClient: CaptureCommandClient): Parti
               dedupeWindowMs,
             },
         bufferStats: payload.bufferStats,
+      };
+    },
+
+    execute_ui_action: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const actionInput: Record<string, unknown> = { ...input };
+      delete actionInput.sessionId;
+      delete actionInput.captureOnFailure;
+
+      const request = LiveUIActionRequestSchema.parse(actionInput);
+      const failureCaptureOptions = resolveFailureEvidenceCaptureOptions(input);
+      const capture = await executeLiveCapture(
+        captureClient,
+        sessionId,
+        'EXECUTE_UI_ACTION',
+        request as unknown as Record<string, unknown>,
+        5_000,
+      );
+      const payload = ensureCaptureSuccess(capture, sessionId);
+      const actionResult = payload as LiveUIActionResult & Record<string, unknown>;
+      const failed = actionResult.status === 'failed' || actionResult.status === 'rejected';
+      const failureEvidence = failed
+        ? await captureFailureEvidence(captureClient, sessionId, request, failureCaptureOptions)
+        : undefined;
+      const postActionWaitInput =
+        typeof input.waitForPageState === 'object' && input.waitForPageState !== null
+          ? {
+              ...input.waitForPageState as Record<string, unknown>,
+            }
+          : undefined;
+      const postActionState =
+        actionResult.status === 'succeeded' && postActionWaitInput
+          ? await waitForPageStateCondition(sessionId, postActionWaitInput, capturePageState)
+          : undefined;
+      const evidenceTruncated = Boolean(
+        failureEvidence
+        && typeof failureEvidence === 'object'
+        && failureEvidence !== null
+        && typeof (failureEvidence as { limitsApplied?: { truncated?: unknown } }).limitsApplied?.truncated === 'boolean'
+        && (failureEvidence as { limitsApplied: { truncated: boolean } }).limitsApplied.truncated,
+      );
+      const target = typeof actionResult.target === 'object' && actionResult.target !== null
+        ? actionResult.target as Record<string, unknown>
+        : {};
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated:
+            (capture.truncated ?? false)
+            || evidenceTruncated
+            || Boolean(postActionState?.limitsApplied.truncated),
+        },
+        action: actionResult.action,
+        status: actionResult.status,
+        traceId: actionResult.traceId,
+        startedAt: actionResult.startedAt,
+        finishedAt: actionResult.finishedAt,
+        durationMs:
+          typeof actionResult.startedAt === 'number' && typeof actionResult.finishedAt === 'number'
+            ? Math.max(0, actionResult.finishedAt - actionResult.startedAt)
+            : undefined,
+        actionResult,
+        target,
+        tabContext: {
+          tabId: typeof target.tabId === 'number' ? target.tabId : undefined,
+          frameId: typeof target.frameId === 'number' ? target.frameId : 0,
+          url: typeof target.url === 'string' ? target.url : undefined,
+        },
+        failureDetails: actionResult.failureReason,
+        postActionEvidence: failureEvidence,
+        postActionState,
+        supportedScopes: {
+          executionScope: actionResult.executionScope,
+          topDocumentOnly: true,
+          opensNewBrowserSession: false,
+        },
       };
     },
   };

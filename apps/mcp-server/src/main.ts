@@ -5,6 +5,7 @@ import { pathToFileURL } from 'url';
 import { WebSocketManager } from './websocket/websocket-server.js';
 import { initializeDatabase, getConnection, getDatabasePath } from './db/index.js';
 import { resetDatabase } from './db/migrations.js';
+import { getRuntimeDataDir } from './runtime-paths.js';
 import {
   exportSessionToJson,
   exportSessionToZip,
@@ -91,6 +92,53 @@ fastify.get('/stats', async () => {
   };
 });
 
+fastify.get('/internal/session-connection/:sessionId', async (request, reply) => {
+  const params = request.params as { sessionId: string };
+  if (!wsManager) {
+    return reply.code(503).send({ ok: false, error: 'WebSocket manager unavailable' });
+  }
+
+  return {
+    ok: true,
+    sessionId: params.sessionId,
+    state: wsManager.getSessionConnectionState(params.sessionId) ?? null,
+  };
+});
+
+fastify.post('/internal/capture-command', async (request, reply) => {
+  const body = (request.body ?? {}) as Partial<{
+    sessionId: string;
+    command: string;
+    payload: Record<string, unknown>;
+    timeoutMs: number;
+  }>;
+
+  if (!wsManager) {
+    return reply.code(503).send({ ok: false, error: 'WebSocket manager unavailable' });
+  }
+  if (typeof body.sessionId !== 'string' || body.sessionId.trim().length === 0) {
+    return reply.code(400).send({ ok: false, error: 'sessionId is required' });
+  }
+  if (typeof body.command !== 'string' || body.command.trim().length === 0) {
+    return reply.code(400).send({ ok: false, error: 'command is required' });
+  }
+
+  try {
+    const result = await wsManager.sendCaptureCommand(
+      body.sessionId,
+      body.command as Parameters<WebSocketManager['sendCaptureCommand']>[1],
+      body.payload && typeof body.payload === 'object' && !Array.isArray(body.payload) ? body.payload : {},
+      typeof body.timeoutMs === 'number' && Number.isFinite(body.timeoutMs) ? Math.floor(body.timeoutMs) : 4000,
+    );
+    return result;
+  } catch (error) {
+    return reply.code(502).send({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Failed to send capture command',
+    });
+  }
+});
+
 fastify.get('/retention/settings', async () => {
   return {
     settings: getRetentionSettings(getConnection().db),
@@ -161,8 +209,8 @@ fastify.post('/sessions/:sessionId/export', async (request) => {
   const settings = getRetentionSettings(getConnection().db);
   const format = body.format === 'zip' || body.format === 'json' ? body.format : 'zip';
   const result = format === 'zip'
-    ? await exportSessionToZip(getConnection().db, getDatabasePath(), params.sessionId, process.cwd(), settings.exportPathOverride)
-    : exportSessionToJson(getConnection().db, getDatabasePath(), params.sessionId, process.cwd(), settings.exportPathOverride, {
+    ? await exportSessionToZip(getConnection().db, getDatabasePath(), params.sessionId, getRuntimeDataDir(), settings.exportPathOverride)
+    : exportSessionToJson(getConnection().db, getDatabasePath(), params.sessionId, getRuntimeDataDir(), settings.exportPathOverride, {
       compatibilityMode: body.compatibilityMode,
       includePngBase64: body.includePngBase64,
     });

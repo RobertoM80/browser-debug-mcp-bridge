@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { BRIDGE_KIND, BRIDGE_SOURCE, executeCaptureCommand, installContentCapture } from './content-script';
+import {
+  applyAutomationIndicatorUpdate,
+  BRIDGE_KIND,
+  BRIDGE_SOURCE,
+  executeCaptureCommand,
+  installContentCapture,
+} from './content-script';
 
 function createRuntimeMock(
   sendMessage: (message: unknown, callback?: () => void) => void
@@ -327,6 +333,51 @@ describe('content-script capture', () => {
     expect(output.result.truncation).toMatchObject({ dom: false });
   });
 
+  it('captures compact structured page state for buttons, inputs, and modals', () => {
+    document.body.innerHTML = [
+      '<main>',
+      '  <button id="primary-cta" aria-pressed="true">Build targets</button>',
+      '  <label for="name-field">Name</label>',
+      '  <input id="name-field" type="text" placeholder="Roberto" value="Roberto Mirabella" />',
+      '  <div role="dialog" aria-label="Day plan" data-testid="modal-surface">',
+      '    <h2>Monday</h2>',
+      '    <button>Close day</button>',
+      '  </div>',
+      '</main>',
+    ].join('');
+
+    const output = executeCaptureCommand(window, 'CAPTURE_PAGE_STATE', {
+      maxItems: 10,
+      maxTextLength: 40,
+    });
+
+    expect(output.truncated).toBe(false);
+    expect(output.result.summary).toMatchObject({
+      buttons: 2,
+      inputs: 1,
+      modals: 1,
+    });
+    expect((output.result.buttons as Array<Record<string, unknown>>)[0]).toMatchObject({
+      text: 'Build targets',
+      selector: '#primary-cta',
+      pressed: true,
+    });
+    expect(typeof (output.result.buttons as Array<Record<string, unknown>>)[0]?.elementRef).toBe('string');
+    expect((output.result.inputs as Array<Record<string, unknown>>)[0]).toMatchObject({
+      label: 'Name',
+      selector: '#name-field',
+      type: 'text',
+      valueLength: 'Roberto Mirabella'.length,
+    });
+    expect(typeof (output.result.inputs as Array<Record<string, unknown>>)[0]?.elementRef).toBe('string');
+    expect((output.result.modals as Array<Record<string, unknown>>)[0]).toMatchObject({
+      title: 'Monday',
+      testId: 'modal-surface',
+      buttonCount: 1,
+    });
+    expect(typeof (output.result.modals as Array<Record<string, unknown>>)[0]?.elementRef).toBe('string');
+  });
+
   it('can omit DOM and styles in UI snapshot capture payload', () => {
     document.body.innerHTML = '<main><button id="buy-now">Buy</button></main>';
 
@@ -370,5 +421,295 @@ describe('content-script capture', () => {
     expect(Object.keys(fullStyles.styles.chain[0].properties).length).toBeGreaterThanOrEqual(
       Object.keys(downgradedStyles.styles.chain[0].properties).length
     );
+  });
+
+  it('returns a structured rejection for live UI actions targeting iframes', () => {
+    document.body.innerHTML = '<main><button id="buy-now">Buy now</button></main>';
+
+    const output = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'click',
+      traceId: 'trace-live-1',
+      target: {
+        selector: '#buy-now',
+        frameId: 2,
+      },
+      input: {
+        clickCount: 1,
+      },
+    });
+
+    expect(output.truncated).toBe(false);
+    expect(output.result).toMatchObject({
+      action: 'click',
+      traceId: 'trace-live-1',
+      status: 'rejected',
+      executionScope: 'top-document-v1',
+      target: {
+        selector: '#buy-now',
+        frameId: 2,
+      },
+      failureReason: {
+        code: 'unsupported_target_frame',
+      },
+    });
+  });
+
+  it('executes click actions and dispatches DOM click events', () => {
+    document.body.innerHTML = '<button id="action-target">Run</button>';
+    const button = document.getElementById('action-target') as HTMLButtonElement | null;
+    expect(button).toBeTruthy();
+
+    let clickCount = 0;
+    button?.addEventListener('click', () => {
+      clickCount += 1;
+    });
+
+    const output = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'click',
+      traceId: 'trace-click-1',
+      target: {
+        selector: '#action-target',
+      },
+      input: {
+        clickCount: 2,
+      },
+    });
+
+    expect(clickCount).toBe(2);
+    expect(output.result).toMatchObject({
+      action: 'click',
+      traceId: 'trace-click-1',
+      status: 'succeeded',
+      result: {
+        clickCount: 2,
+        button: 'left',
+      },
+    });
+  });
+
+  it('executes actions via elementRef targets from page-state capture', () => {
+    document.body.innerHTML = '<button id="action-target">Run</button>';
+    const button = document.getElementById('action-target') as HTMLButtonElement | null;
+    expect(button).toBeTruthy();
+
+    let clickCount = 0;
+    button?.addEventListener('click', () => {
+      clickCount += 1;
+    });
+
+    const pageState = executeCaptureCommand(window, 'CAPTURE_PAGE_STATE', {
+      maxItems: 10,
+      maxTextLength: 40,
+    });
+    const buttonRef = (pageState.result.buttons as Array<Record<string, unknown>>)[0]?.elementRef;
+
+    const output = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'click',
+      traceId: 'trace-click-ref-1',
+      target: {
+        elementRef: buttonRef,
+      },
+      input: {
+        clickCount: 1,
+      },
+    });
+
+    expect(clickCount).toBe(1);
+    expect(output.result).toMatchObject({
+      action: 'click',
+      traceId: 'trace-click-ref-1',
+      status: 'succeeded',
+    });
+  });
+
+  it('executes input actions without exposing raw values in the result', () => {
+    document.body.innerHTML = '<input id="username" type="text" value="" />';
+    const input = document.getElementById('username') as HTMLInputElement | null;
+    expect(input).toBeTruthy();
+
+    let inputEvents = 0;
+    let changeEvents = 0;
+    input?.addEventListener('input', () => {
+      inputEvents += 1;
+    });
+    input?.addEventListener('change', () => {
+      changeEvents += 1;
+    });
+
+    const output = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'input',
+      target: {
+        selector: '#username',
+      },
+      input: {
+        value: 'hello world',
+      },
+    });
+
+    expect(input?.value).toBe('hello world');
+    expect(inputEvents).toBeGreaterThan(0);
+    expect(changeEvents).toBeGreaterThan(0);
+    expect(output.result).toMatchObject({
+      action: 'input',
+      status: 'succeeded',
+      result: {
+        fieldType: 'text',
+        valueLength: 11,
+      },
+    });
+    expect((output.result.result as Record<string, unknown>).value).toBeUndefined();
+  });
+
+  it('rejects input actions for non-editable targets', () => {
+    document.body.innerHTML = '<div id="readonly">No typing</div>';
+
+    const output = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'input',
+      target: {
+        selector: '#readonly',
+      },
+      input: {
+        value: 'blocked',
+      },
+    });
+
+    expect(output.result).toMatchObject({
+      action: 'input',
+      status: 'rejected',
+      failureReason: {
+        code: 'target_not_editable',
+      },
+    });
+  });
+
+  it('executes focus, blur, keyboard, scroll, and submit actions on the live target', () => {
+    document.body.innerHTML = [
+      '<div id="scroll-box" style="overflow:auto;height:40px;width:40px"><div style="height:200px;width:200px"></div></div>',
+      '<form id="live-form" method="post" action="/submit"><input id="live-input" type="text" /></form>',
+    ].join('');
+
+    const scrollBox = document.getElementById('scroll-box') as HTMLElement | null;
+    const input = document.getElementById('live-input') as HTMLInputElement | null;
+    const form = document.getElementById('live-form') as HTMLFormElement | null;
+    expect(scrollBox).toBeTruthy();
+    expect(input).toBeTruthy();
+    expect(form).toBeTruthy();
+
+    let focusCount = 0;
+    let blurCount = 0;
+    let keydownCount = 0;
+    let submitCount = 0;
+    input?.addEventListener('focusin', () => {
+      focusCount += 1;
+    });
+    input?.addEventListener('focusout', () => {
+      blurCount += 1;
+    });
+    input?.addEventListener('keydown', () => {
+      keydownCount += 1;
+    });
+    form?.addEventListener('submit', (event) => {
+      event.preventDefault();
+      submitCount += 1;
+    });
+
+    Object.defineProperty(scrollBox, 'scrollTo', {
+      configurable: true,
+      value: ({ left, top }: { left?: number; top?: number }) => {
+        Object.defineProperty(scrollBox, 'scrollLeft', { configurable: true, value: left ?? 0 });
+        Object.defineProperty(scrollBox, 'scrollTop', { configurable: true, value: top ?? 0 });
+      },
+    });
+
+    const focusResult = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'focus',
+      target: { selector: '#live-input' },
+    });
+    const keyResult = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'press_key',
+      target: { selector: '#live-input' },
+      input: { key: 'A' },
+    });
+    const blurResult = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'blur',
+      target: { selector: '#live-input' },
+    });
+    const scrollResult = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'scroll',
+      target: { selector: '#scroll-box' },
+      input: { x: 5, y: 80, behavior: 'smooth' },
+    });
+    const submitResult = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'submit',
+      target: { selector: '#live-form' },
+    });
+
+    expect(focusCount).toBeGreaterThan(0);
+    expect(blurCount).toBeGreaterThan(0);
+    expect(keydownCount).toBeGreaterThan(0);
+    expect(input?.value).toBe('A');
+    expect(scrollBox?.scrollTop).toBe(80);
+    expect(submitCount).toBe(1);
+    expect(focusResult.result).toMatchObject({ status: 'succeeded', result: { focused: true } });
+    expect(keyResult.result).toMatchObject({ status: 'succeeded', result: { key: 'A' } });
+    expect(blurResult.result).toMatchObject({ status: 'succeeded', result: { blurred: true } });
+    expect(scrollResult.result).toMatchObject({ status: 'succeeded', result: { y: 80, behavior: 'smooth' } });
+    expect(submitResult.result).toMatchObject({
+      status: 'succeeded',
+      result: {
+        submitted: true,
+        method: 'post',
+      },
+    });
+  });
+
+  it('renders an in-page automation indicator with emergency stop while armed', () => {
+    const sendMessage = vi.fn((_message: unknown, callback?: () => void) => {
+      callback?.();
+    });
+    const runtime = createRuntimeMock(sendMessage);
+
+    applyAutomationIndicatorUpdate(window, runtime, {
+      automation: {
+        enabled: true,
+        allowSensitiveFields: false,
+        status: 'armed',
+        sessionId: 'sess-1',
+      },
+    });
+
+    const indicator = document.getElementById('__bdmcp_automation_indicator__');
+    expect(indicator?.textContent).toContain('Automation armed');
+    expect(indicator?.textContent).toContain('Sensitive-field automation is still blocked.');
+
+    const stopButton = indicator?.querySelector('button');
+    expect(stopButton).toBeTruthy();
+    stopButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'AUTOMATION_EMERGENCY_STOP' }, expect.any(Function));
+  });
+
+  it('removes the in-page automation indicator when automation returns to idle', () => {
+    const runtime = createRuntimeMock(() => undefined);
+
+    applyAutomationIndicatorUpdate(window, runtime, {
+      automation: {
+        enabled: true,
+        allowSensitiveFields: false,
+        status: 'executing',
+        action: 'click',
+      },
+    });
+    expect(document.getElementById('__bdmcp_automation_indicator__')).toBeTruthy();
+
+    applyAutomationIndicatorUpdate(window, runtime, {
+      automation: {
+        enabled: false,
+        allowSensitiveFields: false,
+        status: 'idle',
+      },
+    });
+
+    expect(document.getElementById('__bdmcp_automation_indicator__')).toBeNull();
   });
 });

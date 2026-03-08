@@ -129,6 +129,10 @@ export async function startHttpServer(dataDir: string, port = 8065): Promise<Man
   };
 }
 
+export function getServerBaseUrl(port: number): string {
+  return `http://127.0.0.1:${port}`;
+}
+
 function pipeLogs(child: ChildProcessWithoutNullStreams, logs: string[], prefix: string): void {
   const append = (chunk: Buffer, stream: 'stdout' | 'stderr') => {
     logs.push(`${prefix}:${stream} ${chunk.toString('utf8')}`);
@@ -166,6 +170,15 @@ export interface ExtensionContextHandle {
   close(): Promise<void>;
 }
 
+function isIgnorablePlaywrightArtifactCloseError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+
+  return error.message.includes('ENOENT')
+    && error.message.includes('playwright-artifacts');
+}
+
 function shouldRunHeaded(): boolean {
   const raw = process.env.BDMCP_E2E_HEADED;
   if (!raw) {
@@ -197,7 +210,13 @@ export async function launchExtensionContext(): Promise<ExtensionContextHandle> 
     context,
     extensionId,
     close: async () => {
-      await context.close();
+      try {
+        await context.close();
+      } catch (error) {
+        if (!isIgnorablePlaywrightArtifactCloseError(error)) {
+          throw error;
+        }
+      }
     },
   };
 }
@@ -262,4 +281,11 @@ export async function sendRuntimeMessage<T>(page: Page, message: unknown): Promi
   }
 
   throw new Error('Runtime message failed unexpectedly');
+}
+
+export async function setExtensionServerBaseUrl(page: Page, serverBaseUrl: string | null): Promise<void> {
+  await sendRuntimeMessage(page, {
+    type: 'TEST_SET_SERVER_BASE_URL',
+    serverBaseUrl,
+  });
 }

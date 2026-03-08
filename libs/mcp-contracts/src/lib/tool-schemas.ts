@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { LiveUIActionRequestSchema } from './live-actions';
+import { RunUIStepsSchema } from './ui-workflows';
 
 export const ListSessionsSchema = z.object({
   sinceMinutes: z.number().int().min(1).max(1440).default(60)
@@ -188,6 +190,16 @@ export const GetElementRefsSchema = z.object({
     .describe('Soft byte budget for returned rows before truncation'),
 });
 
+export const GetInteractiveElementsSchema = z.object({
+  sessionId: z.string().describe('Connected session identifier'),
+  kinds: z.array(z.enum(['buttons', 'inputs', 'modals', 'focused'])).optional()
+    .describe('Optional element kinds to include; defaults to all live interactive categories'),
+  maxItems: z.number().int().min(1).max(100).optional()
+    .describe('Maximum number of structured refs to return'),
+  maxTextLength: z.number().int().min(8).max(200).optional()
+    .describe('Per-field text truncation budget for returned refs'),
+});
+
 export const GetDOMSubtreeSchema = z.object({
   sessionId: z.string().describe('Unique session identifier'),
   selector: z.string().describe('Root element selector'),
@@ -314,3 +326,90 @@ export const GetSnapshotAssetSchema = z.object({
   encoding: z.enum(['raw', 'base64']).default('base64')
     .describe('Chunk encoding mode'),
 });
+
+export const ListAutomationRunsSchema = z.object({
+  sessionId: z.string().describe('Session identifier'),
+  status: z.enum(['requested', 'started', 'succeeded', 'failed', 'rejected', 'stopped']).optional()
+    .describe('Optional run status filter'),
+  action: z.enum(['click', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload']).optional()
+    .describe('Optional action filter'),
+  traceId: z.string().optional()
+    .describe('Optional trace identifier filter'),
+  limit: z.number().int().min(1).max(200).optional()
+    .describe('Maximum number of automation runs to return'),
+  offset: z.number().int().min(0).optional()
+    .describe('Pagination offset for result set'),
+  maxResponseBytes: z.number().int().min(1024).max(524288).optional()
+    .describe('Soft byte budget for returned rows before truncation'),
+});
+
+export const GetAutomationRunSchema = z.object({
+  sessionId: z.string().describe('Session identifier'),
+  runId: z.string().describe('Automation run identifier'),
+  stepLimit: z.number().int().min(1).max(200).optional()
+    .describe('Maximum number of steps to return'),
+  stepOffset: z.number().int().min(0).optional()
+    .describe('Pagination offset for steps'),
+  maxResponseBytes: z.number().int().min(1024).max(524288).optional()
+    .describe('Soft byte budget for returned step rows before truncation'),
+});
+
+const ExecuteUIActionFailureCaptureSchema = z.object({
+  enabled: z.boolean().optional()
+    .describe('Capture snapshot evidence only when the action result is rejected or failed'),
+  selector: z.string().optional()
+    .describe('Optional selector override for failure snapshot capture'),
+  mode: z.enum(['dom', 'png', 'both']).optional()
+    .describe('Failure snapshot mode; defaults to dom'),
+  styleMode: z.enum(['computed-lite', 'computed-full']).optional()
+    .describe('Failure snapshot style detail level; full mode must be explicitly requested'),
+  maxDepth: z.number().int().min(1).max(10).optional()
+    .describe('Maximum DOM depth for failure capture'),
+  maxBytes: z.number().int().min(1000).max(1000000).optional()
+    .describe('Maximum bytes for failure capture payload sections'),
+  maxAncestors: z.number().int().min(0).max(8).optional()
+    .describe('Maximum ancestor chain length for failure style capture'),
+  includeDom: z.boolean().optional()
+    .describe('Include DOM section in failure capture response payload'),
+  includeStyles: z.boolean().optional()
+    .describe('Include styles section in failure capture response payload'),
+  includePngDataUrl: z.boolean().optional()
+    .describe('Include inline PNG data URL in failure capture response payload'),
+});
+
+const ExecuteUIActionWaitForPageStateSchema = z.object({
+  scope: z.enum(['buttons', 'inputs', 'modals', 'focused', 'page'])
+    .describe('Structured page-state scope to evaluate after the action'),
+  selector: z.string().optional().describe('Optional selector substring matcher'),
+  testId: z.string().optional().describe('Optional exact data-testid matcher'),
+  textContains: z.string().optional().describe('Optional text substring matcher'),
+  labelContains: z.string().optional().describe('Optional input label substring matcher'),
+  titleContains: z.string().optional().describe('Optional modal title substring matcher'),
+  urlContains: z.string().optional().describe('Optional page URL substring matcher'),
+  language: z.string().optional().describe('Optional exact page language matcher'),
+  disabled: z.boolean().optional().describe('Optional disabled-state matcher'),
+  selected: z.boolean().optional().describe('Optional selected-state matcher'),
+  pressed: z.boolean().optional().describe('Optional pressed-state matcher'),
+  expanded: z.boolean().optional().describe('Optional expanded-state matcher'),
+  readOnly: z.boolean().optional().describe('Optional readonly-state matcher'),
+  requiredField: z.boolean().optional().describe('Optional required-field matcher'),
+  tagName: z.string().optional().describe('Optional exact tag name matcher'),
+  type: z.string().optional().describe('Optional exact input type matcher'),
+  countExactly: z.number().int().min(0).optional().describe('Require an exact number of matches'),
+  countAtLeast: z.number().int().min(0).optional().describe('Require at least this many matches'),
+  maxItems: z.number().int().min(1).max(100).optional().describe('Structured page-state item budget'),
+  maxTextLength: z.number().int().min(8).max(200).optional().describe('Per-field text truncation budget'),
+  timeoutMs: z.number().int().min(100).max(30000).optional().describe('Maximum wait duration in milliseconds'),
+  pollIntervalMs: z.number().int().min(50).max(2000).optional().describe('Polling interval in milliseconds'),
+});
+
+export const ExecuteUIActionSchema = z.intersection(
+  z.object({
+    sessionId: z.string().describe('Connected session identifier'),
+    captureOnFailure: ExecuteUIActionFailureCaptureSchema.optional(),
+    waitForPageState: ExecuteUIActionWaitForPageStateSchema.optional(),
+  }),
+  LiveUIActionRequestSchema,
+);
+
+export { RunUIStepsSchema };

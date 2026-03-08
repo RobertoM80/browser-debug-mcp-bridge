@@ -31,6 +31,7 @@ export const ERROR_TOOLS = {
 
 export const QUERY_TOOLS = {
   GET_ELEMENT_REFS: 'get_element_refs',
+  GET_INTERACTIVE_ELEMENTS: 'get_interactive_elements',
 } as const;
 
 export const CAPTURE_TOOLS = {
@@ -38,8 +39,10 @@ export const CAPTURE_TOOLS = {
   GET_DOM_DOCUMENT: 'get_dom_document',
   GET_COMPUTED_STYLES: 'get_computed_styles',
   GET_LAYOUT_METRICS: 'get_layout_metrics',
+  GET_PAGE_STATE: 'get_page_state',
   CAPTURE_UI_SNAPSHOT: 'capture_ui_snapshot',
   GET_LIVE_CONSOLE_LOGS: 'get_live_console_logs',
+  SET_VIEWPORT: 'set_viewport',
 } as const;
 
 export const CORRELATION_TOOLS = {
@@ -53,6 +56,15 @@ export const SNAPSHOT_TOOLS = {
   GET_SNAPSHOT_ASSET: 'get_snapshot_asset',
 } as const;
 
+export const AUTOMATION_TOOLS = {
+  LIST_AUTOMATION_RUNS: 'list_automation_runs',
+  GET_AUTOMATION_RUN: 'get_automation_run',
+  EXECUTE_UI_ACTION: 'execute_ui_action',
+  ASSERT_PAGE_STATE: 'assert_page_state',
+  WAIT_FOR_PAGE_STATE: 'wait_for_page_state',
+  RUN_UI_STEPS: 'run_ui_steps',
+} as const;
+
 export const ALL_TOOLS = [
   ...Object.values(SESSION_TOOLS),
   ...Object.values(ERROR_TOOLS),
@@ -60,4 +72,5 @@ export const ALL_TOOLS = [
   ...Object.values(CAPTURE_TOOLS),
   ...Object.values(CORRELATION_TOOLS),
   ...Object.values(SNAPSHOT_TOOLS),
+  ...Object.values(AUTOMATION_TOOLS),
 ];

@@ -30,6 +30,21 @@ Response guidance:
 { "name": "get_session_summary", "arguments": { "sessionId": "sess_123" } }
 ```
 
+## `get_live_session_health`
+
+Use this before long live automation/debugging flows when you need to know whether a session is currently healthy, stale, or fully ended.
+
+```json
+{ "name": "get_live_session_health", "arguments": { "sessionId": "sess_123" } }
+```
+
+Response highlights:
+
+- persisted tab/window/viewport binding
+- live connection timestamps
+- disconnect reason when known
+- `recommendedAction` such as `ready`, `reconnect_extension`, or `start_new_session`
+
 ## `get_recent_events`
 
 ```json

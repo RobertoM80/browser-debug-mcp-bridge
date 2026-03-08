@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
-import { join } from 'path';
 import { dirname } from 'path';
 import { mkdirSync } from 'fs';
+import { getDatabasePath } from '../runtime-paths.js';
 
 export interface DatabaseConnection {
   db: Database.Database;
@@ -9,11 +9,6 @@ export interface DatabaseConnection {
 }
 
 let connection: DatabaseConnection | null = null;
-
-export function getDatabasePath(): string {
-  const dataDir = process.env.DATA_DIR || join(process.cwd(), 'data');
-  return join(dataDir, 'browser-debug.db');
-}
 
 export function createConnection(dbPath?: string): DatabaseConnection {
   const path = dbPath || getDatabasePath();

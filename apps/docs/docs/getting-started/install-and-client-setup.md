@@ -44,6 +44,7 @@ Then:
 2. Enable Developer mode
 3. Click **Load unpacked**
 4. Select `dist/apps/chrome-extension`
+5. After later rebuilds, use the extension `Reload` action in `chrome://extensions` so popup changes actually appear
 
 ## 4) Start runtime for MCP clients
 
@@ -76,11 +77,41 @@ Notes:
 4. If npm reports `EPERM` under `npm-cache\\_cacache\\tmp\\git-clone...`, use local mode instead.
 5. On Windows, launcher attempts automatic recovery when stale bridge processes still hold port `8065`.
 6. In `mcp-stdio` mode, runtime should stop when the MCP host transport closes.
+7. Runtime state now defaults to a user-local app-data directory instead of the repo/package root. Set `DATA_DIR` only if you want to override it.
+8. If a standalone bridge is already running on `127.0.0.1:8065`, new MCP stdio launches now attach to it instead of killing and replacing it.
+
+Recommended durable workflow:
+
+```bash
+node scripts/mcp-start.cjs --standalone
+```
+
+Then keep MCP host config pointing at the normal launcher:
+
+```bash
+node scripts/mcp-start.cjs
+```
+
+Each new Codex/MCP host session will attach to the existing bridge on `8065`.
 
 Manual stop command (if stale process still occupies `8065`):
 
 ```bash
 node scripts/mcp-start.cjs --stop
+```
+
+One-command diagnostics:
+
+```bash
+pnpm mcp:doctor
+```
+
+It actively tries a standalone startup, waits for `/health`, and prints status plus fix commands for bridge health, launcher/runtime viability, sessions API reachability, current live session state, and Codex config. Codex current-chat MCP transport remains a host-dependent manual check.
+
+JSON output for automation:
+
+```bash
+pnpm mcp:doctor:json
 ```
 
 ## 5) Generate client config snippets
@@ -125,6 +156,9 @@ If tools return no data:
 4. MCP host process cannot find `node` in PATH
 5. Session id is historical/stale (`liveConnection.connected = false`)
 6. Event came from a tab that is not bound to the active session
+7. A manual `--standalone` launcher is still running from an older terminal and is blocking MCP stdio startup
+
+If you want a compact local report before debugging manually, run `pnpm mcp:doctor`.
 
 ## 8) One-command local setup (optional)
 

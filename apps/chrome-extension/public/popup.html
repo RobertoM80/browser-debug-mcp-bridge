@@ -17,6 +17,53 @@
       <div><strong>Queue:</strong> <span id="queue-size">0</span></div>
       <div><strong>Dropped:</strong> <span id="dropped-events">0</span></div>
     </div>
+    <details class="settings health-panel" open>
+      <summary>Bridge Health</summary>
+      <div id="health-summary" class="config-status" aria-live="polite">Loading health diagnostics...</div>
+      <div class="health-actions-header">Recovery actions</div>
+      <div class="controls health-actions">
+        <button id="health-recover-session" type="button" class="health-action-primary">Recover session</button>
+        <button id="health-retry-content-script" type="button" class="health-action-secondary">Retry content script</button>
+      </div>
+      <div class="controls health-actions">
+        <button id="health-focus-tab" type="button" class="health-action-secondary">Open bound tab</button>
+      </div>
+      <div id="health-action-status" class="config-status" aria-live="polite"></div>
+      <div class="health-grid">
+        <div class="health-row">
+          <span class="health-label">Transport</span>
+          <span id="health-transport" class="health-value">-</span>
+        </div>
+        <div class="health-row">
+          <span class="health-label">Session</span>
+          <span id="health-session" class="health-value">-</span>
+        </div>
+        <div class="health-row">
+          <span class="health-label">Content script</span>
+          <span id="health-content-script" class="health-value">-</span>
+        </div>
+        <div class="health-row">
+          <span class="health-label">Guardrails</span>
+          <span id="health-guardrails" class="health-value">-</span>
+        </div>
+        <div class="health-row">
+          <span class="health-label">Capture</span>
+          <span id="health-capture" class="health-value">-</span>
+        </div>
+        <div class="health-row">
+          <span class="health-label">Last event</span>
+          <span id="health-last-event" class="health-value">-</span>
+        </div>
+        <div class="health-row">
+          <span class="health-label">Last sender</span>
+          <span id="health-last-sender" class="health-value">-</span>
+        </div>
+        <div class="health-row">
+          <span class="health-label">Updated</span>
+          <span id="health-last-updated" class="health-value">-</span>
+        </div>
+      </div>
+    </details>
     <div class="controls">
       <button id="start-session" type="button">Start Session</button>
       <button id="pause-session" type="button">Pause Session</button>
@@ -111,6 +158,23 @@
           <label for="network-max-body-bytes">Max body bytes</label>
           <input id="network-max-body-bytes" type="number" min="4096" step="1024" value="262144">
         </div>
+      </details>
+
+      <details class="automation-settings" open>
+        <summary>Live automation</summary>
+        <div class="automation-warning">
+          Live automation can click, type, and submit in the current tab. Keep this off unless you are actively supervising the session.
+        </div>
+        <label class="toggle" for="automation-enabled">
+          <input id="automation-enabled" type="checkbox">
+          <span>Allow live automation</span>
+        </label>
+        <label class="toggle" for="automation-sensitive-fields">
+          <input id="automation-sensitive-fields" type="checkbox">
+          <span>Allow sensitive field automation</span>
+        </label>
+        <div id="automation-status" class="config-status" aria-live="polite"></div>
+        <button id="automation-emergency-stop" type="button" class="danger-button">Emergency stop automation</button>
       </details>
 
       <button id="save-config" type="button">Save Settings</button>

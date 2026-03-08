@@ -401,6 +401,57 @@ describe('SessionManager', () => {
     expect(response.payload.logs[0]?.message).toContain('[auth]');
   });
 
+  it('accepts live UI action commands from server', async () => {
+    const ws = new MockWebSocket();
+    const manager = new SessionManager({
+      createSessionId: () => 'session-live-action',
+      createWebSocket: () => ws,
+      now: () => 1700000000000,
+      handleCaptureCommand: async (command, payload) => ({
+        payload: {
+          command,
+          action: payload.action,
+          traceId: payload.traceId,
+          status: 'rejected',
+        },
+      }),
+    });
+
+    manager.startSession({ url: 'https://example.com' });
+    ws.open();
+    ws.sentMessages.length = 0;
+
+    ws.receive(
+      JSON.stringify({
+        type: 'capture_command',
+        commandId: 'cmd-action-1',
+        sessionId: 'session-live-action',
+        command: 'EXECUTE_UI_ACTION',
+        payload: {
+          action: 'click',
+          traceId: 'trace-action-1',
+          target: { selector: '#buy-now' },
+        },
+      }),
+    );
+
+    await Promise.resolve();
+
+    expect(ws.sentMessages).toHaveLength(1);
+    const response = JSON.parse(ws.sentMessages[0]) as {
+      type: string;
+      commandId: string;
+      ok: boolean;
+      payload: { command: string; action: string; traceId: string; status: string };
+    };
+    expect(response.type).toBe('capture_result');
+    expect(response.commandId).toBe('cmd-action-1');
+    expect(response.ok).toBe(true);
+    expect(response.payload.command).toBe('EXECUTE_UI_ACTION');
+    expect(response.payload.action).toBe('click');
+    expect(response.payload.traceId).toBe('trace-action-1');
+  });
+
   it('uses readable default session ids with date hints', () => {
     const manager = new SessionManager({
       createWebSocket: () => new MockWebSocket(),
@@ -457,6 +508,81 @@ describe('SessionManager', () => {
 
     expect(sockets).toHaveLength(2);
     expect(manager.getState().connectionStatus).toBe('connecting');
+    vi.useRealTimers();
+  });
+
+  it('re-announces the active session when websocket reconnects', () => {
+    vi.useFakeTimers();
+    const sockets: MockWebSocket[] = [];
+    const manager = new SessionManager({
+      createSessionId: () => 'session-rebind',
+      createWebSocket: () => {
+        const ws = new MockWebSocket();
+        sockets.push(ws);
+        return ws;
+      },
+      now: () => Date.now(),
+    });
+
+    manager.startSession({
+      url: 'https://example.com/planner',
+      tabId: 21,
+      windowId: 7,
+      baseOrigin: 'https://example.com',
+      allowedTabIds: [21],
+      viewport: { width: 1280, height: 720 },
+      dpr: 2,
+      safeMode: true,
+    });
+
+    const first = sockets[0];
+    expect(first).toBeDefined();
+    first?.open();
+    if (first) {
+      first.sentMessages.length = 0;
+      first.close();
+    }
+
+    vi.advanceTimersByTime(1000);
+    const second = sockets[1];
+    expect(second).toBeDefined();
+    second?.open();
+
+    const sent = second?.sentMessages.map((entry) => JSON.parse(entry) as { type: string; sessionId?: string; url?: string; tabId?: number }) ?? [];
+    expect(sent[0]).toMatchObject({
+      type: 'session_resume',
+      sessionId: 'session-rebind',
+      url: 'https://example.com/planner',
+      tabId: 21,
+    });
+    vi.useRealTimers();
+  });
+
+  it('uses an updated websocket url for the next reconnect attempt', () => {
+    vi.useFakeTimers();
+    const socketUrls: string[] = [];
+    const sockets: MockWebSocket[] = [];
+    const manager = new SessionManager({
+      createSessionId: () => 'session-ws-url',
+      createWebSocket: (url) => {
+        socketUrls.push(url);
+        const ws = new MockWebSocket();
+        sockets.push(ws);
+        return ws;
+      },
+      now: () => Date.now(),
+    });
+
+    manager.startSession({ url: 'https://example.com' });
+    expect(socketUrls[0]).toBe('ws://127.0.0.1:8065/ws');
+
+    sockets[0]?.open();
+    manager.setWsUrl('ws://127.0.0.1:49213/ws');
+    sockets[0]?.close();
+
+    vi.advanceTimersByTime(1000);
+
+    expect(socketUrls[1]).toBe('ws://127.0.0.1:49213/ws');
     vi.useRealTimers();
   });
 });
