@@ -45,10 +45,28 @@ What it does:
 Why it exists:
 1. Keep published docs always updated from `main`
 
-## 3. Release Please (`.github/workflows/release-please.yml`)
+## 3. PR Title (`.github/workflows/pr-title.yml`)
 
 When it runs:
-1. On push to `main`
+1. On pull request open, edit, reopen, and synchronize
+
+What it does:
+1. Validates that the pull request title follows Conventional Commits
+2. Prevents non-conventional squash titles from reaching `main`
+
+Why it exists:
+1. Squash merge uses the pull request title as the merge commit title
+2. `release-please` relies on conventional commit messages to decide version bumps and changelog entries
+
+Valid examples:
+1. `feat(mcp): add automation workflow tools`
+2. `fix(ci): install playwright in release workflow`
+3. `chore(main): release browser-debug-mcp-bridge 1.10.0`
+
+## 4. Release Please (`.github/workflows/release-please.yml`)
+
+When it runs:
+1. After `CI` completes successfully for a push to `main`
 2. Manually
 
 What it does:
@@ -59,8 +77,13 @@ What it does:
 Why it exists:
 1. Automate versioning/changelog workflow
 2. Reduce manual release preparation
+3. Keep version bumps tied to validated `main` pushes instead of firing before CI finishes
 
-## 4. Release (`.github/workflows/release.yml`)
+Important notes:
+1. For squash merges, the PR title is the commit message that `release-please` sees on `main`
+2. If a merged PR used the wrong title, add a `BEGIN_COMMIT_OVERRIDE` / `END_COMMIT_OVERRIDE` block to the merged PR body, then rerun `Release Please`
+
+## 5. Release (`.github/workflows/release.yml`)
 
 When it runs:
 1. On tag push matching `v*` (example: `v1.2.0`)
@@ -86,7 +109,7 @@ Required repository secret for Release workflow:
 3. Workflow fails fast if `NPM_TOKEN` is missing
 4. If same package version is already on npm, npm publish step is skipped safely
 
-## 5. Dependency Update (`.github/workflows/dependency-update.yml`)
+## 6. Dependency Update (`.github/workflows/dependency-update.yml`)
 
 When it runs:
 1. Weekly (Monday 06:00 UTC)
@@ -102,7 +125,7 @@ Why it exists:
 1. Keep dependencies current
 2. Catch upgrade breakages early through automation
 
-## 6. Nightly Health (`.github/workflows/nightly-health.yml`)
+## 7. Nightly Health (`.github/workflows/nightly-health.yml`)
 
 When it runs:
 1. Every night (02:00 UTC)
@@ -119,33 +142,25 @@ Why it exists:
 1. Detect environment/runtime breakages that static CI might miss
 2. Catch browser-level regressions that can appear outside normal PR traffic
 
-## 7. Typical automated flow
+## 8. Typical automated flow
 
 1. You push commits.
-2. `CI` validates quality and runs smoke/full browser E2E suites.
-3. `Release Please` updates release PR automatically.
-4. When you tag a version, `Release` publishes assets.
-5. `Docs Pages` deploys docs on `main`.
-6. Weekly dependencies and nightly health checks run automatically.
+2. Open a PR with a conventional title.
+3. `CI` validates quality and runs smoke/full browser E2E suites.
+4. After the merge push to `main` passes `CI`, `Release Please` updates the release PR automatically.
+5. When the release PR is merged and the tag is created, `Release` publishes assets.
+6. `Docs Pages` deploys docs on `main`.
+7. Weekly dependencies and nightly health checks run automatically.
 
-## 8. What you still do manually
+## 9. What you still do manually
 
 1. Develop features/fixes.
 2. Review and merge PRs.
-3. Approve/review release PRs and create version tags when ready.
+3. Approve/review release PRs.
 
 Everything else is automated by workflows.
 
-Tag creation shortcut:
-
-1. Run `pnpm release:tag`
-2. The script suggests the next `vX.Y.Z` tag, asks confirmation, then runs:
-   - `git checkout main`
-   - `git pull --ff-only origin main`
-   - `git tag <tag>`
-   - `git push origin <tag>`
-
-## 9. Run workflows locally with `act`
+## 10. Run workflows locally with `act`
 
 Install prerequisites:
 

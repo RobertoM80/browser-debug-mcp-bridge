@@ -44,10 +44,10 @@ jobs:
           find node_modules/.pnpm -name better_sqlite3.node -print
           test -n "$(find node_modules/.pnpm -name better_sqlite3.node -print -quit)"
 
-      - name: Verify
+      - name: Verify non-E2E checks
         run: |
           set -euxo pipefail
-          pnpm run verify
+          pnpm run verify:ci
 
       - name: Install Playwright Chromium
         run: |
