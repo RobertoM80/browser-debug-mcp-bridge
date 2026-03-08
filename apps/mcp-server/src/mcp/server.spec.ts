@@ -212,6 +212,55 @@ describe('mcp/server V1 query tools', () => {
     db.close();
   });
 
+  it('returns live session health with reconnect guidance', async () => {
+    const db = createTestDb();
+    const now = Date.now();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (
+          session_id, created_at, safe_mode, url_start, url_last, tab_id, window_id, viewport_w, viewport_h, dpr, pinned
+        )
+        VALUES ('session-health', ?, 1, 'http://localhost:8081', 'http://localhost:8081', 11, 22, 1440, 900, 2, 1)
+      `
+    ).run(now - 30_000);
+
+    const tools = createToolRegistry(
+      createV1ToolHandlers(() => db, (sessionId) => sessionId === 'session-health'
+        ? {
+            connected: false,
+            connectedAt: now - 25_000,
+            lastHeartbeatAt: now - 5_000,
+            disconnectedAt: now - 2_000,
+            disconnectReason: 'network_error',
+          }
+        : undefined),
+    );
+
+    const response = await routeToolCall(tools, 'get_live_session_health', {
+      sessionId: 'session-health',
+    });
+
+    expect(response.session).toMatchObject({
+      sessionId: 'session-health',
+      tabId: 11,
+      windowId: 22,
+      safeMode: true,
+      pinned: true,
+      viewport: {
+        width: 1440,
+        height: 900,
+      },
+    });
+    expect(response.liveConnection).toMatchObject({
+      connected: false,
+      disconnectReason: 'network_error',
+    });
+    expect(response.recommendedAction).toBe('reconnect_extension');
+
+    db.close();
+  });
+
   it('returns recent events with type filtering and limits', async () => {
     const db = createTestDb();
 
@@ -1286,6 +1335,1093 @@ describe('mcp/server V2 capture tools', () => {
     expect(response.limitsApplied).toEqual({ maxResults: 10000, truncated: true });
   });
 
+  it('captures compact page state through the v2 capture path', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          return {
+            ok: true,
+            payload: {
+              url: 'http://localhost:8081/',
+              title: 'Planner',
+              language: 'it',
+              viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+              summary: { buttons: 8, inputs: 5, modals: 1 },
+              buttons: [{ text: 'Calcola target', selector: '#build' }],
+              inputs: [{ label: 'Nome', selector: '#name', valueLength: 7 }],
+              modals: [{ title: 'Piano del giorno', selector: '[role="dialog"]' }],
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'get_page_state', {
+      sessionId: 'session-v2',
+      maxItems: 12,
+      maxTextLength: 60,
+    });
+
+    expect(captureCalls[0]).toMatchObject({
+      command: 'CAPTURE_PAGE_STATE',
+      payload: {
+        maxItems: 12,
+        maxTextLength: 60,
+        includeButtons: true,
+        includeInputs: true,
+        includeModals: true,
+      },
+    });
+    expect(response.summary).toMatchObject({ buttons: 8, inputs: 5, modals: 1 });
+    expect((response.buttons as Array<Record<string, unknown>>)[0]?.text).toBe('Calcola target');
+  });
+
+  it('returns compact interactive element refs through the v2 capture path', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          return {
+            ok: true,
+            payload: {
+              url: 'http://localhost:8081/',
+              title: 'Planner',
+              language: 'it',
+              viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+              summary: { buttons: 2, inputs: 1, modals: 1 },
+              buttons: [{ text: 'Calcola target', selector: '#build', elementRef: 'ref:button' }],
+              inputs: [{ label: 'Nome', selector: '#name', elementRef: 'ref:input' }],
+              modals: [{ title: 'Piano del giorno', selector: '[role="dialog"]', elementRef: 'ref:modal' }],
+              focused: { selector: '#name', elementRef: 'ref:focused', tagName: 'input' },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'get_interactive_elements', {
+      sessionId: 'session-v2',
+      kinds: ['buttons', 'focused'],
+      maxItems: 10,
+    });
+
+    expect(captureCalls[0]).toMatchObject({
+      command: 'CAPTURE_PAGE_STATE',
+      payload: {
+        includeButtons: true,
+        includeInputs: false,
+        includeModals: false,
+      },
+    });
+    expect(response.kinds).toEqual(['buttons', 'focused']);
+    expect((response.refs as Array<Record<string, unknown>>)[0]).toMatchObject({
+      kind: 'buttons',
+      elementRef: 'ref:button',
+    });
+  });
+
+  it('resizes viewport through the v2 capture path', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          return {
+            ok: true,
+            payload: {
+              requested: {
+                width: payload.width,
+                height: payload.height,
+              },
+              viewport: {
+                width: 390,
+                height: 844,
+                scrollX: 0,
+                scrollY: 0,
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'set_viewport', {
+      sessionId: 'session-v2',
+      width: 390,
+      height: 844,
+    });
+
+    expect(captureCalls[0]).toMatchObject({
+      command: 'SET_VIEWPORT',
+      payload: {
+        width: 390,
+        height: 844,
+      },
+    });
+    expect(response.requested).toEqual({ width: 390, height: 844 });
+    expect(response.viewport).toMatchObject({ width: 390, height: 844 });
+  });
+
+  it('asserts structured page-state conditions through the v2 capture path', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async () => {
+          return {
+            ok: true,
+            payload: {
+              url: 'http://localhost:8081/',
+              title: 'Planner',
+              language: 'it',
+              viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+              summary: { buttons: 8, inputs: 5, modals: 0 },
+              buttons: [
+                { text: 'Calcola target', selector: '#build', disabled: false },
+                { text: 'Settimana', selector: '#week', disabled: true },
+              ],
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'assert_page_state', {
+      sessionId: 'session-v2',
+      scope: 'buttons',
+      textContains: 'Settimana',
+      disabled: true,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.matchCount).toBe(1);
+    expect((response.sampledMatches as Array<Record<string, unknown>>)[0]?.selector).toBe('#week');
+  });
+
+  it('waits for a structured page-state condition to become true', async () => {
+    let attempt = 0;
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async () => {
+          attempt += 1;
+          return {
+            ok: true,
+            payload: {
+              url: 'http://localhost:8081/',
+              title: 'Planner',
+              language: 'en',
+              viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+              summary: { buttons: 2, inputs: 1, modals: attempt >= 2 ? 1 : 0 },
+              modals:
+                attempt >= 2
+                  ? [{ title: 'Day plan', selector: '[role="dialog"]', buttonCount: 2, fieldCount: 0 }]
+                  : [],
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_page_state', {
+      sessionId: 'session-v2',
+      scope: 'modals',
+      titleContains: 'Day plan',
+      timeoutMs: 500,
+      pollIntervalMs: 10,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.attempts).toBeGreaterThanOrEqual(2);
+    expect(response.waitedMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('runs a generic safe UI workflow with action, wait, and assert steps', async () => {
+    let pageStateAttempts = 0;
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          if (command === 'CAPTURE_PAGE_STATE') {
+            pageStateAttempts += 1;
+            if (pageStateAttempts === 1) {
+              return {
+                ok: true,
+                payload: {
+                  url: 'http://localhost:3000/planner',
+                  title: 'Planner',
+                  language: 'en',
+                  viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+                  summary: { buttons: 1, inputs: 0, modals: 0 },
+                  buttons: [
+                    {
+                      text: 'Build targets',
+                      selector: '#build-targets',
+                      elementRef: 'ref:build-targets',
+                      disabled: false,
+                    },
+                  ],
+                },
+                truncated: false,
+              };
+            }
+
+            return {
+              ok: true,
+              payload: {
+                url: 'http://localhost:3000/planner',
+                title: 'Planner',
+                language: 'en',
+                viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+                summary: { buttons: 1, inputs: 0, modals: 0 },
+                buttons: [
+                  {
+                    text: 'Generate 7-day plan',
+                    selector: '#generate-week',
+                    elementRef: 'ref:generate-week',
+                    disabled: false,
+                  },
+                ],
+              },
+              truncated: false,
+            };
+          }
+
+          if (command === 'EXECUTE_UI_ACTION') {
+            expect(payload).toMatchObject({
+              action: 'click',
+              target: {
+                elementRef: 'ref:build-targets',
+              },
+            });
+
+            return {
+              ok: true,
+              payload: {
+                action: 'click',
+                traceId: 'trace-workflow-1',
+                status: 'succeeded',
+                executionScope: 'top-document-v1',
+                startedAt: 1700000000000,
+                finishedAt: 1700000000010,
+                target: {
+                  matched: true,
+                  selector: '#build-targets',
+                  resolvedSelector: '#build-targets',
+                  tagName: 'button',
+                  tabId: 7,
+                  frameId: 0,
+                  url: 'http://localhost:3000/planner',
+                },
+              },
+              truncated: false,
+            };
+          }
+
+          throw new Error(`Unexpected command ${command}`);
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'run_ui_steps', {
+      sessionId: 'session-v2',
+      mode: 'safe',
+      steps: [
+        {
+          kind: 'action',
+          id: 'build',
+          action: 'click',
+          target: {
+            scope: 'buttons',
+            textContains: 'Build targets',
+          },
+        },
+        {
+          kind: 'waitFor',
+          id: 'wait-week',
+          matcher: {
+            scope: 'buttons',
+            textContains: 'Generate 7-day plan',
+            timeoutMs: 500,
+            pollIntervalMs: 50,
+          },
+        },
+        {
+          kind: 'assert',
+          id: 'assert-week',
+          matcher: {
+            scope: 'buttons',
+            textContains: 'Generate 7-day plan',
+          },
+        },
+      ],
+    });
+
+    expect(response.status).toBe('succeeded');
+    expect(response.completedStepCount).toBe(3);
+    expect(response.failedStepId).toBeUndefined();
+    expect((response.steps as Array<Record<string, unknown>>).map((step) => step.status)).toEqual([
+      'succeeded',
+      'succeeded',
+      'succeeded',
+    ]);
+    expect((response.finalPageSummary as Record<string, unknown>)?.buttons).toBe(1);
+  });
+
+  it('stops a generic safe workflow on the first failed step and marks the rest skipped', async () => {
+    const captureCalls: Array<string> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command) => {
+          captureCalls.push(command);
+          if (command === 'EXECUTE_UI_ACTION') {
+            return {
+              ok: true,
+              payload: {
+                action: 'click',
+                traceId: 'trace-workflow-fail-1',
+                status: 'failed',
+                executionScope: 'top-document-v1',
+                startedAt: 1700000000000,
+                finishedAt: 1700000000010,
+                target: {
+                  matched: false,
+                  selector: '#missing',
+                  frameId: 0,
+                },
+                failureReason: {
+                  code: 'target_not_found',
+                  message: 'No element matched the selector.',
+                },
+              },
+              truncated: false,
+            };
+          }
+
+          if (command === 'CAPTURE_PAGE_STATE') {
+            return {
+              ok: true,
+              payload: {
+                url: 'http://localhost:3000/planner',
+                title: 'Planner',
+                language: 'en',
+                viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+                summary: { buttons: 0, inputs: 0, modals: 0 },
+                buttons: [],
+              },
+              truncated: false,
+            };
+          }
+
+          throw new Error(`Unexpected command ${command}`);
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'run_ui_steps', {
+      sessionId: 'session-v2',
+      mode: 'safe',
+      steps: [
+        {
+          kind: 'action',
+          id: 'missing-click',
+          action: 'click',
+          target: {
+            selector: '#missing',
+          },
+        },
+        {
+          kind: 'assert',
+          id: 'never-runs',
+          matcher: {
+            scope: 'buttons',
+            textContains: 'Done',
+          },
+        },
+      ],
+    });
+
+    expect(captureCalls).toContain('EXECUTE_UI_ACTION');
+    expect(response.status).toBe('failed');
+    expect(response.failedStepId).toBe('missing-click');
+    expect(response.stoppedEarly).toBe(true);
+    expect((response.steps as Array<Record<string, unknown>>).map((step) => step.status)).toEqual([
+      'failed',
+      'skipped',
+    ]);
+  });
+
+  it('resolves generic workflow action targets with richer semantic input matchers', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          if (command === 'CAPTURE_PAGE_STATE') {
+            return {
+              ok: true,
+              payload: {
+                url: 'http://localhost:3000/login',
+                title: 'Login',
+                language: 'en',
+                viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+                summary: { buttons: 1, inputs: 2, modals: 0 },
+                inputs: [
+                  {
+                    label: 'Email address',
+                    selector: '#email',
+                    elementRef: 'ref:email',
+                    tagName: 'input',
+                    type: 'text',
+                    readOnly: false,
+                  },
+                  {
+                    label: 'Password',
+                    selector: '#password',
+                    elementRef: 'ref:password',
+                    tagName: 'input',
+                    type: 'password',
+                    readOnly: false,
+                  },
+                ],
+              },
+              truncated: false,
+            };
+          }
+
+          if (command === 'EXECUTE_UI_ACTION') {
+            expect(payload).toMatchObject({
+              action: 'input',
+              target: {
+                elementRef: 'ref:email',
+              },
+              input: {
+                value: 'person@example.com',
+              },
+            });
+
+            return {
+              ok: true,
+              payload: {
+                action: 'input',
+                traceId: 'trace-workflow-input-1',
+                status: 'succeeded',
+                executionScope: 'top-document-v1',
+                startedAt: 1700000000000,
+                finishedAt: 1700000000010,
+                target: {
+                  matched: true,
+                  selector: '#email',
+                  resolvedSelector: '#email',
+                  tagName: 'input',
+                  tabId: 7,
+                  frameId: 0,
+                  url: 'http://localhost:3000/login',
+                },
+              },
+              truncated: false,
+            };
+          }
+
+          throw new Error(`Unexpected command ${command}`);
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'run_ui_steps', {
+      sessionId: 'session-v2',
+      mode: 'safe',
+      steps: [
+        {
+          kind: 'action',
+          id: 'email-input',
+          action: 'input',
+          target: {
+            scope: 'inputs',
+            labelContains: 'Email',
+            tagName: 'input',
+            type: 'text',
+            readOnly: false,
+          },
+          input: {
+            value: 'person@example.com',
+          },
+        },
+      ],
+    });
+
+    expect(response.status).toBe('succeeded');
+    expect((response.steps as Array<Record<string, unknown>>)[0]?.target).toMatchObject({
+      resolution: {
+        strategy: 'semantic_elementRef',
+        matchedCandidateCount: 1,
+        matched: {
+          selector: '#email',
+          tagName: 'input',
+          type: 'text',
+        },
+      },
+    });
+  });
+
+  it('returns structured ambiguity diagnostics for generic workflow action targets', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command) => {
+          if (command === 'CAPTURE_PAGE_STATE') {
+            return {
+              ok: true,
+              payload: {
+                url: 'http://localhost:3000/planner',
+                title: 'Planner',
+                language: 'en',
+                viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+                summary: { buttons: 2, inputs: 0, modals: 0 },
+                buttons: [
+                  {
+                    text: 'Continue',
+                    selector: '#primary-continue',
+                    elementRef: 'ref:continue-1',
+                    tagName: 'button',
+                  },
+                  {
+                    text: 'Continue',
+                    selector: '#secondary-continue',
+                    elementRef: 'ref:continue-2',
+                    tagName: 'button',
+                  },
+                ],
+              },
+              truncated: false,
+            };
+          }
+
+          throw new Error(`Unexpected command ${command}`);
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'run_ui_steps', {
+      sessionId: 'session-v2',
+      mode: 'safe',
+      steps: [
+        {
+          kind: 'action',
+          id: 'continue',
+          action: 'click',
+          target: {
+            scope: 'buttons',
+            textContains: 'Continue',
+          },
+        },
+        {
+          kind: 'assert',
+          id: 'never-runs',
+          matcher: {
+            scope: 'buttons',
+            textContains: 'Done',
+          },
+        },
+      ],
+    });
+
+    expect(response.status).toBe('failed');
+    expect(response.failedStepId).toBe('continue');
+    expect((response.steps as Array<Record<string, unknown>>)[0]).toMatchObject({
+      status: 'failed',
+      target: {
+        matcher: {
+          scope: 'buttons',
+          textContains: 'Continue',
+        },
+        matchedCandidateCount: 2,
+      },
+      error: {
+        code: 'workflow_target_ambiguous',
+      },
+    });
+  });
+
+  it('reuses cached page state in fast mode and returns compact page change summaries', async () => {
+    let captureCount = 0;
+    const capturePayloads: Array<Record<string, unknown>> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          if (command === 'CAPTURE_PAGE_STATE') {
+            captureCount += 1;
+            capturePayloads.push(payload);
+            if (captureCount === 1) {
+              return {
+                ok: true,
+                payload: {
+                  url: 'http://localhost:3000/planner',
+                  title: 'Planner',
+                  language: 'en',
+                  viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+                  summary: { buttons: 1, inputs: 0, modals: 0 },
+                  buttons: [
+                    {
+                      text: 'Build targets',
+                      selector: '#build-targets',
+                      elementRef: 'ref:build',
+                      tagName: 'button',
+                    },
+                  ],
+                },
+                truncated: false,
+              };
+            }
+
+            return {
+              ok: true,
+              payload: {
+                url: 'http://localhost:3000/planner/week',
+                title: 'Planner Week',
+                language: 'en',
+                viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+                summary: { buttons: 2, inputs: 0, modals: 0 },
+                buttons: [
+                  {
+                    text: 'Generate 7-day plan',
+                    selector: '#generate-week',
+                    elementRef: 'ref:generate',
+                    tagName: 'button',
+                  },
+                  {
+                    text: 'Back',
+                    selector: '#back',
+                    elementRef: 'ref:back',
+                    tagName: 'button',
+                  },
+                ],
+              },
+              truncated: false,
+            };
+          }
+
+          if (command === 'EXECUTE_UI_ACTION') {
+            expect(payload).toMatchObject({
+              action: 'click',
+              target: {
+                elementRef: 'ref:build',
+              },
+            });
+
+            return {
+              ok: true,
+              payload: {
+                action: 'click',
+                traceId: 'trace-workflow-fast-1',
+                status: 'succeeded',
+                executionScope: 'top-document-v1',
+                startedAt: 1700000000000,
+                finishedAt: 1700000000010,
+                target: {
+                  matched: true,
+                  selector: '#build-targets',
+                  resolvedSelector: '#build-targets',
+                  tagName: 'button',
+                  tabId: 7,
+                  frameId: 0,
+                  url: 'http://localhost:3000/planner',
+                },
+              },
+              truncated: false,
+            };
+          }
+
+          throw new Error(`Unexpected command ${command}`);
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'run_ui_steps', {
+      sessionId: 'session-v2',
+      mode: 'fast',
+      steps: [
+        {
+          kind: 'action',
+          id: 'build',
+          action: 'click',
+          target: {
+            scope: 'buttons',
+            textContains: 'Build targets',
+          },
+        },
+        {
+          kind: 'assert',
+          id: 'assert-week',
+          matcher: {
+            scope: 'buttons',
+            textContains: 'Generate 7-day plan',
+          },
+        },
+      ],
+    });
+
+    expect(response.status).toBe('succeeded');
+    expect(captureCount).toBe(2);
+    expect(capturePayloads).toEqual([
+      expect.objectContaining({
+        includeButtons: true,
+        includeInputs: false,
+        includeModals: false,
+        maxItems: 100,
+        maxTextLength: 120,
+      }),
+      expect.objectContaining({
+        includeButtons: true,
+        includeInputs: true,
+        includeModals: true,
+        maxItems: 12,
+        maxTextLength: 60,
+      }),
+    ]);
+    expect((response.steps as Array<Record<string, unknown>>)[0]).toMatchObject({
+      id: 'build',
+      status: 'succeeded',
+      pageChangeSummary: {
+        changes: expect.arrayContaining([
+          'buttons 0 -> 2',
+          'inputs 0 -> 0',
+          'modals 0 -> 0',
+        ]),
+      },
+    });
+    expect((response.steps as Array<Record<string, unknown>>)[1]).toMatchObject({
+      id: 'assert-week',
+      status: 'succeeded',
+      pageChangeSummary: {
+        changes: [],
+      },
+    });
+  });
+
+  it('continues after a failed workflow step when the step failure policy says continue', async () => {
+    const commands: string[] = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          commands.push(command);
+          if (command === 'CAPTURE_PAGE_STATE') {
+            return {
+              ok: true,
+              payload: {
+                url: 'http://localhost:3000/planner',
+                title: 'Planner',
+                language: 'en',
+                viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+                summary: { buttons: 1, inputs: 0, modals: 0 },
+                buttons: [
+                  {
+                    text: 'Done',
+                    selector: '#done',
+                    elementRef: 'ref:done',
+                    tagName: 'button',
+                  },
+                ],
+              },
+              truncated: false,
+            };
+          }
+
+          if (command === 'EXECUTE_UI_ACTION') {
+            return {
+              ok: true,
+              payload: {
+                action: 'click',
+                traceId: 'trace-workflow-continue-1',
+                status: 'failed',
+                executionScope: 'top-document-v1',
+                startedAt: 1700000000000,
+                finishedAt: 1700000000010,
+                target: {
+                  matched: false,
+                  selector: '#missing',
+                  frameId: 0,
+                },
+                failureReason: {
+                  code: 'target_not_found',
+                  message: 'No element matched the selector.',
+                },
+              },
+              truncated: false,
+            };
+          }
+
+          throw new Error(`Unexpected command ${command}`);
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'run_ui_steps', {
+      sessionId: 'session-v2',
+      mode: 'safe',
+      steps: [
+        {
+          kind: 'action',
+          id: 'missing-click',
+          action: 'click',
+          target: {
+            selector: '#missing',
+          },
+          onFailure: {
+            strategy: 'continue',
+          },
+        },
+        {
+          kind: 'assert',
+          id: 'done-visible',
+          matcher: {
+            scope: 'buttons',
+            textContains: 'Done',
+          },
+        },
+      ],
+    });
+
+    expect(response.status).toBe('failed');
+    expect(response.failedStepId).toBe('missing-click');
+    expect(response.stoppedEarly).toBe(false);
+    expect((response.stepCounts as Record<string, unknown>)).toMatchObject({
+      succeeded: 1,
+      failed: 1,
+      skipped: 0,
+    });
+    expect((response.steps as Array<Record<string, unknown>>).map((step) => step.status)).toEqual([
+      'failed',
+      'succeeded',
+    ]);
+    expect(commands).toContain('CAPTURE_PAGE_STATE');
+  });
+
+  it('retries one failed workflow step once and reports retry diagnostics', async () => {
+    let actionAttempts = 0;
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command) => {
+          if (command === 'CAPTURE_PAGE_STATE') {
+            return {
+              ok: true,
+              payload: {
+                url: 'http://localhost:3000/planner',
+                title: 'Planner',
+                language: 'en',
+                viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+                summary: { buttons: 1, inputs: 0, modals: 0 },
+                buttons: [
+                  {
+                    text: 'Build targets',
+                    selector: '#build-targets',
+                    elementRef: 'ref:build',
+                    tagName: 'button',
+                  },
+                ],
+              },
+              truncated: false,
+            };
+          }
+
+          if (command === 'EXECUTE_UI_ACTION') {
+            actionAttempts += 1;
+            if (actionAttempts === 1) {
+              return {
+                ok: true,
+                payload: {
+                  action: 'click',
+                  traceId: 'trace-workflow-retry-1',
+                  status: 'failed',
+                  executionScope: 'top-document-v1',
+                  startedAt: 1700000000000,
+                  finishedAt: 1700000000010,
+                  target: {
+                    matched: true,
+                    selector: '#build-targets',
+                    frameId: 0,
+                  },
+                  failureReason: {
+                    code: 'click_intercepted',
+                    message: 'Overlay blocked the click.',
+                  },
+                },
+                truncated: false,
+              };
+            }
+
+            return {
+              ok: true,
+              payload: {
+                action: 'click',
+                traceId: 'trace-workflow-retry-2',
+                status: 'succeeded',
+                executionScope: 'top-document-v1',
+                startedAt: 1700000000020,
+                finishedAt: 1700000000030,
+                target: {
+                  matched: true,
+                  selector: '#build-targets',
+                  resolvedSelector: '#build-targets',
+                  tagName: 'button',
+                  tabId: 7,
+                  frameId: 0,
+                  url: 'http://localhost:3000/planner',
+                },
+              },
+              truncated: false,
+            };
+          }
+
+          throw new Error(`Unexpected command ${command}`);
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'run_ui_steps', {
+      sessionId: 'session-v2',
+      mode: 'safe',
+      steps: [
+        {
+          kind: 'action',
+          id: 'build',
+          action: 'click',
+          target: {
+            scope: 'buttons',
+            textContains: 'Build targets',
+          },
+          onFailure: {
+            strategy: 'retry_once',
+          },
+        },
+      ],
+    });
+
+    expect(actionAttempts).toBe(2);
+    expect(response.status).toBe('succeeded');
+    expect(response.failedStepId).toBeUndefined();
+    expect((response.workflowDiagnostics as Record<string, unknown>)).toMatchObject({
+      retryCount: 1,
+    });
+    expect((response.steps as Array<Record<string, unknown>>)[0]).toMatchObject({
+      id: 'build',
+      status: 'succeeded',
+      executionAttempts: 2,
+      failurePolicy: {
+        strategy: 'retry_once',
+        captureEnabled: false,
+      },
+    });
+  });
+
+  it('captures workflow failure evidence and exposes recovery guidance for failed steps', async () => {
+    const commands: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          commands.push({ command, payload });
+          if (command === 'EXECUTE_UI_ACTION') {
+            return {
+              ok: true,
+              payload: {
+                action: 'click',
+                traceId: 'trace-workflow-failure-evidence',
+                status: 'failed',
+                executionScope: 'top-document-v1',
+                startedAt: 1700000000000,
+                finishedAt: 1700000000010,
+                target: {
+                  matched: false,
+                  selector: '#missing',
+                  frameId: 0,
+                },
+                failureReason: {
+                  code: 'target_not_found',
+                  message: 'No element matched the selector.',
+                },
+              },
+              truncated: false,
+            };
+          }
+
+          if (command === 'CAPTURE_UI_SNAPSHOT') {
+            return {
+              ok: true,
+              payload: {
+                snapshotId: 'snap-workflow-1',
+                mode: 'dom',
+                dom: { root: { tagName: 'button' } },
+              },
+              truncated: false,
+            };
+          }
+
+          if (command === 'CAPTURE_PAGE_STATE') {
+            return {
+              ok: true,
+              payload: {
+                url: 'http://localhost:3000/planner',
+                title: 'Planner',
+                language: 'en',
+                viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+                summary: { buttons: 0, inputs: 0, modals: 0 },
+                buttons: [],
+              },
+              truncated: false,
+            };
+          }
+
+          throw new Error(`Unexpected command ${command}`);
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'run_ui_steps', {
+      sessionId: 'session-v2',
+      mode: 'safe',
+      steps: [
+        {
+          kind: 'action',
+          id: 'missing-click',
+          action: 'click',
+          target: {
+            selector: '#missing',
+          },
+          onFailure: {
+            capture: {
+              enabled: true,
+              mode: 'dom',
+            },
+          },
+        },
+      ],
+    });
+
+    expect(response.status).toBe('failed');
+    expect(response.recommendedAction).toBe('inspect_page_state');
+    expect((response.workflowDiagnostics as Record<string, unknown>)).toMatchObject({
+      failureCaptureCount: 1,
+    });
+    expect((response.steps as Array<Record<string, unknown>>)[0]).toMatchObject({
+      id: 'missing-click',
+      status: 'failed',
+      recommendedAction: 'inspect_page_state',
+      failurePolicy: {
+        strategy: 'stop',
+        captureEnabled: true,
+      },
+      failureEvidence: {
+        captured: true,
+      },
+    });
+    expect(commands.some((entry) => entry.command === 'CAPTURE_UI_SNAPSHOT')).toBe(true);
+  });
+
   it('falls back to outline document mode when html capture times out', async () => {
     const tools = createToolRegistry(
       createV2ToolHandlers({
@@ -1591,6 +2727,61 @@ describe('mcp/server V2 capture tools', () => {
     });
   });
 
+  it('passes elementRef targets through the live ui action path', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          return {
+            ok: true,
+            payload: {
+              action: 'click',
+              traceId: 'trace-live-ref-1',
+              status: 'succeeded',
+              executionScope: 'top-document-v1',
+              startedAt: 1700000000000,
+              finishedAt: 1700000000020,
+              target: {
+                matched: true,
+                selector: '#submit',
+                resolvedSelector: '#submit',
+                tagName: 'button',
+                tabId: 9,
+                frameId: 0,
+                url: 'http://localhost:3000/checkout',
+              },
+              result: {
+                button: 'left',
+                clickCount: 1,
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'execute_ui_action', {
+      sessionId: 'session-v2',
+      action: 'click',
+      target: {
+        elementRef: 'ref:button',
+      },
+    });
+
+    expect(captureCalls[0]).toMatchObject({
+      command: 'EXECUTE_UI_ACTION',
+      payload: {
+        action: 'click',
+        target: {
+          elementRef: 'ref:button',
+        },
+      },
+    });
+    expect(response.status).toBe('succeeded');
+  });
+
   it('captures snapshot evidence when a live ui action fails', async () => {
     const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
     const tools = createToolRegistry(
@@ -1680,6 +2871,130 @@ describe('mcp/server V2 capture tools', () => {
         trigger: 'error',
       },
     });
+  });
+
+  it('waits for structured page state after a successful live ui action', async () => {
+    let pageStateAttempts = 0;
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command) => {
+          if (command === 'EXECUTE_UI_ACTION') {
+            return {
+              ok: true,
+              payload: {
+                action: 'click',
+                traceId: 'trace-live-3',
+                status: 'succeeded',
+                executionScope: 'top-document-v1',
+                startedAt: 1700000001000,
+                finishedAt: 1700000001010,
+                target: {
+                  matched: true,
+                  selector: '#open-day',
+                  resolvedSelector: '#open-day',
+                  tagName: 'button',
+                  tabId: 7,
+                  frameId: 0,
+                  url: 'http://localhost:3000/planner',
+                },
+              },
+              truncated: false,
+            };
+          }
+
+          if (command === 'CAPTURE_PAGE_STATE') {
+            pageStateAttempts += 1;
+            return {
+              ok: true,
+              payload: {
+                url: 'http://localhost:3000/planner',
+                title: 'Planner',
+                language: 'en',
+                viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+                summary: { buttons: 5, inputs: 2, modals: pageStateAttempts >= 2 ? 1 : 0 },
+                modals:
+                  pageStateAttempts >= 2
+                    ? [{ title: 'Day plan', selector: '[role="dialog"]', buttonCount: 2, fieldCount: 0 }]
+                    : [],
+              },
+              truncated: false,
+            };
+          }
+
+          throw new Error(`Unexpected command ${command}`);
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'execute_ui_action', {
+      sessionId: 'session-v2',
+      action: 'click',
+      target: {
+        selector: '#open-day',
+      },
+      waitForPageState: {
+        scope: 'modals',
+        titleContains: 'Day plan',
+        timeoutMs: 500,
+        pollIntervalMs: 10,
+      },
+    });
+
+    expect(response.status).toBe('succeeded');
+    expect(response.postActionState).toMatchObject({
+      matched: true,
+      matchCount: 1,
+    });
+    expect((response.postActionState as Record<string, unknown>).attempts).toBeGreaterThanOrEqual(2);
+  });
+
+  it('does not run post-action page-state wait when the live ui action fails', async () => {
+    const captureCalls: Array<string> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command) => {
+          captureCalls.push(command);
+          return {
+            ok: true,
+            payload: {
+              action: 'click',
+              traceId: 'trace-live-4',
+              status: 'failed',
+              executionScope: 'top-document-v1',
+              startedAt: 1700000001000,
+              finishedAt: 1700000001010,
+              target: {
+                matched: false,
+                selector: '#missing',
+                frameId: 0,
+              },
+              failureReason: {
+                code: 'target_not_found',
+                message: 'No element matched the selector.',
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'execute_ui_action', {
+      sessionId: 'session-v2',
+      action: 'click',
+      target: {
+        selector: '#missing',
+      },
+      waitForPageState: {
+        scope: 'modals',
+        titleContains: 'Day plan',
+        timeoutMs: 500,
+      },
+    });
+
+    expect(captureCalls).toEqual(['EXECUTE_UI_ACTION']);
+    expect(response.status).toBe('failed');
+    expect(response.postActionState).toBeUndefined();
   });
 
   it('supports compact live console profile with byte-budget truncation', async () => {

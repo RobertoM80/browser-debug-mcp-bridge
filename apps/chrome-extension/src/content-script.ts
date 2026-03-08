@@ -1,13 +1,288 @@
-import {
-  LiveUIActionRequest,
-  LiveUIActionRequestSchema,
-  LiveUIActionResult,
-  createLiveUIActionTraceId,
-} from '../../../libs/mcp-contracts/src';
-
 export const BRIDGE_SOURCE = 'browser-debug-mcp-bridge';
 export const BRIDGE_KIND = 'bridge-event';
 export const BRIDGE_CONTROL_KIND = 'bridge-control';
+
+type LiveUIAction = 'click' | 'input' | 'focus' | 'blur' | 'scroll' | 'press_key' | 'submit' | 'reload';
+
+interface LiveUIActionTarget {
+  selector?: string;
+  elementRef?: string;
+  tabId?: number;
+  frameId?: number;
+  url?: string;
+}
+
+interface LiveUIActionBaseRequest {
+  action: LiveUIAction;
+  traceId?: string;
+  target?: LiveUIActionTarget;
+}
+
+type LiveUIActionRequest =
+  | (LiveUIActionBaseRequest & {
+      action: 'click';
+      input?: {
+        button?: 'left' | 'middle' | 'right';
+        clickCount?: number;
+      };
+    })
+  | (LiveUIActionBaseRequest & {
+      action: 'input';
+      input: {
+        value: string;
+      };
+    })
+  | (LiveUIActionBaseRequest & {
+      action: 'focus';
+      input?: Record<string, never>;
+    })
+  | (LiveUIActionBaseRequest & {
+      action: 'blur';
+      input?: Record<string, never>;
+    })
+  | (LiveUIActionBaseRequest & {
+      action: 'scroll';
+      input?: {
+        x?: number;
+        y?: number;
+        behavior?: 'auto' | 'smooth';
+      };
+    })
+  | (LiveUIActionBaseRequest & {
+      action: 'press_key';
+      input: {
+        key: string;
+        altKey?: boolean;
+        ctrlKey?: boolean;
+        metaKey?: boolean;
+        shiftKey?: boolean;
+      };
+    })
+  | (LiveUIActionBaseRequest & {
+      action: 'submit';
+      input?: Record<string, never>;
+    })
+  | (LiveUIActionBaseRequest & {
+      action: 'reload';
+      input?: {
+        ignoreCache?: boolean;
+      };
+    });
+
+interface LiveUIActionFailureReason {
+  code: string;
+  message: string;
+}
+
+interface LiveUIActionTargetSummary {
+  matched: boolean;
+  selector?: string;
+  resolvedSelector?: string;
+  tagName?: string;
+  textPreview?: string;
+  tabId?: number;
+  frameId: number;
+  url?: string;
+}
+
+interface LiveUIActionResult {
+  [key: string]: unknown;
+  action: LiveUIAction;
+  traceId: string;
+  status: 'succeeded' | 'rejected' | 'failed';
+  executionScope: 'top-document-v1';
+  startedAt: number;
+  finishedAt: number;
+  target: LiveUIActionTargetSummary;
+  failureReason?: LiveUIActionFailureReason;
+  result?: Record<string, unknown>;
+}
+
+function createLiveUIActionTraceId(): string {
+  return `uiaction-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function parseLiveUIActionTarget(value: unknown): LiveUIActionTarget | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const target: LiveUIActionTarget = {};
+  if (typeof value.selector === 'string' && value.selector.length > 0) {
+    target.selector = value.selector;
+  }
+  if (typeof value.elementRef === 'string' && value.elementRef.length > 0) {
+    target.elementRef = value.elementRef;
+  }
+  if (isFiniteNumber(value.tabId) && Number.isInteger(value.tabId) && value.tabId >= 0) {
+    target.tabId = value.tabId;
+  }
+  if (isFiniteNumber(value.frameId) && Number.isInteger(value.frameId) && value.frameId >= 0) {
+    target.frameId = value.frameId;
+  }
+  if (typeof value.url === 'string' && value.url.length > 0) {
+    try {
+      new URL(value.url);
+      target.url = value.url;
+    } catch {
+      return undefined;
+    }
+  }
+
+  return target;
+}
+
+interface LiveElementRefPayload {
+  selector?: string;
+  testId?: string;
+  text?: string;
+  label?: string;
+  title?: string;
+  tagName?: string;
+  type?: string;
+}
+
+function encodeElementRef(payload: LiveElementRefPayload): string {
+  return `ref:${btoa(JSON.stringify(payload))}`;
+}
+
+function decodeElementRef(value: string): LiveElementRefPayload | undefined {
+  if (!value.startsWith('ref:')) {
+    return undefined;
+  }
+
+  try {
+    const decoded = JSON.parse(atob(value.slice(4))) as Record<string, unknown>;
+    const result: LiveElementRefPayload = {};
+    if (typeof decoded.selector === 'string' && decoded.selector.length > 0) {
+      result.selector = decoded.selector;
+    }
+    if (typeof decoded.testId === 'string' && decoded.testId.length > 0) {
+      result.testId = decoded.testId;
+    }
+    if (typeof decoded.text === 'string' && decoded.text.length > 0) {
+      result.text = decoded.text;
+    }
+    if (typeof decoded.label === 'string' && decoded.label.length > 0) {
+      result.label = decoded.label;
+    }
+    if (typeof decoded.title === 'string' && decoded.title.length > 0) {
+      result.title = decoded.title;
+    }
+    if (typeof decoded.tagName === 'string' && decoded.tagName.length > 0) {
+      result.tagName = decoded.tagName.toLowerCase();
+    }
+    if (typeof decoded.type === 'string' && decoded.type.length > 0) {
+      result.type = decoded.type.toLowerCase();
+    }
+    return result;
+  } catch {
+    return undefined;
+  }
+}
+
+function parseLiveUIActionRequest(payload: unknown): { success: true; data: LiveUIActionRequest } | { success: false; error: string } {
+  if (!isRecord(payload) || typeof payload.action !== 'string') {
+    return { success: false, error: 'action is required' };
+  }
+
+  const traceId = typeof payload.traceId === 'string' && payload.traceId.length > 0 ? payload.traceId : undefined;
+  const target = parseLiveUIActionTarget(payload.target);
+  const base = target ? { traceId, target } : { traceId };
+
+  switch (payload.action) {
+    case 'click': {
+      if (payload.input !== undefined && !isRecord(payload.input)) {
+        return { success: false, error: 'click input must be an object' };
+      }
+      const button = payload.input?.button;
+      const clickCount = payload.input?.clickCount;
+      if (button !== undefined && button !== 'left' && button !== 'middle' && button !== 'right') {
+        return { success: false, error: 'click input.button must be left, middle, or right' };
+      }
+      if (clickCount !== undefined && (!isFiniteNumber(clickCount) || !Number.isInteger(clickCount) || clickCount < 1 || clickCount > 3)) {
+        return { success: false, error: 'click input.clickCount must be an integer between 1 and 3' };
+      }
+      return { success: true, data: { action: 'click', ...base, input: payload.input ? { button, clickCount } : undefined } };
+    }
+    case 'input': {
+      if (!isRecord(payload.input) || typeof payload.input.value !== 'string') {
+        return { success: false, error: 'input action requires input.value' };
+      }
+      return { success: true, data: { action: 'input', ...base, input: { value: payload.input.value } } };
+    }
+    case 'focus':
+    case 'blur':
+    case 'submit':
+      return { success: true, data: { action: payload.action, ...base } };
+    case 'scroll': {
+      if (payload.input !== undefined && !isRecord(payload.input)) {
+        return { success: false, error: 'scroll input must be an object' };
+      }
+      const x = payload.input?.x;
+      const y = payload.input?.y;
+      const behavior = payload.input?.behavior;
+      if (x !== undefined && !isFiniteNumber(x)) {
+        return { success: false, error: 'scroll input.x must be a number' };
+      }
+      if (y !== undefined && !isFiniteNumber(y)) {
+        return { success: false, error: 'scroll input.y must be a number' };
+      }
+      if (behavior !== undefined && behavior !== 'auto' && behavior !== 'smooth') {
+        return { success: false, error: 'scroll input.behavior must be auto or smooth' };
+      }
+      return { success: true, data: { action: 'scroll', ...base, input: payload.input ? { x, y, behavior } : undefined } };
+    }
+    case 'press_key': {
+      if (!isRecord(payload.input) || typeof payload.input.key !== 'string' || payload.input.key.length === 0) {
+        return { success: false, error: 'press_key action requires input.key' };
+      }
+      for (const flag of ['altKey', 'ctrlKey', 'metaKey', 'shiftKey'] as const) {
+        const value = payload.input[flag];
+        if (value !== undefined && typeof value !== 'boolean') {
+          return { success: false, error: `press_key input.${flag} must be a boolean` };
+        }
+      }
+      return {
+        success: true,
+        data: {
+          action: 'press_key',
+          ...base,
+          input: {
+            key: payload.input.key,
+            altKey: payload.input.altKey as boolean | undefined,
+            ctrlKey: payload.input.ctrlKey as boolean | undefined,
+            metaKey: payload.input.metaKey as boolean | undefined,
+            shiftKey: payload.input.shiftKey as boolean | undefined,
+          },
+        },
+      };
+    }
+    case 'reload': {
+      if (payload.input !== undefined && !isRecord(payload.input)) {
+        return { success: false, error: 'reload input must be an object' };
+      }
+      const ignoreCache = payload.input?.ignoreCache;
+      if (ignoreCache !== undefined && typeof ignoreCache !== 'boolean') {
+        return { success: false, error: 'reload input.ignoreCache must be a boolean' };
+      }
+      return { success: true, data: { action: 'reload', ...base, input: payload.input ? { ignoreCache } : undefined } };
+    }
+    default:
+      return { success: false, error: `unsupported action: ${payload.action}` };
+  }
+}
 
 export interface BridgePayload {
   source: string;
@@ -21,7 +296,9 @@ type CaptureCommandType =
   | 'CAPTURE_DOM_DOCUMENT'
   | 'CAPTURE_COMPUTED_STYLES'
   | 'CAPTURE_LAYOUT_METRICS'
+  | 'CAPTURE_PAGE_STATE'
   | 'CAPTURE_UI_SNAPSHOT'
+  | 'SET_VIEWPORT'
   | 'EXECUTE_UI_ACTION';
 
 type SnapshotStyleMode = 'computed-lite' | 'computed-full';
@@ -132,6 +409,352 @@ function getElementTextPreview(target: Element | null): string | undefined {
   }
 
   return text.slice(0, 80);
+}
+
+function clampPageStateItems(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 40;
+  }
+
+  const floored = Math.floor(value);
+  if (floored < 1) {
+    return 40;
+  }
+
+  return Math.min(floored, 100);
+}
+
+function clampPageStateTextLength(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 80;
+  }
+
+  const floored = Math.floor(value);
+  if (floored < 8) {
+    return 80;
+  }
+
+  return Math.min(floored, 200);
+}
+
+function truncatePreview(value: string | null | undefined, maxLength: number): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) {
+    return undefined;
+  }
+
+  return normalized.slice(0, maxLength);
+}
+
+function getElementTestId(target: Element): string | undefined {
+  return truncatePreview(target.getAttribute('data-testid'), 120);
+}
+
+function getAriaBoolean(target: Element, attribute: 'aria-pressed' | 'aria-selected' | 'aria-expanded'): boolean | undefined {
+  const value = target.getAttribute(attribute);
+  if (value === 'true') {
+    return true;
+  }
+  if (value === 'false') {
+    return false;
+  }
+  return undefined;
+}
+
+function isElementDisabled(target: Element): boolean {
+  if (target instanceof HTMLButtonElement || target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement) {
+    return target.disabled;
+  }
+
+  const ariaDisabled = target.getAttribute('aria-disabled');
+  return ariaDisabled === 'true';
+}
+
+function resolveInputLabel(target: Element, maxTextLength: number): string | undefined {
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) {
+    const labels = target.labels ? Array.from(target.labels) : [];
+    for (const label of labels) {
+      const text = truncatePreview(label.textContent, maxTextLength);
+      if (text) {
+        return text;
+      }
+    }
+
+    if (target.id) {
+      const explicit = target.ownerDocument.querySelector(`label[for="${cssEscape(target.id)}"]`);
+      if (explicit) {
+        const text = truncatePreview(explicit.textContent, maxTextLength);
+        if (text) {
+          return text;
+        }
+      }
+    }
+  }
+
+  const ariaLabel = truncatePreview(target.getAttribute('aria-label'), maxTextLength);
+  if (ariaLabel) {
+    return ariaLabel;
+  }
+
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+    return truncatePreview(target.placeholder, maxTextLength);
+  }
+
+  return undefined;
+}
+
+function collectUniqueElements(selectors: string[]): Element[] {
+  const seen = new Set<Element>();
+  const elements: Element[] = [];
+  for (const selector of selectors) {
+    for (const element of Array.from(document.querySelectorAll(selector))) {
+      if (seen.has(element)) {
+        continue;
+      }
+      seen.add(element);
+      elements.push(element);
+    }
+  }
+  return elements;
+}
+
+function summarizeButtonElement(target: Element, maxTextLength: number): Record<string, unknown> {
+  const text = truncatePreview(
+    target instanceof HTMLInputElement ? (target.value || target.getAttribute('value')) : target.textContent,
+    maxTextLength,
+  );
+  const selector = getElementSelector(target);
+  const testId = getElementTestId(target);
+  return {
+    text,
+    selector,
+    testId,
+    elementRef: encodeElementRef({
+      selector,
+      testId,
+      text,
+      tagName: target.tagName.toLowerCase(),
+      type: target instanceof HTMLInputElement ? resolveFieldType(target) : undefined,
+    }),
+    disabled: isElementDisabled(target),
+    pressed: getAriaBoolean(target, 'aria-pressed'),
+    selected: getAriaBoolean(target, 'aria-selected'),
+    expanded: getAriaBoolean(target, 'aria-expanded'),
+    role: truncatePreview(target.getAttribute('role'), 32),
+    tagName: target.tagName.toLowerCase(),
+  };
+}
+
+function summarizeInputElement(target: Element, maxTextLength: number): Record<string, unknown> {
+  const editable = isEditableElement(target);
+  const formField = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement;
+  const valueLength = editable ? getEditableElementValueLength(target) : undefined;
+  const label = resolveInputLabel(target, maxTextLength);
+  const selector = getElementSelector(target);
+  const testId = getElementTestId(target);
+  const type = formField ? resolveFieldType(target as FormFieldElement) : (target instanceof HTMLElement && target.isContentEditable ? 'contenteditable' : target.tagName.toLowerCase());
+  return {
+    label,
+    selector,
+    testId,
+    elementRef: encodeElementRef({
+      selector,
+      testId,
+      label,
+      tagName: target.tagName.toLowerCase(),
+      type,
+    }),
+    type,
+    placeholder:
+      target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
+        ? truncatePreview(target.placeholder, maxTextLength)
+        : undefined,
+    disabled: isElementDisabled(target),
+    readOnly:
+      target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
+        ? target.readOnly
+        : undefined,
+    required:
+      target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement
+        ? target.required
+        : undefined,
+    valueLength,
+  };
+}
+
+function summarizeModalElement(target: Element, maxTextLength: number): Record<string, unknown> {
+  const heading = target.querySelector('h1, h2, h3, [role="heading"]');
+  const firstButton = target.querySelector('button, [role="button"]');
+  const fieldCount = target.querySelectorAll('input, textarea, select, [contenteditable="true"], [contenteditable=""]').length;
+  const title = truncatePreview(heading?.textContent ?? target.getAttribute('aria-label') ?? target.getAttribute('data-testid'), maxTextLength);
+  const selector = getElementSelector(target);
+  const testId = getElementTestId(target);
+  return {
+    title,
+    selector,
+    testId,
+    elementRef: encodeElementRef({
+      selector,
+      testId,
+      title,
+      tagName: target.tagName.toLowerCase(),
+    }),
+    role: truncatePreview(target.getAttribute('role'), 32),
+    buttonCount: target.querySelectorAll('button, [role="button"]').length,
+    fieldCount,
+    primaryAction: truncatePreview(firstButton?.textContent, maxTextLength),
+  };
+}
+
+function resolveElementFromRef(win: Window, elementRef: string): Element | null {
+  const ref = decodeElementRef(elementRef);
+  if (!ref) {
+    return null;
+  }
+
+  const matches = (target: Element): boolean => {
+    if (ref.tagName && target.tagName.toLowerCase() !== ref.tagName) {
+      return false;
+    }
+    if (ref.testId && target.getAttribute('data-testid') !== ref.testId) {
+      return false;
+    }
+    if (ref.type && target instanceof HTMLInputElement && resolveFieldType(target) !== ref.type) {
+      return false;
+    }
+    if (ref.text && !truncatePreview(target.textContent, 200)?.toLowerCase().includes(ref.text.toLowerCase())) {
+      return false;
+    }
+    if (ref.label && !resolveInputLabel(target, 200)?.toLowerCase().includes(ref.label.toLowerCase())) {
+      return false;
+    }
+    if (ref.title) {
+      const heading = target.querySelector('h1, h2, h3, [role="heading"]');
+      const title = truncatePreview(heading?.textContent ?? target.getAttribute('aria-label') ?? target.getAttribute('data-testid'), 200);
+      if (!title?.toLowerCase().includes(ref.title.toLowerCase())) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  if (ref.testId) {
+    const selector = `[data-testid="${cssEscape(ref.testId)}"]`;
+    for (const target of Array.from(win.document.querySelectorAll(selector))) {
+      if (matches(target)) {
+        return target;
+      }
+    }
+  }
+
+  if (ref.selector) {
+    const target = win.document.querySelector(ref.selector);
+    if (target && matches(target)) {
+      return target;
+    }
+  }
+
+  const candidates = collectUniqueElements([
+    'button',
+    '[role="button"]',
+    'input',
+    'textarea',
+    'select',
+    '[role="dialog"]',
+    '[aria-modal="true"]',
+    '[contenteditable="true"]',
+    '[contenteditable=""]',
+  ]);
+
+  return candidates.find((target) => matches(target)) ?? null;
+}
+
+function capturePageState(win: Window, payload: Record<string, unknown>): { result: Record<string, unknown>; truncated: boolean } {
+  const maxItems = clampPageStateItems(payload.maxItems);
+  const maxTextLength = clampPageStateTextLength(payload.maxTextLength);
+  const includeButtons = payload.includeButtons !== false;
+  const includeInputs = payload.includeInputs !== false;
+  const includeModals = payload.includeModals !== false;
+
+  const buttonElements = includeButtons
+    ? collectUniqueElements([
+        'button',
+        '[role="button"]',
+        'input[type="button"]',
+        'input[type="submit"]',
+        'input[type="reset"]',
+      ])
+    : [];
+  const inputElements = includeInputs
+    ? collectUniqueElements([
+        'input',
+        'textarea',
+        'select',
+        '[contenteditable="true"]',
+        '[contenteditable=""]',
+      ])
+    : [];
+  const modalElements = includeModals
+    ? collectUniqueElements([
+        '[role="dialog"]',
+        '[aria-modal="true"]',
+        '[data-testid="modal-surface"]',
+        '[data-testid="modal"]',
+      ])
+    : [];
+
+  const buttons = buttonElements.slice(0, maxItems).map((element) => summarizeButtonElement(element, maxTextLength));
+  const inputs = inputElements.slice(0, maxItems).map((element) => summarizeInputElement(element, maxTextLength));
+  const modals = modalElements.slice(0, maxItems).map((element) => summarizeModalElement(element, maxTextLength));
+  const focused = win.document.activeElement instanceof Element
+    ? {
+        selector: getElementSelector(win.document.activeElement),
+        testId: getElementTestId(win.document.activeElement),
+        elementRef: encodeElementRef({
+          selector: getElementSelector(win.document.activeElement),
+          testId: getElementTestId(win.document.activeElement),
+          text: truncatePreview(win.document.activeElement.textContent, maxTextLength),
+          tagName: win.document.activeElement.tagName.toLowerCase(),
+        }),
+        tagName: win.document.activeElement.tagName.toLowerCase(),
+        text: truncatePreview(win.document.activeElement.textContent, maxTextLength),
+      }
+    : undefined;
+
+  const truncated = buttonElements.length > buttons.length || inputElements.length > inputs.length || modalElements.length > modals.length;
+
+  return {
+    truncated,
+    result: {
+      url: win.location.href,
+      title: truncatePreview(win.document.title, maxTextLength),
+      language: truncatePreview(win.document.documentElement.lang || navigator.language, 32),
+      viewport: {
+        width: win.innerWidth,
+        height: win.innerHeight,
+        scrollX: win.scrollX,
+        scrollY: win.scrollY,
+      },
+      focused,
+      summary: {
+        buttons: buttonElements.length,
+        inputs: inputElements.length,
+        modals: modalElements.length,
+      },
+      buttons: includeButtons ? buttons : undefined,
+      inputs: includeInputs ? inputs : undefined,
+      modals: includeModals ? modals : undefined,
+      truncation: {
+        buttons: buttonElements.length > buttons.length,
+        inputs: inputElements.length > inputs.length,
+        modals: modalElements.length > modals.length,
+      },
+    },
+  };
 }
 
 function buildLiveActionTargetSummary(
@@ -1080,6 +1703,10 @@ export function executeCaptureCommand(
     };
   }
 
+  if (command === 'CAPTURE_PAGE_STATE') {
+    return capturePageState(win, payload);
+  }
+
   if (command === 'CAPTURE_UI_SNAPSHOT') {
     const selector = typeof payload.selector === 'string' ? payload.selector : '';
     const trigger = typeof payload.trigger === 'string' ? payload.trigger : 'manual';
@@ -1157,19 +1784,21 @@ export function executeCaptureCommand(
   }
 
   if (command === 'EXECUTE_UI_ACTION') {
-    const parsed = LiveUIActionRequestSchema.safeParse(payload);
+    const parsed = parseLiveUIActionRequest(payload);
     if (!parsed.success) {
-      throw new Error(`Invalid live UI action payload: ${parsed.error.issues[0]?.message ?? 'unknown error'}`);
+      throw new Error(`Invalid live UI action payload: ${parsed.error}`);
     }
 
     const request = parsed.data;
     const startedAt = Date.now();
     const selector = request.target?.selector;
-    const target = selector
-      ? win.document.querySelector(selector)
-      : (win.document.activeElement instanceof Element ? win.document.activeElement : null)
-        ?? win.document.body
-        ?? win.document.documentElement;
+    const target = request.target?.elementRef
+      ? resolveElementFromRef(win, request.target.elementRef)
+      : selector
+        ? win.document.querySelector(selector)
+        : (win.document.activeElement instanceof Element ? win.document.activeElement : null)
+          ?? win.document.body
+          ?? win.document.documentElement;
 
     if ((request.target?.frameId ?? 0) !== 0) {
       return {
@@ -1201,6 +1830,10 @@ export function executeCaptureCommand(
       truncated: false,
       result: executeLiveUiAction(win, request, startedAt, target),
     };
+  }
+
+  if (command === 'SET_VIEWPORT') {
+    throw new Error('SET_VIEWPORT must be handled by the extension background context');
   }
 
   throw new Error(`Unsupported capture command: ${command}`);

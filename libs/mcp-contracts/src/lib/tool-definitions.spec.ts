@@ -37,6 +37,7 @@ describe('tool-definitions', () => {
 
   it('should define query tools', () => {
     expect(QUERY_TOOLS.GET_ELEMENT_REFS).toBe('get_element_refs');
+    expect(QUERY_TOOLS.GET_INTERACTIVE_ELEMENTS).toBe('get_interactive_elements');
   });
 
   it('should define capture tools', () => {
@@ -44,8 +45,10 @@ describe('tool-definitions', () => {
     expect(CAPTURE_TOOLS.GET_DOM_DOCUMENT).toBe('get_dom_document');
     expect(CAPTURE_TOOLS.GET_COMPUTED_STYLES).toBe('get_computed_styles');
     expect(CAPTURE_TOOLS.GET_LAYOUT_METRICS).toBe('get_layout_metrics');
+    expect(CAPTURE_TOOLS.GET_PAGE_STATE).toBe('get_page_state');
     expect(CAPTURE_TOOLS.CAPTURE_UI_SNAPSHOT).toBe('capture_ui_snapshot');
     expect(CAPTURE_TOOLS.GET_LIVE_CONSOLE_LOGS).toBe('get_live_console_logs');
+    expect(CAPTURE_TOOLS.SET_VIEWPORT).toBe('set_viewport');
   });
 
   it('should define correlation tools', () => {
@@ -61,5 +64,8 @@ describe('tool-definitions', () => {
 
   it('should define automation tools', () => {
     expect(AUTOMATION_TOOLS.EXECUTE_UI_ACTION).toBe('execute_ui_action');
+    expect(AUTOMATION_TOOLS.ASSERT_PAGE_STATE).toBe('assert_page_state');
+    expect(AUTOMATION_TOOLS.WAIT_FOR_PAGE_STATE).toBe('wait_for_page_state');
+    expect(AUTOMATION_TOOLS.RUN_UI_STEPS).toBe('run_ui_steps');
   });
 });

@@ -333,6 +333,51 @@ describe('content-script capture', () => {
     expect(output.result.truncation).toMatchObject({ dom: false });
   });
 
+  it('captures compact structured page state for buttons, inputs, and modals', () => {
+    document.body.innerHTML = [
+      '<main>',
+      '  <button id="primary-cta" aria-pressed="true">Build targets</button>',
+      '  <label for="name-field">Name</label>',
+      '  <input id="name-field" type="text" placeholder="Roberto" value="Roberto Mirabella" />',
+      '  <div role="dialog" aria-label="Day plan" data-testid="modal-surface">',
+      '    <h2>Monday</h2>',
+      '    <button>Close day</button>',
+      '  </div>',
+      '</main>',
+    ].join('');
+
+    const output = executeCaptureCommand(window, 'CAPTURE_PAGE_STATE', {
+      maxItems: 10,
+      maxTextLength: 40,
+    });
+
+    expect(output.truncated).toBe(false);
+    expect(output.result.summary).toMatchObject({
+      buttons: 2,
+      inputs: 1,
+      modals: 1,
+    });
+    expect((output.result.buttons as Array<Record<string, unknown>>)[0]).toMatchObject({
+      text: 'Build targets',
+      selector: '#primary-cta',
+      pressed: true,
+    });
+    expect(typeof (output.result.buttons as Array<Record<string, unknown>>)[0]?.elementRef).toBe('string');
+    expect((output.result.inputs as Array<Record<string, unknown>>)[0]).toMatchObject({
+      label: 'Name',
+      selector: '#name-field',
+      type: 'text',
+      valueLength: 'Roberto Mirabella'.length,
+    });
+    expect(typeof (output.result.inputs as Array<Record<string, unknown>>)[0]?.elementRef).toBe('string');
+    expect((output.result.modals as Array<Record<string, unknown>>)[0]).toMatchObject({
+      title: 'Monday',
+      testId: 'modal-surface',
+      buttonCount: 1,
+    });
+    expect(typeof (output.result.modals as Array<Record<string, unknown>>)[0]?.elementRef).toBe('string');
+  });
+
   it('can omit DOM and styles in UI snapshot capture payload', () => {
     document.body.innerHTML = '<main><button id="buy-now">Buy</button></main>';
 
@@ -439,6 +484,41 @@ describe('content-script capture', () => {
         clickCount: 2,
         button: 'left',
       },
+    });
+  });
+
+  it('executes actions via elementRef targets from page-state capture', () => {
+    document.body.innerHTML = '<button id="action-target">Run</button>';
+    const button = document.getElementById('action-target') as HTMLButtonElement | null;
+    expect(button).toBeTruthy();
+
+    let clickCount = 0;
+    button?.addEventListener('click', () => {
+      clickCount += 1;
+    });
+
+    const pageState = executeCaptureCommand(window, 'CAPTURE_PAGE_STATE', {
+      maxItems: 10,
+      maxTextLength: 40,
+    });
+    const buttonRef = (pageState.result.buttons as Array<Record<string, unknown>>)[0]?.elementRef;
+
+    const output = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'click',
+      traceId: 'trace-click-ref-1',
+      target: {
+        elementRef: buttonRef,
+      },
+      input: {
+        clickCount: 1,
+      },
+    });
+
+    expect(clickCount).toBe(1);
+    expect(output.result).toMatchObject({
+      action: 'click',
+      traceId: 'trace-click-ref-1',
+      status: 'succeeded',
     });
   });
 

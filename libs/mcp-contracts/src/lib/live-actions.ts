@@ -13,6 +13,7 @@ export const LiveUIActionSchema = z.enum([
 
 export const LiveUIActionTargetSchema = z.object({
   selector: z.string().min(1).optional(),
+  elementRef: z.string().min(1).optional(),
   tabId: z.number().int().min(0).optional(),
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
