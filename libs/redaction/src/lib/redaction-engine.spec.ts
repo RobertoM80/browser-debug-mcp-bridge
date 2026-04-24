@@ -34,6 +34,14 @@ describe('redaction-engine', () => {
       expect(result.value).toBe('token: [TOKEN]');
     });
 
+    it('should redact sensitive number sequences with a neutral placeholder', () => {
+      const engine = new RedactionEngine();
+      const result = engine.redact('4111 1111 1111 1111');
+      expect(result.redacted).toBe(true);
+      expect(result.value).toBe('[SENSITIVE_NUMBER]');
+      expect(result.rulesApplied).toContain('sensitive-number-sequence');
+    });
+
     it('should not redact safe content', () => {
       const engine = new RedactionEngine();
       const result = engine.redact('Hello World');

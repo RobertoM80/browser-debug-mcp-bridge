@@ -252,6 +252,7 @@ describe('SessionManager', () => {
       apiKey: 'api_key: sk-abcdef',
       token: 'token: top-secret',
       password: 'password: super-secret',
+      sensitiveNumber: '4111 1111 1111 1111',
     });
 
     const sent = JSON.parse(ws.sentMessages[0]) as {
@@ -261,6 +262,7 @@ describe('SessionManager', () => {
         apiKey: string;
         token: string;
         password: string;
+        sensitiveNumber: string;
       };
     };
 
@@ -269,6 +271,7 @@ describe('SessionManager', () => {
     expect(sent.data.apiKey).toBe('api_key: [API_KEY]');
     expect(sent.data.token).toBe('token: [TOKEN]');
     expect(sent.data.password).toBe('password: [PASSWORD]');
+    expect(sent.data.sensitiveNumber).toBe('[SENSITIVE_NUMBER]');
   });
 
   it('handles capture commands received from server', async () => {
