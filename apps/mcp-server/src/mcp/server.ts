@@ -96,6 +96,13 @@ const TOOL_SCHEMAS: Record<string, object> = {
       sessionId: { type: 'string' },
     },
   },
+  get_live_session_health: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+    },
+  },
   get_recent_events: {
     type: 'object',
     properties: {
@@ -362,6 +369,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
 const TOOL_DESCRIPTIONS: Record<string, string> = {
   list_sessions: 'List captured debugging sessions',
   get_session_summary: 'Get summary counters for one session',
+  get_live_session_health: 'Read live-health guidance for a session using persisted activity plus websocket state',
   get_recent_events: 'Read recent events from a session',
   get_navigation_history: 'Read navigation events for a session',
   get_console_events: 'Read console events for a session',
@@ -408,11 +416,29 @@ const DEFAULT_NETWORK_POLL_TIMEOUT_MS = 15_000;
 const MAX_NETWORK_POLL_TIMEOUT_MS = 120_000;
 const DEFAULT_NETWORK_POLL_INTERVAL_MS = 250;
 const LIVE_SESSION_DISCONNECTED_CODE = 'LIVE_SESSION_DISCONNECTED';
+const STALE_LIVE_CONNECTION_GRACE_WINDOW_MS = 30 * 60 * 1000;
+const NOISE_SESSION_HOST_PATTERNS = [
+  /(^|\.)adtrafficquality\.google$/i,
+  /(^|\.)doubleclick\.net$/i,
+  /(^|\.)googlesyndication\.com$/i,
+  /(^|\.)googleadservices\.com$/i,
+  /(^|\.)recaptcha\.net$/i,
+  /(^|\.)gstatic\.com$/i,
+];
+const NOISE_SESSION_PATH_PATTERNS = [/\/sodar/i, /\/recaptcha/i, /runner\.html$/i];
 const NETWORK_CALL_SELECT_COLUMNS = `
   request_id, session_id, trace_id, tab_id, ts_start, duration_ms, method, url, origin, status, initiator, error_class, response_size_est,
   request_content_type, request_body_text, request_body_json, request_body_bytes, request_body_truncated, request_body_chunk_ref,
   response_content_type, response_body_text, response_body_json, response_body_bytes, response_body_truncated, response_body_chunk_ref
 `;
+
+interface SessionScopeAssessment {
+  kind: 'top_level_page' | 'likely_iframe_noise' | 'unknown';
+  note: string;
+  origin?: string;
+  host?: string;
+  isLocalhost?: boolean;
+}
 
 const NETWORK_DOMAIN_GROUP_SQL = `
   CASE
@@ -429,6 +455,7 @@ const NETWORK_DOMAIN_GROUP_SQL = `
 interface SessionRow {
   session_id: string;
   created_at: number;
+  last_seen_at: number | null;
   paused_at: number | null;
   ended_at: number | null;
   tab_id: number | null;
@@ -817,6 +844,150 @@ function resolveLastUrl(payload: Record<string, unknown>): string | undefined {
   }
 
   return undefined;
+}
+
+function classifySessionUrl(urlValue: string | null | undefined): SessionScopeAssessment {
+  if (!urlValue) {
+    return {
+      kind: 'unknown',
+      note: 'No session URL is available yet.',
+    };
+  }
+
+  try {
+    const parsed = new URL(urlValue);
+    const host = parsed.hostname.toLowerCase();
+    const pathname = parsed.pathname.toLowerCase();
+    const origin = parsed.origin;
+    const isLocalhost = host === 'localhost' || host === '127.0.0.1';
+
+    if (
+      NOISE_SESSION_HOST_PATTERNS.some((pattern) => pattern.test(host))
+      || NOISE_SESSION_PATH_PATTERNS.some((pattern) => pattern.test(pathname))
+    ) {
+      return {
+        kind: 'likely_iframe_noise',
+        note: 'Last URL looks like third-party iframe/ad traffic rather than the app surface.',
+        origin,
+        host,
+        isLocalhost,
+      };
+    }
+
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return {
+        kind: 'top_level_page',
+        note: isLocalhost
+          ? 'Last URL looks like a local top-level app page.'
+          : 'Last URL looks like a top-level app page.',
+        origin,
+        host,
+        isLocalhost,
+      };
+    }
+  } catch {
+    return {
+      kind: 'unknown',
+      note: 'Session URL could not be parsed.',
+    };
+  }
+
+  return {
+    kind: 'unknown',
+    note: 'Session URL does not use an http(s) page origin.',
+  };
+}
+
+function getSessionStatus(row: Pick<SessionRow, 'paused_at' | 'ended_at'>): 'active' | 'paused' | 'ended' {
+  if (row.ended_at) {
+    return 'ended';
+  }
+  if (row.paused_at) {
+    return 'paused';
+  }
+  return 'active';
+}
+
+function resolveSessionLastSeenAt(
+  row: Pick<SessionRow, 'created_at' | 'last_seen_at' | 'paused_at' | 'ended_at'>,
+  state?: SessionConnectionLookupResult,
+): number {
+  return Math.max(
+    row.created_at,
+    row.last_seen_at ?? 0,
+    row.paused_at ?? 0,
+    row.ended_at ?? 0,
+    state?.lastHeartbeatAt ?? 0,
+  );
+}
+
+function buildLiveConnectionRecord(
+  row: Pick<SessionRow, 'created_at' | 'last_seen_at' | 'paused_at' | 'ended_at'>,
+  scope: SessionScopeAssessment,
+  state?: SessionConnectionLookupResult,
+): Record<string, unknown> {
+  const status = getSessionStatus(row);
+  const lastSeenAt = resolveSessionLastSeenAt(row, state);
+  const heartbeatAt = state?.lastHeartbeatAt;
+  const heartbeatAgeMs = typeof heartbeatAt === 'number' ? Math.max(0, Date.now() - heartbeatAt) : undefined;
+  const likelyStale = Boolean(
+    !state?.connected
+      && status === 'active'
+      && scope.kind !== 'likely_iframe_noise'
+      && typeof heartbeatAt === 'number'
+      && Date.now() - heartbeatAt <= STALE_LIVE_CONNECTION_GRACE_WINDOW_MS,
+  );
+
+  return {
+    connected: state?.connected === true,
+    connectedAt: state?.connectedAt,
+    lastHeartbeatAt: heartbeatAt,
+    heartbeatAgeMs,
+    disconnectedAt: state?.disconnectedAt,
+    disconnectReason: state?.disconnectReason ?? (status === 'ended' ? 'manual_stop' : undefined),
+    status: status === 'ended'
+      ? 'ended'
+      : status === 'paused'
+        ? 'paused'
+        : state?.connected
+          ? 'connected'
+          : likelyStale
+            ? 'likely_stale'
+            : 'disconnected',
+    captureReady: state?.connected === true && status === 'active',
+    recommendedForLiveCapture: state?.connected === true && status === 'active' && scope.kind !== 'likely_iframe_noise',
+    lastSeenAt,
+    activityAgeMs: Math.max(0, Date.now() - lastSeenAt),
+  };
+}
+
+function buildLiveSessionNextAction(
+  liveConnection: Record<string, unknown>,
+  scope: SessionScopeAssessment,
+): string {
+  const liveStatus = typeof liveConnection.status === 'string' ? liveConnection.status : 'disconnected';
+
+  if (liveStatus === 'connected' && scope.kind !== 'likely_iframe_noise') {
+    return 'Use this session for live capture tools.';
+  }
+
+  if (liveStatus === 'connected' && scope.kind === 'likely_iframe_noise') {
+    return 'Reconnect on a top-level app tab before relying on live navigation or performance captures.';
+  }
+
+  if (liveStatus === 'likely_stale') {
+    return 'Retry list_sessions after a fresh app interaction or restart the session if live capture still fails.';
+  }
+
+  if (liveStatus === 'paused') {
+    return 'Resume the session from the extension popup before using live capture tools.';
+  }
+
+  if (liveStatus === 'ended') {
+    return 'Start a new extension session before using live capture tools.';
+  }
+
+  return 'Reconnect or restart the extension session before using live capture tools.';
 }
 
 function mapEventRecord(
@@ -1423,7 +1594,12 @@ export function createV1ToolHandlers(
       const params: unknown[] = [];
 
       if (sinceMinutes !== undefined && Number.isFinite(sinceMinutes) && sinceMinutes > 0) {
-        where.push('created_at >= ?');
+        where.push(`
+          CASE
+            WHEN COALESCE(last_seen_at, 0) > created_at THEN COALESCE(last_seen_at, 0)
+            ELSE created_at
+          END >= ?
+        `);
         params.push(Date.now() - Math.floor(sinceMinutes * 60_000));
       }
 
@@ -1432,6 +1608,7 @@ export function createV1ToolHandlers(
         SELECT
           session_id,
           created_at,
+          last_seen_at,
           paused_at,
           ended_at,
           tab_id,
@@ -1446,52 +1623,51 @@ export function createV1ToolHandlers(
           pinned
         FROM sessions
         ${whereClause}
-        ORDER BY created_at DESC
+        ORDER BY
+          CASE
+            WHEN COALESCE(last_seen_at, 0) > created_at THEN COALESCE(last_seen_at, 0)
+            ELSE created_at
+          END DESC,
+          created_at DESC
         LIMIT ? OFFSET ?
       `;
 
       const rows = db.prepare(sql).all(...params, limit + 1, offset) as SessionRow[];
       const truncatedByLimit = rows.length > limit;
-      const sessions = rows.slice(0, limit).map((row) => ({
-        sessionId: row.session_id,
-        createdAt: row.created_at,
-        pausedAt: row.paused_at ?? undefined,
-        endedAt: row.ended_at ?? undefined,
-        status: row.ended_at ? 'ended' : row.paused_at ? 'paused' : 'active',
-        tabId: row.tab_id ?? undefined,
-        windowId: row.window_id ?? undefined,
-        urlStart: row.url_start ?? undefined,
-        urlLast: row.url_last ?? undefined,
-        userAgent: row.user_agent ?? undefined,
-        viewport:
-          row.viewport_w !== null && row.viewport_h !== null
-            ? {
-                width: row.viewport_w,
-                height: row.viewport_h,
-              }
-            : undefined,
-        dpr: row.dpr ?? undefined,
-        safeMode: row.safe_mode === 1,
-        pinned: row.pinned === 1,
-        liveConnection: (() => {
-          const state = getSessionConnectionState?.(row.session_id);
-          if (!state) {
-            return {
-              connected: false,
-              lastHeartbeatAt: undefined,
-              disconnectReason: row.ended_at ? 'manual_stop' : undefined,
-            };
-          }
+      const sessions = rows.slice(0, limit).map((row) => {
+        const status = getSessionStatus(row);
+        const state = getSessionConnectionState?.(row.session_id);
+        const lastUrl = row.url_last ?? undefined;
+        const scope = classifySessionUrl(lastUrl);
+        const liveConnection = buildLiveConnectionRecord(row, scope, state);
 
-          return {
-            connected: state.connected,
-            connectedAt: state.connectedAt,
-            lastHeartbeatAt: state.lastHeartbeatAt,
-            disconnectedAt: state.disconnectedAt,
-            disconnectReason: state.disconnectReason,
-          };
-        })(),
-      }));
+        return {
+          sessionId: row.session_id,
+          createdAt: row.created_at,
+          lastSeenAt: resolveSessionLastSeenAt(row, state),
+          pausedAt: row.paused_at ?? undefined,
+          endedAt: row.ended_at ?? undefined,
+          status,
+          tabId: row.tab_id ?? undefined,
+          windowId: row.window_id ?? undefined,
+          urlStart: row.url_start ?? undefined,
+          urlLast: lastUrl,
+          lastUrl,
+          userAgent: row.user_agent ?? undefined,
+          viewport:
+            row.viewport_w !== null && row.viewport_h !== null
+              ? {
+                  width: row.viewport_w,
+                  height: row.viewport_h,
+                }
+              : undefined,
+          dpr: row.dpr ?? undefined,
+          safeMode: row.safe_mode === 1,
+          pinned: row.pinned === 1,
+          scope,
+          liveConnection,
+        };
+      });
       const bytePage = applyByteBudget(sessions, maxResponseBytes);
       const truncated = truncatedByLimit || bytePage.truncatedByBytes;
 
@@ -1583,6 +1759,82 @@ export function createV1ToolHandlers(
           end: eventRange.end_ts ?? session.ended_at ?? session.created_at,
         },
         pinned: session.pinned === 1,
+      };
+    },
+
+    get_live_session_health: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const session = db
+        .prepare(`
+          SELECT
+            session_id,
+            created_at,
+            last_seen_at,
+            paused_at,
+            ended_at,
+            tab_id,
+            window_id,
+            url_last,
+            safe_mode,
+            pinned
+          FROM sessions
+          WHERE session_id = ?
+        `)
+        .get(sessionId) as
+        | {
+            session_id: string;
+            created_at: number;
+            last_seen_at: number | null;
+            paused_at: number | null;
+            ended_at: number | null;
+            tab_id: number | null;
+            window_id: number | null;
+            url_last: string | null;
+            safe_mode: number;
+            pinned: number;
+          }
+        | undefined;
+
+      if (!session) {
+        throw new Error(`Session not found: ${sessionId}`);
+      }
+
+      const latestNav = db
+        .prepare(`
+          SELECT payload_json
+          FROM events
+          WHERE session_id = ? AND type = 'nav'
+          ORDER BY ts DESC
+          LIMIT 1
+        `)
+        .get(sessionId) as { payload_json: string } | undefined;
+
+      const navPayload = latestNav ? readJsonPayload(latestNav.payload_json) : {};
+      const lastUrl = resolveLastUrl(navPayload) ?? session.url_last ?? undefined;
+      const scope = classifySessionUrl(lastUrl);
+      const connectionState = getSessionConnectionState?.(sessionId);
+      const liveConnection = buildLiveConnectionRecord(session, scope, connectionState);
+
+      return {
+        ...createBaseResponse(sessionId),
+        status: getSessionStatus(session),
+        createdAt: session.created_at,
+        lastSeenAt: resolveSessionLastSeenAt(session, connectionState),
+        pausedAt: session.paused_at ?? undefined,
+        endedAt: session.ended_at ?? undefined,
+        tabId: session.tab_id ?? undefined,
+        windowId: session.window_id ?? undefined,
+        lastUrl,
+        safeMode: session.safe_mode === 1,
+        pinned: session.pinned === 1,
+        scope,
+        liveConnection,
+        nextAction: buildLiveSessionNextAction(liveConnection, scope),
       };
     },
 

@@ -110,6 +110,32 @@ describe('mcp/server V1 query tools', () => {
     db.close();
   });
 
+  it('lists sessions using last_seen_at activity, not only created_at', async () => {
+    const db = createTestDb();
+    const now = Date.now();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, url_start, url_last)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `
+    ).run('session-active-old', now - 2 * 60 * 60_000, now - 2 * 60_000, 0, 'https://old.example', 'https://old.example/live');
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, url_start, url_last)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `
+    ).run('session-stale-old', now - 30 * 60_000, now - 4 * 60 * 60_000, 1, 'https://new.example', 'https://new.example');
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'list_sessions', { sinceMinutes: 10 });
+
+    expect(response.sessions).toHaveLength(1);
+    expect((response.sessions as Array<{ sessionId: string }>)[0]?.sessionId).toBe('session-active-old');
+
+    db.close();
+  });
+
   it('includes live connection metadata in list_sessions when available', async () => {
     const db = createTestDb();
     const now = Date.now();
@@ -148,6 +174,105 @@ describe('mcp/server V1 query tools', () => {
     expect(session?.liveConnection?.connected).toBe(true);
     expect(session?.liveConnection?.connectedAt).toBe(now - 60_000);
     expect(session?.liveConnection?.lastHeartbeatAt).toBe(now - 1_000);
+
+    db.close();
+  });
+
+  it('returns live session health guidance with stale-aware connection status', async () => {
+    const db = createTestDb();
+    const now = Date.now();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, url_start, url_last)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `
+    ).run(
+      'session-health',
+      now - 20 * 60_000,
+      now - 2 * 60_000,
+      1,
+      'https://app.example',
+      'https://ep2.adtrafficquality.google/sodar/sodar2/254/runner.html',
+    );
+
+    const tools = createToolRegistry(
+      createV1ToolHandlers(
+        () => db,
+        (sessionId) => sessionId === 'session-health'
+          ? {
+              connected: false,
+              connectedAt: now - 15 * 60_000,
+              lastHeartbeatAt: now - 90_000,
+              disconnectedAt: now - 45_000,
+              disconnectReason: 'stale_timeout',
+            }
+          : undefined,
+      ),
+    );
+
+    const response = await routeToolCall(tools, 'get_live_session_health', { sessionId: 'session-health' });
+
+    expect(response.status).toBe('active');
+    expect(response.lastSeenAt).toBe(now - 90_000);
+    expect(response.scope).toMatchObject({
+      kind: 'likely_iframe_noise',
+    });
+    expect(response.liveConnection).toMatchObject({
+      connected: false,
+      status: 'disconnected',
+      disconnectReason: 'stale_timeout',
+      recommendedForLiveCapture: false,
+    });
+    expect(typeof response.nextAction).toBe('string');
+
+    db.close();
+  });
+
+  it('marks recently active disconnected sessions as likely_stale when scope looks interactive', async () => {
+    const db = createTestDb();
+    const now = Date.now();
+
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, url_start, url_last)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `
+    ).run(
+      'session-stale-live',
+      now - 40 * 60_000,
+      now - 3 * 60_000,
+      0,
+      'http://localhost:3000',
+      'http://localhost:3000/rankings',
+    );
+
+    const tools = createToolRegistry(
+      createV1ToolHandlers(
+        () => db,
+        (sessionId) => sessionId === 'session-stale-live'
+          ? {
+              connected: false,
+              connectedAt: now - 30 * 60_000,
+              lastHeartbeatAt: now - 2 * 60_000,
+              disconnectedAt: now - 30_000,
+              disconnectReason: 'stale_timeout',
+            }
+          : undefined,
+      ),
+    );
+
+    const response = await routeToolCall(tools, 'get_live_session_health', { sessionId: 'session-stale-live' });
+
+    expect(response.scope).toMatchObject({
+      kind: 'top_level_page',
+      isLocalhost: true,
+    });
+    expect(response.liveConnection).toMatchObject({
+      status: 'likely_stale',
+      recommendedForLiveCapture: false,
+    });
+    expect(String(response.nextAction)).toContain('Retry list_sessions');
 
     db.close();
   });

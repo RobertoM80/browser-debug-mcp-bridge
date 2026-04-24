@@ -317,6 +317,7 @@ describe('Database Migrations', () => {
       const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='sessions'").all() as { name: string }[];
       const indexNames = indexes.map((index) => index.name);
       expect(indexNames).toContain('idx_sessions_paused_at');
+      expect(indexNames).toContain('idx_sessions_last_seen_at');
     });
   });
 
@@ -412,18 +413,23 @@ describe('Database Integration', () => {
   describe('Data Insertion', () => {
     it('should insert and retrieve session data', () => {
       const insert = db.prepare(`
-        INSERT INTO sessions (session_id, created_at, ended_at, tab_id, window_id, 
+        INSERT INTO sessions (session_id, created_at, last_seen_at, ended_at, tab_id, window_id, 
           url_start, url_last, user_agent, viewport_w, viewport_h, dpr, safe_mode, allowlist_hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       
-      insert.run('sess-1', 123456789, null, 1, 1, 'https://start.com', 'https://last.com',
+      insert.run('sess-1', 123456789, 123456799, null, 1, 1, 'https://start.com', 'https://last.com',
         'Mozilla/5.0', 1920, 1080, 2.0, 1, 'hash123');
       
-      const session = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get('sess-1') as { session_id: string; safe_mode: number };
+      const session = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get('sess-1') as {
+        session_id: string;
+        safe_mode: number;
+        last_seen_at: number;
+      };
       expect(session).toBeDefined();
       expect(session.session_id).toBe('sess-1');
       expect(session.safe_mode).toBe(1);
+      expect(session.last_seen_at).toBe(123456799);
     });
 
     it('should insert and retrieve event data', () => {

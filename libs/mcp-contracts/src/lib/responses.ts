@@ -56,6 +56,15 @@ export interface SessionSummaryResponse extends BaseResponse {
   };
 }
 
+export interface LiveSessionHealthResponse extends BaseResponse {
+  sessionId: string;
+  status: 'active' | 'paused' | 'ended';
+  createdAt: number;
+  lastSeenAt: number;
+  lastUrl?: string;
+  nextAction: string;
+}
+
 export interface EventsResponse extends BaseResponse {
   events: Array<{
     id: string;

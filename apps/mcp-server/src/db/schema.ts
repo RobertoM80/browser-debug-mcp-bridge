@@ -1,12 +1,13 @@
 import { Database } from 'better-sqlite3';
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export const CREATE_TABLES_SQL = `
 -- Sessions table
 CREATE TABLE IF NOT EXISTS sessions (
   session_id TEXT PRIMARY KEY,
   created_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL DEFAULT 0,
   paused_at INTEGER,
   ended_at INTEGER,
   tab_id INTEGER,

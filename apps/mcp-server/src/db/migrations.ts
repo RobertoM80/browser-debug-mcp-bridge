@@ -301,6 +301,70 @@ const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 7,
+    name: 'session_last_seen_tracking',
+    up: (db) => {
+      const sessionColumns = getColumnNames(db, 'sessions');
+      if (!sessionColumns.has('last_seen_at')) {
+        db.exec('ALTER TABLE sessions ADD COLUMN last_seen_at INTEGER NOT NULL DEFAULT 0;');
+      }
+
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_sessions_last_seen_at ON sessions(last_seen_at);
+      `);
+
+      const updateLastSeen = db.prepare('UPDATE sessions SET last_seen_at = ? WHERE session_id = ?');
+
+      const runBackfill = db.transaction(() => {
+        const rows = db.prepare(`
+          SELECT
+            s.session_id,
+            s.created_at,
+            s.paused_at,
+            s.ended_at,
+            (
+              SELECT MAX(ts)
+              FROM events
+              WHERE session_id = s.session_id
+            ) AS event_last_seen_at,
+            (
+              SELECT MAX(ts_start)
+              FROM network
+              WHERE session_id = s.session_id
+            ) AS network_last_seen_at,
+            (
+              SELECT MAX(ts)
+              FROM snapshots
+              WHERE session_id = s.session_id
+            ) AS snapshot_last_seen_at
+          FROM sessions s
+        `).all() as Array<{
+          session_id: string;
+          created_at: number;
+          paused_at: number | null;
+          ended_at: number | null;
+          event_last_seen_at: number | null;
+          network_last_seen_at: number | null;
+          snapshot_last_seen_at: number | null;
+        }>;
+
+        for (const row of rows) {
+          const lastSeenAt = Math.max(
+            row.created_at,
+            row.paused_at ?? 0,
+            row.ended_at ?? 0,
+            row.event_last_seen_at ?? 0,
+            row.network_last_seen_at ?? 0,
+            row.snapshot_last_seen_at ?? 0,
+          );
+          updateLastSeen.run(lastSeenAt, row.session_id);
+        }
+      });
+
+      runBackfill();
+    },
+  },
 ];
 
 export function runMigrations(db: Database): void {

@@ -40,6 +40,7 @@ const REDACTION_PATTERNS: Array<{ pattern: RegExp; replacement: string }> = [
 export interface SessionRecord {
   sessionId: string;
   createdAt: number;
+  lastSeenAt?: number;
   endedAt?: number;
   pausedAt?: number;
   tabId?: number;
@@ -128,10 +129,22 @@ export class EventsRepository {
         sample_stack = COALESCE(error_fingerprints.sample_stack, excluded.sample_stack)
     `);
 
+    const updateSessionActivity = this.db.prepare(`
+      UPDATE sessions
+      SET
+        last_seen_at = CASE
+          WHEN last_seen_at IS NULL OR last_seen_at < ? THEN ?
+          ELSE last_seen_at
+        END,
+        url_last = COALESCE(?, url_last)
+      WHERE session_id = ?
+    `);
+
     const runBatch = this.db.transaction((batch: EventMessage[]) => {
       for (const message of batch) {
         const eventId = `${message.sessionId}-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
         const dbEventType = this.mapEventType(message.eventType);
+        const eventTimestamp = message.timestamp ?? Date.now();
         const sanitizedData =
           message.eventType === 'network'
             ? sanitizeRecord(message.data)
@@ -145,11 +158,18 @@ export class EventsRepository {
         insert.run(
           eventId,
           message.sessionId,
-          message.timestamp ?? Date.now(),
+          eventTimestamp,
           dbEventType,
           JSON.stringify(sanitizedData),
           eventTabId,
           eventOrigin,
+        );
+
+        this.touchSessionPrepared(
+          updateSessionActivity,
+          message.sessionId,
+          eventTimestamp,
+          this.resolveSessionUrl(message.eventType, sanitizedData),
         );
 
         if (message.eventType === 'error') {
@@ -179,14 +199,15 @@ export class EventsRepository {
   createSession(message: SessionStartMessage): void {
     const insert = this.db.prepare(`
       INSERT INTO sessions (
-        session_id, created_at, tab_id, window_id, url_start, url_last,
+        session_id, created_at, last_seen_at, tab_id, window_id, url_start, url_last,
         user_agent, viewport_w, viewport_h, dpr, safe_mode, allowlist_hash
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const now = Date.now();
     insert.run(
       message.sessionId,
+      now,
       now,
       message.tabId ?? null,
       message.windowId ?? null,
@@ -204,21 +225,23 @@ export class EventsRepository {
   endSession(message: SessionEndMessage): void {
     const update = this.db.prepare(`
       UPDATE sessions
-      SET ended_at = ?, paused_at = NULL
+      SET ended_at = ?, paused_at = NULL, last_seen_at = ?
       WHERE session_id = ?
     `);
 
-    update.run(Date.now(), message.sessionId);
+    const now = Date.now();
+    update.run(now, now, message.sessionId);
   }
 
   pauseSession(message: SessionPauseMessage): void {
     const update = this.db.prepare(`
       UPDATE sessions
-      SET paused_at = COALESCE(paused_at, ?), ended_at = NULL
+      SET paused_at = COALESCE(paused_at, ?), ended_at = NULL, last_seen_at = ?
       WHERE session_id = ? AND ended_at IS NULL
     `);
 
-    const result = update.run(Date.now(), message.sessionId);
+    const now = Date.now();
+    const result = update.run(now, now, message.sessionId);
     if (result.changes === 0) {
       throw new Error(`Session not found or already ended: ${message.sessionId}`);
     }
@@ -230,6 +253,7 @@ export class EventsRepository {
       SET
         paused_at = NULL,
         ended_at = NULL,
+        last_seen_at = ?,
         url_last = COALESCE(?, url_last),
         tab_id = COALESCE(?, tab_id),
         window_id = COALESCE(?, window_id),
@@ -242,6 +266,7 @@ export class EventsRepository {
     `);
 
     const result = update.run(
+      Date.now(),
       message.url ?? null,
       message.tabId ?? null,
       message.windowId ?? null,
@@ -259,6 +284,21 @@ export class EventsRepository {
 
   insertEvent(message: EventMessage): void {
     this.insertEventsBatch([message]);
+  }
+
+  touchSession(sessionId: string, timestamp: number = Date.now(), urlLast?: string | null): void {
+    const update = this.db.prepare(`
+      UPDATE sessions
+      SET
+        last_seen_at = CASE
+          WHEN last_seen_at IS NULL OR last_seen_at < ? THEN ?
+          ELSE last_seen_at
+        END,
+        url_last = COALESCE(?, url_last)
+      WHERE session_id = ?
+    `);
+
+    this.touchSessionPrepared(update, sessionId, timestamp, urlLast);
   }
 
   private mapEventType(eventType: string): string {
@@ -298,6 +338,47 @@ export class EventsRepository {
       now,
       now
     );
+  }
+
+  private touchSessionPrepared(
+    statement: ReturnType<Database['prepare']>,
+    sessionId: string,
+    timestamp: number,
+    urlLast?: string | null,
+  ): void {
+    (statement as { run: (...params: unknown[]) => unknown }).run(
+      timestamp,
+      timestamp,
+      urlLast ?? null,
+      sessionId,
+    );
+  }
+
+  private resolveSessionUrl(eventType: string, data: Record<string, unknown>): string | undefined {
+    if (eventType === 'navigation') {
+      return this.resolveUrlCandidate(data.to)
+        ?? this.resolveUrlCandidate(data.url)
+        ?? this.resolveUrlCandidate(data.href)
+        ?? this.resolveUrlCandidate(data.location);
+    }
+
+    if (eventType === 'ui_snapshot') {
+      return this.resolveUrlCandidate(data.url);
+    }
+
+    if (eventType === 'custom' && data.marker === 'content_script_loaded') {
+      return this.resolveUrlCandidate(data.url);
+    }
+
+    return undefined;
+  }
+
+  private resolveUrlCandidate(value: unknown): string | undefined {
+    if (typeof value !== 'string' || value.trim().length === 0) {
+      return undefined;
+    }
+
+    return value;
   }
 
   private insertNetworkEventPrepared(

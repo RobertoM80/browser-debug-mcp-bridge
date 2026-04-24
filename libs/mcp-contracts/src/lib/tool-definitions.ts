@@ -13,6 +13,7 @@ export interface MCPServerConfig {
 export const SESSION_TOOLS = {
   LIST_SESSIONS: 'list_sessions',
   GET_SESSION_SUMMARY: 'get_session_summary',
+  GET_LIVE_SESSION_HEALTH: 'get_live_session_health',
   GET_RECENT_EVENTS: 'get_recent_events',
   GET_NAVIGATION_HISTORY: 'get_navigation_history',
   GET_CONSOLE_EVENTS: 'get_console_events',

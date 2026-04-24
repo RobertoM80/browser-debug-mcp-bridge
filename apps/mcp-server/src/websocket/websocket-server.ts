@@ -99,6 +99,14 @@ export class WebSocketManager {
     return this.eventsRepository;
   }
 
+  private touchSessionActivity(sessionId: string, timestamp: number = Date.now()): void {
+    try {
+      this.getRepository().touchSession(sessionId, timestamp);
+    } catch {
+      // Best effort only; session may have been deleted concurrently.
+    }
+  }
+
   initialize(server: FastifyInstance): void {
     this.logger = {
       info: (payload, message) => server.log.info(payload, message),
@@ -184,6 +192,7 @@ export class WebSocketManager {
         connectedAt: previous?.connectedAt ?? connectionInfo.connectedAt,
         lastHeartbeatAt: connectionInfo.lastPingAt,
       });
+      this.touchSessionActivity(connectionInfo.sessionId, connectionInfo.lastPingAt);
     }
 
     this.logger.debug(
@@ -443,6 +452,7 @@ export class WebSocketManager {
             connectedAt: previous?.connectedAt ?? info.connectedAt,
             lastHeartbeatAt: info.lastPingAt,
           });
+          this.touchSessionActivity(info.sessionId, info.lastPingAt);
         }
       }
     }, this.PING_INTERVAL_MS);
