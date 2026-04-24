@@ -50,8 +50,10 @@ Why this happens:
 
 What to do:
 
-- Run `list_sessions` and pick a session where `liveConnection.connected` is `true`
-- If none are connected, start/restart session from extension popup and retry
+- Run `get_live_session_health` for the candidate session id
+- Prefer a session where `liveConnection.recommendedForLiveCapture` is `true`
+- If health shows `scope.kind = "likely_iframe_noise"`, reconnect on a top-level app tab and retry
+- If none are healthy, start/restart session from extension popup and retry
 
 ## No events appear in MCP responses
 

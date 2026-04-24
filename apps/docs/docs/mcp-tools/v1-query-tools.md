@@ -20,9 +20,19 @@ High-volume queries support `maxResponseBytes` (default `32768`) and return pagi
 
 Response guidance:
 
-- `liveConnection.connected` tells you whether a session is currently usable for live capture tools
-- `liveConnection.lastHeartbeatAt` helps identify stale session ids
-- Prefer session ids with `liveConnection.connected = true` before calling live tools
+- `lastSeenAt` is the server's best session activity timestamp; ordering/filtering now prefers this over raw `createdAt`
+- `scope.kind` helps distinguish app pages from likely third-party iframe/ad noise
+- `liveConnection.connected` is the strongest positive signal for live capture tools, but it is not the only health signal
+- `liveConnection.status` can be `connected`, `likely_stale`, `disconnected`, `paused`, or `ended`
+- `liveConnection.recommendedForLiveCapture` is the safest field to follow when choosing a live session
+
+## `get_live_session_health`
+
+```json
+{ "name": "get_live_session_health", "arguments": { "sessionId": "sess_123" } }
+```
+
+Use this when `list_sessions` is ambiguous. It combines persisted activity, websocket heartbeats, and URL scope assessment into one health record with `nextAction`.
 
 ## `get_session_summary`
 

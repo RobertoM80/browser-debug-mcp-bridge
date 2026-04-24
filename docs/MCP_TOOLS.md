@@ -42,15 +42,27 @@ Example:
 
 Important response fields per session:
 
+- `lastSeenAt`: best-known activity timestamp for the session
+- `scope.kind`: quick URL-based hint (`top_level_page`, `likely_iframe_noise`, `unknown`)
 - `liveConnection.connected`: `true` only when the extension session is currently reachable for live capture commands
 - `liveConnection.lastHeartbeatAt`: latest websocket heartbeat/message timestamp seen by the server
+- `liveConnection.status`: `connected`, `likely_stale`, `disconnected`, `paused`, or `ended`
 - `liveConnection.disconnectReason`: best-known disconnect reason when no longer connected
+- `liveConnection.recommendedForLiveCapture`: safest field to use when choosing a live session
 - `status`: `active`, `paused`, or `ended`
 - `pausedAt`: pause timestamp when `status` is `paused`
 
 Use this rule for live tools (`get_dom_document`, `capture_ui_snapshot`, etc.):
 
-- Prefer sessions where `liveConnection.connected` is `true`
+- Prefer sessions where `liveConnection.recommendedForLiveCapture` is `true`
+
+### get_live_session_health
+
+Use this when `list_sessions` is ambiguous or a listed session still fails live tools.
+
+```json
+{ "name": "get_live_session_health", "arguments": { "sessionId": "sess_123" } }
+```
 
 ### get_session_summary
 
@@ -310,7 +322,7 @@ When a listed session is not currently connected, live tools return a normalized
 
 - `LIVE_SESSION_DISCONNECTED`
 
-This indicates the session is historical/stale or transport was dropped. Start/reconnect a live session in the extension and retry with a session id where `liveConnection.connected` is `true`.
+This indicates the session is historical/stale or transport was dropped. Start/reconnect a live session in the extension and retry with a session id whose health response shows `liveConnection.status = "connected"` and `recommendedForLiveCapture = true`.
 
 ## V3 Correlation tools
 

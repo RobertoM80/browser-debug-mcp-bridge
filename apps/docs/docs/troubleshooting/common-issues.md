@@ -15,8 +15,10 @@ Symptoms:
 
 Actions:
 
-- Run `list_sessions` and select a session where `liveConnection.connected` is `true`
-- If none are connected, restart session from extension popup and retry
+- Run `get_live_session_health` for the candidate `sessionId`
+- Prefer sessions where `liveConnection.recommendedForLiveCapture` is `true`
+- If health shows `scope.kind = "likely_iframe_noise"`, reconnect on a top-level app tab and retry
+- If none are healthy, restart session from extension popup and retry
 
 ## Server start fails with port conflict
 

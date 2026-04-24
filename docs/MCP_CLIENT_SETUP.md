@@ -201,11 +201,12 @@ If the host accepts JSON-style MCP server entries, use:
    - `npx -y browser-debug-mcp-bridge` (npm mode).
 3. Open extension popup, set allowlist, start session (or resume a paused one).
 4. Ask LLM to call `list_sessions`.
-5. Use a `sessionId` with `liveConnection.connected = true` for live tools.
-6. Ask LLM to call `get_live_console_logs` with that `sessionId` and optional `contains` filter.
-7. Ask LLM to call `capture_ui_snapshot` with that `sessionId`.
-8. Verify with `list_snapshots` or extension DB Viewer snapshots table.
-9. Optional filter check: call `get_recent_events` with `{ "url": "http://localhost:3000" }` to scope by origin.
+5. Prefer a `sessionId` where `liveConnection.recommendedForLiveCapture = true`.
+6. If choice is unclear, ask LLM to call `get_live_session_health`.
+7. Ask LLM to call `get_live_console_logs` with that `sessionId` and optional `contains` filter.
+8. Ask LLM to call `capture_ui_snapshot` with that `sessionId`.
+9. Verify with `list_snapshots` or extension DB Viewer snapshots table.
+10. Optional filter check: call `get_recent_events` with `{ "url": "http://localhost:3000" }` to scope by origin.
 
 ## CI safety check (stdio guard)
 

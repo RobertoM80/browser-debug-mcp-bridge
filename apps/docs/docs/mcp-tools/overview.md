@@ -21,6 +21,7 @@ All tool responses include:
 - Size/depth/time limits applied to heavy captures
 - Query tools support `sessionId`, `url` (origin), or both for intersection filtering
 - High-volume tools support `maxResponseBytes` and optional `responseProfile: "compact"`
+- Session selection should prefer `liveConnection.recommendedForLiveCapture`; use `get_live_session_health` when `list_sessions` is ambiguous
 
 ## Console capture scope
 
