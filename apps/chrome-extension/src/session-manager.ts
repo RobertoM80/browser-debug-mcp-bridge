@@ -37,7 +37,11 @@ export type CaptureCommandType =
   | 'CAPTURE_COMPUTED_STYLES'
   | 'CAPTURE_LAYOUT_METRICS'
   | 'CAPTURE_UI_SNAPSHOT'
-  | 'CAPTURE_GET_LIVE_CONSOLE_LOGS';
+  | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+  | 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
+  | 'CAPTURE_OVERRIDE_POC_GET_STATUS'
+  | 'CAPTURE_OVERRIDE_POC_ENABLE'
+  | 'CAPTURE_OVERRIDE_POC_DISABLE';
 
 interface CaptureCommandMessage {
   type: 'capture_command';
@@ -169,7 +173,7 @@ function createDefaultSessionId(): string {
 }
 
 export class SessionManager {
-  private readonly wsUrl: string;
+  private wsUrl: string;
   private readonly maxBufferSize: number;
   private readonly createSessionId: () => string;
   private readonly createWebSocket: (url: string) => WebSocketLike;
@@ -203,6 +207,15 @@ export class SessionManager {
     this.maxBatchSize = options.maxBatchSize ?? 20;
     this.redactionEngine = options.redactionEngine ?? new RedactionEngine();
     this.handleCaptureCommand = options.handleCaptureCommand;
+  }
+
+  setWsUrl(wsUrl: string): void {
+    const trimmed = wsUrl.trim();
+    if (!trimmed || trimmed === this.wsUrl) {
+      return;
+    }
+
+    this.wsUrl = trimmed;
   }
 
   startSession(context: SessionStartContext): SessionState {
@@ -537,6 +550,10 @@ export class SessionManager {
         && message.command !== 'CAPTURE_LAYOUT_METRICS'
         && message.command !== 'CAPTURE_UI_SNAPSHOT'
         && message.command !== 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+        && message.command !== 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
+        && message.command !== 'CAPTURE_OVERRIDE_POC_GET_STATUS'
+        && message.command !== 'CAPTURE_OVERRIDE_POC_ENABLE'
+        && message.command !== 'CAPTURE_OVERRIDE_POC_DISABLE'
       ) {
         return null;
       }

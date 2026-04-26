@@ -2,9 +2,19 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Database } from 'better-sqlite3';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { getConnection } from '../db/connection.js';
+import { diagnoseOverridePoc, listOverridePocRequests, listOverridePocRuns } from '../override-audit.js';
+import {
+  createOverrideProfileConfig,
+  OVERRIDE_PROFILE_ADAPTERS,
+  type OverrideProfileAdapterId,
+} from '../override-profile-generator.js';
+import { getOverridePocConfigSummary } from '../override-poc.js';
+import { mapNextOverrideAssetsWithDrift } from '../next-asset-mapper.js';
+import { planNextSourceOverride } from '../next-source-override-planner.js';
+import { listObservedOverrideAssets, persistObservedOverrideAssets } from '../override-observed-assets.js';
 
 type ToolInput = Record<string, unknown>;
 
@@ -313,6 +323,148 @@ const TOOL_SCHEMAS: Record<string, object> = {
       maxResponseBytes: { type: 'number' },
     },
   },
+  list_override_profiles: {
+    type: 'object',
+    properties: {},
+  },
+  create_override_profile: {
+    type: 'object',
+    required: ['targetBaseUrl'],
+    properties: {
+      adapter: { type: 'string' },
+      mode: { type: 'string' },
+      targetBaseUrl: { type: 'string' },
+      projectRoot: { type: 'string' },
+      assetRoot: { type: 'string' },
+      nextDir: { type: 'string' },
+      configPath: { type: 'string' },
+      profileId: { type: 'string' },
+      profileName: { type: 'string' },
+      enabled: { type: 'boolean' },
+      profileEnabled: { type: 'boolean' },
+      autoReload: { type: 'boolean' },
+      includeManifestFiles: { type: 'boolean' },
+      includeStaticFiles: { type: 'boolean' },
+      extensions: { type: 'array', items: { type: 'string' } },
+      maxRules: { type: 'number' },
+      writeConfig: { type: 'boolean' },
+      overwrite: { type: 'boolean' },
+    },
+  },
+  validate_override_profile: {
+    type: 'object',
+    properties: {
+      profileId: { type: 'string' },
+    },
+  },
+  observe_override_assets: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      tabId: { type: 'number' },
+      includePerformance: { type: 'boolean' },
+    },
+  },
+  list_observed_override_assets: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      limit: { type: 'number' },
+      sinceTimestamp: { type: 'number' },
+    },
+  },
+  map_next_override_assets: {
+    type: 'object',
+    required: ['projectRoot'],
+    properties: {
+      sessionId: { type: 'string' },
+      tabId: { type: 'number' },
+      projectRoot: { type: 'string' },
+      nextDir: { type: 'string' },
+      route: { type: 'string' },
+      sourcePaths: { type: 'array', items: { type: 'string' } },
+      observedAssets: { type: 'array', items: { type: 'object' } },
+      maxResults: { type: 'number' },
+      fetchProductionAssets: { type: 'boolean' },
+      productionFetchTimeoutMs: { type: 'number' },
+      maxProductionAssetBytes: { type: 'number' },
+      maxDriftCandidates: { type: 'number' },
+      productionFetchConcurrency: { type: 'number' },
+    },
+  },
+  plan_next_source_override: {
+    type: 'object',
+    required: ['projectRoot', 'sourceEdits'],
+    properties: {
+      sessionId: { type: 'string' },
+      tabId: { type: 'number' },
+      projectRoot: { type: 'string' },
+      nextDir: { type: 'string' },
+      route: { type: 'string' },
+      sourcePaths: { type: 'array', items: { type: 'string' } },
+      sourceEdits: { type: 'array', items: { type: 'object' } },
+      observedAssets: { type: 'array', items: { type: 'object' } },
+      configPath: { type: 'string' },
+      writeConfig: { type: 'boolean' },
+      overwrite: { type: 'boolean' },
+      enabled: { type: 'boolean' },
+      profileEnabled: { type: 'boolean' },
+      autoReload: { type: 'boolean' },
+      profileId: { type: 'string' },
+      profileName: { type: 'string' },
+      buildTimeoutMs: { type: 'number' },
+      maxRules: { type: 'number' },
+      fetchProductionAssets: { type: 'boolean' },
+      productionFetchTimeoutMs: { type: 'number' },
+      maxProductionAssetBytes: { type: 'number' },
+      maxDriftCandidates: { type: 'number' },
+      productionFetchConcurrency: { type: 'number' },
+      overlayTtlMs: { type: 'number' },
+    },
+  },
+  enable_overrides: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      tabId: { type: 'number' },
+    },
+  },
+  disable_overrides: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+    },
+  },
+  get_override_status: {
+    type: 'object',
+    properties: {
+      sessionId: { type: 'string' },
+      profileId: { type: 'string' },
+    },
+  },
+  get_override_request_log: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      runId: { type: 'string' },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
+    },
+  },
+  diagnose_overrides: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      runId: { type: 'string' },
+    },
+  },
   explain_last_failure: {
     type: 'object',
     required: ['sessionId'],
@@ -388,6 +540,18 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_layout_metrics: 'Read viewport and element layout metrics',
   capture_ui_snapshot: 'Capture redacted UI snapshot (DOM/styles/optional PNG) and persist it',
   get_live_console_logs: 'Read in-memory live console logs for a connected session',
+  list_override_profiles: 'List configured browser override profiles',
+  create_override_profile: 'Generate a candidate browser override profile from local build assets',
+  validate_override_profile: 'Validate the current browser override profile and local asset readiness',
+  observe_override_assets: 'Observe production script/style assets from a live extension tab',
+  list_observed_override_assets: 'List persisted production script/style assets observed for a session',
+  map_next_override_assets: 'Map observed production Next.js assets to local build chunks and source paths',
+  plan_next_source_override: 'Apply source edits in a temp Next.js overlay build and plan exact browser override rules',
+  enable_overrides: 'Enable browser overrides for a live extension session',
+  disable_overrides: 'Disable browser overrides for a live extension session',
+  get_override_status: 'Read live or persisted browser override status for a session',
+  get_override_request_log: 'Read persisted browser override request audit rows',
+  diagnose_overrides: 'Diagnose persisted browser override runs and failure indicators',
   explain_last_failure: 'Explain the latest failure timeline',
   get_event_correlation: 'Correlate related events by window',
   list_snapshots: 'List snapshot metadata by session/time/trigger',
@@ -608,7 +772,11 @@ export interface CaptureCommandClient {
       | 'CAPTURE_COMPUTED_STYLES'
       | 'CAPTURE_LAYOUT_METRICS'
       | 'CAPTURE_UI_SNAPSHOT'
-      | 'CAPTURE_GET_LIVE_CONSOLE_LOGS',
+      | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+      | 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
+      | 'CAPTURE_OVERRIDE_POC_GET_STATUS'
+      | 'CAPTURE_OVERRIDE_POC_ENABLE'
+      | 'CAPTURE_OVERRIDE_POC_DISABLE',
     payload: Record<string, unknown>,
     timeoutMs?: number,
   ): Promise<CaptureClientResult>;
@@ -906,6 +1074,172 @@ function getSessionStatus(row: Pick<SessionRow, 'paused_at' | 'ended_at'>): 'act
     return 'paused';
   }
   return 'active';
+}
+
+function buildOverrideProfileRecords(): Record<string, unknown>[] {
+  const summary = getOverridePocConfigSummary();
+  return summary.profiles.map((profile) => ({
+    profileId: profile.profileId,
+    name: profile.name,
+    active: profile.profileId === summary.activeProfileId,
+    configEnabled: summary.configEnabled,
+    enabled: profile.enabled,
+    effectiveEnabled: summary.configEnabled && profile.enabled && profile.enabledRuleCount > 0,
+    autoReload: profile.autoReload,
+    configPath: summary.configPath,
+    fileExists: profile.fileExists,
+    ruleCount: profile.ruleCount,
+    enabledRuleCount: profile.enabledRuleCount,
+    rules: profile.rules,
+  }));
+}
+
+function resolveOverrideProfileRecord(value: unknown): Record<string, unknown> {
+  const profiles = buildOverrideProfileRecords();
+  const fallbackProfileId = typeof profiles[0]?.profileId === 'string' ? profiles[0].profileId : 'poc';
+  const requestedProfileId = typeof value === 'string' && value.trim().length > 0 ? value.trim() : fallbackProfileId;
+  const profile = profiles.find((candidate) => candidate.profileId === requestedProfileId);
+  if (!profile) {
+    throw new Error(`Unknown override profile: ${requestedProfileId}`);
+  }
+
+  return profile;
+}
+
+function buildOverrideProfileIssues(profile: Record<string, unknown>): Array<Record<string, unknown>> {
+  const issues: Array<Record<string, unknown>> = [];
+  const rules = Array.isArray(profile.rules)
+    ? profile.rules.filter((rule): rule is Record<string, unknown> => isRecord(rule))
+    : [];
+
+  if (profile.configEnabled !== true) {
+    issues.push({
+      code: 'CONFIG_DISABLED',
+      severity: 'warning',
+      message: 'The override config is disabled and cannot replace requests until enabled.',
+    });
+  }
+
+  if (profile.enabled !== true) {
+    issues.push({
+      code: 'PROFILE_DISABLED',
+      severity: 'warning',
+      message: 'The override profile is disabled and cannot replace requests until enabled.',
+    });
+  }
+
+  if (rules.length === 0 || !rules.some((rule) => rule.enabled === true)) {
+    issues.push({
+      code: 'NO_ENABLED_RULES',
+      severity: 'error',
+      message: 'The override profile has no enabled rules.',
+    });
+  }
+
+  for (const rule of rules) {
+    if (rule.enabled !== true) {
+      continue;
+    }
+
+    if (typeof rule.targetAssetUrl !== 'string' || !rule.targetAssetUrl.startsWith('http')) {
+      issues.push({
+        code: 'TARGET_URL_INVALID',
+        severity: 'error',
+        message: `Rule ${String(rule.ruleId ?? 'unknown')} targetAssetUrl must be an absolute http(s) URL.`,
+      });
+    }
+
+    if (rule.fileExists !== true) {
+      issues.push({
+        code: 'LOCAL_FILE_MISSING',
+        severity: 'error',
+        message: `Rule ${String(rule.ruleId ?? 'unknown')} local override file does not exist.`,
+      });
+    }
+  }
+
+  return issues;
+}
+
+function buildOverrideProfileNextActions(
+  profile: Record<string, unknown>,
+  issues: Array<Record<string, unknown>>,
+): Array<Record<string, string>> {
+  if (issues.some((issue) => issue.code === 'LOCAL_FILE_MISSING')) {
+    return [{
+      code: 'REBUILD_OR_FIX_LOCAL_PATHS',
+      message: 'Rebuild the local app or fix localFilePath values before enabling overrides.',
+    }];
+  }
+
+  if (issues.some((issue) => issue.code === 'NO_ENABLED_RULES')) {
+    return [{
+      code: 'ENABLE_RULES',
+      message: 'Enable at least one rule in the selected override profile.',
+    }];
+  }
+
+  if (issues.some((issue) => issue.code === 'TARGET_URL_INVALID')) {
+    return [{
+      code: 'FIX_TARGET_URLS',
+      message: 'Use absolute http(s) production URLs for every targetAssetUrl.',
+    }];
+  }
+
+  if (profile.configEnabled !== true) {
+    return [{
+      code: 'ENABLE_CONFIG',
+      message: 'Set the root override config enabled=true after reviewing the profile.',
+    }];
+  }
+
+  if (profile.enabled !== true) {
+    return [{
+      code: 'ENABLE_PROFILE',
+      message: 'Set the selected override profile enabled=true after reviewing its rules.',
+    }];
+  }
+
+  return [{
+    code: 'ENABLE_OVERRIDES',
+    message: 'Enable overrides on a connected session, then reload the target tab if needed.',
+  }];
+}
+
+function normalizeOptionalBooleanInput(value: unknown, fieldName: string): boolean | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'boolean') {
+    throw new Error(`${fieldName} must be a boolean when provided`);
+  }
+  return value;
+}
+
+function normalizeOptionalNumberInput(value: unknown, fieldName: string): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`${fieldName} must be a finite number when provided`);
+  }
+  return value;
+}
+
+function normalizeOptionalStringArrayInput(value: unknown, fieldName: string): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array of strings when provided`);
+  }
+
+  return value.map((entry, index) => {
+    if (typeof entry !== 'string' || entry.trim().length === 0) {
+      throw new Error(`${fieldName}[${index}] must be a non-empty string`);
+    }
+    return entry.trim();
+  });
 }
 
 function resolveSessionLastSeenAt(
@@ -1559,7 +1893,11 @@ async function executeLiveCapture(
     | 'CAPTURE_COMPUTED_STYLES'
     | 'CAPTURE_LAYOUT_METRICS'
     | 'CAPTURE_UI_SNAPSHOT'
-    | 'CAPTURE_GET_LIVE_CONSOLE_LOGS',
+    | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+    | 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
+    | 'CAPTURE_OVERRIDE_POC_GET_STATUS'
+    | 'CAPTURE_OVERRIDE_POC_ENABLE'
+    | 'CAPTURE_OVERRIDE_POC_DISABLE',
   payload: Record<string, unknown>,
   timeoutMs: number,
 ): Promise<CaptureClientResult> {
@@ -1835,6 +2173,313 @@ export function createV1ToolHandlers(
         scope,
         liveConnection,
         nextAction: buildLiveSessionNextAction(liveConnection, scope),
+      };
+    },
+
+    list_override_profiles: async () => {
+      const profiles = buildOverrideProfileRecords();
+
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: profiles.length,
+          truncated: false,
+        },
+        profiles,
+        nextActions: profiles.length > 0
+          ? [{ code: 'VALIDATE_PROFILE', message: 'Run validate_override_profile before enabling overrides.' }]
+          : [{ code: 'CREATE_PROFILE', message: 'Run create_override_profile to generate a candidate profile.' }],
+      };
+    },
+
+    create_override_profile: async (input) => {
+      const adapterInput = normalizeOptionalString(input.adapter) ?? normalizeOptionalString(input.mode);
+      let adapter: OverrideProfileAdapterId | undefined;
+      if (adapterInput !== undefined) {
+        if (!OVERRIDE_PROFILE_ADAPTERS.includes(adapterInput as OverrideProfileAdapterId)) {
+          throw new Error(`adapter must be one of: ${OVERRIDE_PROFILE_ADAPTERS.join(', ')}`);
+        }
+        adapter = adapterInput as OverrideProfileAdapterId;
+      }
+
+      const targetBaseUrl = normalizeOptionalString(input.targetBaseUrl);
+      if (!targetBaseUrl) {
+        throw new Error('targetBaseUrl is required, for example https://example.com/_next/ or https://example.com/assets/');
+      }
+
+      const generated = createOverrideProfileConfig({
+        adapter,
+        targetBaseUrl,
+        projectRoot: normalizeOptionalString(input.projectRoot),
+        assetRoot: normalizeOptionalString(input.assetRoot),
+        nextDir: normalizeOptionalString(input.nextDir),
+        configPath: normalizeOptionalString(input.configPath),
+        profileId: normalizeOptionalString(input.profileId),
+        profileName: normalizeOptionalString(input.profileName),
+        enabled: normalizeOptionalBooleanInput(input.enabled, 'enabled'),
+        profileEnabled: normalizeOptionalBooleanInput(input.profileEnabled, 'profileEnabled'),
+        autoReload: normalizeOptionalBooleanInput(input.autoReload, 'autoReload'),
+        includeManifestFiles: normalizeOptionalBooleanInput(input.includeManifestFiles, 'includeManifestFiles'),
+        includeStaticFiles: normalizeOptionalBooleanInput(input.includeStaticFiles, 'includeStaticFiles'),
+        extensions: normalizeOptionalStringArrayInput(input.extensions, 'extensions'),
+        maxRules: normalizeOptionalNumberInput(input.maxRules, 'maxRules'),
+      });
+
+      const writeConfig = normalizeOptionalBooleanInput(input.writeConfig, 'writeConfig') ?? false;
+      const overwrite = normalizeOptionalBooleanInput(input.overwrite, 'overwrite') ?? false;
+      const write: Record<string, unknown> = {
+        written: false,
+        path: generated.suggestedConfigPath,
+      };
+      let nextActions = generated.nextActions;
+
+      if (writeConfig && generated.ruleCount === 0) {
+        write.failureCode = 'NO_RULES';
+        write.message = 'Generated profile has no rules; config was not written.';
+        nextActions = [{
+          code: 'BUILD_APP',
+          message: 'Build the app so local assets exist, then generate the profile again.',
+        }];
+      } else if (writeConfig && existsSync(generated.suggestedConfigPath) && !overwrite) {
+        write.failureCode = 'CONFIG_EXISTS';
+        write.message = 'Config file already exists; pass overwrite=true or choose another configPath.';
+        nextActions = [{
+          code: 'OVERWRITE_OR_CHOOSE_CONFIG_PATH',
+          message: 'Pass overwrite=true to replace the config file, or choose a different configPath.',
+        }, ...generated.nextActions];
+      } else if (writeConfig) {
+        mkdirSync(dirname(generated.suggestedConfigPath), { recursive: true });
+        writeFileSync(generated.suggestedConfigPath, generated.configJson, 'utf8');
+        write.written = true;
+        write.bytes = Buffer.byteLength(generated.configJson, 'utf8');
+        nextActions = generated.nextActions.filter((action) => action.code !== 'SAVE_LOCAL_CONFIG');
+      }
+
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: generated.ruleCount,
+          truncated: generated.warnings.some((warning) => warning.startsWith('Rule generation was limited')),
+        },
+        adapter: generated.adapter,
+        mode: generated.mode,
+        projectRoot: generated.projectRoot,
+        assetRoot: generated.assetRoot,
+        nextDir: generated.nextDir,
+        targetBaseUrl: generated.targetBaseUrl,
+        suggestedConfigPath: generated.suggestedConfigPath,
+        ruleCount: generated.ruleCount,
+        manifestFiles: generated.manifestFiles,
+        staticFileCount: generated.staticFileCount,
+        missingManifestAssetCount: generated.missingManifestAssetCount,
+        warnings: generated.warnings,
+        nextActions,
+        write,
+        profile: generated.profile,
+        config: generated.config,
+        configJson: generated.configJson,
+      };
+    },
+
+    validate_override_profile: async (input) => {
+      const profile = resolveOverrideProfileRecord(input.profileId);
+      const issues = buildOverrideProfileIssues(profile);
+
+      return {
+        ...createBaseResponse(),
+        profileId: profile.profileId,
+        valid: !issues.some((issue) => issue.severity === 'error'),
+        issues,
+        nextActions: buildOverrideProfileNextActions(profile, issues),
+        profile,
+      };
+    },
+
+    list_observed_override_assets: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const assets = listObservedOverrideAssets(getDb(), {
+        sessionId,
+        limit: typeof input.limit === 'number' ? input.limit : undefined,
+        sinceTimestamp: typeof input.sinceTimestamp === 'number' ? input.sinceTimestamp : undefined,
+      });
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: assets.length,
+          truncated: false,
+        },
+        assets,
+      };
+    },
+
+    map_next_override_assets: async (input) => {
+      const projectRoot = normalizeOptionalString(input.projectRoot);
+      if (!projectRoot) {
+        throw new Error('projectRoot is required');
+      }
+
+      const sessionId = getSessionId(input);
+      const observedAssets = Array.isArray(input.observedAssets)
+        ? input.observedAssets
+        : sessionId
+          ? listObservedOverrideAssets(getDb(), { sessionId })
+          : input.observedAssets;
+
+      const mapping = await mapNextOverrideAssetsWithDrift({
+        projectRoot,
+        nextDir: normalizeOptionalString(input.nextDir),
+        observedAssets,
+        sourcePaths: input.sourcePaths,
+        route: input.route,
+        maxResults: input.maxResults,
+        fetchProductionAssets: input.fetchProductionAssets,
+        productionFetchTimeoutMs: input.productionFetchTimeoutMs,
+        maxProductionAssetBytes: input.maxProductionAssetBytes,
+        maxDriftCandidates: input.maxDriftCandidates,
+        productionFetchConcurrency: input.productionFetchConcurrency,
+      });
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: mapping.candidates.length,
+          truncated: false,
+        },
+        observedFromPersisted: !Array.isArray(input.observedAssets) && sessionId
+          ? { sessionId, assetCount: Array.isArray(observedAssets) ? observedAssets.length : 0 }
+          : undefined,
+        ...mapping,
+      };
+    },
+
+    plan_next_source_override: async (input) => {
+      const projectRoot = normalizeOptionalString(input.projectRoot);
+      if (!projectRoot) {
+        throw new Error('projectRoot is required');
+      }
+
+      const sessionId = getSessionId(input);
+      const observedAssets = Array.isArray(input.observedAssets)
+        ? input.observedAssets
+        : sessionId
+          ? listObservedOverrideAssets(getDb(), { sessionId })
+          : input.observedAssets;
+
+      const plan = await planNextSourceOverride({
+        projectRoot,
+        nextDir: normalizeOptionalString(input.nextDir),
+        observedAssets,
+        sourceEdits: input.sourceEdits,
+        sourcePaths: input.sourcePaths,
+        route: input.route,
+        configPath: input.configPath,
+        writeConfig: input.writeConfig,
+        overwrite: input.overwrite,
+        enabled: input.enabled,
+        profileEnabled: input.profileEnabled,
+        autoReload: input.autoReload,
+        profileId: input.profileId,
+        profileName: input.profileName,
+        buildTimeoutMs: input.buildTimeoutMs,
+        maxRules: input.maxRules,
+        fetchProductionAssets: input.fetchProductionAssets,
+        productionFetchTimeoutMs: input.productionFetchTimeoutMs,
+        maxProductionAssetBytes: input.maxProductionAssetBytes,
+        maxDriftCandidates: input.maxDriftCandidates,
+        productionFetchConcurrency: input.productionFetchConcurrency,
+        overlayTtlMs: input.overlayTtlMs,
+      });
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: plan.rules.length,
+          truncated: false,
+        },
+        observedFromPersisted: !Array.isArray(input.observedAssets) && sessionId
+          ? { sessionId, assetCount: Array.isArray(observedAssets) ? observedAssets.length : 0 }
+          : undefined,
+        ...plan,
+      };
+    },
+
+    get_override_status: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      const profile = resolveOverrideProfileRecord(input.profileId);
+      const latestRun = sessionId ? listOverridePocRuns(db, sessionId, 1, 0).runs[0] ?? null : null;
+
+      return {
+        ...createBaseResponse(sessionId),
+        profile,
+        latestRun,
+        diagnosis: sessionId ? diagnoseOverridePoc(db, sessionId, latestRun?.runId) : null,
+        nextActions: latestRun?.lastErrorCode
+          ? [{ code: 'DIAGNOSE_OVERRIDES', message: 'Run diagnose_overrides for the latest failed override run.' }]
+          : latestRun
+            ? [{ code: 'GET_OVERRIDE_REQUEST_LOG', message: 'Inspect get_override_request_log for matched and fulfilled requests.' }]
+            : [{ code: 'ENABLE_OVERRIDES', message: 'Enable overrides on a connected session after profile validation succeeds.' }],
+      };
+    },
+
+    get_override_request_log: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
+      const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
+      const runId = typeof input.runId === 'string' && input.runId.trim().length > 0
+        ? input.runId.trim()
+        : undefined;
+      const result = listOverridePocRequests(db, sessionId, limit, offset, runId);
+      const bytePage = applyByteBudget(result.requests, maxResponseBytes);
+      const truncated = result.hasMore || bytePage.truncatedByBytes;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: limit,
+          truncated,
+        },
+        runId: runId ?? null,
+        pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+        responseBytes: bytePage.responseBytes,
+        requests: bytePage.items,
+        nextActions: bytePage.items.length === 0
+          ? [{ code: 'RELOAD_TAB', message: 'Reload the selected tab after enabling overrides so matching requests are observed.' }]
+          : [{ code: 'DIAGNOSE_OVERRIDES', message: 'Run diagnose_overrides if any matched request failed or did not fulfill.' }],
+      };
+    },
+
+    diagnose_overrides: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const runId = typeof input.runId === 'string' && input.runId.trim().length > 0
+        ? input.runId.trim()
+        : undefined;
+
+      const diagnosis = diagnoseOverridePoc(db, sessionId, runId);
+      const firstIssue = diagnosis.issues[0];
+
+      return {
+        ...createBaseResponse(sessionId),
+        diagnosis,
+        nextActions: firstIssue?.suggestedActions[0]
+          ? [{ code: firstIssue.code, message: firstIssue.suggestedActions[0] }]
+          : [{ code: 'NO_DIAGNOSIS_ISSUES', message: 'No diagnosis issues were found for the selected override run.' }],
       };
     },
 
@@ -3192,8 +3837,271 @@ export function createV1ToolHandlers(
   };
 }
 
-export function createV2ToolHandlers(captureClient: CaptureCommandClient): Partial<Record<string, ToolHandler>> {
+export function createV2ToolHandlers(
+  captureClient: CaptureCommandClient,
+  getDb?: () => Database,
+): Partial<Record<string, ToolHandler>> {
   return {
+    observe_override_assets: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const tabId = resolveOptionalTabId(input.tabId);
+      const capture = await executeLiveCapture(
+        captureClient,
+        sessionId,
+        'CAPTURE_OVERRIDE_OBSERVE_ASSETS',
+        { tabId, includePerformance: input.includePerformance !== false },
+        5_000,
+      );
+      const payload = ensureCaptureSuccess(capture, sessionId);
+      const assetCount = Array.isArray(payload.assets) ? payload.assets.length : 0;
+      const persisted = getDb
+        ? persistObservedOverrideAssets(getDb(), { ...payload, sessionId, tabId: payload.tabId ?? tabId })
+        : undefined;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: assetCount,
+          truncated: capture.truncated ?? false,
+        },
+        persisted,
+        ...payload,
+        nextActions: assetCount > 0
+          ? [{ code: 'MAP_NEXT_ASSETS', message: 'Run map_next_override_assets with projectRoot and sourcePaths to score override candidates.' }]
+          : [{ code: 'LOAD_ROUTE', message: 'Load or interact with the target route so script/style assets are requested, then observe again.' }],
+      };
+    },
+
+    map_next_override_assets: async (input) => {
+      const projectRoot = normalizeOptionalString(input.projectRoot);
+      if (!projectRoot) {
+        throw new Error('projectRoot is required');
+      }
+
+      const sessionId = getSessionId(input);
+      let observedAssets = input.observedAssets;
+      let observedFromLiveTab: Record<string, unknown> | undefined;
+      let observedFromPersisted: { sessionId: string; assetCount: number } | undefined;
+      if (!Array.isArray(observedAssets) && sessionId) {
+        const tabId = resolveOptionalTabId(input.tabId);
+        try {
+          const capture = await executeLiveCapture(
+            captureClient,
+            sessionId,
+            'CAPTURE_OVERRIDE_OBSERVE_ASSETS',
+            { tabId, includePerformance: true },
+            5_000,
+          );
+          observedFromLiveTab = ensureCaptureSuccess(capture, sessionId);
+          observedAssets = observedFromLiveTab.assets;
+          if (getDb) {
+            persistObservedOverrideAssets(getDb(), { ...observedFromLiveTab, sessionId, tabId: observedFromLiveTab.tabId ?? tabId });
+          }
+        } catch (error) {
+          if (!getDb || !isLiveSessionDisconnectedError(error)) {
+            throw error;
+          }
+          observedAssets = listObservedOverrideAssets(getDb(), { sessionId });
+          observedFromPersisted = { sessionId, assetCount: Array.isArray(observedAssets) ? observedAssets.length : 0 };
+        }
+      }
+
+      const mapping = await mapNextOverrideAssetsWithDrift({
+        projectRoot,
+        nextDir: normalizeOptionalString(input.nextDir),
+        observedAssets,
+        sourcePaths: input.sourcePaths,
+        route: input.route,
+        maxResults: input.maxResults,
+        fetchProductionAssets: input.fetchProductionAssets,
+        productionFetchTimeoutMs: input.productionFetchTimeoutMs,
+        maxProductionAssetBytes: input.maxProductionAssetBytes,
+        maxDriftCandidates: input.maxDriftCandidates,
+        productionFetchConcurrency: input.productionFetchConcurrency,
+      });
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: mapping.candidates.length,
+          truncated: false,
+        },
+        observedFromLiveTab: observedFromLiveTab
+          ? {
+              pageUrl: observedFromLiveTab.pageUrl,
+              tabId: observedFromLiveTab.tabId,
+              assetCount: Array.isArray(observedFromLiveTab.assets) ? observedFromLiveTab.assets.length : 0,
+            }
+          : undefined,
+        observedFromPersisted,
+        ...mapping,
+      };
+    },
+
+    plan_next_source_override: async (input) => {
+      const projectRoot = normalizeOptionalString(input.projectRoot);
+      if (!projectRoot) {
+        throw new Error('projectRoot is required');
+      }
+
+      const sessionId = getSessionId(input);
+      let observedAssets = input.observedAssets;
+      let observedFromLiveTab: Record<string, unknown> | undefined;
+      let observedFromPersisted: { sessionId: string; assetCount: number } | undefined;
+      if (!Array.isArray(observedAssets) && sessionId) {
+        const tabId = resolveOptionalTabId(input.tabId);
+        try {
+          const capture = await executeLiveCapture(
+            captureClient,
+            sessionId,
+            'CAPTURE_OVERRIDE_OBSERVE_ASSETS',
+            { tabId, includePerformance: true },
+            5_000,
+          );
+          observedFromLiveTab = ensureCaptureSuccess(capture, sessionId);
+          observedAssets = observedFromLiveTab.assets;
+          if (getDb) {
+            persistObservedOverrideAssets(getDb(), { ...observedFromLiveTab, sessionId, tabId: observedFromLiveTab.tabId ?? tabId });
+          }
+        } catch (error) {
+          if (!getDb || !isLiveSessionDisconnectedError(error)) {
+            throw error;
+          }
+          observedAssets = listObservedOverrideAssets(getDb(), { sessionId });
+          observedFromPersisted = { sessionId, assetCount: Array.isArray(observedAssets) ? observedAssets.length : 0 };
+        }
+      }
+
+      const plan = await planNextSourceOverride({
+        projectRoot,
+        nextDir: normalizeOptionalString(input.nextDir),
+        observedAssets,
+        sourceEdits: input.sourceEdits,
+        sourcePaths: input.sourcePaths,
+        route: input.route,
+        configPath: input.configPath,
+        writeConfig: input.writeConfig,
+        overwrite: input.overwrite,
+        enabled: input.enabled,
+        profileEnabled: input.profileEnabled,
+        autoReload: input.autoReload,
+        profileId: input.profileId,
+        profileName: input.profileName,
+        buildTimeoutMs: input.buildTimeoutMs,
+        maxRules: input.maxRules,
+        fetchProductionAssets: input.fetchProductionAssets,
+        productionFetchTimeoutMs: input.productionFetchTimeoutMs,
+        maxProductionAssetBytes: input.maxProductionAssetBytes,
+        maxDriftCandidates: input.maxDriftCandidates,
+        productionFetchConcurrency: input.productionFetchConcurrency,
+        overlayTtlMs: input.overlayTtlMs,
+      });
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: plan.rules.length,
+          truncated: false,
+        },
+        observedFromLiveTab: observedFromLiveTab
+          ? {
+              pageUrl: observedFromLiveTab.pageUrl,
+              tabId: observedFromLiveTab.tabId,
+              assetCount: Array.isArray(observedFromLiveTab.assets) ? observedFromLiveTab.assets.length : 0,
+            }
+          : undefined,
+        observedFromPersisted,
+        ...plan,
+      };
+    },
+
+    get_override_status: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const capture = await executeLiveCapture(
+        captureClient,
+        sessionId,
+        'CAPTURE_OVERRIDE_POC_GET_STATUS',
+        {},
+        3_000,
+      );
+      const payload = ensureCaptureSuccess(capture, sessionId);
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: capture.truncated ?? false,
+        },
+        ...payload,
+        nextActions: payload.lastErrorCode
+          ? [{ code: 'DIAGNOSE_OVERRIDES', message: 'Run diagnose_overrides for the latest override failure.' }]
+          : payload.active === true
+            ? [{ code: 'GET_OVERRIDE_REQUEST_LOG', message: 'Inspect get_override_request_log after the target tab loads matching assets.' }]
+            : [{ code: 'ENABLE_OVERRIDES', message: 'Enable overrides after validating the selected profile.' }],
+      };
+    },
+
+    enable_overrides: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const tabId = resolveOptionalTabId(input.tabId);
+      const capture = await executeLiveCapture(
+        captureClient,
+        sessionId,
+        'CAPTURE_OVERRIDE_POC_ENABLE',
+        { tabId },
+        8_000,
+      );
+      const payload = ensureCaptureSuccess(capture, sessionId);
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: capture.truncated ?? false,
+        },
+        ...payload,
+        nextActions: [{ code: 'RELOAD_OR_INTERACT', message: 'Reload or interact with the tab so configured asset requests occur under the active override.' }],
+      };
+    },
+
+    disable_overrides: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const capture = await executeLiveCapture(
+        captureClient,
+        sessionId,
+        'CAPTURE_OVERRIDE_POC_DISABLE',
+        {},
+        5_000,
+      );
+      const payload = ensureCaptureSuccess(capture, sessionId);
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: capture.truncated ?? false,
+        },
+        ...payload,
+        nextActions: [{ code: 'VERIFY_DISABLED', message: 'Run get_override_status if you need to confirm the debugger override is inactive.' }],
+      };
+    },
+
     get_dom_subtree: async (input) => {
       const sessionId = getSessionId(input);
       if (!sessionId) {
@@ -3565,7 +4473,7 @@ export function createMCPServer(
   options: MCPServerOptions = {},
 ): MCPServerRuntime {
   const logger = options.logger ?? createDefaultMcpLogger();
-  const v2Handlers = options.captureClient ? createV2ToolHandlers(options.captureClient) : {};
+  const v2Handlers = options.captureClient ? createV2ToolHandlers(options.captureClient, () => getConnection().db) : {};
   const tools = createToolRegistry({
     ...createV1ToolHandlers(() => getConnection().db, options.getSessionConnectionState),
     ...v2Handlers,

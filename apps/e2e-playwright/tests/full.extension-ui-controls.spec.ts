@@ -17,8 +17,9 @@ test.describe('@full extension popup and db-viewer controls', () => {
   test.beforeAll(async () => {
     server = await startHttpServer(createTempDataDir('bdmcp-e2e-full-ui-data-'));
     extension = await launchExtensionContext();
+    await extension.setServerBaseUrl(`http://127.0.0.1:${server.port}`);
     targetPage = await extension.context.newPage();
-    await targetPage.goto('http://127.0.0.1:8065/?e2e-ui=1');
+    await targetPage.goto(`http://127.0.0.1:${server.port}/?e2e-ui=1`);
     popupPage = await openExtensionPage(extension.context, extension.extensionId, 'popup.html');
   });
 

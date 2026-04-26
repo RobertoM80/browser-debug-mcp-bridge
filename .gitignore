@@ -33,6 +33,7 @@ lerna-debug.log*
 .env.development.local
 .env.test.local
 .env.production.local
+override-poc.local.json
 
 # Editor/IDE settings
 .vscode/
@@ -81,3 +82,7 @@ opencode.json
 # Local package manager cache
 .npm-cache/
 .pnpm-store/
+
+# Next.js
+.next
+out

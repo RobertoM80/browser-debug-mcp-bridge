@@ -1,137 +1,64 @@
 # Browser Debug MCP Bridge
 
-Chrome Extension + local Node.js MCP runtime for real-browser debugging.
+Chrome extension plus local MCP runtime for debugging real browser sessions with an AI client.
 
-It captures telemetry from an actual browser session (console, network, navigation, UI events), stores it locally, and exposes debugging tools through MCP to your AI client.
+It captures console logs, network calls, navigation, UI events, DOM snapshots, styles, layout, screenshots, and persisted failure context from an actual Chrome tab. The MCP server exposes that evidence as tools your AI client can call while you reproduce a bug.
 
-## What You Can Do
+## What It Does
 
-- Inspect real sessions instead of synthetic test runs
-- Query recent errors, failed requests, and event timelines
-- Run targeted live capture (DOM subtree/document, styles, layout)
-- Pull live in-memory console logs with server-side filters (`url`, `tabId`, `levels`, `contains`)
-- Query targeted API calls with optional sanitized request/response bodies
-- Wait deterministically for the next matching API request during repro flows
-- Correlate user actions with network/runtime failures
-- Keep privacy controls enabled (safe mode, allowlist, redaction)
-
-## How It Works
-
-1. Chrome extension captures session telemetry.
-2. Local server ingests via HTTP/WebSocket on `127.0.0.1:8065`.
-3. Data is persisted in local SQLite.
-4. MCP stdio server exposes tools to your AI client.
+- Debugs a real Chrome page instead of guessing from source code alone.
+- Stores session telemetry locally in SQLite.
+- Lets your AI client query recent events, console errors, failed requests, and API calls.
+- Captures live DOM, styles, layout metrics, UI snapshots, and live console logs on demand.
+- Correlates user actions, network failures, runtime errors, and snapshots into timelines.
+- Keeps privacy controls local with safe mode, domain allowlists, redaction, and bounded payloads.
+- Includes an experimental exact-asset override workflow for replacing production JS/CSS assets with local files during debugging.
 
 ## Requirements
 
 - Node.js `>=20`
-- npm (for no-repo quick mode)
-- pnpm `>=9` (for local repo mode)
-- Chrome (Developer Mode to load unpacked extension)
+- Chrome or Chromium with extension Developer Mode enabled
+- An MCP-capable AI client
 
-## Setup Modes
+## Install
 
-### Recommended for Most Users: No-Repo Quick Setup
-
-Use this when you want to install and run quickly without cloning this repository.
-
-1. Install runtime globally:
+Install the MCP runtime:
 
 ```bash
 npm i -g browser-debug-mcp-bridge
 ```
 
-1. Download the latest extension asset `chrome-extension-dist.tgz` from:
+Download the Chrome extension archive from the latest GitHub release:
 
-- `https://github.com/RobertoM80/browser-debug-mcp-bridge/releases/latest`
-
-1. Extract the archive and load extension in Chrome:
-
-1. Open `chrome://extensions`
-1. Enable Developer mode
-1. Click **Load unpacked**
-1. Select the extracted extension folder
-
-1. Configure MCP host with direct Node launch (recommended):
-
-1. Find npm global root: `npm root -g`
-1. Use script path: `<NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs`
-
-1. Alternative quick runtime (secondary):
-
-```bash
-npx -y browser-debug-mcp-bridge
+```text
+https://github.com/RobertoM80/browser-debug-mcp-bridge/releases/latest
 ```
 
-### Local Repo Setup (Contributors/Customization)
+Load the extension:
 
-Use this when you need local development, customization, or source-level debugging.
+1. Extract `chrome-extension-dist.tgz`.
+2. Open `chrome://extensions`.
+3. Enable Developer mode.
+4. Click **Load unpacked**.
+5. Select the extracted extension folder.
 
-```bash
-git clone https://github.com/RobertoM80/browser-debug-mcp-bridge.git
-cd browser-debug-mcp-bridge
-pnpm install
-pnpm nx build mcp-server
-pnpm nx build chrome-extension
-```
+## Configure Your MCP Client
 
-Load extension:
+Recommended launch method: direct `node` command pointing at the installed package script.
 
-1. Open `chrome://extensions`
-2. Enable Developer mode
-3. Click **Load unpacked**
-4. Select `dist/apps/chrome-extension`
-
-Start MCP runtime:
+Find the global npm root:
 
 ```bash
-node scripts/mcp-start.cjs
+npm root -g
 ```
 
-### Experimental Override POC
+Use this script path:
 
-Local repo mode now includes a single-asset production override POC.
-
-1. Edit `override-poc.config.json` with:
-   - `enabled`
-   - exact production `targetAssetUrl`
-   - local built `localFilePath`
-   - `contentType`
-   - `autoReload`
-2. Rebuild the server and extension:
-
-```bash
-pnpm nx build mcp-server
-pnpm nx build chrome-extension
+```text
+<NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs
 ```
 
-3. Reload the unpacked extension in `chrome://extensions`.
-4. Start or resume a live session on the target tab.
-5. Open the popup `Override POC` section and click `Enable POC`.
-
-Current scope:
-
-- one exact asset URL
-- one local file
-- one attached tab
-- cache disabled and service worker bypass enabled through CDP
-- local bytes served by `GET /overrides/poc/asset`
-
-This is intentionally hardcoded and experimental. It validates the core replacement mechanism only; it does not yet include automatic Next.js chunk mapping or robust SRI/CSP handling.
-
-## MCP Client Configuration
-
-If you are using local repo mode, generate ready-to-paste snippets:
-
-```bash
-pnpm mcp:print-config
-```
-
-### OpenAI (Codex CLI / Codex in VS Code)
-
-Best-practice launch path: use direct `node` launch to the installed script path.
-
-Edit `~/.codex/config.toml` (Windows: `C:\Users\<you>\.codex\config.toml`) and add:
+OpenAI Codex CLI / Codex in VS Code example:
 
 ```toml
 [mcp_servers.browser_debug]
@@ -139,25 +66,7 @@ command = "node"
 args = ["C:\\Users\\<you>\\AppData\\Roaming\\npm\\node_modules\\browser-debug-mcp-bridge\\scripts\\mcp-start.cjs"]
 ```
 
-local repo mode alternative:
-
-```toml
-[mcp_servers.browser_debug]
-command = "node"
-args = ["C:\\ABSOLUTE\\PATH\\TO\\browser-debug-mcp-bridge\\scripts\\mcp-start.cjs"]
-```
-
-npm quick mode (secondary):
-
-```toml
-[mcp_servers.browser_debug]
-command = "npx"
-args = ["-y", "browser-debug-mcp-bridge"]
-```
-
-### OpenCode
-
-Use JSON MCP config:
+OpenCode or JSON-style MCP host example:
 
 ```json
 {
@@ -172,53 +81,112 @@ Use JSON MCP config:
 }
 ```
 
-### VS Code (any MCP host expecting command/args)
+Quick secondary option:
 
-Use the same values:
+```json
+{
+  "mcpServers": {
+    "browser-debug": {
+      "command": "npx",
+      "args": ["-y", "browser-debug-mcp-bridge"]
+    }
+  }
+}
+```
 
-- `command`: `node`
-- `args`: `[
-  "<NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs"
-]`
+## First Debug Session
 
-If your VS Code MCP host uses JSON, reuse the OpenCode JSON block above.
+1. Start your MCP client so it launches the bridge.
+2. Open the target page in Chrome.
+3. Open the Browser Debug extension popup.
+4. Add the page origin to the allowlist.
+5. Click **Start session**.
+6. Ask your AI client to call `list_sessions`.
+7. Pick a session where `liveConnection.connected` is `true`.
 
-## First End-to-End Check
-
-- Start MCP host/client (so it launches this server).
-- Open extension popup, allowlist domain, start a session.
-- Ask your AI client to run:
+Useful first tool call:
 
 ```json
 { "name": "list_sessions", "arguments": { "sinceMinutes": 60 } }
 ```
 
-- Pick a session where `liveConnection.connected` is `true`.
-- Run query tools first (`get_session_summary`, `get_recent_events`, `get_network_failures`).
-- Use live tools (`get_dom_document`, `capture_ui_snapshot`, `get_live_console_logs`) only on connected sessions.
+Then query persisted evidence first with `get_session_summary`, `get_recent_events`, `get_console_events`, `get_network_failures`, and `get_network_calls`.
 
-## Session Scope and URL Filtering
+Use live capture tools only on connected sessions: `get_dom_document`, `get_dom_subtree`, `get_computed_styles`, `get_layout_metrics`, `capture_ui_snapshot`, and `get_live_console_logs`.
 
-- Sessions start bound to the active tab only.
-- Telemetry from unbound tabs is rejected to avoid cross-tab contamination.
-- Use the popup `Session Tabs` panel to explicitly add/remove tabs from the active session.
-- If all bound tabs are removed/closed, the session auto-stops.
+## Tool List
 
-MCP query tools support `sessionId`, `url`, or both:
+Session and health:
 
-- `sessionId` only: filter by session
-- `url` only: filter by URL origin across sessions (for example `http://localhost:3000`)
-- `sessionId + url`: intersection (only rows matching both)
+- `list_sessions`
+- `get_live_session_health`
+- `get_session_summary`
 
-Supported tools:
+Events, console, and navigation:
 
 - `get_recent_events`
 - `get_navigation_history`
 - `get_console_events`
+- `get_console_summary`
+- `get_event_summary`
+- `get_live_console_logs`
+
+Network and API debugging:
+
 - `get_network_failures`
 - `get_network_calls`
+- `wait_for_network_call`
+- `get_request_trace`
+- `get_body_chunk`
 
-Example: URL-only query
+Live UI capture:
+
+- `get_element_refs`
+- `get_dom_subtree`
+- `get_dom_document`
+- `get_computed_styles`
+- `get_layout_metrics`
+- `capture_ui_snapshot`
+
+Failure analysis and snapshots:
+
+- `explain_last_failure`
+- `get_event_correlation`
+- `list_snapshots`
+- `get_snapshot_for_event`
+- `get_snapshot_asset`
+
+Experimental overrides:
+
+- `list_override_profiles`
+- `create_override_profile`
+- `validate_override_profile`
+- `observe_override_assets`
+- `list_observed_override_assets`
+- `map_next_override_assets`
+- `plan_next_source_override`
+- `enable_overrides`
+- `disable_overrides`
+- `get_override_status`
+- `get_override_request_log`
+- `diagnose_overrides`
+
+## Session Scope
+
+Sessions are tab-bound by default.
+
+- The active tab is bound when you start a session.
+- Telemetry from unbound tabs is rejected to avoid cross-tab contamination.
+- Use the popup `Session Tabs` panel to add or remove tabs from the active session.
+- If all bound tabs are removed or closed, the session auto-stops.
+
+Query tools accept `sessionId`, `url`, or both.
+
+- `sessionId`: only that session.
+- `url`: that origin across sessions, for example `http://localhost:3000`.
+- `sessionId` plus `url`: intersection of both filters.
+
+Example URL-only query:
 
 ```json
 {
@@ -227,7 +195,7 @@ Example: URL-only query
 }
 ```
 
-Example: session + URL intersection
+Example session and URL query:
 
 ```json
 {
@@ -236,20 +204,23 @@ Example: session + URL intersection
 }
 ```
 
-## Live Console Logs (Non-Persistent)
+## Live Console Logs
 
-`get_live_console_logs` reads from extension in-memory ring buffers (session-scoped), so this live stream can be filtered without DB scanning.
+`get_live_console_logs` reads from extension memory, not the SQLite event log. It is useful for current-page console debugging with server-side filters.
 
-- `sessionId` is required
-- optional filters: `url` (origin), `tabId`, `levels`, `contains`, `sinceTs`
-- supports substring filters like `"[auth]"` directly server-side
-- results are bounded by `limit` and buffer capacity
+Supported filters:
 
-Capture scope:
-
-- Captured from page context: `console.log`, `console.info`, `console.warn`, `console.error`, `console.debug`, `console.trace`
-- Runtime JS exceptions are included as `error`-level live entries
-- Browser-internal/DevTools UI-only rows are not guaranteed
+- `sessionId`
+- `url`
+- `tabId`
+- `levels`
+- `contains`
+- `sinceTs`
+- `dedupeWindowMs`
+- `responseProfile`
+- `includeArgs`
+- `maxResponseBytes`
+- `limit`
 
 Example:
 
@@ -261,105 +232,175 @@ Example:
     "url": "http://localhost:3000",
     "levels": ["info", "error"],
     "contains": "[auth]",
+    "responseProfile": "compact",
     "limit": 100
   }
 }
 ```
 
-## Port and Startup Behavior
+## Experimental Asset Overrides
 
-Default port is `8065`.
+Overrides let you test local JS/CSS files against a real production page by intercepting exact asset URLs in one selected tab.
 
-- Launcher enforces a single-instance startup lock to avoid concurrent launch races.
-- On Windows, launcher tries automatic stale bridge recovery first.
-- If port is still occupied, startup fails with `MCP_STARTUP_PORT_IN_USE`.
-- In that case, free/reserve port `8065` for this bridge and restart.
-- Launcher reports `Started` only after `/health` becomes reachable on `127.0.0.1:8065`.
-- In `mcp-stdio` mode, bridge lifecycle is tied to the host and should stop when host transport closes.
-- If a stale process still remains, stop it explicitly with `node scripts/mcp-start.cjs --stop`.
-- Optional: set `MCP_STARTUP_TIMEOUT_MS` (default `15000`) for slower machines.
+Current scope:
+
+- One active profile with one or more exact URL-to-file rules.
+- One explicitly selected bound tab.
+- Cache disable and service-worker bypass through Chrome debugger protocol.
+- Durable run and request logs.
+- MCP control, status, request log, and diagnosis tools.
+- Candidate profile generation through adapters.
+- Live production asset observation, persistence, and Next.js source-to-chunk candidate mapping.
+- Optional production/local drift checks with fetched asset hashes and normalized signatures.
+- Next.js source-edit planning with temp overlay builds and safe literal patching of observed chunks.
+
+Supported generator adapters:
+
+| Adapter | Use case | Main inputs |
+| --- | --- | --- |
+| `nextjs` | Next.js apps built into `.next` | `targetBaseUrl`, optional `projectRoot`, optional `nextDir` |
+| `static` | Any built asset directory, including Vite, Angular, Vue, SvelteKit, Remix, or no framework | `targetBaseUrl`, optional `projectRoot`, optional `assetRoot` |
+
+The override runtime is framework-agnostic. Adapters only generate exact `targetAssetUrl` to `localFilePath` rules. The same browser replacement, validation, audit, and diagnosis path is used for every framework.
+
+Observe production assets from a live session:
+
+```json
+{
+  "name": "observe_override_assets",
+  "arguments": { "sessionId": "sess_123" }
+}
+```
+
+Observed assets are persisted per session and can be reused when the live tab is no longer connected:
+
+```json
+{
+  "name": "list_observed_override_assets",
+  "arguments": { "sessionId": "sess_123" }
+}
+```
+
+Map observed Next.js assets back to local build chunks and source paths:
+
+```json
+{
+  "name": "map_next_override_assets",
+  "arguments": {
+    "sessionId": "sess_123",
+    "projectRoot": "C:/path/to/app",
+    "route": "/products",
+    "sourcePaths": ["src/app/products/page.tsx"],
+    "fetchProductionAssets": true
+  }
+}
+```
+
+`fetchProductionAssets` reports whether observed production bytes match the local build. Hash/signature drift lowers confidence and adds a `PRODUCTION_LOCAL_DRIFT` blocker. Drift checks are opt-in and bounded by `maxDriftCandidates` (default 20), `productionFetchConcurrency` (default 4), `productionFetchTimeoutMs`, and `maxProductionAssetBytes` so normal mapping stays fast.
+
+Plan a browser-only source edit for an observed Next.js route:
+
+```json
+{
+  "name": "plan_next_source_override",
+  "arguments": {
+    "sessionId": "sess_123",
+    "projectRoot": "C:/path/to/app",
+    "route": "/products",
+    "sourceEdits": [
+      {
+        "filePath": "src/app/products/page.tsx",
+        "search": "Original headline",
+        "replacement": "Override headline"
+      }
+    ],
+    "configPath": "C:/path/to/app/override-poc.local.json",
+    "writeConfig": true,
+    "overlayTtlMs": 86400000
+  }
+}
+```
+
+Temp overlay builds are created under `tmp/bn/<id>`. Expired overlays are cleaned automatically when `plan_next_source_override` runs.
+
+`diagnose_overrides` also uses persisted observations to report target URL mismatches, SRI, CSP meta tags, and service-worker control. The extension popup surfaces the same compact blocker summary.
+
+Generate a Next.js candidate profile:
+
+```json
+{
+  "name": "create_override_profile",
+  "arguments": {
+    "adapter": "nextjs",
+    "projectRoot": "C:/path/to/app",
+    "targetBaseUrl": "https://www.example.com/_next/",
+    "writeConfig": true
+  }
+}
+```
+
+Generate a generic static-assets profile:
+
+```json
+{
+  "name": "create_override_profile",
+  "arguments": {
+    "adapter": "static",
+    "projectRoot": "C:/path/to/app",
+    "assetRoot": "dist/assets",
+    "targetBaseUrl": "https://www.example.com/assets/",
+    "writeConfig": true
+  }
+}
+```
+
+Generated configs are disabled by default. Review exact production URLs before enabling.
+
+To make the runtime load your config, set `OVERRIDE_POC_CONFIG_PATH` in your MCP server environment to the generated config file path, then restart the MCP server.
+
+Planned adapter direction:
+
+1. Keep `static` as the universal fallback.
+2. Add framework-specific manifest adapters only when they improve mapping confidence.
+3. Add observed production URL ingestion for stronger generated mappings.
+4. Add dedicated Angular, Vue/Nuxt, Vite, SvelteKit, Remix, and other adapters as needed.
+
+Known current limits:
+
+- Exact URL matching only.
+- No pattern or fuzzy matching yet.
+- No robust SRI/CSP rewrite flow yet.
+- Generated profiles do not yet ingest observed production network URLs.
 
 ## Runtime Storage
 
-By default, the launcher and server store local runtime state in a user-local app-data directory, not in the repo or package root.
+Runtime data is local to your machine.
 
-- Windows: `%LOCALAPPDATA%\\browser-debug-mcp-bridge`
+- Windows: `%LOCALAPPDATA%\browser-debug-mcp-bridge`
 - macOS: `~/Library/Application Support/browser-debug-mcp-bridge`
 - Linux: `$XDG_STATE_HOME/browser-debug-mcp-bridge` or `$XDG_DATA_HOME/browser-debug-mcp-bridge`
 - Fallback: `~/.local/share/browser-debug-mcp-bridge`
 
-This keeps SQLite data, snapshot assets, exports, and launcher lock files out of host app roots. To override it explicitly, set `DATA_DIR`.
+Set `DATA_DIR` only if you want to override the default local storage path.
 
-Useful Windows command:
+## Port And Startup
 
-```powershell
-netstat -ano | findstr :8065
-```
+Default local port: `8065`.
 
-Stop command:
+- The launcher uses a single-instance lock.
+- Startup reports ready only after `/health` responds on `127.0.0.1:8065`.
+- `MCP_STARTUP_PORT_IN_USE` means another process is using the port.
+- `LIVE_SESSION_DISCONNECTED` means the session is historical or no extension is currently connected.
 
-```bash
-node scripts/mcp-start.cjs --stop
-```
-
-## Common Failure Signals
-
-- `LIVE_SESSION_DISCONNECTED`: session exists in DB but no active extension transport. Fix: restart/reconnect extension session, then use a `liveConnection.connected = true` session id.
-- `MCP_STARTUP_PORT_IN_USE`: required MCP port is blocked. Fix: stop the process using that port and restart bridge.
-
-## Useful Commands
+Stop a stale bridge process:
 
 ```bash
-pnpm typecheck
-pnpm lint
-pnpm test
-pnpm test:e2e
-pnpm test:e2e:head
-pnpm test:e2e:smoke
-pnpm test:e2e:full
-pnpm build
-pnpm docs:ci
-pnpm verify
-node scripts/mcp-start.cjs --stop
+node <NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs --stop
 ```
 
-E2E commands run headless by default. Use `pnpm test:e2e:head` only for local headed debugging.
-
-CI lanes:
-
-- Pull requests and pushes to `main`: `verify` + Playwright smoke + Playwright full.
-- Nightly: `verify` + Playwright full + runtime `/health` smoke check.
-
-Optional one-shot local setup:
-
-```powershell
-# Windows
-./install.ps1
-```
-
-```bash
-# macOS/Linux
-bash ./install.sh
-```
-
-## Tooling Docs
+## Docs
 
 - [MCP tools reference](https://github.com/RobertoM80/browser-debug-mcp-bridge/blob/main/docs/MCP_TOOLS.md)
 - [MCP client setup](https://github.com/RobertoM80/browser-debug-mcp-bridge/blob/main/docs/MCP_CLIENT_SETUP.md)
 - [Troubleshooting](https://github.com/RobertoM80/browser-debug-mcp-bridge/blob/main/docs/TROUBLESHOOTING.md)
-- [Architecture](https://github.com/RobertoM80/browser-debug-mcp-bridge/blob/main/docs/ARCHITECTURE.md)
 - [Security and privacy](https://github.com/RobertoM80/browser-debug-mcp-bridge/blob/main/SECURITY.md)
-
-## Repository Layout
-
-```text
-apps/
-  mcp-server/         Fastify + WebSocket ingest + MCP server
-  chrome-extension/   MV3 extension (background/content/injected)
-  viewer/             Optional UI
-libs/
-  shared/             Shared schemas/types/utils
-  redaction/          Privacy redaction engine
-  selectors/          Selector generation
-  mcp-contracts/      MCP tool contracts and schemas
-```

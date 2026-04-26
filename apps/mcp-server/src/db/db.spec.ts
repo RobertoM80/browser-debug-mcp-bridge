@@ -13,6 +13,7 @@ import {
 import { initializeSchema, getSchemaVersion, clearDatabase, SCHEMA_VERSION } from './schema';
 import { initializeDatabase, resetDatabase, runMigrations } from './migrations';
 import { getDatabasePath } from '../runtime-paths';
+import { listObservedOverrideAssets, persistObservedOverrideAssets } from '../override-observed-assets';
 
 describe('Database Connection', () => {
   let testDbPath: string;
@@ -160,6 +161,23 @@ describe('Database Schema', () => {
       expect(result).toBeDefined();
     });
 
+    it('should create override audit tables', () => {
+      initializeSchema(db);
+      const runs = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_runs'").get();
+      const requests = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_requests'").get();
+      expect(runs).toBeDefined();
+      expect(requests).toBeDefined();
+    });
+
+    it('should create observed override asset table', () => {
+      initializeSchema(db);
+      const table = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_observed_assets'").get();
+      const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_observed_assets'").all() as { name: string }[];
+      expect(table).toBeDefined();
+      expect(indexes.map((index) => index.name)).toContain('idx_override_observed_assets_session_url');
+      expect(indexes.map((index) => index.name)).toContain('idx_override_observed_assets_session_seen');
+    });
+
     it('should create schema_version table', () => {
       initializeSchema(db);
       const result = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'").get();
@@ -220,6 +238,18 @@ describe('Database Schema', () => {
       expect(indexNames).toContain('idx_snapshots_session_ts');
       expect(indexNames).toContain('idx_snapshots_session_trigger_ts');
       expect(indexNames).toContain('idx_snapshots_png_path');
+    });
+
+    it('should create indexes on override audit tables', () => {
+      initializeSchema(db);
+      const runIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_runs'").all() as { name: string }[];
+      const requestIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_requests'").all() as { name: string }[];
+
+      expect(runIndexes.map((index) => index.name)).toContain('idx_override_runs_session_started_at');
+      expect(runIndexes.map((index) => index.name)).toContain('idx_override_runs_session_status_started_at');
+      expect(requestIndexes.map((index) => index.name)).toContain('idx_override_requests_session_ts');
+      expect(requestIndexes.map((index) => index.name)).toContain('idx_override_requests_run_ts');
+      expect(requestIndexes.map((index) => index.name)).toContain('idx_override_requests_status_ts');
     });
 
     it('should record schema version when using migrations', () => {
@@ -300,6 +330,9 @@ describe('Database Migrations', () => {
       expect(tableNames).toContain('body_chunks');
       expect(tableNames).toContain('error_fingerprints');
       expect(tableNames).toContain('snapshots');
+      expect(tableNames).toContain('override_runs');
+      expect(tableNames).toContain('override_requests');
+      expect(tableNames).toContain('override_observed_assets');
       expect(tableNames).toContain('schema_version');
     });
 
@@ -408,6 +441,23 @@ describe('Database Integration', () => {
         `).run();
       }).toThrow();
     });
+
+    it('should enforce foreign key on override_runs.session_id', () => {
+      expect(() => {
+        db.prepare(`
+          INSERT INTO override_runs (
+            run_id, session_id, started_at, run_status, tab_id, target_asset_url, local_file_path,
+            resolved_local_file_path, content_type, auto_reload, config_path, file_exists, matched_requests,
+            fulfilled_requests, created_at, updated_at
+          )
+          VALUES (
+            'run-1', 'non-existent', 123456789, 'active', 1, 'https://example.com/app.js', './app.js',
+            'C:/repo/app.js', 'application/javascript', 1, 'C:/repo/override-poc.local.json', 1, 0,
+            0, 123456789, 123456789
+          )
+        `).run();
+      }).toThrow();
+    });
   });
 
   describe('Data Insertion', () => {
@@ -513,6 +563,93 @@ describe('Database Integration', () => {
       const fp = db.prepare('SELECT * FROM error_fingerprints WHERE fingerprint = ?').get('fp-abc123') as { count: number };
       expect(fp).toBeDefined();
       expect(fp.count).toBe(5);
+    });
+
+    it('should insert and retrieve override audit data', () => {
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('sess-1', 123456789, 0)
+      `).run();
+
+      db.prepare(`
+        INSERT INTO override_runs (
+          run_id, session_id, started_at, run_status, tab_id, selected_tab_id, target_asset_url, local_file_path,
+          resolved_local_file_path, content_type, auto_reload, config_path, file_exists, file_size_bytes,
+          matched_requests, fulfilled_requests, created_at, updated_at
+        )
+        VALUES (
+          'run-1', 'sess-1', 123456789, 'active', 7, 7, 'https://example.com/app.js', './app.js',
+          'C:/repo/app.js', 'application/javascript', 1, 'C:/repo/override-poc.local.json', 1, 42,
+          1, 1, 123456789, 123456790
+        )
+      `).run();
+
+      db.prepare(`
+        INSERT INTO override_requests (
+          request_log_id, run_id, session_id, request_id, ts, request_url, request_status, response_code, created_at, updated_at
+        )
+        VALUES (
+          'req-log-1', 'run-1', 'sess-1', 'request-1', 123456790, 'https://example.com/app.js', 'fulfilled', 200, 123456790, 123456791
+        )
+      `).run();
+
+      const run = db.prepare('SELECT * FROM override_runs WHERE run_id = ?').get('run-1') as { matched_requests: number };
+      const request = db.prepare('SELECT * FROM override_requests WHERE request_log_id = ?').get('req-log-1') as { request_status: string };
+
+      expect(run).toBeDefined();
+      expect(run.matched_requests).toBe(1);
+      expect(request).toBeDefined();
+      expect(request.request_status).toBe('fulfilled');
+    });
+  });
+
+  describe('observed override assets', () => {
+    it('persists and deduplicates observed assets by session and URL', () => {
+      initializeSchema(db);
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode)
+        VALUES ('session-assets', 123456789, 123456789, 0)
+      `).run();
+
+      persistObservedOverrideAssets(db, {
+        sessionId: 'session-assets',
+        tabId: 7,
+        pageUrl: 'https://example.test/products',
+        baseUrl: 'https://example.test',
+        title: 'Products',
+        serviceWorkerControlled: true,
+        cspMetaTags: ['default-src self'],
+        assets: [{
+          url: 'https://example.test/_next/static/chunks/app.js',
+          kind: 'script',
+          fromDom: true,
+        }],
+        observedAt: 1000,
+      });
+      persistObservedOverrideAssets(db, {
+        sessionId: 'session-assets',
+        tabId: 7,
+        pageUrl: 'https://example.test/products',
+        assets: [{
+          url: 'https://example.test/_next/static/chunks/app.js',
+          kind: 'script',
+          fromPerformance: true,
+        }],
+        observedAt: 2000,
+      });
+
+      const assets = listObservedOverrideAssets(db, { sessionId: 'session-assets' });
+      expect(assets).toHaveLength(1);
+      expect(assets[0]).toMatchObject({
+        sessionId: 'session-assets',
+        tabId: 7,
+        lastSeenAt: 2000,
+        pageUrl: 'https://example.test/products',
+        url: 'https://example.test/_next/static/chunks/app.js',
+        assetPath: 'static/chunks/app.js',
+        fromDom: true,
+        fromPerformance: true,
+      });
     });
   });
 });

@@ -10,14 +10,16 @@ const read = (relativePath: string): string => {
 };
 
 describe('project documentation', () => {
-  it('should provide a root README with setup instructions', () => {
+  it('should provide a root README with user-facing setup instructions', () => {
     const filePath = resolve(root, 'README.md');
     expect(existsSync(filePath)).toBe(true);
 
     const content = read('README.md');
-    expect(content).toContain('## Setup Modes');
-    expect(content).toContain('pnpm install');
-    expect(content).toContain('node scripts/mcp-start.cjs');
+    expect(content).toContain('## Install');
+    expect(content).toContain('npm i -g browser-debug-mcp-bridge');
+    expect(content).toContain('## Configure Your MCP Client');
+    expect(content).toContain('## Tool List');
+    expect(content).toContain('## Experimental Asset Overrides');
   });
 
   it('should document MCP tools with usage examples', () => {

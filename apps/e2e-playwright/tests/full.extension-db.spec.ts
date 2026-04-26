@@ -77,8 +77,9 @@ test.describe('@full extension to db integration', () => {
   test.beforeAll(async () => {
     server = await startHttpServer(createTempDataDir('bdmcp-e2e-full-ext-data-'));
     extension = await launchExtensionContext();
+    await extension.setServerBaseUrl(`http://127.0.0.1:${server.port}`);
     targetPage = await extension.context.newPage();
-    await targetPage.goto('http://127.0.0.1:8065/?e2e-target=1');
+    await targetPage.goto(`http://127.0.0.1:${server.port}/?e2e-target=1`);
     popupPage = await openExtensionPage(extension.context, extension.extensionId, 'popup.html');
   });
 
@@ -141,7 +142,7 @@ test.describe('@full extension to db integration', () => {
     });
 
     const otherPage = await extension.context.newPage();
-    await otherPage.goto('http://127.0.0.1:8065/?e2e-other=1');
+    await otherPage.goto(`http://127.0.0.1:${server?.port ?? 8065}/?e2e-other=1`);
     await otherPage.evaluate(() => {
       console.warn('[cross-tab] should be dropped');
     });

@@ -4,7 +4,7 @@
     "target": "ES2022",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
-    "types": ["node", "@playwright/test"],
+    "types": ["node", "@playwright/test", "chrome"],
     "strict": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,

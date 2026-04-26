@@ -27,7 +27,7 @@ function makeStringEnv(base: NodeJS.ProcessEnv, overrides: Record<string, string
 
 export async function connectMcpClient(
   dataDir: string,
-  options: { port?: number } = {},
+  options: { env?: Record<string, string>; port?: number } = {},
 ): Promise<MCPClientHandle> {
   const port = options.port ?? 8065;
 
@@ -40,6 +40,7 @@ export async function connectMcpClient(
       PORT: String(port),
       HOST: '127.0.0.1',
       MCP_STARTUP_TIMEOUT_MS: '30000',
+      ...options.env,
     }),
     stderr: 'pipe',
   });
@@ -133,6 +134,19 @@ export const EXPECTED_TOOL_NAMES = [
   'get_layout_metrics',
   'capture_ui_snapshot',
   'get_live_console_logs',
+  'list_override_profiles',
+  'create_override_profile',
+  'validate_override_profile',
+  'observe_override_assets',
+  'list_observed_override_assets',
+  'map_next_override_assets',
+  'plan_next_source_override',
+  'enable_overrides',
+  'disable_overrides',
+  'get_override_status',
+  'get_override_request_log',
+  'diagnose_overrides',
+  'get_live_session_health',
   'explain_last_failure',
   'get_event_correlation',
   'list_snapshots',

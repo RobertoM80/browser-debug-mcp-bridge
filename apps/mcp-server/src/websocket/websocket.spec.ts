@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { WebSocket } from 'ws';
 import Fastify, { FastifyInstance } from 'fastify';
 import Database from 'better-sqlite3';
@@ -129,7 +129,7 @@ describe('WebSocket Server', () => {
         new Promise<void>(resolve => ws2.on('open', resolve)),
       ]);
 
-      const stats = wsManager.getConnectionStats();
+      const stats = wsManager!.getConnectionStats();
       expect(stats.total).toBe(2);
       expect(stats.withSession).toBe(0);
 
@@ -146,7 +146,7 @@ describe('WebSocket Server', () => {
         await new Promise<void>(resolve => ws.on('open', resolve));
       }
 
-      const stats = wsManager.getConnectionStats();
+      const stats = wsManager!.getConnectionStats();
       expect(stats.total).toBe(5);
 
       connections.forEach(ws => ws.close());
@@ -222,14 +222,14 @@ describe('WebSocket Server', () => {
       ws.send(JSON.stringify(sessionStart));
       await wait(100);
 
-      const liveState = wsManager.getSessionConnectionState('test-session-live-state');
+      const liveState = wsManager!.getSessionConnectionState('test-session-live-state');
       expect(liveState).toBeDefined();
       expect(liveState?.connected).toBe(true);
 
       ws.close();
       await wait(150);
 
-      const disconnectedState = wsManager.getSessionConnectionState('test-session-live-state');
+      const disconnectedState = wsManager!.getSessionConnectionState('test-session-live-state');
       expect(disconnectedState).toBeDefined();
       expect(disconnectedState?.connected).toBe(false);
 
@@ -707,7 +707,7 @@ describe('WebSocket Server', () => {
       ws.send(JSON.stringify(sessionStart));
       await wait(100);
 
-      const commandPromise = wsManager.sendCaptureCommand(
+      const commandPromise = wsManager!.sendCaptureCommand(
         'capture-test-session',
         'CAPTURE_DOM_SUBTREE',
         { selector: '#app', maxDepth: 2, maxBytes: 4000 },
@@ -839,7 +839,7 @@ describe('WebSocket Server', () => {
       ws.send(JSON.stringify(sessionStart));
       await wait(100);
 
-      const commandPromise = wsManager.sendCaptureCommand(
+      const commandPromise = wsManager!.sendCaptureCommand(
         'capture-live-logs-session',
         'CAPTURE_GET_LIVE_CONSOLE_LOGS',
         { contains: '[auth]', limit: 5 },

@@ -13,6 +13,7 @@ All tool responses include:
 - **V2 heavy capture tools** for targeted DOM/styles/layout evidence and live in-memory console retrieval
 - **V3 correlation tools** for reasoned timelines across events
 - **V4 snapshot tools** for snapshot timelines and bounded asset retrieval
+- **Experimental override tools** for exact asset profile generation, persisted live asset observation, Next.js source/chunk mapping, bounded drift checks, source-edit planning, validation, enable/disable, request logs, and observed-asset-aware diagnosis
 
 ## Request/response conventions
 
@@ -34,3 +35,4 @@ Continue with:
 - [V2 heavy capture tools](./v2-heavy-capture.md)
 - [V3 correlation tools](./v3-correlation.md)
 - [V4 snapshot tools](./v4-snapshot-tools.md)
+- [Experimental override POC](../extension/experimental-override-poc.md)

@@ -20,7 +20,7 @@ import {
   shouldCapturePng,
   SnapshotPngUsage,
 } from './snapshot-capture';
-import { OverridePocController } from './override-poc';
+import { OverridePocController, type OverridePocStatus } from './override-poc';
 import { redactSnapshotRecord } from '../../../libs/redaction/src';
 
 type RuntimeRequest =
@@ -62,7 +62,8 @@ type RuntimeRequest =
   | { type: 'SESSION_ADD_TAB_TO_SESSION'; tabId: number }
   | { type: 'SESSION_REMOVE_TAB_FROM_SESSION'; tabId: number }
   | { type: 'OVERRIDE_POC_GET_STATUS' }
-  | { type: 'OVERRIDE_POC_ENABLE' }
+  | { type: 'OVERRIDE_POC_SET_TARGET_TAB'; tabId: number | null }
+  | { type: 'OVERRIDE_POC_ENABLE'; tabId?: number }
   | { type: 'OVERRIDE_POC_DISABLE' }
   | { type: 'DB_RESET' };
 
@@ -97,12 +98,24 @@ interface SessionTabScope {
   allowedTabIds: Set<number>;
 }
 
+interface RuntimeStorageAreaLike {
+  get(keys: string | string[] | Record<string, unknown> | null, callback: (items: Record<string, unknown>) => void): void;
+}
+
 const snapshotPngUsageBySession = new Map<string, SnapshotPngUsage>();
 const captureTabBySession = new Map<string, { tabId: number; windowId?: number }>();
 const sessionTabScopeBySession = new Map<string, SessionTabScope>();
+const overridePocTargetTabBySession = new Map<string, number>();
 const liveConsoleBufferStore = new LiveConsoleBufferStore();
+let overridePocDiagnosisCache: {
+  key: string;
+  expiresAt: number;
+  diagnosis: OverridePocUiDiagnosis | undefined;
+} | null = null;
 const FULL_PAGE_CAPTURE_SCROLL_SETTLE_MS = 120;
 const MAX_STITCHED_PNG_PIXELS = 40_000_000;
+const DEFAULT_SERVER_BASE_URL = 'http://127.0.0.1:8065';
+const SERVER_BASE_URL_STORAGE_KEY = 'serverBaseUrl';
 
 interface FullPageCaptureMetrics {
   totalWidth: number;
@@ -123,6 +136,51 @@ interface FullPageCaptureResult {
   viewportHeight: number;
   tiles: number;
   downscaled: boolean;
+}
+
+interface ObservedOverrideAsset {
+  url: string;
+  kind: string;
+  initiatorType?: string;
+  rel?: string;
+  as?: string;
+  integrity?: string;
+  crossOrigin?: string;
+  nonce?: string;
+  fromDom: boolean;
+  fromPerformance: boolean;
+}
+
+interface ObservedOverrideAssetsResult {
+  pageUrl: string;
+  baseUrl: string;
+  title: string;
+  serviceWorkerControlled: boolean;
+  cspMetaTags: string[];
+  assets: ObservedOverrideAsset[];
+}
+
+interface OverridePocUiDiagnosisIssue {
+  code: string;
+  severity: 'info' | 'warning' | 'error';
+  message: string;
+}
+
+interface OverridePocUiDiagnosis {
+  issueCount: number;
+  issues: OverridePocUiDiagnosisIssue[];
+  observedAssets?: {
+    observedAssetCount: number;
+    targetAssetObserved: boolean;
+    targetAssetIntegrity: string | null;
+    serviceWorkerControlled: boolean;
+    cspMetaTagCount: number;
+    sriAssetCount: number;
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function getSnapshotPngUsage(sessionId: string): SnapshotPngUsage {
@@ -309,7 +367,149 @@ function cleanupSessionLocalState(sessionId: string): void {
   snapshotPngUsageBySession.delete(sessionId);
   captureTabBySession.delete(sessionId);
   sessionTabScopeBySession.delete(sessionId);
+  overridePocTargetTabBySession.delete(sessionId);
   liveConsoleBufferStore.clearSession(sessionId);
+}
+
+function getSelectedOverridePocTabId(sessionId: string): number | undefined {
+  const selectedTabId = overridePocTargetTabBySession.get(sessionId);
+  if (typeof selectedTabId !== 'number' || !Number.isInteger(selectedTabId)) {
+    return undefined;
+  }
+
+  const scope = getSessionTabScope(sessionId);
+  if (scope && !scope.allowedTabIds.has(selectedTabId)) {
+    overridePocTargetTabBySession.delete(sessionId);
+    return undefined;
+  }
+
+  return selectedTabId;
+}
+
+async function getBoundSessionTab(sessionId: string, tabId: number): Promise<chrome.tabs.Tab> {
+  const scope = getSessionTabScope(sessionId);
+  if (!scope || !scope.allowedTabIds.has(tabId)) {
+    throw new Error('Selected override tab is not bound to the active session.');
+  }
+
+  const tab = await chrome.tabs.get(tabId);
+  if (!tab || typeof tab.id !== 'number') {
+    throw new Error('Selected override tab is no longer available.');
+  }
+
+  return tab;
+}
+
+async function resolveOverridePocTab(sessionId: string, preferredTabId?: number): Promise<chrome.tabs.Tab | undefined> {
+  if (typeof preferredTabId === 'number') {
+    const tab = await getBoundSessionTab(sessionId, preferredTabId);
+    rememberCaptureTabForSession(sessionId, tab);
+    return tab;
+  }
+
+  const selectedTabId = getSelectedOverridePocTabId(sessionId);
+  if (typeof selectedTabId === 'number') {
+    const tab = await getBoundSessionTab(sessionId, selectedTabId);
+    rememberCaptureTabForSession(sessionId, tab);
+    return tab;
+  }
+
+  return resolveCaptureTab(sessionId);
+}
+
+function parseOverridePocUiDiagnosis(payload: unknown): OverridePocUiDiagnosis | undefined {
+  if (!isRecord(payload) || !isRecord(payload.diagnosis)) {
+    return undefined;
+  }
+
+  const diagnosis = payload.diagnosis;
+  const issueEntries = Array.isArray(diagnosis.issues) ? diagnosis.issues : [];
+  const issues = issueEntries
+    .map((entry): OverridePocUiDiagnosisIssue | null => {
+      if (!isRecord(entry) || typeof entry.code !== 'string' || typeof entry.message !== 'string') {
+        return null;
+      }
+      const severity = entry.severity === 'error' || entry.severity === 'warning' || entry.severity === 'info'
+        ? entry.severity
+        : 'info';
+      return {
+        code: entry.code,
+        severity,
+        message: entry.message,
+      };
+    })
+    .filter((entry): entry is OverridePocUiDiagnosisIssue => entry !== null)
+    .slice(0, 5);
+
+  const observed = isRecord(diagnosis.observedAssets) ? diagnosis.observedAssets : undefined;
+  const observedAssets = observed
+    ? {
+        observedAssetCount: typeof observed.observedAssetCount === 'number' ? Math.floor(observed.observedAssetCount) : 0,
+        targetAssetObserved: observed.targetAssetObserved === true,
+        targetAssetIntegrity: typeof observed.targetAssetIntegrity === 'string' ? observed.targetAssetIntegrity : null,
+        serviceWorkerControlled: observed.serviceWorkerControlled === true,
+        cspMetaTagCount: typeof observed.cspMetaTagCount === 'number' ? Math.floor(observed.cspMetaTagCount) : 0,
+        sriAssetCount: typeof observed.sriAssetCount === 'number' ? Math.floor(observed.sriAssetCount) : 0,
+      }
+    : undefined;
+
+  return {
+    issueCount: issueEntries.length,
+    issues,
+    observedAssets,
+  };
+}
+
+async function readOverridePocDiagnosis(
+  sessionId: string,
+  status: OverridePocStatus,
+): Promise<OverridePocUiDiagnosis | undefined> {
+  if (!status.runId) {
+    return undefined;
+  }
+
+  const key = [sessionId, status.runId, status.matchedRequests, status.fulfilledRequests, status.lastErrorCode ?? ''].join(':');
+  const now = Date.now();
+  if (overridePocDiagnosisCache?.key === key && overridePocDiagnosisCache.expiresAt > now) {
+    return overridePocDiagnosisCache.diagnosis;
+  }
+
+  try {
+    const payload = await fetchServer(
+      `/sessions/${encodeURIComponent(sessionId)}/overrides/diagnosis?runId=${encodeURIComponent(status.runId)}`,
+    );
+    const diagnosis = parseOverridePocUiDiagnosis(payload);
+    overridePocDiagnosisCache = { key, expiresAt: now + 5_000, diagnosis };
+    return diagnosis;
+  } catch (error) {
+    const diagnosis: OverridePocUiDiagnosis = {
+      issueCount: 1,
+      issues: [{
+        code: 'DIAGNOSIS_UNAVAILABLE',
+        severity: 'warning',
+        message: error instanceof Error ? error.message : 'Unable to read override diagnosis.',
+      }],
+    };
+    overridePocDiagnosisCache = { key, expiresAt: now + 5_000, diagnosis };
+    return diagnosis;
+  }
+}
+
+async function buildOverridePocStatusResult(
+  sessionId: string | null | undefined,
+  status: OverridePocStatus,
+): Promise<OverridePocStatus & { diagnosis?: OverridePocUiDiagnosis }> {
+  if (!sessionId) {
+    return status;
+  }
+
+  const selectedTabId = getSelectedOverridePocTabId(sessionId);
+  const diagnosis = await readOverridePocDiagnosis(sessionId, status);
+  return {
+    ...status,
+    selectedTabId: typeof selectedTabId === 'number' ? selectedTabId : status.selectedTabId,
+    diagnosis,
+  };
 }
 
 async function buildSessionTabScopeResult(sessionId: string): Promise<Record<string, unknown>> {
@@ -400,6 +600,114 @@ async function executeScriptInTab<T>(tabId: number, func: (...args: unknown[]) =
   }
 
   return firstResult.result as T;
+}
+
+async function observeOverrideAssetsInTab(tabId: number, includePerformance = true): Promise<ObservedOverrideAssetsResult> {
+  return executeScriptInTab<ObservedOverrideAssetsResult>(tabId, (includePerformanceArg) => {
+    const shouldIncludePerformance = includePerformanceArg !== false;
+    const assets = new Map<string, ObservedOverrideAsset>();
+
+    const toAbsoluteUrl = (value: string | null): string | null => {
+      if (!value) {
+        return null;
+      }
+      try {
+        return new URL(value, window.location.href).toString();
+      } catch {
+        return null;
+      }
+    };
+
+    const addAsset = (asset: ObservedOverrideAsset): void => {
+      const existing = assets.get(asset.url);
+      if (existing) {
+        existing.fromDom = existing.fromDom || asset.fromDom;
+        existing.fromPerformance = existing.fromPerformance || asset.fromPerformance;
+        existing.integrity = existing.integrity ?? asset.integrity;
+        existing.crossOrigin = existing.crossOrigin ?? asset.crossOrigin;
+        existing.nonce = existing.nonce ?? asset.nonce;
+        existing.rel = existing.rel ?? asset.rel;
+        existing.as = existing.as ?? asset.as;
+        existing.initiatorType = existing.initiatorType ?? asset.initiatorType;
+        return;
+      }
+
+      assets.set(asset.url, asset);
+    };
+
+    for (const script of Array.from(document.querySelectorAll<HTMLScriptElement>('script[src]'))) {
+      const url = toAbsoluteUrl(script.getAttribute('src'));
+      if (!url) {
+        continue;
+      }
+      addAsset({
+        url,
+        kind: script.type === 'module' ? 'module-script' : 'script',
+        integrity: script.integrity || undefined,
+        crossOrigin: script.crossOrigin || undefined,
+        nonce: script.nonce || undefined,
+        fromDom: true,
+        fromPerformance: false,
+      });
+    }
+
+    for (const link of Array.from(document.querySelectorAll<HTMLLinkElement>('link[href]'))) {
+      const rel = link.rel || link.getAttribute('rel') || '';
+      const relTokens = rel.toLowerCase().split(/\s+/).filter(Boolean);
+      if (!relTokens.some((entry) => ['stylesheet', 'preload', 'modulepreload'].includes(entry))) {
+        continue;
+      }
+
+      const url = toAbsoluteUrl(link.getAttribute('href'));
+      if (!url) {
+        continue;
+      }
+      addAsset({
+        url,
+        kind: relTokens.includes('stylesheet') ? 'stylesheet' : relTokens.includes('modulepreload') ? 'modulepreload' : 'preload',
+        rel,
+        as: link.as || undefined,
+        integrity: link.integrity || undefined,
+        crossOrigin: link.crossOrigin || undefined,
+        nonce: link.nonce || undefined,
+        fromDom: true,
+        fromPerformance: false,
+      });
+    }
+
+    if (shouldIncludePerformance) {
+      for (const entry of performance.getEntriesByType('resource') as PerformanceResourceTiming[]) {
+        const url = toAbsoluteUrl(entry.name);
+        if (!url) {
+          continue;
+        }
+        if (!url.includes('/_next/') && !['script', 'link', 'css'].includes(entry.initiatorType)) {
+          continue;
+        }
+        addAsset({
+          url,
+          kind: entry.initiatorType || 'resource',
+          initiatorType: entry.initiatorType || undefined,
+          fromDom: false,
+          fromPerformance: true,
+        });
+      }
+    }
+
+    const cspMetaTags = Array.from(document.querySelectorAll<HTMLMetaElement>('meta[http-equiv]'))
+      .filter((meta) => meta.httpEquiv.toLowerCase() === 'content-security-policy')
+      .map((meta) => meta.content)
+      .filter((content) => content.length > 0);
+
+    return {
+      pageUrl: window.location.href,
+      baseUrl: window.location.origin,
+      title: document.title,
+      serviceWorkerControlled: Boolean(navigator.serviceWorker?.controller),
+      cspMetaTags,
+      assets: Array.from(assets.values()).sort((first, second) => first.url.localeCompare(second.url)),
+    };
+  }, [includePerformance]);
 }
 
 async function getFullPageCaptureMetrics(tabId: number): Promise<FullPageCaptureMetrics> {
@@ -833,6 +1141,63 @@ async function executeCaptureCommand(
     };
   }
 
+  if (command === 'CAPTURE_OVERRIDE_OBSERVE_ASSETS') {
+    const requestedTabId = resolveLiveConsoleTabId(payload.tabId);
+    const sessionScope = getSessionTabScope(context.sessionId);
+    if (requestedTabId !== undefined && sessionScope && !sessionScope.allowedTabIds.has(requestedTabId)) {
+      throw new Error(`tabId ${requestedTabId} is not bound to this session`);
+    }
+
+    const tab = await resolveOverridePocTab(context.sessionId, requestedTabId);
+    if (!tab || typeof tab.id !== 'number') {
+      throw new Error('No capture tab is available for the active session.');
+    }
+
+    rememberCaptureTabForSession(context.sessionId, tab);
+    const observed = await observeOverrideAssetsInTab(tab.id, payload.includePerformance !== false);
+    return {
+      payload: {
+        sessionId: context.sessionId,
+        tabId: tab.id,
+        ...observed,
+      },
+    };
+  }
+
+  if (command === 'CAPTURE_OVERRIDE_POC_GET_STATUS') {
+    return {
+      payload: await buildOverridePocStatusResult(
+        context.sessionId,
+        await overridePocController.getStatus(),
+      ) as unknown as Record<string, unknown>,
+    };
+  }
+
+  if (command === 'CAPTURE_OVERRIDE_POC_ENABLE') {
+    const requestedTabId = resolveLiveConsoleTabId(payload.tabId);
+    const tab = await resolveOverridePocTab(context.sessionId, requestedTabId);
+    if (!tab || typeof tab.id !== 'number') {
+      throw new Error('No capture tab is available for the active session.');
+    }
+
+    overridePocTargetTabBySession.set(context.sessionId, tab.id);
+    const status = await overridePocController.enableForTab({
+      sessionId: context.sessionId,
+      tabId: tab.id,
+      selectedTabId: requestedTabId ?? getSelectedOverridePocTabId(context.sessionId),
+    });
+
+    return {
+      payload: await buildOverridePocStatusResult(context.sessionId, status) as unknown as Record<string, unknown>,
+    };
+  }
+
+  if (command === 'CAPTURE_OVERRIDE_POC_DISABLE') {
+    return {
+      payload: await overridePocController.disable() as unknown as Record<string, unknown>,
+    };
+  }
+
   const tab = await resolveCaptureTab(context.sessionId);
   if (!tab || tab.id === undefined) {
     throw new Error('No tab available for this session capture');
@@ -1010,11 +1375,12 @@ async function executeCaptureCommand(
 
 const sessionManager = new SessionManager({
   handleCaptureCommand: executeCaptureCommand,
+  wsUrl: 'ws://127.0.0.1:8065/ws',
 });
 const LOG_PREFIX = '[BrowserDebug][Background]';
 let captureConfig: CaptureConfig = { ...DEFAULT_CAPTURE_CONFIG };
-const SERVER_BASE_URL = 'http://127.0.0.1:8065';
-const overridePocController = new OverridePocController(SERVER_BASE_URL);
+let serverBaseUrl = DEFAULT_SERVER_BASE_URL;
+const overridePocController = new OverridePocController(serverBaseUrl);
 const captureDiagnostics = {
   received: 0,
   accepted: 0,
@@ -1030,8 +1396,62 @@ const captureDiagnostics = {
   lastInjectError: '',
 };
 
+function normalizeServerBaseUrl(value: unknown): string {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return DEFAULT_SERVER_BASE_URL;
+  }
+
+  try {
+    const parsed = new URL(value.trim());
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return DEFAULT_SERVER_BASE_URL;
+    }
+
+    parsed.pathname = '';
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return DEFAULT_SERVER_BASE_URL;
+  }
+}
+
+function toWebSocketUrl(baseUrl: string): string {
+  const parsed = new URL(baseUrl);
+  parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+  parsed.pathname = '/ws';
+  parsed.search = '';
+  parsed.hash = '';
+  return parsed.toString();
+}
+
+function applyServerBaseUrl(nextBaseUrl: unknown): void {
+  serverBaseUrl = normalizeServerBaseUrl(nextBaseUrl);
+  sessionManager.setWsUrl(toWebSocketUrl(serverBaseUrl));
+  overridePocController.setServerBaseUrl(serverBaseUrl);
+}
+
+function loadServerBaseUrl(storageArea: RuntimeStorageAreaLike): Promise<string> {
+  return new Promise((resolve) => {
+    storageArea.get(SERVER_BASE_URL_STORAGE_KEY, (items) => {
+      resolve(normalizeServerBaseUrl(items[SERVER_BASE_URL_STORAGE_KEY]));
+    });
+  });
+}
+
 void loadCaptureConfig(chrome.storage.local).then((loaded) => {
   captureConfig = loaded;
+});
+void loadServerBaseUrl(chrome.storage.local).then((loaded) => {
+  applyServerBaseUrl(loaded);
+});
+
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local' || !changes[SERVER_BASE_URL_STORAGE_KEY]) {
+    return;
+  }
+
+  applyServerBaseUrl(changes[SERVER_BASE_URL_STORAGE_KEY].newValue);
 });
 
 async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
@@ -1093,7 +1513,7 @@ async function fetchServer(path: string, init?: RequestInit): Promise<Record<str
     headers.set('Content-Type', 'application/json');
   }
 
-  const response = await fetch(`${SERVER_BASE_URL}${path}`, {
+  const response = await fetch(`${serverBaseUrl}${path}`, {
     ...init,
     headers,
   });
@@ -1231,7 +1651,7 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
     }
 
     case 'SESSION_PAUSE':
-      return Promise.resolve().then(() => {
+      return Promise.resolve().then(async () => {
         const state = sessionManager.getState();
         if (!state.isActive || !state.sessionId) {
           throw new Error('No active session to pause');
@@ -1240,6 +1660,7 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
           return { ok: true as const, state };
         }
 
+        await overridePocController.disable().catch(() => undefined);
         return { ok: true as const, state: sessionManager.pauseSession() };
       }).catch((error) => ({
         ok: false,
@@ -1482,9 +1903,40 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
       return Promise.resolve()
         .then(async () => ({
           ok: true as const,
-          result: await overridePocController.getStatus(),
+          result: await buildOverridePocStatusResult(
+            sessionManager.getState().sessionId,
+            await overridePocController.getStatus(),
+          ),
         }))
         .catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : 'Failed to read override POC status' }));
+
+    case 'OVERRIDE_POC_SET_TARGET_TAB':
+      return Promise.resolve()
+        .then(async () => {
+          const sessionState = sessionManager.getState();
+          if (!sessionState.sessionId || !sessionState.isActive) {
+            throw new Error('Start or resume a session before selecting an override target tab.');
+          }
+
+          const activeOverrideTabId = overridePocController.getActiveTabId();
+          if (typeof activeOverrideTabId === 'number' && request.tabId !== activeOverrideTabId) {
+            throw new Error('Disable the active override before changing the target tab.');
+          }
+
+          if (request.tabId === null) {
+            overridePocTargetTabBySession.delete(sessionState.sessionId);
+          } else {
+            const tab = await getBoundSessionTab(sessionState.sessionId, request.tabId);
+            overridePocTargetTabBySession.set(sessionState.sessionId, tab.id as number);
+          }
+
+          const status = await overridePocController.getStatus();
+          return {
+            ok: true as const,
+            result: await buildOverridePocStatusResult(sessionState.sessionId, status),
+          };
+        })
+        .catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : 'Failed to set override target tab' }));
 
     case 'OVERRIDE_POC_ENABLE':
       return Promise.resolve()
@@ -1494,13 +1946,24 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
             throw new Error('Start or resume an active session before enabling the override POC.');
           }
 
-          const tab = await resolveCaptureTab(sessionState.sessionId);
+          const requestedTabId = typeof request.tabId === 'number' && Number.isFinite(request.tabId)
+            ? Math.floor(request.tabId)
+            : undefined;
+          const tab = await resolveOverridePocTab(sessionState.sessionId, requestedTabId);
           if (!tab || typeof tab.id !== 'number') {
             throw new Error('No capture tab is available for the active session.');
           }
 
-          const status = await overridePocController.enableForTab(tab.id);
-          return { ok: true as const, result: status };
+          overridePocTargetTabBySession.set(sessionState.sessionId, tab.id);
+          const status = await overridePocController.enableForTab({
+            sessionId: sessionState.sessionId,
+            tabId: tab.id,
+            selectedTabId: requestedTabId ?? getSelectedOverridePocTabId(sessionState.sessionId),
+          });
+          return {
+            ok: true as const,
+            result: await buildOverridePocStatusResult(sessionState.sessionId, status),
+          };
         })
         .catch((error) => ({ ok: false as const, error: error instanceof Error ? error.message : 'Failed to enable override POC' }));
 
@@ -1583,11 +2046,18 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
           if (remembered?.tabId === requestedTabId) {
             captureTabBySession.delete(sessionState.sessionId);
           }
+          if (overridePocTargetTabBySession.get(sessionState.sessionId) === requestedTabId) {
+            overridePocTargetTabBySession.delete(sessionState.sessionId);
+          }
 
           if (scope.allowedTabIds.size === 0) {
             cleanupSessionLocalState(sessionState.sessionId);
             await overridePocController.disable().catch(() => undefined);
             return { ok: true as const, state: sessionManager.stopSession() };
+          }
+
+          if (overridePocController.isActiveForTab(requestedTabId)) {
+            await overridePocController.disable().catch(() => undefined);
           }
 
           const result = await buildSessionTabScopeResult(sessionState.sessionId);
@@ -1725,8 +2195,14 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (remembered?.tabId === tabId) {
     captureTabBySession.delete(state.sessionId);
   }
+  if (overridePocTargetTabBySession.get(state.sessionId) === tabId) {
+    overridePocTargetTabBySession.delete(state.sessionId);
+  }
 
   if (scope.allowedTabIds.size > 0) {
+    if (overridePocController.isActiveForTab(tabId)) {
+      void overridePocController.disable().catch(() => undefined);
+    }
     return;
   }
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { initializeDatabase } from '../db/migrations';
@@ -12,6 +12,7 @@ import {
   routeToolCall,
   type ToolHandler,
 } from './server.js';
+import { persistObservedOverrideAssets } from '../override-observed-assets.js';
 
 describe('mcp/server foundation', () => {
   it('creates MCP runtime with stdio transport', () => {
@@ -1245,9 +1246,282 @@ describe('mcp/server V1 query tools', () => {
     db.close();
     rmSync(tempRoot, { recursive: true, force: true });
   });
+
+  it('exposes override profile, audit log, status, and diagnosis tools', async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-override-tools-'));
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const db = createTestDb();
+
+    try {
+      const localAssetPath = join(tempRoot, 'override.js');
+      const configPath = join(tempRoot, 'override-poc.config.json');
+      writeFileSync(localAssetPath, 'console.log("override");', 'utf8');
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          enabled: true,
+          targetAssetUrl: 'https://example.com/app.js',
+          localFilePath: './override.js',
+          contentType: 'application/javascript; charset=utf-8',
+          autoReload: true,
+        }),
+        'utf8',
+      );
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('override-session', 1000, 0)
+      `).run();
+
+      db.prepare(`
+        INSERT INTO override_runs (
+          run_id, session_id, started_at, run_status, tab_id, selected_tab_id, target_asset_url, local_file_path,
+          resolved_local_file_path, content_type, auto_reload, config_path, file_exists, file_size_bytes,
+          matched_requests, fulfilled_requests, last_matched_at, last_error_code, last_error_message, created_at, updated_at
+        ) VALUES (
+          'run-override', 'override-session', 1100, 'failed', 7, 7, 'https://example.com/app.js', './override.js',
+          ?, 'application/javascript; charset=utf-8', 1, ?, 1, 24,
+          1, 0, 1200, 'FULFILL_FAILED', 'Inspector target closed', 1100, 1300
+        )
+      `).run(localAssetPath, configPath);
+
+      db.prepare(`
+        INSERT INTO override_requests (
+          request_log_id, run_id, session_id, request_id, ts, request_url, request_status,
+          failure_code, error_message, created_at, updated_at
+        ) VALUES (
+          'run-override:req-1', 'run-override', 'override-session', 'req-1', 1200, 'https://example.com/app.js', 'failed',
+          'FULFILL_FAILED', 'Inspector target closed', 1200, 1300
+        )
+      `).run();
+      persistObservedOverrideAssets(db, {
+        sessionId: 'override-session',
+        serviceWorkerControlled: true,
+        cspMetaTags: ["script-src 'self'"],
+        assets: [{
+          url: 'https://example.com/app.js',
+          kind: 'script',
+          integrity: 'sha384-test',
+          fromDom: true,
+        }],
+      });
+
+      const tools = createToolRegistry(createV1ToolHandlers(() => db));
+      const profiles = await routeToolCall(tools, 'list_override_profiles', {});
+      const validation = await routeToolCall(tools, 'validate_override_profile', { profileId: 'poc' });
+      const status = await routeToolCall(tools, 'get_override_status', { sessionId: 'override-session' });
+      const requests = await routeToolCall(tools, 'get_override_request_log', { sessionId: 'override-session', runId: 'run-override' });
+      const diagnosis = await routeToolCall(tools, 'diagnose_overrides', { sessionId: 'override-session', runId: 'run-override' });
+
+      expect((profiles.profiles as Array<{ profileId: string }>)[0]?.profileId).toBe('poc');
+      expect(validation.valid).toBe(true);
+      expect((status.latestRun as { runId?: string } | null)?.runId).toBe('run-override');
+      expect((requests.requests as Array<{ requestLogId: string }>)[0]?.requestLogId).toBe('run-override:req-1');
+      const diagnosisPayload = diagnosis.diagnosis as {
+        observedAssets: { targetAssetObserved: boolean; serviceWorkerControlled: boolean; cspMetaTagCount: number };
+        issues: Array<{ code: string }>;
+      };
+      expect(diagnosisPayload.issues.some((issue) => issue.code === 'FULFILL_FAILED')).toBe(true);
+      expect(diagnosisPayload.issues.some((issue) => issue.code === 'TARGET_ASSET_SRI_PRESENT')).toBe(true);
+      expect(diagnosisPayload.issues.some((issue) => issue.code === 'CSP_META_PRESENT')).toBe(true);
+      expect(diagnosisPayload.observedAssets).toMatchObject({
+        targetAssetObserved: true,
+        serviceWorkerControlled: true,
+        cspMetaTagCount: 1,
+      });
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('generates and optionally writes override profiles through MCP', async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-override-profile-generator-'));
+    const db = createTestDb();
+
+    try {
+      const assetsDir = join(tempRoot, 'dist', 'assets');
+      mkdirSync(assetsDir, { recursive: true });
+      writeFileSync(join(assetsDir, 'app.js'), 'console.log("app");', 'utf8');
+
+      const configPath = join(tempRoot, 'override-poc.local.json');
+      const tools = createToolRegistry(createV1ToolHandlers(() => db));
+      const generated = await routeToolCall(tools, 'create_override_profile', {
+        adapter: 'static',
+        projectRoot: tempRoot,
+        assetRoot: 'dist/assets',
+        targetBaseUrl: 'https://example.com/assets/',
+        configPath: 'override-poc.local.json',
+        writeConfig: true,
+      });
+
+      expect(generated.adapter).toBe('static');
+      expect(generated.ruleCount).toBe(1);
+      expect((generated.write as { written?: boolean }).written).toBe(true);
+      expect((generated.profile as { rules: Array<{ targetAssetUrl: string }> }).rules[0]?.targetAssetUrl).toBe('https://example.com/assets/app.js');
+      expect(readFileSync(configPath, 'utf8')).toContain('https://example.com/assets/app.js');
+      expect((generated.nextActions as Array<{ code: string }>).some((action) => action.code === 'VALIDATE_PROFILE')).toBe(true);
+    } finally {
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('mcp/server V2 capture tools', () => {
+  it('routes override control tools through live capture commands', async () => {
+    const captureCalls: Array<{ sessionId: string; command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (sessionId, command, payload) => {
+          captureCalls.push({ sessionId, command, payload });
+          return {
+            ok: true,
+            payload: {
+              active: command === 'CAPTURE_OVERRIDE_POC_ENABLE',
+              configuredEnabled: true,
+              tabId: payload.tabId,
+              matchedRequests: 0,
+              fulfilledRequests: 0,
+            },
+          };
+        },
+      })
+    );
+
+    const status = await routeToolCall(tools, 'get_override_status', { sessionId: 'session-live' });
+    const enabled = await routeToolCall(tools, 'enable_overrides', { sessionId: 'session-live', tabId: 7 });
+    const disabled = await routeToolCall(tools, 'disable_overrides', { sessionId: 'session-live' });
+
+    expect(captureCalls.map((call) => call.command)).toEqual([
+      'CAPTURE_OVERRIDE_POC_GET_STATUS',
+      'CAPTURE_OVERRIDE_POC_ENABLE',
+      'CAPTURE_OVERRIDE_POC_DISABLE',
+    ]);
+    expect(captureCalls[1]?.payload).toMatchObject({ tabId: 7 });
+    expect(status.configuredEnabled).toBe(true);
+    expect(enabled.active).toBe(true);
+    expect(disabled.active).toBe(false);
+  });
+
+  it('routes observed Next.js asset mapping through the live extension session', async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'mcp-next-map-'));
+    try {
+      const chunkDir = join(fixtureRoot, '.next', 'static', 'chunks', 'app');
+      mkdirSync(chunkDir, { recursive: true });
+      const chunkPath = join(chunkDir, 'page.js');
+      writeFileSync(chunkPath, 'console.log("page");', 'utf8');
+      writeFileSync(
+        `${chunkPath}.map`,
+        JSON.stringify({
+          version: 3,
+          sources: ['webpack://_N_E/./src/app/page.tsx'],
+          mappings: '',
+        }),
+        'utf8',
+      );
+
+      const captureCalls: Array<{ sessionId: string; command: string; payload: Record<string, unknown> }> = [];
+      const tools = createToolRegistry(
+        createV2ToolHandlers({
+          execute: async (sessionId, command, payload) => {
+            captureCalls.push({ sessionId, command, payload });
+            return {
+              ok: true,
+              payload: {
+                sessionId,
+                tabId: 7,
+                pageUrl: 'https://www.example.com/',
+                assets: [{
+                  url: 'https://www.example.com/_next/static/chunks/app/page.js',
+                  kind: 'script',
+                  fromDom: true,
+                }],
+              },
+            };
+          },
+        })
+      );
+
+      const observed = await routeToolCall(tools, 'observe_override_assets', { sessionId: 'session-live', tabId: 7 });
+      const mapped = await routeToolCall(tools, 'map_next_override_assets', {
+        sessionId: 'session-live',
+        tabId: 7,
+        projectRoot: fixtureRoot,
+        sourcePaths: ['src/app/page.tsx'],
+      });
+
+      expect(captureCalls.map((call) => call.command)).toEqual([
+        'CAPTURE_OVERRIDE_OBSERVE_ASSETS',
+        'CAPTURE_OVERRIDE_OBSERVE_ASSETS',
+      ]);
+      expect((observed.assets as unknown[]).length).toBe(1);
+      expect((mapped.candidates as Array<{ confidence: string; matchedSourcePaths: string[] }>)[0]).toMatchObject({
+        confidence: 'high',
+        matchedSourcePaths: ['src/app/page.tsx'],
+      });
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('maps persisted observed assets when live capture input is not provided', async () => {
+    const db = new Database(':memory:');
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'mcp-next-persisted-map-'));
+    try {
+      initializeDatabase(db);
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode)
+        VALUES ('session-persisted', 1000, 1000, 0)
+      `).run();
+      const chunkDir = join(fixtureRoot, '.next', 'static', 'chunks', 'app');
+      mkdirSync(chunkDir, { recursive: true });
+      const chunkPath = join(chunkDir, 'page.js');
+      writeFileSync(chunkPath, 'console.log("page");', 'utf8');
+      writeFileSync(
+        `${chunkPath}.map`,
+        JSON.stringify({
+          version: 3,
+          sources: ['webpack://_N_E/./src/app/page.tsx'],
+          mappings: '',
+        }),
+        'utf8',
+      );
+      persistObservedOverrideAssets(db, {
+        sessionId: 'session-persisted',
+        assets: [{
+          url: 'https://www.example.com/_next/static/chunks/app/page.js',
+          kind: 'script',
+          fromDom: true,
+        }],
+      });
+
+      const tools = createToolRegistry(createV1ToolHandlers(() => db));
+      const listed = await routeToolCall(tools, 'list_observed_override_assets', { sessionId: 'session-persisted' });
+      const mapped = await routeToolCall(tools, 'map_next_override_assets', {
+        sessionId: 'session-persisted',
+        projectRoot: fixtureRoot,
+        sourcePaths: ['src/app/page.tsx'],
+      });
+
+      expect((listed.assets as unknown[])).toHaveLength(1);
+      expect(mapped.observedFromPersisted).toMatchObject({ sessionId: 'session-persisted', assetCount: 1 });
+      expect((mapped.candidates as Array<{ confidence: string; matchedSourcePaths: string[] }>)[0]).toMatchObject({
+        confidence: 'high',
+        matchedSourcePaths: ['src/app/page.tsx'],
+      });
+    } finally {
+      db.close();
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   it('captures dom subtree with limits', async () => {
     const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
     const tools = createToolRegistry(

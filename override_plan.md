@@ -45,7 +45,7 @@ Use an **Override Control Plane** integrated with this repo (extension + MCP ser
 1. Chrome extension override engine (network interception).
 2. MCP server override manager (mapping, validation, diagnostics, file serving).
 3. MCP tools for LLM/client control.
-4. Local build manifest parser (Next.js first).
+4. Adapter-based profile generator with a universal static adapter and framework-specific adapters where useful.
 
 ### 3.2 Why this architecture
 
@@ -62,7 +62,7 @@ Use an **Override Control Plane** integrated with this repo (extension + MCP ser
 
 1. Chromium-based browsers.
 2. JS chunk override for production URL.
-3. Next.js support first.
+3. Generic static asset support plus Next.js support first.
 4. Per-session/per-tab enable/disable.
 5. Detailed diagnostics for cache/SW/mapping/security failures.
 
@@ -151,18 +151,35 @@ Add file format `.browser-debug-overrides.json`:
 }
 ```
 
-### 1.2 Build a Next.js profile generator
+### 1.2 Build an adapter-based profile generator
 
 CLI command:
 
-1. `pnpm overrides:generate --framework next --repo <path> --prod-manifest <path-or-url>`
+1. `pnpm overrides:generate --adapter nextjs --repo <path> --prod-manifest <path-or-url>`
+2. `pnpm overrides:generate --adapter static --repo <path> --asset-root dist/assets --target-base-url <url>`
 
 Generator responsibilities:
 
-1. Parse local `.next` manifests.
-2. Parse prod asset list (from live session network or provided manifest).
-3. Propose mapping with confidence score.
-4. Flag non-match items explicitly.
+1. Keep the runtime override profile format framework-agnostic.
+2. Parse local framework manifests where an adapter exists.
+3. Scan generic static directories as the universal fallback.
+4. Parse prod asset list (from live session network or provided manifest).
+5. Propose mapping with confidence score.
+6. Flag non-match items explicitly.
+
+Initial adapters:
+
+1. `static`: no-framework and generic build outputs such as `dist/assets`.
+2. `nextjs`: `.next` manifests plus `.next/static`.
+
+Future adapters:
+
+1. Angular.
+2. Vue/Nuxt.
+3. Vite.
+4. SvelteKit.
+5. Remix.
+6. Other frameworks when their manifests improve confidence beyond `static`.
 
 Confidence levels:
 
@@ -436,6 +453,5 @@ Feature is done when all are true:
 1. Given a target prod URL and valid profile, local chunk replacement is visible within one reload.
 2. Failure cases always return deterministic error codes and fixes.
 3. Cache/SW-related failures are auto-detected and surfaced clearly.
-4. Next.js sample app test suite passes full matrix.
+4. Static and Next.js sample app test suites pass full matrix.
 5. Safety controls prevent accidental third-party override.
-

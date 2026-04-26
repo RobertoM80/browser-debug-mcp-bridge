@@ -3,7 +3,8 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import net from 'node:net';
 import { join, resolve } from 'node:path';
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessByStdio } from 'node:child_process';
+import type { Readable } from 'node:stream';
 
 export interface ManagedServerProcess {
   readonly dataDir: string;
@@ -12,14 +13,22 @@ export interface ManagedServerProcess {
   stop(): Promise<void>;
 }
 
+export interface HttpServerStartOptions {
+  env?: Record<string, string>;
+  port?: number;
+}
+
 export const REPO_ROOT = resolve(__dirname, '../../../../');
 export const MCP_SERVER_MAIN = resolve(REPO_ROOT, 'apps/mcp-server/dist/main.js');
 export const MCP_BRIDGE_MAIN = resolve(REPO_ROOT, 'apps/mcp-server/dist/mcp-bridge.js');
 export const EXTENSION_DIST_DIR = resolve(REPO_ROOT, 'dist/apps/chrome-extension');
+export const NEXT_FIXTURE_ROOT = resolve(REPO_ROOT, 'apps/override-next-fixture');
+const NEXT_BIN = resolve(REPO_ROOT, 'node_modules/next/dist/bin/next');
 const EXTENSION_BOOT_TIMEOUT_MS = 60_000;
 const RUNTIME_MESSAGE_TIMEOUT_MS = 10_000;
 const RUNTIME_MESSAGE_MAX_ATTEMPTS = 8;
 const TRUE_ENV_VALUES = new Set(['1', 'true', 'yes', 'on']);
+type ManagedChildProcess = ChildProcessByStdio<null, Readable, Readable>;
 
 export function createTempDataDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -73,7 +82,7 @@ async function waitForPortAvailable(port: number, timeoutMs: number): Promise<bo
   return !(await isPortInUse(port));
 }
 
-export async function waitForHealth(port = 8065, timeoutMs = 20_000): Promise<void> {
+export async function waitForHealth(port: number, timeoutMs = 20_000): Promise<void> {
   const startedAt = Date.now();
   let lastError = 'health endpoint unavailable';
 
@@ -97,10 +106,35 @@ export async function waitForHealth(port = 8065, timeoutMs = 20_000): Promise<vo
   throw new Error(`Timed out waiting for health endpoint: ${lastError}`);
 }
 
-export async function startHttpServer(dataDir: string, port = 8065): Promise<ManagedServerProcess> {
-  const logs: string[] = [];
+async function waitForHttpOk(url: string, timeoutMs = 20_000): Promise<void> {
+  const startedAt = Date.now();
+  let lastError = 'endpoint unavailable';
 
-  if (await isPortInUse(port)) {
+  while (Date.now() - startedAt < timeoutMs) {
+    try {
+      const response = await fetch(url);
+      if (response.ok) {
+        return;
+      }
+      lastError = `status ${response.status}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
+  }
+
+  throw new Error(`Timed out waiting for ${url}: ${lastError}`);
+}
+
+export async function startHttpServer(
+  dataDir: string,
+  options: HttpServerStartOptions = {},
+): Promise<ManagedServerProcess> {
+  const logs: string[] = [];
+  const port = typeof options.port === 'number' ? options.port : await getFreePort();
+
+  if (typeof options.port === 'number' && await isPortInUse(port)) {
     const becameAvailable = await waitForPortAvailable(port, 5_000);
     if (!becameAvailable) {
       throw new Error(`Cannot start test server on ${port}: port is still in use after waiting 5000ms`);
@@ -111,6 +145,7 @@ export async function startHttpServer(dataDir: string, port = 8065): Promise<Man
     cwd: REPO_ROOT,
     env: {
       ...process.env,
+      ...options.env,
       DATA_DIR: dataDir,
       PORT: String(port),
       HOST: '127.0.0.1',
@@ -129,7 +164,31 @@ export async function startHttpServer(dataDir: string, port = 8065): Promise<Man
   };
 }
 
-function pipeLogs(child: ChildProcessWithoutNullStreams, logs: string[], prefix: string): void {
+export async function startNextFixtureApp(): Promise<ManagedServerProcess> {
+  const logs: string[] = [];
+  const port = await getFreePort();
+  const child = spawn(process.execPath, [NEXT_BIN, 'start', '-p', String(port), '-H', '127.0.0.1'], {
+    cwd: NEXT_FIXTURE_ROOT,
+    env: {
+      ...process.env,
+      PORT: String(port),
+      HOST: '127.0.0.1',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  pipeLogs(child, logs, '[next-fixture]');
+  await waitForHttpOk(`http://127.0.0.1:${port}/`);
+
+  return {
+    dataDir: NEXT_FIXTURE_ROOT,
+    logs,
+    port,
+    stop: () => stopChildProcess(child),
+  };
+}
+
+function pipeLogs(child: ManagedChildProcess, logs: string[], prefix: string): void {
   const append = (chunk: Buffer, stream: 'stdout' | 'stderr') => {
     logs.push(`${prefix}:${stream} ${chunk.toString('utf8')}`);
   };
@@ -138,7 +197,7 @@ function pipeLogs(child: ChildProcessWithoutNullStreams, logs: string[], prefix:
   child.stderr.on('data', (chunk: Buffer) => append(chunk, 'stderr'));
 }
 
-async function stopChildProcess(child: ChildProcessWithoutNullStreams): Promise<void> {
+async function stopChildProcess(child: ManagedChildProcess): Promise<void> {
   if (child.exitCode !== null) {
     return;
   }
@@ -163,6 +222,7 @@ async function stopChildProcess(child: ChildProcessWithoutNullStreams): Promise<
 export interface ExtensionContextHandle {
   context: BrowserContext;
   extensionId: string;
+  setServerBaseUrl(baseUrl: string): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -196,10 +256,33 @@ export async function launchExtensionContext(): Promise<ExtensionContextHandle> 
   return {
     context,
     extensionId,
+    setServerBaseUrl: async (baseUrl: string) => {
+      await serviceWorker.evaluate(
+        async ({ nextBaseUrl, storageKey }) => {
+          await chrome.storage.local.set({ [storageKey]: nextBaseUrl });
+        },
+        { nextBaseUrl: baseUrl, storageKey: 'serverBaseUrl' },
+      );
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+    },
     close: async () => {
       await context.close();
     },
   };
+}
+
+export async function assertExtensionInstalled(context: BrowserContext, extensionId: string): Promise<void> {
+  const page = await context.newPage();
+  try {
+    await page.goto(`chrome-extension://${extensionId}/popup.html`, { waitUntil: 'domcontentloaded' });
+    await page.locator('#start-session').waitFor({ state: 'visible', timeout: EXTENSION_BOOT_TIMEOUT_MS });
+    const runtimeId = await page.evaluate(() => chrome.runtime.id);
+    if (runtimeId !== extensionId) {
+      throw new Error(`Loaded extension runtime id ${runtimeId} did not match expected id ${extensionId}`);
+    }
+  } finally {
+    await page.close();
+  }
 }
 
 export async function openExtensionPage(context: BrowserContext, extensionId: string, pagePath: 'popup.html' | 'db-viewer.html'): Promise<Page> {

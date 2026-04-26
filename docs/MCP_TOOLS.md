@@ -324,6 +324,82 @@ When a listed session is not currently connected, live tools return a normalized
 
 This indicates the session is historical/stale or transport was dropped. Start/reconnect a live session in the extension and retry with a session id whose health response shows `liveConnection.status = "connected"` and `recommendedForLiveCapture = true`.
 
+## Experimental Override tools
+
+These tools manage the exact-asset override POC for local repo mode.
+
+Available tools:
+
+- `list_override_profiles`
+- `create_override_profile`
+- `validate_override_profile`
+- `observe_override_assets`
+- `list_observed_override_assets`
+- `map_next_override_assets`
+- `plan_next_source_override`
+- `enable_overrides`
+- `disable_overrides`
+- `get_override_status`
+- `get_override_request_log`
+- `diagnose_overrides`
+
+`create_override_profile` generates reviewable config JSON from local build assets. Current adapters are `nextjs` for `.next` output and `static` for framework-neutral asset directories such as `dist/assets`.
+
+The override runtime is framework-agnostic. Adapters only generate exact `targetAssetUrl` to `localFilePath` rules; validation, serving, interception, audit, and diagnosis use the same path for every framework.
+
+`observe_override_assets` uses the live extension connection to inspect the selected tab's script/style DOM nodes and performance resources, then persists them per session. `list_observed_override_assets` returns the persisted assets. `map_next_override_assets` compares observed `/_next/static/...` URLs with the local `.next` build, source maps when available, route manifests, and optional fetched production bytes. `plan_next_source_override` applies source edits in a temp Next.js overlay build, prefers safe literal patching of observed chunks to preserve runtime/module identity, cleans expired `tmp/bn` overlays, and can write an override config.
+
+```json
+{
+  "name": "map_next_override_assets",
+  "arguments": {
+    "sessionId": "sess_123",
+    "projectRoot": "C:/path/to/app",
+    "route": "/products",
+    "sourcePaths": ["src/app/products/page.tsx"],
+    "fetchProductionAssets": true
+  }
+}
+```
+
+When `fetchProductionAssets` is true, each checked candidate includes `drift`. Different production/local hashes add `PRODUCTION_LOCAL_DRIFT` unless normalized signatures still match. The check is bounded by `maxDriftCandidates` (default 20), `productionFetchConcurrency` (default 4), `productionFetchTimeoutMs`, and `maxProductionAssetBytes`.
+
+`diagnose_overrides` incorporates persisted observed assets when available. It can report `TARGET_ASSET_NOT_OBSERVED`, `TARGET_ASSET_SRI_PRESENT`, `CSP_META_PRESENT`, and `SERVICE_WORKER_CONTROLLED_PAGE` alongside audit failures.
+
+```json
+{
+  "name": "plan_next_source_override",
+  "arguments": {
+    "sessionId": "sess_123",
+    "projectRoot": "C:/path/to/app",
+    "route": "/products",
+    "sourceEdits": [
+      {
+        "filePath": "src/app/products/page.tsx",
+        "search": "Original headline",
+        "replacement": "Override headline"
+      }
+    ],
+    "configPath": "C:/path/to/app/override-poc.local.json",
+    "writeConfig": true,
+    "overlayTtlMs": 86400000
+  }
+}
+```
+
+```json
+{
+  "name": "create_override_profile",
+  "arguments": {
+    "adapter": "static",
+    "projectRoot": "C:/path/to/app",
+    "assetRoot": "dist/assets",
+    "targetBaseUrl": "https://www.example.com/assets/",
+    "writeConfig": true
+  }
+}
+```
+
 ## V3 Correlation tools
 
 ### explain_last_failure
