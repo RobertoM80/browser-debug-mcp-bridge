@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.11.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.10.0...browser-debug-mcp-bridge-v1.11.0) (2026-05-11)
+
+
+### Features
+
+* **extension:** support production response overrides ([ba96186](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/ba9618672c874c4db6699ce5368fd7309adab010))
+* **mcp-server:** improve live session discovery and health ([672ff7c](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/672ff7c5402d13210c5c11d0ec25e6490934b8ae))
+* **override:** harden browser asset overrides ([6a33d59](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/6a33d5924b3ef4e883366386755a060181d25bf6))
+* **overrides:** add response planning and audit gates ([379b3bc](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/379b3bce410657137afe8dfcc215cd21543caed3))
+* **overrides:** support production Next.js response overrides ([14623ee](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/14623ee8d34d7245fa01e4c3dc46311c8c0cfa8c))
+
+
+### Bug Fixes
+
+* **redaction:** redact sensitive number sequences neutrally ([bf40176](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/bf401768d5f7cfc3d2c341e448c8e0bb79a85c87))
+* update pnpm lockfile ([c64b7ba](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/c64b7ba2d52f5709f6b215067371dc657cba6f04))
+
 ## [1.10.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.9.0...browser-debug-mcp-bridge-v1.10.0) (2026-03-08)
 
 
