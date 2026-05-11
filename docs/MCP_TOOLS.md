@@ -215,6 +215,7 @@ Fetches chunked body payload for rows that expose `bodyChunkRef`.
 ```
 
 Tool boundaries:
+
 - `get_recent_events`: broad timeline across event types.
 - `get_network_failures`: failure-focused triage and grouping.
 - `get_network_calls`: targeted request search with method/status/time filters and optional bodies.
@@ -326,28 +327,50 @@ This indicates the session is historical/stale or transport was dropped. Start/r
 
 ## Experimental Override tools
 
-These tools manage the exact-asset override POC for local repo mode.
+These tools manage the response override POC for local repo mode.
 
 Available tools:
 
 - `list_override_profiles`
 - `create_override_profile`
 - `validate_override_profile`
+- `preflight_overrides`
 - `observe_override_assets`
+- `capture_override_response_body`
 - `list_observed_override_assets`
 - `map_next_override_assets`
+- `plan_override_response_patch`
 - `plan_next_source_override`
 - `enable_overrides`
 - `disable_overrides`
 - `get_override_status`
 - `get_override_request_log`
+- `get_override_plan_log`
 - `diagnose_overrides`
 
 `create_override_profile` generates reviewable config JSON from local build assets. Current adapters are `nextjs` for `.next` output and `static` for framework-neutral asset directories such as `dist/assets`.
 
-The override runtime is framework-agnostic. Adapters only generate exact `targetAssetUrl` to `localFilePath` rules; validation, serving, interception, audit, and diagnosis use the same path for every framework.
+The override runtime is framework-agnostic. Adapters currently generate `targetAssetUrl` to `localFilePath` rules with exact matching by default and prefix matching for unstable response URLs when explicitly requested; validation, serving, interception, audit, and diagnosis use the same path for every framework.
 
-`observe_override_assets` uses the live extension connection to inspect the selected tab's script/style DOM nodes and performance resources, then persists them per session. `list_observed_override_assets` returns the persisted assets. `map_next_override_assets` compares observed `/_next/static/...` URLs with the local `.next` build, source maps when available, route manifests, and optional fetched production bytes. `plan_next_source_override` applies source edits in a temp Next.js overlay build, prefers safe literal patching of observed chunks to preserve runtime/module identity, cleans expired `tmp/bn` overlays, and can write an override config.
+`preflight_overrides` is the production-safety gate before `enable_overrides`. It combines profile validation, live-session readiness, observed asset constraints, recent plan/variant context, and persisted diagnosis signals into a single readiness result. Today the production contract is GET-only for response overrides. Generic non-GET replay attempts fail with `UNSAFE_REQUEST_METHOD` plus `MUTATION_REPLAY_UNSUPPORTED`, and Next.js server action or POST RSC flows fail with `UNSAFE_REQUEST_METHOD` plus `SERVER_ACTION_UNSUPPORTED`, instead of being enabled speculatively.
+
+`observe_override_assets` uses the live extension connection to inspect the selected tab's document, script/style/link DOM nodes, Next.js URL hints such as `/_next/static`, `/_next/data`, and `_rsc=`, and fetch/XHR performance entries, then persists them per session with request metadata. Observed entries include `ruleType` values of `asset`, `document`, `rsc-flight`, `next-data`, or `api-response`, plus request method, resource type, content type, status, and navigation/fetch hints when available.
+
+`list_observed_override_assets` returns the persisted entries. `map_next_override_assets` currently maps observed `asset` entries under `/_next/static/...` back to the local `.next` build, source maps when available, route manifests, and optional fetched production bytes. `plan_next_source_override` applies source edits in a temp Next.js overlay build, prefers safe literal patching of observed static chunks to preserve runtime/module identity, distinguishes direct source-map ownership from client-reference manifest membership, cleans expired `tmp/bn` overlays, and can write an override config.
+
+Document, RSC flight, Next data, and API response observations are persisted as production-readiness foundations. The runtime fulfills configured request URLs for supported response types. Planner-generated `rsc-flight` rules are supported for captured `text/x-component` `GET` responses with structured Flight string-value patches and `_rsc` target URLs.
+
+`capture_override_response_body` captures a bounded text-like response body through the live extension session. By default it uses extension `fetch` with browser credentials and exact URL matching. With `captureMode: "cdp-response"`, `tabId`, optional `triggerReload: true`, and optional `matchMode: "prefix"`, it attaches CDP response-stage interception to the bound tab and captures the real in-tab response before continuing the request. Both modes are limited to safe `GET`/`HEAD` requests, reject sensitive caller-supplied headers such as `authorization` and `cookie` when headers are supplied, and do not return the full body unless `includeBody=true`. Non-GET capture attempts are rejected before the live bridge is called; Next.js server actions return `SERVER_ACTION_UNSUPPORTED`, and other mutation-style POST requests return `MUTATION_REPLAY_UNSUPPORTED`.
+
+`plan_override_response_patch` applies exactly one patch family to a supplied or live-captured response body: literal `textPatches`, structured JSON Pointer `jsonPatches`, or structured HTML `documentPatches`. It validates text/JSON/document/RSC safety, writes a generated local response body when requested, and can write exact or prefix override config rules for supported `document`, `next-data`, `api-response`, and production-safe `rsc-flight` responses. `jsonPatches` support existing-value `replace` operations only, with optional `expectedValue` checks, and are limited to JSON-like Next data/API response bodies. `documentPatches` are parser-based and currently support selector-scoped `replaceText`, `removeElement`, and `replaceJsonValue` operations, including safe JSON Pointer edits inside `script#__NEXT_DATA__`. Planning stays GET-only: Next.js server action requests are blocked with `SERVER_ACTION_UNSUPPORTED`, and generic mutation replay attempts are blocked with `MUTATION_REPLAY_UNSUPPORTED`. If no body is supplied and `sessionId` is provided, the tool can use the same `captureMode`, `tabId`, `triggerReload`, `matchMode`, and `timeoutMs` controls as `capture_override_response_body` before planning. Planned response patches persist a normalized variant context as well, including pathname, search params, safe Next.js request headers, request method, and a stable `variantKey`.
+
+When `sessionId` is supplied and a generated rule is produced, `plan_override_response_patch` and `plan_next_source_override` also persist an `override_plan_audits` row per generated rule. `get_override_plan_log` returns these records later with rule type, target URL, config path, generated files, original/patched hashes when available, patch summaries, optional previews, planner warnings/blockers, live-capture provenance, captured variant context, and rollback instructions.
+
+Production RSC rules include planner metadata: patch operations, original/patched hashes, byte counts, content type, and stable RSC request headers. The planner emits `structured-flight-v1` / `string-value-text` metadata and the live runtime validates that RSC patches only target parsed Flight JSON string values. Patches that hit tagged records, React element type/key tokens, Flight protocol/reference tokens, object keys, or content outside string payloads are rejected or continued unchanged with a structured failure. Replacements that need JSON escaping are supported through JSON serialization. The extension handles supported rules at CDP response stage and applies the structured patch to the live Flight body for the captured navigation variant. Next.js can also issue matching prefetch or metadata-only Flight requests for the same `_rsc` URL; those variants are continued unchanged when they do not contain the captured patch anchors. Other matching live responses that miss the expected anchors are continued and recorded as structured failures instead of serving stale content.
+
+Manual `rsc-flight` rules without planner metadata remain invalid and `preflight_overrides` reports them as not production-ready. An investigation-only rule field, `allowExperimentalRscFlightFulfillment: true`, can still be used in controlled tests to bypass the production enable gate, but it is not the supported contract.
+
+Current browser e2e coverage includes document responses, parser-based document patches, a Next.js Pages Router `#__NEXT_DATA__` document rewrite, a dynamic Next.js App Router API JSON response, and a real Next.js `/_next/data` response captured through CDP, patched through MCP, persisted into the generated plan audit log, and fulfilled by the override runtime. It also covers Next.js RSC flight capture/planning with prefix matching, production validation, CDP response-stage live patching, dynamic route isolation, search-param isolation, history navigation, prefetch/metadata pass-through behavior, direct RSC replay probes, the explicit experimental RSC opt-in path on the fixture, and negative fixture coverage showing that real Next.js server action requests and generic POST mutation requests are blocked before planning.
 
 ```json
 {

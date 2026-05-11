@@ -1,11 +1,11 @@
 # Experimental Override POC
 
-This repo includes a minimal proof of concept for replacing exact production asset requests with local files through Chrome's debugger protocol.
+This repo includes a minimal proof of concept for replacing production asset requests with local files through Chrome's debugger protocol.
 
 ## Scope
 
 - local repo mode only
-- one active override profile with one or more exact URL/file rules
+- one active override profile with one or more exact or prefix URL/file rules
 - one attached tab
 - manual enable/disable from the extension popup or MCP tools
 
@@ -42,7 +42,7 @@ Create `override-poc.local.json` in the repo root for real local values. If need
 
 Notes:
 
-1. Each rule `targetAssetUrl` must be the exact production URL requested by the browser.
+1. Each rule `targetAssetUrl` must be the exact production URL requested by the browser, unless the rule explicitly uses `matchMode: "prefix"` for unstable response URLs.
 2. Each rule `localFilePath` can be relative to the config file directory or an absolute path.
 3. `enabled` should stay `false` in the checked-in placeholder config.
 4. `override-poc.local.json` is ignored by git and is preferred automatically when present.
@@ -57,7 +57,7 @@ Supported adapters:
 1. `nextjs`: scans `.next` manifests plus `.next/static` assets and maps them under a production `/_next/` asset base URL.
 2. `static`: scans any built asset directory, such as `dist/assets`, and maps files under the provided production asset base URL.
 
-Architecture note: the override engine is framework-agnostic. Adapters only generate exact URL/file rules; request interception, validation, audit, and diagnosis use the same path for every framework.
+Architecture note: the override engine is framework-agnostic. Adapters generate exact URL/file rules by default; request interception, validation, audit, and diagnosis use the same path for every framework, and prefix matching is available where the planner explicitly opts into it.
 
 Planned adapter roadmap:
 
@@ -89,7 +89,7 @@ Example MCP arguments for framework-neutral builds:
 }
 ```
 
-The generated root config is disabled by default. Review the exact `targetAssetUrl` values against real production network requests before setting `enabled` to `true`.
+The generated root config is disabled by default. Review the `targetAssetUrl` values against real production network requests before setting `enabled` to `true`.
 
 ## How To Run It
 
@@ -113,7 +113,7 @@ Continue:
 
 If `autoReload` is `true`, the tab reloads after debugger attach so the first matching request can be intercepted with cache disabled and service worker bypass enabled.
 
-You can also operate the same flow through MCP on a connected live session with `list_override_profiles`, `create_override_profile`, `validate_override_profile`, `enable_overrides`, `disable_overrides`, `get_override_status`, `get_override_request_log`, and `diagnose_overrides`.
+You can also operate the same flow through MCP on a connected live session with `list_override_profiles`, `create_override_profile`, `validate_override_profile`, `preflight_overrides`, `observe_override_assets`, `capture_override_response_body`, `plan_override_response_patch`, `enable_overrides`, `disable_overrides`, `get_override_status`, `get_override_request_log`, `get_override_plan_log`, and `diagnose_overrides`.
 
 ## What It Does
 
@@ -124,13 +124,13 @@ When enabled, the background service worker:
 3. disables cache
 4. bypasses the service worker
 5. intercepts requests
-6. fulfills only exact URLs from enabled rules in the active profile
+6. fulfills only URLs that match enabled exact or prefix rules in the active profile
 
 The local bytes come from the server endpoint `GET /overrides/poc/asset`.
 
 ## Audit And Diagnosis APIs
 
-The override backend now persists durable run and request records for the session.
+The override backend now persists durable run, request, and generated plan records for the session.
 
 Available HTTP endpoints:
 
@@ -138,31 +138,49 @@ Available HTTP endpoints:
 2. `GET /sessions/:sessionId/overrides/runs`
 3. `POST /sessions/:sessionId/overrides/requests`
 4. `GET /sessions/:sessionId/overrides/requests`
-5. `GET /sessions/:sessionId/overrides/diagnosis`
+5. `POST /sessions/:sessionId/overrides/plans`
+6. `GET /sessions/:sessionId/overrides/plans`
+7. `GET /sessions/:sessionId/overrides/diagnosis`
 
 Available MCP tools:
 
 1. `list_override_profiles`
 2. `create_override_profile`
 3. `validate_override_profile`
-4. `observe_override_assets`
-5. `list_observed_override_assets`
-6. `map_next_override_assets`
-7. `plan_next_source_override`
-8. `enable_overrides`
-9. `disable_overrides`
-10. `get_override_status`
-11. `get_override_request_log`
-12. `diagnose_overrides`
+4. `preflight_overrides`
+5. `observe_override_assets`
+6. `capture_override_response_body`
+7. `list_observed_override_assets`
+8. `map_next_override_assets`
+9. `plan_override_response_patch`
+10. `plan_next_source_override`
+11. `enable_overrides`
+12. `disable_overrides`
+13. `get_override_status`
+14. `get_override_request_log`
+15. `get_override_plan_log`
+16. `diagnose_overrides`
 
 What they currently give you:
 
 1. per-run status with structured failure codes
 2. per-request matched and fulfilled history for the configured target asset
-3. a diagnosis response that ranks likely blockers such as exact URL mismatch, cache or reload issues, debugger lifecycle failures, persisted observed-asset mismatch, SRI, CSP, and service-worker interference
-4. live production script/style asset observation from the selected browser tab with persisted per-session reuse
-5. Next.js observed-asset to local chunk/source-path mapping with confidence reasons and optional bounded production/local drift checks
-6. temp Next.js source-overlay planning that can write exact override profile rules without mutating the repo and cleans expired `tmp/bn` overlays
+3. a diagnosis response that ranks likely blockers such as exact URL mismatch, cache or reload issues, precise debugger setup failures, persisted observed-asset mismatch, SRI, CSP, service-worker interference, and guarded RSC patch drift or unsafe-patch cases
+4. live production render-artifact observation from the selected browser tab with persisted per-session reuse, including document, static asset, Next data/RSC URL hints, and fetch/XHR metadata
+5. preflight readiness checks before enablement, including profile validity, session readiness, observed browser constraints, and recent captured variant context
+6. bounded live text response-body capture for safe `GET`/`HEAD` requests, including explicit CDP response-stage capture from the bound tab
+7. response patch planning that can generate local document, Next data, API response, or supported Next.js RSC flight override files from exact text patches, JSON Pointer replacements, or parser-based document patches, with prefix matching available for unstable response URLs
+8. Next.js observed static asset to local chunk/source-path mapping with confidence reasons and optional bounded production/local drift checks
+9. temp Next.js source-overlay planning that can write exact static asset override profile rules without mutating the repo, avoids remapping manifest-only shared chunks, and cleans expired `tmp/bn` overlays
+10. generated plan audit records with rule metadata, hashes, patch summaries, variant context, generated files, warnings/blockers, and rollback instructions
+
+For production Next.js routes, prefer `captureMode: "cdp-response"` with an explicit bound `tabId`. Add `triggerReload: true` for document navigations and `matchMode: "prefix"` for unstable URLs such as `_rsc=` requests. CDP capture reads the real browser response and then continues it unchanged; it refuses to run while overrides are already active on the same tab.
+
+`enable_overrides` now uses the same preflight checks. Production response overrides stay GET-only for now. Generic non-GET replay attempts are blocked with `UNSAFE_REQUEST_METHOD` and `MUTATION_REPLAY_UNSUPPORTED`; Next.js server action or POST RSC flows are blocked with `UNSAFE_REQUEST_METHOD` and `SERVER_ACTION_UNSUPPORTED`. SRI-protected targets, ended/paused sessions, and disconnected live bridges are also surfaced as blocking preflight errors instead of being enabled speculatively.
+
+RSC flight overrides are supported for a narrow production subset: captured `text/x-component` `GET` responses, `_rsc` target URLs, and exact text replacements inside Flight JSON string values. Planner-generated `rsc-flight` rules use `structured-flight-v1` metadata with `string-value-text` patch operations, hashes, byte counts, and stable RSC request headers. The planner and live runtime parse Flight rows, patch only JSON string values, and preserve the row framing. Patches that hit tagged Flight records, React element type/key tokens, Flight protocol/reference tokens, object keys, or content outside string payloads are rejected or continued unchanged with a structured failure. JSON escaping in replacements is supported because patched values are serialized through JSON. The extension handles supported rules at CDP response stage and applies the structured patch to the live Flight body for the captured navigation variant. Matching prefetch or metadata-only Flight variants that do not contain the captured patch anchors are continued unchanged; other anchor mismatches are continued and recorded as `RSC_PATCH_ANCHOR_MISMATCH` or `RSC_FLIGHT_STRUCTURAL_DRIFT` instead of serving stale content.
+
+Manual `rsc-flight` rules without planner metadata remain invalid and fail production preflight. The investigation-only rule flag, `allowExperimentalRscFlightFulfillment: true`, still exists for controlled fixture probes and can bypass the enable gate, but it is not the production support contract.
 
 ## Popup Status
 
@@ -178,6 +196,8 @@ The popup shows:
 8. audit sync/retry status
 9. profile/rule summary
 10. compact diagnosis details from persisted observed assets and override audit rows
+11. recent request audit rows with failure codes and messages
+12. recent generated override plan rows with warning and blocker counts
 
 The target selector is locked while an override is active. Disable the override before changing the selected tab.
 
@@ -194,15 +214,32 @@ The full Playwright suite includes override-specific browser coverage:
 7. MCP stdio control flow for the Next fixture path: list live session, validate profile, enable override, read status, request log, and diagnosis
 8. observed live Next.js assets are persisted and mapped back to local source paths before the override is enabled
 9. bounded production/local drift checks verify fetched asset hashes in the Next fixture path
-10. popup coverage renders profile/rule and compact diagnosis details
+10. popup coverage renders profile/rule, compact diagnosis details, recent request rows, and recent plan rows
 11. `plan_next_source_override` patches an observed Next.js chunk from source-level edits and blocks SRI-protected candidates before config writing
+12. `plan_override_response_patch` writes and fulfills an exact document response override in Chromium through MCP
+13. CDP response-stage capture can capture the real in-tab document response, feed it into parser-based `documentPatches`, and fulfill the generated document override in Chromium
+14. a Next.js Pages Router document can be captured through CDP, patched through `script#__NEXT_DATA__` JSON Pointer document patches, fulfilled by the override runtime, and kept isolated from a sibling page
+15. a dynamic Next.js App Router API response can be captured through CDP, patched with structured JSON Pointer replacements through MCP, fulfilled by the override runtime, and reflected in page UI
+16. a real Next.js `/_next/data` response can be captured through CDP, patched with structured JSON Pointer replacements through MCP, fulfilled by the override runtime, and kept isolated from a sibling data route
+17. generated response override plan metadata is persisted with hashes, patch summaries, variant context, generated file paths, and rollback instructions, then retrieved through `get_override_plan_log`
+18. a Next.js App Router RSC flight response can be captured, planned with prefix matching, validated, fulfilled at CDP response stage, and reflected in page UI
+19. production RSC dynamic-route overrides stay scoped to the captured route across back/forward navigation while sibling routes remain original
+20. production RSC search-param overrides apply only to the captured query state while other query states remain original
+21. matching RSC prefetch and metadata-only variants are continued unchanged when they do not contain captured patch anchors
+22. direct CDP RSC replay probes verify unmodified, structured string-value patched, response-stage, and request-stage replay against the fixture
+23. real Next.js server action requests are observed in the fixture and blocked before response planning with `SERVER_ACTION_UNSUPPORTED`
+24. real Next.js POST mutation requests are observed in the fixture and blocked before response planning with `MUTATION_REPLAY_UNSUPPORTED`
+25. manual RSC configs without planner metadata remain invalid, while the explicit experimental opt-in remains covered separately for investigation probes
 
 ## Current Limits
 
 This POC does not yet handle:
 
 1. Angular, Vue, Vite, or other framework-specific manifest adapters beyond the generic `static` adapter
-2. pattern or fuzzy URL matching
+2. regex or fuzzy URL matching beyond exact and prefix modes
 3. popup-level full request history UI
 4. long-running multi-profile workflows across many tabs or sessions
-5. arbitrary non-literal Next.js source transformations that require RSC/HTML/module-id rewrites
+5. arbitrary non-literal Next.js source transformations that require module-id, route-boundary, or server-only rewrites
+6. response patching for non-text bodies, unsafe HTTP methods, streaming responses, or server actions
+7. structured RSC flight patch planning beyond guarded exact string-value replacement
+8. server actions, route/module boundary rewrites, and arbitrary server-side behavior changes
