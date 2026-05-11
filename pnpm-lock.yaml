@@ -14,6 +14,9 @@ importers:
       better-sqlite3:
         specifier: ^12.6.2
         version: 12.6.2
+      cheerio:
+        specifier: ^1.2.0
+        version: 1.2.0
       fastify:
         specifier: ^5.7.4
         version: 5.7.4
