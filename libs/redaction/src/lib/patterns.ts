@@ -43,9 +43,9 @@ export const DEFAULT_REDACTION_RULES: RedactionRule[] = [
     replacement: '$1[PASSWORD]',
   },
   {
-    name: 'credit-card',
+    name: 'sensitive-number-sequence',
     pattern: /\b(?:\d[ -]*?){13,16}\b/g,
-    replacement: '[CREDIT_CARD]',
+    replacement: '[SENSITIVE_NUMBER]',
   },
   {
     name: 'email',

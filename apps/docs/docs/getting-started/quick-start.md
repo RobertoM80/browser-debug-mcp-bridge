@@ -57,7 +57,8 @@ node scripts/mcp-start.cjs --stop
 - Optional stats endpoint: `GET http://127.0.0.1:8065/stats`
 - Confirm popup shows connected status after session start
 - Confirm MCP client can run `list_sessions`
-- For live tools, use a session with `liveConnection.connected = true`
+- For live tools, prefer a session where `liveConnection.recommendedForLiveCapture = true`
+- If session choice is unclear, run `get_live_session_health`
 - Session scope is tab-bound by default; use popup `Session Tabs` to add/remove tabs
 - Verify live console path with `get_live_console_logs` on a connected `sessionId`
 

@@ -7,7 +7,7 @@
     "test": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "pnpm nx run-many -t build --projects mcp-server,chrome-extension && pnpm exec playwright test -c apps/e2e-playwright/playwright.config.ts"
+        "command": "pnpm nx run-many -t build --projects mcp-server,chrome-extension,override-next-fixture && pnpm exec playwright test -c apps/e2e-playwright/playwright.config.ts"
       }
     },
     "smoke": {
@@ -19,7 +19,7 @@
     "full": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "pnpm nx run-many -t build --projects mcp-server,chrome-extension && pnpm exec playwright test -c apps/e2e-playwright/playwright.config.ts --grep @full"
+        "command": "pnpm nx run-many -t build --projects mcp-server,chrome-extension,override-next-fixture && pnpm exec playwright test -c apps/e2e-playwright/playwright.config.ts --grep @full"
       }
     }
   },

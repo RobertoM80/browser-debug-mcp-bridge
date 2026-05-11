@@ -17,6 +17,10 @@ export const GetSessionSummarySchema = z.object({
   sessionId: z.string().describe('Unique session identifier'),
 });
 
+export const GetLiveSessionHealthSchema = z.object({
+  sessionId: z.string().describe('Unique session identifier'),
+});
+
 export const GetRecentEventsSchema = z.object({
   sessionId: z.string().optional().describe('Unique session identifier'),
   url: z.string().optional().describe('Optional absolute URL; normalized to origin filter'),

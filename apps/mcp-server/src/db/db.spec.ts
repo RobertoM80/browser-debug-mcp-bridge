@@ -13,6 +13,7 @@ import {
 import { initializeSchema, getSchemaVersion, clearDatabase, SCHEMA_VERSION } from './schema';
 import { initializeDatabase, resetDatabase, runMigrations } from './migrations';
 import { getDatabasePath } from '../runtime-paths';
+import { listObservedOverrideAssets, persistObservedOverrideAssets } from '../override-observed-assets';
 
 describe('Database Connection', () => {
   let testDbPath: string;
@@ -160,6 +161,36 @@ describe('Database Schema', () => {
       expect(result).toBeDefined();
     });
 
+    it('should create override audit tables', () => {
+      initializeSchema(db);
+      const runs = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_runs'").get();
+      const requests = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_requests'").get();
+      const plans = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_plan_audits'").get();
+      expect(runs).toBeDefined();
+      expect(requests).toBeDefined();
+      expect(plans).toBeDefined();
+    });
+
+    it('should create observed override asset table', () => {
+      initializeSchema(db);
+      const table = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_observed_assets'").get();
+      const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_observed_assets'").all() as { name: string }[];
+      const columns = db.prepare("PRAGMA table_info('override_observed_assets')").all() as { name: string }[];
+      expect(table).toBeDefined();
+      expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([
+        'rule_type',
+        'request_method',
+        'resource_type',
+        'content_type',
+        'status_code',
+        'from_navigation',
+        'from_fetch',
+      ]));
+      expect(indexes.map((index) => index.name)).toContain('idx_override_observed_assets_session_method_url');
+      expect(indexes.map((index) => index.name)).toContain('idx_override_observed_assets_session_seen');
+      expect(indexes.map((index) => index.name)).toContain('idx_override_observed_assets_rule_type');
+    });
+
     it('should create automation tables', () => {
       initializeSchema(db);
       const runs = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='automation_runs'").get();
@@ -228,6 +259,22 @@ describe('Database Schema', () => {
       expect(indexNames).toContain('idx_snapshots_session_ts');
       expect(indexNames).toContain('idx_snapshots_session_trigger_ts');
       expect(indexNames).toContain('idx_snapshots_png_path');
+    });
+
+    it('should create indexes on override audit tables', () => {
+      initializeSchema(db);
+      const runIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_runs'").all() as { name: string }[];
+      const requestIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_requests'").all() as { name: string }[];
+      const planIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_plan_audits'").all() as { name: string }[];
+
+      expect(runIndexes.map((index) => index.name)).toContain('idx_override_runs_session_started_at');
+      expect(runIndexes.map((index) => index.name)).toContain('idx_override_runs_session_status_started_at');
+      expect(requestIndexes.map((index) => index.name)).toContain('idx_override_requests_session_ts');
+      expect(requestIndexes.map((index) => index.name)).toContain('idx_override_requests_run_ts');
+      expect(requestIndexes.map((index) => index.name)).toContain('idx_override_requests_status_ts');
+      expect(planIndexes.map((index) => index.name)).toContain('idx_override_plan_audits_session_created_at');
+      expect(planIndexes.map((index) => index.name)).toContain('idx_override_plan_audits_target_url');
+      expect(planIndexes.map((index) => index.name)).toContain('idx_override_plan_audits_planner_kind');
     });
 
     it('should create indexes on automation tables', () => {
@@ -327,6 +374,10 @@ describe('Database Migrations', () => {
       expect(tableNames).toContain('snapshots');
       expect(tableNames).toContain('automation_runs');
       expect(tableNames).toContain('automation_steps');
+      expect(tableNames).toContain('override_runs');
+      expect(tableNames).toContain('override_requests');
+      expect(tableNames).toContain('override_plan_audits');
+      expect(tableNames).toContain('override_observed_assets');
       expect(tableNames).toContain('schema_version');
     });
 
@@ -344,6 +395,7 @@ describe('Database Migrations', () => {
       const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='sessions'").all() as { name: string }[];
       const indexNames = indexes.map((index) => index.name);
       expect(indexNames).toContain('idx_sessions_paused_at');
+      expect(indexNames).toContain('idx_sessions_last_seen_at');
     });
 
     it('should backfill automation tables from existing lifecycle events during migration', () => {
@@ -524,6 +576,23 @@ describe('Database Integration', () => {
       }).toThrow();
     });
 
+    it('should enforce foreign key on override_runs.session_id', () => {
+      expect(() => {
+        db.prepare(`
+          INSERT INTO override_runs (
+            run_id, session_id, started_at, run_status, tab_id, target_asset_url, local_file_path,
+            resolved_local_file_path, content_type, auto_reload, config_path, file_exists, matched_requests,
+            fulfilled_requests, created_at, updated_at
+          )
+          VALUES (
+            'run-1', 'non-existent', 123456789, 'active', 1, 'https://example.com/app.js', './app.js',
+            'C:/repo/app.js', 'application/javascript', 1, 'C:/repo/override-poc.local.json', 1, 0,
+            0, 123456789, 123456789
+          )
+        `).run();
+      }).toThrow();
+    });
+
     it('should enforce foreign key on automation_runs.session_id', () => {
       expect(() => {
         db.prepare(`
@@ -552,18 +621,23 @@ describe('Database Integration', () => {
   describe('Data Insertion', () => {
     it('should insert and retrieve session data', () => {
       const insert = db.prepare(`
-        INSERT INTO sessions (session_id, created_at, ended_at, tab_id, window_id, 
+        INSERT INTO sessions (session_id, created_at, last_seen_at, ended_at, tab_id, window_id,
           url_start, url_last, user_agent, viewport_w, viewport_h, dpr, safe_mode, allowlist_hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      
-      insert.run('sess-1', 123456789, null, 1, 1, 'https://start.com', 'https://last.com',
+
+      insert.run('sess-1', 123456789, 123456799, null, 1, 1, 'https://start.com', 'https://last.com',
         'Mozilla/5.0', 1920, 1080, 2.0, 1, 'hash123');
       
-      const session = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get('sess-1') as { session_id: string; safe_mode: number };
+      const session = db.prepare('SELECT * FROM sessions WHERE session_id = ?').get('sess-1') as {
+        session_id: string;
+        safe_mode: number;
+        last_seen_at: number;
+      };
       expect(session).toBeDefined();
       expect(session.session_id).toBe('sess-1');
       expect(session.safe_mode).toBe(1);
+      expect(session.last_seen_at).toBe(123456799);
     });
 
     it('should insert and retrieve event data', () => {
@@ -647,6 +721,185 @@ describe('Database Integration', () => {
       const fp = db.prepare('SELECT * FROM error_fingerprints WHERE fingerprint = ?').get('fp-abc123') as { count: number };
       expect(fp).toBeDefined();
       expect(fp.count).toBe(5);
+    });
+
+    it('should insert and retrieve override audit data', () => {
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('sess-1', 123456789, 0)
+      `).run();
+
+      db.prepare(`
+        INSERT INTO override_runs (
+          run_id, session_id, started_at, run_status, tab_id, selected_tab_id, target_asset_url, local_file_path,
+          resolved_local_file_path, content_type, auto_reload, config_path, file_exists, file_size_bytes,
+          matched_requests, fulfilled_requests, created_at, updated_at
+        )
+        VALUES (
+          'run-1', 'sess-1', 123456789, 'active', 7, 7, 'https://example.com/app.js', './app.js',
+          'C:/repo/app.js', 'application/javascript', 1, 'C:/repo/override-poc.local.json', 1, 42,
+          1, 1, 123456789, 123456790
+        )
+      `).run();
+
+      db.prepare(`
+        INSERT INTO override_requests (
+          request_log_id, run_id, session_id, request_id, ts, request_url, request_status, response_code, created_at, updated_at
+        )
+        VALUES (
+          'req-log-1', 'run-1', 'sess-1', 'request-1', 123456790, 'https://example.com/app.js', 'fulfilled', 200, 123456790, 123456791
+        )
+      `).run();
+
+      const run = db.prepare('SELECT * FROM override_runs WHERE run_id = ?').get('run-1') as { matched_requests: number };
+      const request = db.prepare('SELECT * FROM override_requests WHERE request_log_id = ?').get('req-log-1') as { request_status: string };
+
+      expect(run).toBeDefined();
+      expect(run.matched_requests).toBe(1);
+      expect(request).toBeDefined();
+      expect(request.request_status).toBe('fulfilled');
+    });
+
+    it('should insert and retrieve override plan audit metadata', () => {
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('sess-1', 123456789, 0)
+      `).run();
+
+      db.prepare(`
+        INSERT INTO override_plan_audits (
+          plan_id, session_id, created_at, planner_kind, tool_name, profile_id, rule_id, rule_type,
+          request_method, match_mode, target_asset_url, local_file_path, config_path, content_type,
+          original_sha256, patched_sha256, original_bytes, patched_bytes, patch_summary_json,
+          preview_json, warnings_json, blockers_json, captured_from_live_session_json, rollback_json, updated_at
+        )
+        VALUES (
+          'plan-1', 'sess-1', 123456789, 'response-patch', 'plan_override_response_patch',
+          'profile-1', 'rule-1', 'api-response', 'GET', 'exact', 'https://example.com/api',
+          'C:/tmp/override.json', 'C:/tmp/override.config.json', 'application/json',
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          20, 22, '{"jsonPatches":[{"path":"/mode"}]}', '{"before":"a","after":"b"}',
+          '["warning"]', '[]', '{"source":"cdp-response"}', '{"disableTool":"disable_overrides"}',
+          123456790
+        )
+      `).run();
+
+      const plan = db.prepare('SELECT * FROM override_plan_audits WHERE plan_id = ?').get('plan-1') as {
+        planner_kind: string;
+        patch_summary_json: string;
+        rollback_json: string;
+      };
+
+      expect(plan).toBeDefined();
+      expect(plan.planner_kind).toBe('response-patch');
+      expect(JSON.parse(plan.patch_summary_json)).toMatchObject({ jsonPatches: [{ path: '/mode' }] });
+      expect(JSON.parse(plan.rollback_json)).toMatchObject({ disableTool: 'disable_overrides' });
+    });
+  });
+
+  describe('observed override assets', () => {
+    it('persists and deduplicates observed assets by session and URL', () => {
+      initializeSchema(db);
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode)
+        VALUES ('session-assets', 123456789, 123456789, 0)
+      `).run();
+
+      persistObservedOverrideAssets(db, {
+        sessionId: 'session-assets',
+        tabId: 7,
+        pageUrl: 'https://example.test/products',
+        baseUrl: 'https://example.test',
+        title: 'Products',
+        serviceWorkerControlled: true,
+        cspMetaTags: ['default-src self'],
+        assets: [{
+          url: 'https://example.test/_next/static/chunks/app.js',
+          kind: 'script',
+          resourceType: 'script',
+          contentType: 'application/javascript',
+          statusCode: 200,
+          fromDom: true,
+        }],
+        observedAt: 1000,
+      });
+      persistObservedOverrideAssets(db, {
+        sessionId: 'session-assets',
+        tabId: 7,
+        pageUrl: 'https://example.test/products',
+        assets: [{
+          url: 'https://example.test/_next/static/chunks/app.js',
+          kind: 'script',
+          fromPerformance: true,
+        }],
+        observedAt: 2000,
+      });
+
+      const assets = listObservedOverrideAssets(db, { sessionId: 'session-assets' });
+      expect(assets).toHaveLength(1);
+      expect(assets[0]).toMatchObject({
+        sessionId: 'session-assets',
+        tabId: 7,
+        lastSeenAt: 2000,
+        pageUrl: 'https://example.test/products',
+        url: 'https://example.test/_next/static/chunks/app.js',
+        ruleType: 'asset',
+        requestMethod: 'GET',
+        resourceType: 'script',
+        contentType: 'application/javascript',
+        statusCode: 200,
+        assetPath: 'static/chunks/app.js',
+        fromDom: true,
+        fromPerformance: true,
+        fromNavigation: false,
+        fromFetch: false,
+      });
+    });
+
+    it('persists document and RSC observations as distinct request types', () => {
+      initializeSchema(db);
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode)
+        VALUES ('session-render-artifacts', 123456789, 123456789, 0)
+      `).run();
+
+      persistObservedOverrideAssets(db, {
+        sessionId: 'session-render-artifacts',
+        assets: [
+          {
+            url: 'https://example.test/products',
+            kind: 'document',
+            resourceType: 'document',
+            contentType: 'text/html; charset=utf-8',
+            statusCode: 200,
+            fromNavigation: true,
+          },
+          {
+            url: 'https://example.test/products?_rsc=abc',
+            kind: 'fetch',
+            initiatorType: 'fetch',
+            contentType: 'text/x-component',
+            fromPerformance: true,
+            fromFetch: true,
+          },
+        ],
+        observedAt: 3000,
+      });
+
+      const assets = listObservedOverrideAssets(db, { sessionId: 'session-render-artifacts' });
+      expect(assets.map((asset) => asset.ruleType).sort()).toEqual(['document', 'rsc-flight']);
+      expect(assets.find((asset) => asset.ruleType === 'document')).toMatchObject({
+        requestMethod: 'GET',
+        resourceType: 'document',
+        contentType: 'text/html; charset=utf-8',
+        statusCode: 200,
+        fromNavigation: true,
+      });
+      expect(assets.find((asset) => asset.ruleType === 'rsc-flight')).toMatchObject({
+        initiatorType: 'fetch',
+        fromFetch: true,
+      });
     });
   });
 });

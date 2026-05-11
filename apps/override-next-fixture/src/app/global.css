@@ -1,0 +1,258 @@
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: Georgia, 'Times New Roman', serif;
+  background:
+    radial-gradient(circle at 18% 12%, rgba(255, 214, 128, 0.24), transparent 32rem),
+    radial-gradient(circle at 82% 18%, rgba(76, 119, 255, 0.20), transparent 28rem),
+    linear-gradient(135deg, #101820 0%, #17241f 44%, #0c0f13 100%);
+  color: #f7f0df;
+}
+
+a {
+  color: inherit;
+}
+
+button {
+  font: inherit;
+}
+
+.site-shell {
+  align-items: center;
+  display: flex;
+  gap: 24px;
+  justify-content: space-between;
+  padding: 24px clamp(20px, 5vw, 72px);
+}
+
+.brand,
+.site-shell nav {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+}
+
+.brand {
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
+.brand-mark {
+  background: #f6c05f;
+  border: 2px solid #161616;
+  border-radius: 50%;
+  color: #111;
+  display: inline-grid;
+  height: 42px;
+  place-items: center;
+  width: 42px;
+}
+
+.site-shell nav a {
+  border-bottom: 1px solid transparent;
+  color: #e8dcc6;
+  font-size: 14px;
+  letter-spacing: 0.04em;
+  text-decoration: none;
+  text-transform: uppercase;
+}
+
+.site-shell nav a:hover {
+  border-color: #f6c05f;
+}
+
+.lab-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 24px;
+}
+
+.lab-nav a {
+  border: 1px solid rgba(246, 192, 95, 0.34);
+  border-radius: 999px;
+  color: #f6c05f;
+  padding: 10px 14px;
+  text-decoration: none;
+}
+
+.fixture-page {
+  display: grid;
+  gap: clamp(24px, 4vw, 48px);
+  min-height: calc(100vh - 96px);
+  padding: clamp(24px, 6vw, 80px);
+}
+
+.hero-card,
+.split-panel,
+.catalog-header,
+.api-signal,
+.lab-card,
+.lab-panel,
+.lab-shell,
+.product-card,
+.proof-card,
+.signal-grid article {
+  border: 1px solid rgba(246, 192, 95, 0.32);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.25);
+}
+
+.hero-card,
+.catalog-header,
+.api-signal,
+.lab-panel,
+.lab-shell {
+  background: rgba(11, 17, 22, 0.72);
+  border-radius: 32px;
+  max-width: 980px;
+  padding: clamp(28px, 6vw, 72px);
+}
+
+.eyebrow {
+  color: #f6c05f;
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  margin: 0 0 14px;
+  text-transform: uppercase;
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  font-size: clamp(42px, 8vw, 96px);
+  line-height: 0.9;
+  margin-bottom: 24px;
+  max-width: 920px;
+}
+
+h2 {
+  font-size: 28px;
+  margin-bottom: 12px;
+}
+
+.lead {
+  color: #d9cfbd;
+  font-size: clamp(18px, 2vw, 24px);
+  line-height: 1.45;
+  max-width: 740px;
+}
+
+.action-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: 28px;
+}
+
+.primary-action {
+  background: #f6c05f;
+  border: 0;
+  border-radius: 999px;
+  color: #101820;
+  cursor: pointer;
+  font-weight: 800;
+  padding: 14px 22px;
+}
+
+.primary-action:hover {
+  transform: translateY(-1px);
+}
+
+.signal-grid,
+.product-grid,
+.lab-grid {
+  display: grid;
+  gap: 18px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.signal-grid article,
+.lab-card,
+.product-card,
+.proof-card {
+  background: rgba(247, 240, 223, 0.08);
+  border-radius: 24px;
+  padding: 24px;
+}
+
+.metric,
+.marker,
+.product-card strong {
+  color: #f6c05f;
+  display: inline-block;
+  font-size: 32px;
+  font-weight: 900;
+}
+
+.split-panel {
+  align-items: stretch;
+  background: rgba(11, 17, 22, 0.72);
+  border-radius: 32px;
+  display: grid;
+  gap: 24px;
+  grid-template-columns: minmax(0, 1.4fr) minmax(260px, 0.6fr);
+  max-width: 1080px;
+  padding: clamp(28px, 6vw, 72px);
+}
+
+.proof-card {
+  align-content: center;
+  display: grid;
+}
+
+.fine-print,
+.runtime-note,
+.product-index {
+  color: #aeb6a7;
+  font-size: 14px;
+}
+
+.product-card {
+  min-height: 260px;
+}
+
+.product-index {
+  letter-spacing: 0.16em;
+}
+
+.runtime-note {
+  margin-bottom: 0;
+}
+
+.lab-panel h2 {
+  color: #f7f0df;
+  font-size: clamp(34px, 5vw, 62px);
+  line-height: 1;
+}
+
+@media (max-width: 760px) {
+  .site-shell,
+  .site-shell nav,
+  .action-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .signal-grid,
+  .product-grid,
+  .lab-grid,
+  .split-panel {
+    grid-template-columns: 1fr;
+  }
+}

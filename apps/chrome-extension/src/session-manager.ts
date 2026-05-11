@@ -54,6 +54,11 @@ export type CaptureCommandType =
   | 'CAPTURE_PAGE_STATE'
   | 'CAPTURE_UI_SNAPSHOT'
   | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+  | 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
+  | 'CAPTURE_OVERRIDE_RESPONSE_BODY'
+  | 'CAPTURE_OVERRIDE_POC_GET_STATUS'
+  | 'CAPTURE_OVERRIDE_POC_ENABLE'
+  | 'CAPTURE_OVERRIDE_POC_DISABLE'
   | 'SET_VIEWPORT'
   | 'EXECUTE_UI_ACTION';
 
@@ -225,7 +230,12 @@ export class SessionManager {
   }
 
   setWsUrl(wsUrl: string): void {
-    this.wsUrl = wsUrl;
+    const trimmed = wsUrl.trim();
+    if (!trimmed || trimmed === this.wsUrl) {
+      return;
+    }
+
+    this.wsUrl = trimmed;
   }
 
   startSession(context: SessionStartContext): SessionState {
@@ -584,6 +594,11 @@ export class SessionManager {
         && message.command !== 'CAPTURE_PAGE_STATE'
         && message.command !== 'CAPTURE_UI_SNAPSHOT'
         && message.command !== 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+        && message.command !== 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
+        && message.command !== 'CAPTURE_OVERRIDE_RESPONSE_BODY'
+        && message.command !== 'CAPTURE_OVERRIDE_POC_GET_STATUS'
+        && message.command !== 'CAPTURE_OVERRIDE_POC_ENABLE'
+        && message.command !== 'CAPTURE_OVERRIDE_POC_DISABLE'
         && message.command !== 'SET_VIEWPORT'
         && message.command !== 'EXECUTE_UI_ACTION'
       ) {

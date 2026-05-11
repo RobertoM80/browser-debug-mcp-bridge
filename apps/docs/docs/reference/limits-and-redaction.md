@@ -23,6 +23,7 @@ All tool responses include:
 - Redacts authorization headers and bearer tokens
 - Redacts JWT-like values
 - Redacts common query/body secret keys (`token`, `key`, `session`, etc.)
+- Replaces broad 13-16 digit sensitive number sequences with neutral placeholders
 
 <DocNote>
 `redactionSummary` allows clients to audit what was masked without seeing the secret values.

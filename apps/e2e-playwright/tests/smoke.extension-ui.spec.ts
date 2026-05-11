@@ -25,7 +25,7 @@ test.describe('@smoke extension popup wiring', () => {
 
   test.beforeAll(async () => {
     const port = await getFreePort();
-    server = await startHttpServer(createTempDataDir('bdmcp-e2e-smoke-ui-data-'), port);
+    server = await startHttpServer(createTempDataDir('bdmcp-e2e-smoke-ui-data-'), { port });
     serverBaseUrl = getServerBaseUrl(port);
     extension = await launchExtensionContext();
     popupPage = await openExtensionPage(extension.context, extension.extensionId, 'popup.html');

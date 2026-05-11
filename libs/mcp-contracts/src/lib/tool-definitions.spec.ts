@@ -19,6 +19,7 @@ describe('tool-definitions', () => {
   it('should define session tools', () => {
     expect(SESSION_TOOLS.LIST_SESSIONS).toBe('list_sessions');
     expect(SESSION_TOOLS.GET_SESSION_SUMMARY).toBe('get_session_summary');
+    expect(SESSION_TOOLS.GET_LIVE_SESSION_HEALTH).toBe('get_live_session_health');
     expect(SESSION_TOOLS.GET_RECENT_EVENTS).toBe('get_recent_events');
     expect(SESSION_TOOLS.GET_NAVIGATION_HISTORY).toBe('get_navigation_history');
     expect(SESSION_TOOLS.GET_CONSOLE_EVENTS).toBe('get_console_events');

@@ -140,11 +140,12 @@ In extension popup:
 In MCP client:
 
 1. Call `list_sessions`
-2. Pick `sessionId` with `liveConnection.connected = true` for live tools
-3. Call `get_session_summary`, `get_recent_events`
-4. Use `get_live_console_logs` for in-memory logs and server-side `contains` filters
-5. Optional origin scope: call query tools with `url` (example `http://localhost:3000`)
-6. Use `capture_ui_snapshot` and `list_snapshots` when visual state is needed
+2. Prefer `sessionId` with `liveConnection.recommendedForLiveCapture = true` for live tools
+3. If choice is unclear, call `get_live_session_health`
+4. Call `get_session_summary`, `get_recent_events`
+5. Use `get_live_console_logs` for in-memory logs and server-side `contains` filters
+6. Optional origin scope: call query tools with `url` (example `http://localhost:3000`)
+7. Use `capture_ui_snapshot` and `list_snapshots` when visual state is needed
 
 ## 7) Common failure points
 
@@ -154,7 +155,7 @@ If tools return no data:
 2. Domain missing in allowlist
 3. MCP config points to wrong repository path
 4. MCP host process cannot find `node` in PATH
-5. Session id is historical/stale (`liveConnection.connected = false`)
+5. Session id is historical/stale or degraded (`liveConnection.status != "connected"`)
 6. Event came from a tab that is not bound to the active session
 7. A manual `--standalone` launcher is still running from an older terminal and is blocking MCP stdio startup
 

@@ -58,6 +58,9 @@ Why this happens:
 
 What to do:
 
+- Run `get_live_session_health` for the candidate session id
+- Prefer a session where `liveConnection.recommendedForLiveCapture` is `true`
+- If health shows `scope.kind = "likely_iframe_noise"`, reconnect on a top-level app tab and retry
 - Run `list_sessions` and pick a session where `liveConnection.connected` is `true`
 - If a bridge/server restart happened, give the extension a moment to reconnect; active sessions now re-announce themselves automatically
 - If the same browser tab still exists, the extension now prefers rebinding that remembered session tab before falling back to the currently active tab

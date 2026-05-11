@@ -154,7 +154,7 @@ test.describe('@full extension to db integration', () => {
 
   test.beforeAll(async () => {
     const port = await getFreePort();
-    server = await startHttpServer(createTempDataDir('bdmcp-e2e-full-ext-data-'), port);
+    server = await startHttpServer(createTempDataDir('bdmcp-e2e-full-ext-data-'), { port });
     serverBaseUrl = getServerBaseUrl(port);
     extension = await launchExtensionContext();
     popupPage = await openExtensionPage(extension.context, extension.extensionId, 'popup.html');

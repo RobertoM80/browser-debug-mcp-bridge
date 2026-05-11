@@ -621,9 +621,9 @@ export function importSessionFromJson(
 
   const insertSession = db.prepare(
     `INSERT INTO sessions (
-      session_id, created_at, ended_at, tab_id, window_id, url_start, url_last,
+      session_id, created_at, last_seen_at, ended_at, tab_id, window_id, url_start, url_last,
       user_agent, viewport_w, viewport_h, dpr, safe_mode, allowlist_hash, pinned
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
 
   const insertEvent = db.prepare(
@@ -670,6 +670,7 @@ export function importSessionFromJson(
     insertSession.run(
       sessionId,
       parsed.session.createdAt,
+      parsed.session.lastSeenAt,
       parsed.session.endedAt,
       parsed.session.tabId,
       parsed.session.windowId,
@@ -1113,6 +1114,7 @@ function normalizeImportPayload(payload: unknown): {
   requestedSessionId: string;
   session: {
     createdAt: number;
+    lastSeenAt: number;
     endedAt: number | null;
     tabId: number | null;
     windowId: number | null;
@@ -1352,6 +1354,7 @@ function normalizeImportPayload(payload: unknown): {
     requestedSessionId,
     session: {
       createdAt,
+      lastSeenAt: asTimestamp(sessionRoot.last_seen_at ?? sessionRoot.lastSeenAt, createdAt),
       endedAt,
       tabId: asNullableInteger(sessionRoot.tab_id ?? sessionRoot.tabId),
       windowId: asNullableInteger(sessionRoot.window_id ?? sessionRoot.windowId),

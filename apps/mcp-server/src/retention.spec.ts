@@ -11,8 +11,10 @@ import {
   importSessionFromJson,
   importSessionFromZipBase64,
   pruneOrphanedSnapshotAssets,
+  runRetentionCleanup,
   writeSnapshot,
 } from './retention';
+import { persistObservedOverrideAssets } from './override-observed-assets';
 
 describe('session import', () => {
   let db: Database.Database;
@@ -294,5 +296,35 @@ describe('session import', () => {
     const archiveBase64 = (await zip.generateAsync({ type: 'nodebuffer' })).toString('base64');
 
     await expect(importSessionFromZipBase64(db, dbPath, archiveBase64)).rejects.toThrow('missing PNG asset');
+  });
+
+  it('removes observed override assets when retention deletes a session', () => {
+    db.prepare(`
+      INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode)
+      VALUES ('observed-retention-old', 1, 1, 0)
+    `).run();
+    persistObservedOverrideAssets(db, {
+      sessionId: 'observed-retention-old',
+      assets: [{
+        url: 'https://example.test/_next/static/chunks/app.js',
+        kind: 'script',
+        fromDom: true,
+      }],
+    });
+
+    const result = runRetentionCleanup(db, dbPath, {
+      retentionDays: 1,
+      maxDbMb: 1024,
+      maxSessions: 10000,
+      cleanupIntervalMinutes: 60,
+      lastCleanupAt: null,
+      exportPathOverride: null,
+    }, 'manual');
+
+    const sessions = (db.prepare('SELECT COUNT(*) AS count FROM sessions').get() as { count: number }).count;
+    const observedAssets = (db.prepare('SELECT COUNT(*) AS count FROM override_observed_assets').get() as { count: number }).count;
+    expect(result.deletedSessions).toBe(1);
+    expect(sessions).toBe(0);
+    expect(observedAssets).toBe(0);
   });
 });

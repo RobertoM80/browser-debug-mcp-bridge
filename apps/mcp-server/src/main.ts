@@ -19,6 +19,28 @@ import {
   updateRetentionSettings,
   writeSnapshot,
 } from './retention.js';
+import {
+  getOverridePocAssetResponse,
+  getOverridePocConfigSummary,
+} from './override-poc.js';
+import {
+  diagnoseOverridePoc,
+  insertOverridePlanAudit,
+  listOverridePlanAudits,
+  listOverridePocRequests,
+  listOverridePocRuns,
+  upsertOverridePocRequest,
+  upsertOverridePocRun,
+} from './override-audit.js';
+import {
+  isOverridePlanAuditKind,
+  type OverridePlanAuditRecord,
+  type OverridePocRequestRecord,
+  type OverridePocRunRecord,
+  isOverridePocFailureCode,
+  isOverridePocRequestStatus,
+  isOverridePocRunStatus,
+} from './override-audit-contract.js';
 
 const fastify = Fastify({
   logger: process.env.MCP_STDIO_MODE === '1' ? false : true
@@ -31,6 +53,72 @@ const startedAt = Date.now();
 let cleanupInterval: NodeJS.Timeout | null = null;
 let lastCleanupResult: ReturnType<typeof runRetentionCleanup> | null = null;
 const MAX_SESSION_IMPORT_BYTES = 10 * 1024 * 1024;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function hasSession(sessionId: string): boolean {
+  const row = getConnection().db.prepare('SELECT 1 FROM sessions WHERE session_id = ?').get(sessionId);
+  return Boolean(row);
+}
+
+function parseLimit(value: unknown, fallback: number, max: number): number {
+  const raw = typeof value === 'number' ? value : Number(value ?? fallback);
+  return Number.isFinite(raw) ? Math.min(Math.max(Math.floor(raw), 1), max) : fallback;
+}
+
+function parseOffset(value: unknown): number {
+  const raw = typeof value === 'number' ? value : Number(value ?? 0);
+  return Number.isFinite(raw) ? Math.max(Math.floor(raw), 0) : 0;
+}
+
+function requireStringField(body: Record<string, unknown>, fieldName: string): string {
+  const value = body[fieldName];
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`${fieldName} must be a non-empty string`);
+  }
+  return value.trim();
+}
+
+function optionalStringField(body: Record<string, unknown>, fieldName: string): string | null {
+  const value = body[fieldName];
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+  if (typeof value !== 'string') {
+    throw new Error(`${fieldName} must be a string when provided`);
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function requireIntegerField(body: Record<string, unknown>, fieldName: string): number {
+  const value = body[fieldName];
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`${fieldName} must be a finite number`);
+  }
+  return Math.floor(value);
+}
+
+function optionalIntegerField(body: Record<string, unknown>, fieldName: string): number | null {
+  const value = body[fieldName];
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error(`${fieldName} must be a finite number when provided`);
+  }
+  return Math.floor(value);
+}
+
+function requireBooleanField(body: Record<string, unknown>, fieldName: string): boolean {
+  const value = body[fieldName];
+  if (typeof value !== 'boolean') {
+    throw new Error(`${fieldName} must be a boolean`);
+  }
+  return value;
+}
 
 function getDbStats(): { status: 'connected' | 'disconnected'; sessions: number; events: number; network: number; fingerprints: number; snapshots: number } {
   try {
@@ -92,6 +180,182 @@ fastify.get('/stats', async () => {
   };
 });
 
+fastify.get('/overrides/poc/config', async (_request, reply) => {
+  try {
+    return {
+      ok: true,
+      ...getOverridePocConfigSummary(),
+    };
+  } catch (error) {
+    return reply.code(500).send({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Failed to load override POC config',
+    });
+  }
+});
+
+fastify.get('/overrides/poc/asset', async (request, reply) => {
+  const query = (request.query ?? {}) as { assetUrl?: string; requestMethod?: string };
+  const assetUrl = typeof query.assetUrl === 'string' ? query.assetUrl.trim() : '';
+  const requestMethod = typeof query.requestMethod === 'string' ? query.requestMethod.trim() : 'GET';
+  if (!assetUrl) {
+    return reply.code(400).send({
+      ok: false,
+      error: 'assetUrl query parameter is required',
+    });
+  }
+
+  try {
+    const result = getOverridePocAssetResponse(assetUrl, undefined, requestMethod);
+    reply.header('Content-Type', result.contentType);
+    reply.header('Cache-Control', 'no-store, no-cache, must-revalidate');
+    reply.header('X-BDMCP-Override-Poc', '1');
+    reply.header('X-BDMCP-Override-Config', result.summary.configPath);
+    reply.header('X-BDMCP-Override-Profile', result.summary.profileId);
+    reply.header('X-BDMCP-Override-Rule', result.rule.ruleId);
+    return reply.send(result.buffer);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to resolve override asset';
+    const statusCode = message.includes('disabled')
+      ? 409
+      : message.includes('does not exist') || message.includes('does not match')
+        ? 404
+        : 500;
+
+    return reply.code(statusCode).send({
+      ok: false,
+      error: message,
+    });
+  }
+});
+
+fastify.post('/sessions/:sessionId/overrides/runs', async (request, reply) => {
+  const params = request.params as { sessionId: string };
+  if (!hasSession(params.sessionId)) {
+    return reply.code(404).send({ ok: false, error: 'Session not found' });
+  }
+
+  if (!isRecord(request.body)) {
+    return reply.code(400).send({ ok: false, error: 'Invalid override run payload' });
+  }
+
+  try {
+    const body = request.body;
+    const runStatus = body.runStatus;
+    if (!isOverridePocRunStatus(runStatus)) {
+      throw new Error('runStatus must be a valid override run status');
+    }
+
+    const lastErrorCodeValue = body.lastErrorCode;
+    if (lastErrorCodeValue !== undefined && lastErrorCodeValue !== null && !isOverridePocFailureCode(lastErrorCodeValue)) {
+      throw new Error('lastErrorCode must be a valid override failure code when provided');
+    }
+
+    const record: OverridePocRunRecord = {
+      runId: requireStringField(body, 'runId'),
+      sessionId: params.sessionId,
+      startedAt: requireIntegerField(body, 'startedAt'),
+      endedAt: optionalIntegerField(body, 'endedAt'),
+      runStatus,
+      tabId: requireIntegerField(body, 'tabId'),
+      selectedTabId: optionalIntegerField(body, 'selectedTabId'),
+      targetAssetUrl: requireStringField(body, 'targetAssetUrl'),
+      localFilePath: requireStringField(body, 'localFilePath'),
+      resolvedLocalFilePath: requireStringField(body, 'resolvedLocalFilePath'),
+      contentType: requireStringField(body, 'contentType'),
+      autoReload: requireBooleanField(body, 'autoReload'),
+      configPath: requireStringField(body, 'configPath'),
+      fileExists: requireBooleanField(body, 'fileExists'),
+      fileSizeBytes: optionalIntegerField(body, 'fileSizeBytes'),
+      matchedRequests: requireIntegerField(body, 'matchedRequests'),
+      fulfilledRequests: requireIntegerField(body, 'fulfilledRequests'),
+      lastMatchedAt: optionalIntegerField(body, 'lastMatchedAt'),
+      lastFulfilledAt: optionalIntegerField(body, 'lastFulfilledAt'),
+      lastErrorCode: lastErrorCodeValue ?? null,
+      lastErrorMessage: optionalStringField(body, 'lastErrorMessage'),
+    };
+
+    return {
+      ok: true,
+      run: upsertOverridePocRun(getConnection().db, record),
+    };
+  } catch (error) {
+    return reply.code(400).send({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Invalid override run payload',
+    });
+  }
+});
+
+fastify.get('/sessions/:sessionId/overrides/runs', async (request, reply) => {
+  const params = request.params as { sessionId: string };
+  if (!hasSession(params.sessionId)) {
+    return reply.code(404).send({ ok: false, error: 'Session not found' });
+  }
+
+  const query = (request.query ?? {}) as { limit?: string | number; offset?: string | number };
+  const limit = parseLimit(query.limit, 20, 200);
+  const offset = parseOffset(query.offset);
+  const result = listOverridePocRuns(getConnection().db, params.sessionId, limit, offset);
+
+  return {
+    ok: true,
+    sessionId: params.sessionId,
+    limit,
+    offset,
+    hasMore: result.hasMore,
+    nextOffset: result.nextOffset,
+    runs: result.runs,
+  };
+});
+
+fastify.post('/sessions/:sessionId/overrides/requests', async (request, reply) => {
+  const params = request.params as { sessionId: string };
+  if (!hasSession(params.sessionId)) {
+    return reply.code(404).send({ ok: false, error: 'Session not found' });
+  }
+
+  if (!isRecord(request.body)) {
+    return reply.code(400).send({ ok: false, error: 'Invalid override request payload' });
+  }
+
+  try {
+    const body = request.body;
+    const status = body.status;
+    if (!isOverridePocRequestStatus(status)) {
+      throw new Error('status must be a valid override request status');
+    }
+
+    const failureCodeValue = body.failureCode;
+    if (failureCodeValue !== undefined && failureCodeValue !== null && !isOverridePocFailureCode(failureCodeValue)) {
+      throw new Error('failureCode must be a valid override failure code when provided');
+    }
+
+    const record: OverridePocRequestRecord = {
+      requestLogId: requireStringField(body, 'requestLogId'),
+      runId: requireStringField(body, 'runId'),
+      sessionId: params.sessionId,
+      requestId: requireStringField(body, 'requestId'),
+      timestamp: requireIntegerField(body, 'timestamp'),
+      requestUrl: requireStringField(body, 'requestUrl'),
+      status,
+      failureCode: failureCodeValue ?? null,
+      errorMessage: optionalStringField(body, 'errorMessage'),
+      responseCode: optionalIntegerField(body, 'responseCode'),
+    };
+
+    return {
+      ok: true,
+      request: upsertOverridePocRequest(getConnection().db, record),
+    };
+  } catch (error) {
+    return reply.code(400).send({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Invalid override request payload',
+    });
+  }
+});
+
 fastify.get('/internal/session-connection/:sessionId', async (request, reply) => {
   const params = request.params as { sessionId: string };
   if (!wsManager) {
@@ -137,6 +401,137 @@ fastify.post('/internal/capture-command', async (request, reply) => {
       error: error instanceof Error ? error.message : 'Failed to send capture command',
     });
   }
+});
+
+fastify.get('/sessions/:sessionId/overrides/requests', async (request, reply) => {
+  const params = request.params as { sessionId: string };
+  if (!hasSession(params.sessionId)) {
+    return reply.code(404).send({ ok: false, error: 'Session not found' });
+  }
+
+  const query = (request.query ?? {}) as {
+    limit?: string | number;
+    offset?: string | number;
+    runId?: string;
+  };
+  const limit = parseLimit(query.limit, 50, 500);
+  const offset = parseOffset(query.offset);
+  const runId = typeof query.runId === 'string' && query.runId.trim().length > 0 ? query.runId.trim() : undefined;
+  const result = listOverridePocRequests(getConnection().db, params.sessionId, limit, offset, runId);
+
+  return {
+    ok: true,
+    sessionId: params.sessionId,
+    runId: runId ?? null,
+    limit,
+    offset,
+    hasMore: result.hasMore,
+    nextOffset: result.nextOffset,
+    requests: result.requests,
+  };
+});
+
+fastify.post('/sessions/:sessionId/overrides/plans', async (request, reply) => {
+  const params = request.params as { sessionId: string };
+  if (!hasSession(params.sessionId)) {
+    return reply.code(404).send({ ok: false, error: 'Session not found' });
+  }
+
+  if (!isRecord(request.body)) {
+    return reply.code(400).send({ ok: false, error: 'Invalid override plan payload' });
+  }
+
+  try {
+    const body = request.body;
+    const plannerKind = body.plannerKind;
+    if (!isOverridePlanAuditKind(plannerKind)) {
+      throw new Error('plannerKind must be a valid override plan audit kind');
+    }
+
+    const stringArrayField = (fieldName: string): string[] => {
+      const value = body[fieldName];
+      return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+    };
+
+    const record: OverridePlanAuditRecord = {
+      planId: requireStringField(body, 'planId'),
+      sessionId: params.sessionId,
+      createdAt: optionalIntegerField(body, 'createdAt') ?? Date.now(),
+      plannerKind,
+      toolName: requireStringField(body, 'toolName'),
+      profileId: optionalStringField(body, 'profileId'),
+      ruleId: requireStringField(body, 'ruleId'),
+      ruleType: requireStringField(body, 'ruleType'),
+      requestMethod: requireStringField(body, 'requestMethod'),
+      matchMode: requireStringField(body, 'matchMode'),
+      targetAssetUrl: requireStringField(body, 'targetAssetUrl'),
+      localFilePath: optionalStringField(body, 'localFilePath'),
+      configPath: optionalStringField(body, 'configPath'),
+      contentType: requireStringField(body, 'contentType'),
+      originalSha256: optionalStringField(body, 'originalSha256'),
+      patchedSha256: optionalStringField(body, 'patchedSha256'),
+      originalBytes: optionalIntegerField(body, 'originalBytes'),
+      patchedBytes: optionalIntegerField(body, 'patchedBytes'),
+      patchSummary: body.patchSummary ?? null,
+      preview: body.preview ?? null,
+      warnings: stringArrayField('warnings'),
+      blockers: stringArrayField('blockers'),
+      capturedFromLiveSession: body.capturedFromLiveSession ?? null,
+      rollback: body.rollback ?? null,
+    };
+
+    return {
+      ok: true,
+      plan: insertOverridePlanAudit(getConnection().db, record),
+    };
+  } catch (error) {
+    return reply.code(400).send({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Invalid override plan payload',
+    });
+  }
+});
+
+fastify.get('/sessions/:sessionId/overrides/plans', async (request, reply) => {
+  const params = request.params as { sessionId: string };
+  if (!hasSession(params.sessionId)) {
+    return reply.code(404).send({ ok: false, error: 'Session not found' });
+  }
+
+  const query = (request.query ?? {}) as {
+    limit?: string | number;
+    offset?: string | number;
+    planId?: string;
+  };
+  const limit = parseLimit(query.limit, 50, 500);
+  const offset = parseOffset(query.offset);
+  const planId = typeof query.planId === 'string' && query.planId.trim().length > 0 ? query.planId.trim() : undefined;
+  const result = listOverridePlanAudits(getConnection().db, { sessionId: params.sessionId, limit, offset, planId });
+
+  return {
+    ok: true,
+    sessionId: params.sessionId,
+    planId: planId ?? null,
+    limit,
+    offset,
+    hasMore: result.hasMore,
+    nextOffset: result.nextOffset,
+    plans: result.plans,
+  };
+});
+
+fastify.get('/sessions/:sessionId/overrides/diagnosis', async (request, reply) => {
+  const params = request.params as { sessionId: string };
+  if (!hasSession(params.sessionId)) {
+    return reply.code(404).send({ ok: false, error: 'Session not found' });
+  }
+
+  const query = (request.query ?? {}) as { runId?: string };
+  const runId = typeof query.runId === 'string' && query.runId.trim().length > 0 ? query.runId.trim() : undefined;
+  return {
+    ok: true,
+    diagnosis: diagnoseOverridePoc(getConnection().db, params.sessionId, runId),
+  };
 });
 
 fastify.get('/retention/settings', async () => {
@@ -310,6 +705,7 @@ fastify.get('/sessions', async (request) => {
   type SessionRow = {
     session_id: string;
     created_at: number;
+    last_seen_at: number | null;
     paused_at: number | null;
     ended_at: number | null;
     url_last: string | null;
@@ -318,9 +714,14 @@ fastify.get('/sessions', async (request) => {
 
   const rows = db.prepare(
     `
-      SELECT session_id, created_at, paused_at, ended_at, url_last, pinned
+      SELECT session_id, created_at, last_seen_at, paused_at, ended_at, url_last, pinned
       FROM sessions
-      ORDER BY created_at DESC
+      ORDER BY
+        CASE
+          WHEN COALESCE(last_seen_at, 0) > created_at THEN COALESCE(last_seen_at, 0)
+          ELSE created_at
+        END DESC,
+        created_at DESC
       LIMIT ? OFFSET ?
     `
   ).all(limit + 1, offset) as SessionRow[];
@@ -337,6 +738,7 @@ fastify.get('/sessions', async (request) => {
     sessions: page.map((row) => ({
       sessionId: row.session_id,
       createdAt: row.created_at,
+      lastSeenAt: Math.max(row.last_seen_at ?? 0, row.created_at),
       pausedAt: row.paused_at,
       endedAt: row.ended_at,
       status: row.ended_at ? 'ended' : row.paused_at ? 'paused' : 'active',

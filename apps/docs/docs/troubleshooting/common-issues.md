@@ -23,6 +23,9 @@ Symptoms:
 
 Actions:
 
+- Run `get_live_session_health` for the candidate `sessionId`
+- Prefer sessions where `liveConnection.recommendedForLiveCapture` is `true`
+- If health shows `scope.kind = "likely_iframe_noise"`, reconnect on a top-level app tab and retry
 - Run `list_sessions` and select a session where `liveConnection.connected` is `true`
 - If the MCP bridge/server was restarted, wait briefly for the extension to reconnect; active sessions now re-announce themselves automatically
 - Resume now prefers the remembered session tab when it still exists, instead of forcing the current active tab

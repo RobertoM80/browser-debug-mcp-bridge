@@ -15,7 +15,11 @@
 { "name": "list_sessions", "arguments": { "sinceMinutes": 60 } }
 ```
 
-Pick a session where `liveConnection.connected` is `true` before running live capture tools.
+Prefer a session where `liveConnection.recommendedForLiveCapture` is `true` before running live capture tools. If the result is ambiguous, call `get_live_session_health`.
+
+```json
+{ "name": "get_live_session_health", "arguments": { "sessionId": "sess_123" } }
+```
 
 ```json
 { "name": "get_session_summary", "arguments": { "sessionId": "sess_123" } }
@@ -39,6 +43,6 @@ Live console example:
 - Use V2 heavy capture tools only for focused selectors/pages
 - Use V3 correlation tools to connect user action to error/network causes
 
-If live tools fail with `LIVE_SESSION_DISCONNECTED`, restart/reconnect extension session and retry with a currently connected session id from `list_sessions`.
+If live tools fail with `LIVE_SESSION_DISCONNECTED`, restart/reconnect extension session and retry with a session whose health response shows `liveConnection.status = "connected"`.
 
 For deeper triage patterns, use [Troubleshooting](../troubleshooting/common-issues.md) and the correlation/snapshot MCP tools.

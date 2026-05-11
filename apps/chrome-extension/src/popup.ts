@@ -35,6 +35,31 @@ type CaptureConfig = {
   };
 };
 
+const DEFAULT_POPUP_CAPTURE_CONFIG: CaptureConfig = {
+  safeMode: true,
+  allowlist: [],
+  snapshots: {
+    enabled: false,
+    requireOptIn: true,
+    mode: 'dom',
+    styleMode: 'computed-lite',
+    triggers: ['click', 'error'],
+    pngPolicy: {
+      maxImagesPerSession: 8,
+      maxBytesPerImage: 1_048_576,
+      minCaptureIntervalMs: 5_000,
+    },
+  },
+  network: {
+    captureBodies: false,
+    maxBodyBytes: 262_144,
+  },
+  automation: {
+    enabled: false,
+    allowSensitiveFields: false,
+  },
+};
+
 type SessionResponse =
   | { ok: true; state: SessionState; accepted?: boolean }
   | { ok: true; config: CaptureConfig }
@@ -71,6 +96,81 @@ type SessionTabScope = {
   baseOrigin?: string;
   allowedTabIds: number[];
   tabs: SessionScopeTab[];
+};
+
+type OverridePocStatus = {
+  active: boolean;
+  configuredEnabled: boolean;
+  runId?: string;
+  activeProfileId?: string;
+  profileId?: string;
+  profileName?: string;
+  ruleCount?: number;
+  enabledRuleCount?: number;
+  selectedTabId?: number;
+  tabId?: number;
+  targetAssetUrl?: string;
+  localFilePath?: string;
+  resolvedLocalFilePath?: string;
+  contentType?: string;
+  autoReload?: boolean;
+  configPath?: string;
+  fileExists?: boolean;
+  fileSizeBytes?: number | null;
+  matchedRequests: number;
+  fulfilledRequests: number;
+  lastMatchedAt?: number;
+  lastFulfilledAt?: number;
+  lastErrorCode?: string;
+  lastError?: string;
+  auditPendingRequests?: number;
+  auditLastError?: string;
+  diagnosis?: OverridePocUiDiagnosis;
+  requestLog?: OverridePocRequestLogItem[];
+  requestLogError?: string;
+  planLog?: OverridePocPlanLogItem[];
+  planLogError?: string;
+};
+
+type OverridePocRequestLogItem = {
+  requestLogId: string;
+  timestamp: number;
+  requestUrl: string;
+  status: string;
+  failureCode?: string | null;
+  errorMessage?: string | null;
+  responseCode?: number | null;
+};
+
+type OverridePocPlanLogItem = {
+  planId: string;
+  createdAt: number;
+  plannerKind: string;
+  ruleType: string;
+  requestMethod: string;
+  matchMode: string;
+  targetAssetUrl: string;
+  originalBytes?: number | null;
+  patchedBytes?: number | null;
+  warnings: string[];
+  blockers: string[];
+};
+
+type OverridePocUiDiagnosis = {
+  issueCount: number;
+  issues: Array<{
+    code: string;
+    severity: 'info' | 'warning' | 'error';
+    message: string;
+  }>;
+  observedAssets?: {
+    observedAssetCount: number;
+    targetAssetObserved: boolean;
+    targetAssetIntegrity: string | null;
+    serviceWorkerControlled: boolean;
+    cspMetaTagCount: number;
+    sriAssetCount: number;
+  };
 };
 
 type SessionImportResult = {
@@ -112,6 +212,8 @@ type CaptureDiagnostics = {
 type StatusTone = 'info' | 'success' | 'warning' | 'error';
 
 let statePollTimer: number | null = null;
+let latestSessionTabScope: SessionTabScope | null = null;
+let latestOverridePocStatus: OverridePocStatus | null = null;
 let latestSessionState: SessionState | null = null;
 let latestCaptureConfig: CaptureConfig | null = null;
 let latestCaptureDiagnostics: CaptureDiagnostics | null = null;
@@ -225,7 +327,36 @@ function renderSessionState(state: SessionState): void {
   renderAutomationStatus();
 }
 
+function normalizeCaptureConfig(config: CaptureConfig): CaptureConfig {
+  const partial = config as Partial<CaptureConfig>;
+  const snapshots = partial.snapshots ?? DEFAULT_POPUP_CAPTURE_CONFIG.snapshots;
+  const network = partial.network ?? DEFAULT_POPUP_CAPTURE_CONFIG.network;
+  const automation = partial.automation ?? DEFAULT_POPUP_CAPTURE_CONFIG.automation;
+  return {
+    safeMode: partial.safeMode ?? DEFAULT_POPUP_CAPTURE_CONFIG.safeMode,
+    allowlist: Array.isArray(partial.allowlist) ? partial.allowlist : DEFAULT_POPUP_CAPTURE_CONFIG.allowlist,
+    snapshots: {
+      ...DEFAULT_POPUP_CAPTURE_CONFIG.snapshots,
+      ...snapshots,
+      triggers: Array.isArray(snapshots.triggers) ? snapshots.triggers : DEFAULT_POPUP_CAPTURE_CONFIG.snapshots.triggers,
+      pngPolicy: {
+        ...DEFAULT_POPUP_CAPTURE_CONFIG.snapshots.pngPolicy,
+        ...(snapshots.pngPolicy ?? {}),
+      },
+    },
+    network: {
+      ...DEFAULT_POPUP_CAPTURE_CONFIG.network,
+      ...network,
+    },
+    automation: {
+      ...DEFAULT_POPUP_CAPTURE_CONFIG.automation,
+      ...automation,
+    },
+  };
+}
+
 function renderConfig(config: CaptureConfig): void {
+  config = normalizeCaptureConfig(config);
   latestCaptureConfig = config;
   const safeModeCheckbox = document.getElementById('safe-mode') as HTMLInputElement | null;
   const allowlistInput = document.getElementById('allowlist-domains') as HTMLTextAreaElement | null;
@@ -385,6 +516,11 @@ function setRetentionStatus(message: string, tone: StatusTone = 'info'): void {
   setStatusMessage(status, message, tone);
 }
 
+function setOverridePocStatusMessage(message: string, tone: StatusTone = 'info'): void {
+  const status = document.getElementById('override-poc-status');
+  setStatusMessage(status, message, tone);
+}
+
 function setHealthActionStatus(message: string, tone: StatusTone = 'info'): void {
   const status = document.getElementById('health-action-status');
   setStatusMessage(status, message, tone);
@@ -535,10 +671,266 @@ function parseSessionTabScope(result: unknown): SessionTabScope | null {
   };
 }
 
+function parseOverridePocUiDiagnosis(value: unknown): OverridePocUiDiagnosis | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+
+  const candidate = value as Partial<OverridePocUiDiagnosis>;
+  const issues = Array.isArray(candidate.issues)
+    ? candidate.issues
+      .map((entry) => {
+        if (!entry || typeof entry !== 'object') {
+          return null;
+        }
+        const issue = entry as Partial<OverridePocUiDiagnosis['issues'][number]>;
+        if (typeof issue.code !== 'string' || typeof issue.message !== 'string') {
+          return null;
+        }
+        const severity = issue.severity === 'error' || issue.severity === 'warning' || issue.severity === 'info'
+          ? issue.severity
+          : 'info';
+        return { code: issue.code, severity, message: issue.message };
+      })
+      .filter((entry): entry is OverridePocUiDiagnosis['issues'][number] => entry !== null)
+    : [];
+
+  const observed = candidate.observedAssets && typeof candidate.observedAssets === 'object'
+    ? candidate.observedAssets
+    : undefined;
+  const observedAssets = observed
+    ? {
+        observedAssetCount: Number(observed.observedAssetCount ?? 0),
+        targetAssetObserved: observed.targetAssetObserved === true,
+        targetAssetIntegrity: typeof observed.targetAssetIntegrity === 'string' ? observed.targetAssetIntegrity : null,
+        serviceWorkerControlled: observed.serviceWorkerControlled === true,
+        cspMetaTagCount: Number(observed.cspMetaTagCount ?? 0),
+        sriAssetCount: Number(observed.sriAssetCount ?? 0),
+      }
+    : undefined;
+
+  return {
+    issueCount: Number(candidate.issueCount ?? issues.length),
+    issues,
+    observedAssets,
+  };
+}
+
+function parseStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+}
+
+function parseOverridePocRequestLog(value: unknown): OverridePocRequestLogItem[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value
+    .map((entry): OverridePocRequestLogItem | null => {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      const candidate = entry as Partial<OverridePocRequestLogItem>;
+      if (
+        typeof candidate.requestLogId !== 'string'
+        || typeof candidate.requestUrl !== 'string'
+        || typeof candidate.status !== 'string'
+      ) {
+        return null;
+      }
+      return {
+        requestLogId: candidate.requestLogId,
+        timestamp: typeof candidate.timestamp === 'number' && Number.isFinite(candidate.timestamp)
+          ? Math.floor(candidate.timestamp)
+          : 0,
+        requestUrl: candidate.requestUrl,
+        status: candidate.status,
+        failureCode: typeof candidate.failureCode === 'string' ? candidate.failureCode : null,
+        errorMessage: typeof candidate.errorMessage === 'string' ? candidate.errorMessage : null,
+        responseCode: typeof candidate.responseCode === 'number' && Number.isFinite(candidate.responseCode)
+          ? Math.floor(candidate.responseCode)
+          : null,
+      };
+    })
+    .filter((entry): entry is OverridePocRequestLogItem => entry !== null)
+    .slice(0, 5);
+}
+
+function parseOverridePocPlanLog(value: unknown): OverridePocPlanLogItem[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value
+    .map((entry): OverridePocPlanLogItem | null => {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      const candidate = entry as Partial<OverridePocPlanLogItem>;
+      if (
+        typeof candidate.planId !== 'string'
+        || typeof candidate.plannerKind !== 'string'
+        || typeof candidate.ruleType !== 'string'
+        || typeof candidate.requestMethod !== 'string'
+        || typeof candidate.matchMode !== 'string'
+        || typeof candidate.targetAssetUrl !== 'string'
+      ) {
+        return null;
+      }
+      return {
+        planId: candidate.planId,
+        createdAt: typeof candidate.createdAt === 'number' && Number.isFinite(candidate.createdAt)
+          ? Math.floor(candidate.createdAt)
+          : 0,
+        plannerKind: candidate.plannerKind,
+        ruleType: candidate.ruleType,
+        requestMethod: candidate.requestMethod,
+        matchMode: candidate.matchMode,
+        targetAssetUrl: candidate.targetAssetUrl,
+        originalBytes: typeof candidate.originalBytes === 'number' && Number.isFinite(candidate.originalBytes)
+          ? Math.floor(candidate.originalBytes)
+          : null,
+        patchedBytes: typeof candidate.patchedBytes === 'number' && Number.isFinite(candidate.patchedBytes)
+          ? Math.floor(candidate.patchedBytes)
+          : null,
+        warnings: parseStringArray(candidate.warnings),
+        blockers: parseStringArray(candidate.blockers),
+      };
+    })
+    .filter((entry): entry is OverridePocPlanLogItem => entry !== null)
+    .slice(0, 5);
+}
+
+function parseOverridePocStatus(result: unknown): OverridePocStatus | null {
+  if (!result || typeof result !== 'object') {
+    return null;
+  }
+
+  const candidate = result as Partial<OverridePocStatus>;
+  if (candidate.active !== true && candidate.active !== false) {
+    return null;
+  }
+  if (candidate.configuredEnabled !== true && candidate.configuredEnabled !== false) {
+    return null;
+  }
+  if (typeof candidate.matchedRequests !== 'number' || !Number.isFinite(candidate.matchedRequests)) {
+    return null;
+  }
+  if (typeof candidate.fulfilledRequests !== 'number' || !Number.isFinite(candidate.fulfilledRequests)) {
+    return null;
+  }
+
+  const mapOptionalNumber = (value: unknown): number | undefined => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return undefined;
+    }
+    return Math.floor(value);
+  };
+
+  const mapOptionalString = (value: unknown): string | undefined => {
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+  };
+
+  return {
+    active: candidate.active,
+    configuredEnabled: candidate.configuredEnabled,
+    runId: mapOptionalString(candidate.runId),
+    activeProfileId: mapOptionalString(candidate.activeProfileId),
+    profileId: mapOptionalString(candidate.profileId),
+    profileName: mapOptionalString(candidate.profileName),
+    ruleCount: mapOptionalNumber(candidate.ruleCount),
+    enabledRuleCount: mapOptionalNumber(candidate.enabledRuleCount),
+    selectedTabId: mapOptionalNumber(candidate.selectedTabId),
+    tabId: mapOptionalNumber(candidate.tabId),
+    targetAssetUrl: mapOptionalString(candidate.targetAssetUrl),
+    localFilePath: mapOptionalString(candidate.localFilePath),
+    resolvedLocalFilePath: mapOptionalString(candidate.resolvedLocalFilePath),
+    contentType: mapOptionalString(candidate.contentType),
+    autoReload: typeof candidate.autoReload === 'boolean' ? candidate.autoReload : undefined,
+    configPath: mapOptionalString(candidate.configPath),
+    fileExists: typeof candidate.fileExists === 'boolean' ? candidate.fileExists : undefined,
+    fileSizeBytes: candidate.fileSizeBytes === null
+      ? null
+      : mapOptionalNumber(candidate.fileSizeBytes),
+    matchedRequests: Math.floor(candidate.matchedRequests),
+    fulfilledRequests: Math.floor(candidate.fulfilledRequests),
+    lastMatchedAt: mapOptionalNumber(candidate.lastMatchedAt),
+    lastFulfilledAt: mapOptionalNumber(candidate.lastFulfilledAt),
+    lastErrorCode: mapOptionalString(candidate.lastErrorCode),
+    lastError: mapOptionalString(candidate.lastError),
+    auditPendingRequests: mapOptionalNumber(candidate.auditPendingRequests),
+    auditLastError: mapOptionalString(candidate.auditLastError),
+    diagnosis: parseOverridePocUiDiagnosis(candidate.diagnosis),
+    requestLog: parseOverridePocRequestLog(candidate.requestLog),
+    requestLogError: mapOptionalString(candidate.requestLogError),
+    planLog: parseOverridePocPlanLog(candidate.planLog),
+    planLogError: mapOptionalString(candidate.planLogError),
+  };
+}
+
+function formatOverridePocTabLabel(tab: SessionScopeTab): string {
+  const activeSuffix = tab.active ? ' (active)' : '';
+  const originText = tab.origin ?? 'unknown origin';
+  return '[' + tab.tabId + '] ' + tab.title + ' | ' + originText + activeSuffix;
+}
+
+function renderOverridePocTargetTabSelector(): void {
+  const select = document.getElementById('override-poc-target-tab') as HTMLSelectElement | null;
+  if (!select) {
+    return;
+  }
+
+  select.replaceChildren();
+
+  const scope = latestSessionTabScope;
+  if (!scope || !scope.isActive || !scope.sessionId) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'Start a session to choose a target tab';
+    select.append(option);
+    select.disabled = true;
+    return;
+  }
+
+  const boundTabs = scope.tabs.filter((tab) => tab.bound);
+  if (boundTabs.length === 0) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'Bind a session tab first';
+    select.append(option);
+    select.disabled = true;
+    return;
+  }
+
+  for (const tab of boundTabs) {
+    const option = document.createElement('option');
+    option.value = String(tab.tabId);
+    option.textContent = formatOverridePocTabLabel(tab);
+    select.append(option);
+  }
+
+  const preferredTabId = latestOverridePocStatus?.selectedTabId
+    ?? latestOverridePocStatus?.tabId
+    ?? boundTabs.find((tab) => tab.active)?.tabId
+    ?? boundTabs[0]?.tabId;
+
+  const resolvedTabId = boundTabs.some((tab) => tab.tabId === preferredTabId)
+    ? preferredTabId
+    : boundTabs[0]?.tabId;
+
+  select.value = typeof resolvedTabId === 'number' ? String(resolvedTabId) : '';
+  select.disabled = latestOverridePocStatus?.active === true;
+  select.title = latestOverridePocStatus?.active === true
+    ? 'Disable the active override before changing target tabs.'
+    : '';
+}
+
 function renderSessionTabScope(scope: SessionTabScope): void {
+  latestSessionTabScope = scope;
   const baseOriginEl = document.getElementById('session-base-origin');
   const tabsListEl = document.getElementById('session-tabs-list');
   if (!baseOriginEl || !tabsListEl) {
+    renderOverridePocTargetTabSelector();
     return;
   }
 
@@ -550,6 +942,7 @@ function renderSessionTabScope(scope: SessionTabScope): void {
     placeholder.className = 'session-tabs-empty';
     placeholder.textContent = 'Session tab binding is available after session start.';
     tabsListEl.appendChild(placeholder);
+    renderOverridePocTargetTabSelector();
     return;
   }
 
@@ -561,6 +954,7 @@ function renderSessionTabScope(scope: SessionTabScope): void {
     placeholder.className = 'session-tabs-empty';
     placeholder.textContent = 'No tabs detected in this window.';
     tabsListEl.appendChild(placeholder);
+    renderOverridePocTargetTabSelector();
     return;
   }
 
@@ -584,6 +978,231 @@ function renderSessionTabScope(scope: SessionTabScope): void {
     item.appendChild(label);
     tabsListEl.appendChild(item);
   }
+
+  renderOverridePocTargetTabSelector();
+}
+
+function renderOverridePocDiagnostics(status: OverridePocStatus): void {
+  const diagnosticsEl = document.getElementById('override-poc-diagnostics');
+  if (!diagnosticsEl) {
+    return;
+  }
+
+  diagnosticsEl.replaceChildren();
+  const diagnosis = status.diagnosis;
+  if (!diagnosis) {
+    const empty = document.createElement('div');
+    empty.className = 'override-poc-diagnostics-empty';
+    empty.textContent = status.runId ? 'Diagnosis pending.' : 'Enable an override to collect diagnostics.';
+    diagnosticsEl.appendChild(empty);
+    return;
+  }
+
+  const observed = diagnosis.observedAssets;
+  if (observed) {
+    const summary = document.createElement('div');
+    summary.className = 'override-poc-diagnostics-summary';
+    const targetStatus = observed.targetAssetObserved ? 'target observed' : 'target not observed';
+    const flags = [
+      observed.targetAssetIntegrity ? 'SRI target' : null,
+      observed.cspMetaTagCount > 0 ? `CSP meta ${observed.cspMetaTagCount}` : null,
+      observed.serviceWorkerControlled ? 'SW controlled' : null,
+      observed.sriAssetCount > 0 ? `SRI assets ${observed.sriAssetCount}` : null,
+    ].filter((entry): entry is string => entry !== null);
+    summary.textContent = `Observed assets: ${observed.observedAssetCount}; ${targetStatus}${flags.length > 0 ? '; ' + flags.join('; ') : ''}.`;
+    diagnosticsEl.appendChild(summary);
+  }
+
+  if (diagnosis.issues.length === 0) {
+    const ok = document.createElement('div');
+    ok.className = 'override-poc-diagnostics-empty';
+    ok.textContent = 'No override blockers reported.';
+    diagnosticsEl.appendChild(ok);
+    return;
+  }
+
+  const list = document.createElement('div');
+  list.className = 'override-poc-diagnostics-list';
+  for (const issue of diagnosis.issues) {
+    const item = document.createElement('div');
+    item.className = 'override-poc-diagnostics-item';
+    item.dataset.severity = issue.severity;
+    item.textContent = `${issue.code}: ${issue.message}`;
+    list.appendChild(item);
+  }
+  diagnosticsEl.appendChild(list);
+}
+
+function formatOverridePocLogTime(timestamp: number): string {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return '--:--:--';
+  }
+  return new Date(timestamp).toISOString().slice(11, 19);
+}
+
+function renderOverridePocRequestLog(status: OverridePocStatus): void {
+  const logEl = document.getElementById('override-poc-request-log');
+  if (!logEl) {
+    return;
+  }
+
+  logEl.replaceChildren();
+  if (status.requestLogError) {
+    const error = document.createElement('div');
+    error.className = 'override-poc-log-empty';
+    error.textContent = `Request log unavailable: ${status.requestLogError}`;
+    logEl.appendChild(error);
+    return;
+  }
+
+  const entries = status.requestLog ?? [];
+  if (entries.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'override-poc-log-empty';
+    empty.textContent = status.runId ? 'No request rows for this run yet.' : 'No override request rows recorded.';
+    logEl.appendChild(empty);
+    return;
+  }
+
+  for (const entry of entries) {
+    const item = document.createElement('div');
+    item.className = 'override-poc-log-item';
+    item.dataset.status = entry.status;
+    const response = typeof entry.responseCode === 'number' ? ` HTTP ${entry.responseCode}` : '';
+    const failure = entry.failureCode ? ` ${entry.failureCode}` : '';
+    const error = entry.errorMessage ? `; ${entry.errorMessage}` : '';
+    item.textContent = `${formatOverridePocLogTime(entry.timestamp)} ${entry.status}${response}${failure}: ${entry.requestUrl}${error}`;
+    logEl.appendChild(item);
+  }
+}
+
+function renderOverridePocPlanLog(status: OverridePocStatus): void {
+  const logEl = document.getElementById('override-poc-plan-log');
+  if (!logEl) {
+    return;
+  }
+
+  logEl.replaceChildren();
+  if (status.planLogError) {
+    const error = document.createElement('div');
+    error.className = 'override-poc-log-empty';
+    error.textContent = `Plan log unavailable: ${status.planLogError}`;
+    logEl.appendChild(error);
+    return;
+  }
+
+  const entries = status.planLog ?? [];
+  if (entries.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'override-poc-log-empty';
+    empty.textContent = 'No generated override plans recorded.';
+    logEl.appendChild(empty);
+    return;
+  }
+
+  for (const entry of entries) {
+    const item = document.createElement('div');
+    item.className = 'override-poc-log-item';
+    item.dataset.status = entry.blockers.length > 0 ? 'failed' : entry.warnings.length > 0 ? 'warning' : 'fulfilled';
+    const size = typeof entry.originalBytes === 'number' || typeof entry.patchedBytes === 'number'
+      ? ` ${entry.originalBytes ?? '?'}->${entry.patchedBytes ?? '?'} bytes`
+      : '';
+    const notes = [
+      entry.blockers.length > 0 ? `blockers ${entry.blockers.length}` : null,
+      entry.warnings.length > 0 ? `warnings ${entry.warnings.length}` : null,
+    ].filter((value): value is string => value !== null);
+    item.textContent = `${formatOverridePocLogTime(entry.createdAt)} ${entry.plannerKind} ${entry.requestMethod} ${entry.ruleType}${size}: ${entry.targetAssetUrl}${notes.length > 0 ? '; ' + notes.join(', ') : ''}`;
+    logEl.appendChild(item);
+  }
+}
+
+function renderOverridePocStatus(status: OverridePocStatus): void {
+  latestOverridePocStatus = status;
+  const targetUrlEl = document.getElementById('override-poc-target-url');
+  const localFileEl = document.getElementById('override-poc-local-file');
+  const configPathEl = document.getElementById('override-poc-config-path');
+  const profileEl = document.getElementById('override-poc-profile');
+  const rulesEl = document.getElementById('override-poc-rules');
+  const selectedTabIdEl = document.getElementById('override-poc-selected-tab-id');
+  const tabIdEl = document.getElementById('override-poc-tab-id');
+  const matchedEl = document.getElementById('override-poc-matched');
+  const fulfilledEl = document.getElementById('override-poc-fulfilled');
+  const auditEl = document.getElementById('override-poc-audit');
+  const enableButton = document.getElementById('override-poc-enable') as HTMLButtonElement | null;
+  const disableButton = document.getElementById('override-poc-disable') as HTMLButtonElement | null;
+
+  if (targetUrlEl) {
+    targetUrlEl.textContent = status.targetAssetUrl ?? '-';
+  }
+  if (localFileEl) {
+    localFileEl.textContent = status.resolvedLocalFilePath ?? status.localFilePath ?? '-';
+  }
+  if (configPathEl) {
+    configPathEl.textContent = status.configPath ?? '-';
+  }
+  if (profileEl) {
+    profileEl.textContent = status.profileName ?? status.profileId ?? status.activeProfileId ?? '-';
+  }
+  if (rulesEl) {
+    const enabledRuleCount = typeof status.enabledRuleCount === 'number' ? status.enabledRuleCount : '-';
+    const ruleCount = typeof status.ruleCount === 'number' ? status.ruleCount : '-';
+    rulesEl.textContent = `${enabledRuleCount}/${ruleCount} enabled`;
+  }
+  if (selectedTabIdEl) {
+    selectedTabIdEl.textContent = typeof status.selectedTabId === 'number' ? String(status.selectedTabId) : '-';
+  }
+  if (tabIdEl) {
+    tabIdEl.textContent = typeof status.tabId === 'number' ? String(status.tabId) : '-';
+  }
+  if (matchedEl) {
+    matchedEl.textContent = String(status.matchedRequests);
+  }
+  if (fulfilledEl) {
+    fulfilledEl.textContent = String(status.fulfilledRequests);
+  }
+  if (auditEl) {
+    const pending = status.auditPendingRequests ?? 0;
+    auditEl.textContent = status.auditLastError
+      ? `pending ${pending}; retrying after: ${status.auditLastError}`
+      : pending > 0
+        ? `pending ${pending}`
+        : 'synced';
+  }
+
+  let message = 'Override POC ready but inactive.';
+  let tone: StatusTone = 'info';
+
+  if (status.lastError) {
+    message = status.lastError;
+    tone = 'error';
+  } else if (status.diagnosis?.issues.some((issue) => issue.severity === 'error')) {
+    const issue = status.diagnosis.issues.find((entry) => entry.severity === 'error');
+    message = issue ? `${issue.code}: ${issue.message}` : 'Override blocker reported.';
+    tone = 'error';
+  } else if (!status.configuredEnabled) {
+    message = 'Disabled in override-poc.config.json.';
+    tone = 'warning';
+  } else if (status.fileExists === false) {
+    message = 'Configured local file was not found on disk.';
+    tone = 'warning';
+  } else if (status.active) {
+    message = `Attached to tab ${status.tabId ?? '-'}; matched ${status.matchedRequests}, fulfilled ${status.fulfilledRequests}.`;
+    tone = 'success';
+  }
+
+  setOverridePocStatusMessage(message, tone);
+  renderOverridePocDiagnostics(status);
+  renderOverridePocRequestLog(status);
+  renderOverridePocPlanLog(status);
+
+  if (enableButton) {
+    enableButton.disabled = status.active || !status.configuredEnabled || status.fileExists === false;
+  }
+  if (disableButton) {
+    disableButton.disabled = !status.active;
+  }
+
+  renderOverridePocTargetTabSelector();
 }
 
 function parseCaptureDiagnostics(result: unknown): CaptureDiagnostics | null {
@@ -811,6 +1430,37 @@ async function refreshSessionTabScope(): Promise<void> {
   }
 }
 
+async function refreshOverridePocStatus(): Promise<void> {
+  const result = await sendRuntimeMessage({ type: 'OVERRIDE_POC_GET_STATUS' });
+  if (result.ok && 'result' in result) {
+    const parsed = parseOverridePocStatus(result.result);
+    if (parsed) {
+      renderOverridePocStatus(parsed);
+      return;
+    }
+  }
+
+  if (!result.ok) {
+    setOverridePocStatusMessage(`Error: ${result.error}`, 'error');
+  } else {
+    setOverridePocStatusMessage('Unexpected override POC response.', 'warning');
+  }
+}
+
+function getSelectedOverridePocTargetTabId(): number | null {
+  const select = document.getElementById('override-poc-target-tab') as HTMLSelectElement | null;
+  if (!select) {
+    return null;
+  }
+
+  const selectedValue = Number(select.value);
+  if (!Number.isInteger(selectedValue)) {
+    return null;
+  }
+
+  return selectedValue;
+}
+
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   let binary = '';
   const bytes = new Uint8Array(buffer);
@@ -885,6 +1535,7 @@ async function refreshState(): Promise<void> {
   if (result.ok && 'state' in result) {
     renderSessionState(result.state);
     await refreshSessionTabScope();
+    await refreshOverridePocStatus();
     await refreshHealthDiagnostics();
     return;
   }
@@ -937,7 +1588,7 @@ async function refreshRetention(): Promise<void> {
   }
 }
 
-document.addEventListener('DOMContentLoaded', () => {
+export function initializePopup(): void {
   const startButton = document.getElementById('start-session');
   const pauseButton = document.getElementById('pause-session');
   const resumeCurrentButton = document.getElementById('resume-session');
@@ -959,6 +1610,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const showDbEntriesButton = document.getElementById('show-db-entries');
   const refreshSessionTabsButton = document.getElementById('refresh-session-tabs');
   const sessionTabsList = document.getElementById('session-tabs-list');
+  const overridePocEnableButton = document.getElementById('override-poc-enable');
+  const overridePocDisableButton = document.getElementById('override-poc-disable');
+  const overridePocRefreshButton = document.getElementById('override-poc-refresh');
+  const overridePocTargetTabSelect = document.getElementById('override-poc-target-tab') as HTMLSelectElement | null;
 
   startButton?.addEventListener('click', async () => {
     const result = await sendRuntimeMessage({ type: 'SESSION_START' });
@@ -1071,6 +1726,54 @@ document.addEventListener('DOMContentLoaded', () => {
 
   refreshSessionTabsButton?.addEventListener('click', async () => {
     await refreshSessionTabScope();
+  });
+
+  overridePocTargetTabSelect?.addEventListener('change', async () => {
+    const tabId = getSelectedOverridePocTargetTabId();
+    if (tabId === null) {
+      return;
+    }
+
+    const result = await sendRuntimeMessage({ type: 'OVERRIDE_POC_SET_TARGET_TAB', tabId });
+    if (!result.ok) {
+      setOverridePocStatusMessage(result.error, 'error');
+      await refreshOverridePocStatus();
+      return;
+    }
+
+    await refreshOverridePocStatus();
+  });
+
+  overridePocEnableButton?.addEventListener('click', async () => {
+    const tabId = getSelectedOverridePocTargetTabId();
+    if (tabId === null) {
+      setOverridePocStatusMessage('Select a bound target tab before enabling the override.', 'warning');
+      return;
+    }
+
+    setOverridePocStatusMessage('Enabling override POC...', 'info');
+    const result = await sendRuntimeMessage({ type: 'OVERRIDE_POC_ENABLE', tabId });
+    if (!result.ok) {
+      setOverridePocStatusMessage(result.error, 'error');
+      return;
+    }
+
+    await refreshOverridePocStatus();
+  });
+
+  overridePocDisableButton?.addEventListener('click', async () => {
+    setOverridePocStatusMessage('Disabling override POC...', 'info');
+    const result = await sendRuntimeMessage({ type: 'OVERRIDE_POC_DISABLE' });
+    if (!result.ok) {
+      setOverridePocStatusMessage(result.error, 'error');
+      return;
+    }
+
+    await refreshOverridePocStatus();
+  });
+
+  overridePocRefreshButton?.addEventListener('click', async () => {
+    await refreshOverridePocStatus();
   });
 
   sessionTabsList?.addEventListener('change', async (event) => {
@@ -1329,9 +2032,14 @@ document.addEventListener('DOMContentLoaded', () => {
   refreshPausedSessionOptions();
   refreshConfig();
   refreshRetention();
+  refreshOverridePocStatus();
   startStatePolling();
 
   window.addEventListener('unload', () => {
     stopStatePolling();
   });
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  initializePopup();
 });

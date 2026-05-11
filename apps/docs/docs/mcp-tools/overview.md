@@ -13,6 +13,7 @@ All tool responses include:
 - **V2 heavy capture tools** for targeted DOM/styles/layout evidence and live in-memory console retrieval
 - **V3 correlation tools** for reasoned timelines across events
 - **V4 snapshot tools** for snapshot timelines and bounded asset retrieval
+- **Experimental override tools** for exact asset profile generation, persisted live asset observation, Next.js source/chunk mapping, bounded drift checks, source-edit planning, validation, enable/disable, request logs, and observed-asset-aware diagnosis
 - **V5 live automation tools** for one-at-a-time UI actions inside the already bound extension session
 - **V6 automation history tools** for first-class automation run and step analysis from dedicated tables
 
@@ -23,6 +24,7 @@ All tool responses include:
 - Size/depth/time limits applied to heavy captures
 - Query tools support `sessionId`, `url` (origin), or both for intersection filtering
 - High-volume tools support `maxResponseBytes` and optional `responseProfile: "compact"`
+- Session selection should prefer `liveConnection.recommendedForLiveCapture`; use `get_live_session_health` when `list_sessions` is ambiguous
 
 ## Console capture scope
 
@@ -35,5 +37,6 @@ Continue with:
 - [V2 heavy capture tools](./v2-heavy-capture.md)
 - [V3 correlation tools](./v3-correlation.md)
 - [V4 snapshot tools](./v4-snapshot-tools.md)
+- [Experimental override POC](../extension/experimental-override-poc.md)
 - [V5 live automation tools](./v5-live-automation.md)
 - [V6 automation history tools](./v6-automation-history.md)

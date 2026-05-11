@@ -1,0 +1,20 @@
+{
+  "enabled": false,
+  "activeProfileId": "placeholder",
+  "profiles": [
+    {
+      "profileId": "placeholder",
+      "name": "Disabled placeholder override profile",
+      "enabled": true,
+      "autoReload": true,
+      "rules": [
+        {
+          "ruleId": "placeholder-page",
+          "targetAssetUrl": "https://example.com/_next/static/chunks/app/page-PLACEHOLDER.js",
+          "localFilePath": ".next/static/chunks/app/page-PLACEHOLDER.js",
+          "contentType": "application/javascript; charset=utf-8"
+        }
+      ]
+    }
+  ]
+}
