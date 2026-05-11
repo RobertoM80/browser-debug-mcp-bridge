@@ -1,4 +1,5 @@
 import './global.css';
+import Link from 'next/link';
 
 export const metadata = {
   title: 'Northstar Supply',
@@ -19,9 +20,12 @@ export default function RootLayout({
             <span>Northstar Supply</span>
           </a>
           <nav aria-label="Fixture pages">
-            <a href="/">Home</a>
-            <a href="/about">About</a>
-            <a href="/products">Products</a>
+            <Link href="/" prefetch={false}>Home</Link>
+            <Link href="/about" prefetch={false}>About</Link>
+            <Link href="/products" prefetch={false}>Products</Link>
+            <Link id="nav-rsc-lab" href="/rsc-lab/alpha" prefetch={false}>RSC Lab</Link>
+            <Link id="nav-server-actions" href="/server-actions" prefetch={false}>Server Action</Link>
+            <Link id="nav-mutation-lab" href="/mutation-lab" prefetch={false}>Mutation</Link>
           </nav>
         </header>
         {children}

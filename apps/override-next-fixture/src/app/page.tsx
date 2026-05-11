@@ -1,3 +1,4 @@
+import { ApiSignalPanel } from './api-signal-panel';
 import { ScenarioBoot } from './scenario-boot';
 
 export default function Page() {
@@ -29,6 +30,8 @@ export default function Page() {
           <p>home runtime mode</p>
         </article>
       </section>
+
+      <ApiSignalPanel />
 
       <ScenarioBoot page="home" />
     </main>

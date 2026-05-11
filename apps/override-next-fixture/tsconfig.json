@@ -2,7 +2,6 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "jsx": "preserve",
-    
     "strict": true,
     "noEmit": true,
     "emitDeclarationOnly": false,
@@ -23,10 +22,8 @@
     "**/*.tsx",
     "**/*.js",
     "**/*.jsx",
-    
-      "../../apps/override-next-fixture/.next/types/**/*.ts",
-      "../../dist/apps/override-next-fixture/.next/types/**/*.ts",
-    
+    "../../apps/override-next-fixture/.next/types/**/*.ts",
+    "../../dist/apps/override-next-fixture/.next/types/**/*.ts",
     "next-env.d.ts"
   ],
   "exclude": ["node_modules", "jest.config.ts", "jest.config.cts", "**/*.spec.ts", "**/*.test.ts"]

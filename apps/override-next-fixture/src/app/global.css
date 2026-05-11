@@ -71,6 +71,21 @@ button {
   border-color: #f6c05f;
 }
 
+.lab-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 24px;
+}
+
+.lab-nav a {
+  border: 1px solid rgba(246, 192, 95, 0.34);
+  border-radius: 999px;
+  color: #f6c05f;
+  padding: 10px 14px;
+  text-decoration: none;
+}
+
 .fixture-page {
   display: grid;
   gap: clamp(24px, 4vw, 48px);
@@ -81,6 +96,10 @@ button {
 .hero-card,
 .split-panel,
 .catalog-header,
+.api-signal,
+.lab-card,
+.lab-panel,
+.lab-shell,
 .product-card,
 .proof-card,
 .signal-grid article {
@@ -89,7 +108,10 @@ button {
 }
 
 .hero-card,
-.catalog-header {
+.catalog-header,
+.api-signal,
+.lab-panel,
+.lab-shell {
   background: rgba(11, 17, 22, 0.72);
   border-radius: 32px;
   max-width: 980px;
@@ -153,13 +175,15 @@ h2 {
 }
 
 .signal-grid,
-.product-grid {
+.product-grid,
+.lab-grid {
   display: grid;
   gap: 18px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .signal-grid article,
+.lab-card,
 .product-card,
 .proof-card {
   background: rgba(247, 240, 223, 0.08);
@@ -211,6 +235,12 @@ h2 {
   margin-bottom: 0;
 }
 
+.lab-panel h2 {
+  color: #f7f0df;
+  font-size: clamp(34px, 5vw, 62px);
+  line-height: 1;
+}
+
 @media (max-width: 760px) {
   .site-shell,
   .site-shell nav,
@@ -221,6 +251,7 @@ h2 {
 
   .signal-grid,
   .product-grid,
+  .lab-grid,
   .split-panel {
     grid-template-columns: 1fr;
   }
