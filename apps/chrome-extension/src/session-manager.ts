@@ -39,6 +39,7 @@ export type CaptureCommandType =
   | 'CAPTURE_UI_SNAPSHOT'
   | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
   | 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
+  | 'CAPTURE_OVERRIDE_RESPONSE_BODY'
   | 'CAPTURE_OVERRIDE_POC_GET_STATUS'
   | 'CAPTURE_OVERRIDE_POC_ENABLE'
   | 'CAPTURE_OVERRIDE_POC_DISABLE';
@@ -551,6 +552,7 @@ export class SessionManager {
         && message.command !== 'CAPTURE_UI_SNAPSHOT'
         && message.command !== 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
         && message.command !== 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
+        && message.command !== 'CAPTURE_OVERRIDE_RESPONSE_BODY'
         && message.command !== 'CAPTURE_OVERRIDE_POC_GET_STATUS'
         && message.command !== 'CAPTURE_OVERRIDE_POC_ENABLE'
         && message.command !== 'CAPTURE_OVERRIDE_POC_DISABLE'

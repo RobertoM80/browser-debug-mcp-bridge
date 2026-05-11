@@ -97,6 +97,34 @@ type OverridePocStatus = {
   auditPendingRequests?: number;
   auditLastError?: string;
   diagnosis?: OverridePocUiDiagnosis;
+  requestLog?: OverridePocRequestLogItem[];
+  requestLogError?: string;
+  planLog?: OverridePocPlanLogItem[];
+  planLogError?: string;
+};
+
+type OverridePocRequestLogItem = {
+  requestLogId: string;
+  timestamp: number;
+  requestUrl: string;
+  status: string;
+  failureCode?: string | null;
+  errorMessage?: string | null;
+  responseCode?: number | null;
+};
+
+type OverridePocPlanLogItem = {
+  planId: string;
+  createdAt: number;
+  plannerKind: string;
+  ruleType: string;
+  requestMethod: string;
+  matchMode: string;
+  targetAssetUrl: string;
+  originalBytes?: number | null;
+  patchedBytes?: number | null;
+  warnings: string[];
+  blockers: string[];
 };
 
 type OverridePocUiDiagnosis = {
@@ -552,6 +580,91 @@ function parseOverridePocUiDiagnosis(value: unknown): OverridePocUiDiagnosis | u
   };
 }
 
+function parseStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+}
+
+function parseOverridePocRequestLog(value: unknown): OverridePocRequestLogItem[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value
+    .map((entry): OverridePocRequestLogItem | null => {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      const candidate = entry as Partial<OverridePocRequestLogItem>;
+      if (
+        typeof candidate.requestLogId !== 'string'
+        || typeof candidate.requestUrl !== 'string'
+        || typeof candidate.status !== 'string'
+      ) {
+        return null;
+      }
+      return {
+        requestLogId: candidate.requestLogId,
+        timestamp: typeof candidate.timestamp === 'number' && Number.isFinite(candidate.timestamp)
+          ? Math.floor(candidate.timestamp)
+          : 0,
+        requestUrl: candidate.requestUrl,
+        status: candidate.status,
+        failureCode: typeof candidate.failureCode === 'string' ? candidate.failureCode : null,
+        errorMessage: typeof candidate.errorMessage === 'string' ? candidate.errorMessage : null,
+        responseCode: typeof candidate.responseCode === 'number' && Number.isFinite(candidate.responseCode)
+          ? Math.floor(candidate.responseCode)
+          : null,
+      };
+    })
+    .filter((entry): entry is OverridePocRequestLogItem => entry !== null)
+    .slice(0, 5);
+}
+
+function parseOverridePocPlanLog(value: unknown): OverridePocPlanLogItem[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value
+    .map((entry): OverridePocPlanLogItem | null => {
+      if (!entry || typeof entry !== 'object') {
+        return null;
+      }
+      const candidate = entry as Partial<OverridePocPlanLogItem>;
+      if (
+        typeof candidate.planId !== 'string'
+        || typeof candidate.plannerKind !== 'string'
+        || typeof candidate.ruleType !== 'string'
+        || typeof candidate.requestMethod !== 'string'
+        || typeof candidate.matchMode !== 'string'
+        || typeof candidate.targetAssetUrl !== 'string'
+      ) {
+        return null;
+      }
+      return {
+        planId: candidate.planId,
+        createdAt: typeof candidate.createdAt === 'number' && Number.isFinite(candidate.createdAt)
+          ? Math.floor(candidate.createdAt)
+          : 0,
+        plannerKind: candidate.plannerKind,
+        ruleType: candidate.ruleType,
+        requestMethod: candidate.requestMethod,
+        matchMode: candidate.matchMode,
+        targetAssetUrl: candidate.targetAssetUrl,
+        originalBytes: typeof candidate.originalBytes === 'number' && Number.isFinite(candidate.originalBytes)
+          ? Math.floor(candidate.originalBytes)
+          : null,
+        patchedBytes: typeof candidate.patchedBytes === 'number' && Number.isFinite(candidate.patchedBytes)
+          ? Math.floor(candidate.patchedBytes)
+          : null,
+        warnings: parseStringArray(candidate.warnings),
+        blockers: parseStringArray(candidate.blockers),
+      };
+    })
+    .filter((entry): entry is OverridePocPlanLogItem => entry !== null)
+    .slice(0, 5);
+}
+
 function parseOverridePocStatus(result: unknown): OverridePocStatus | null {
   if (!result || typeof result !== 'object') {
     return null;
@@ -612,6 +725,10 @@ function parseOverridePocStatus(result: unknown): OverridePocStatus | null {
     auditPendingRequests: mapOptionalNumber(candidate.auditPendingRequests),
     auditLastError: mapOptionalString(candidate.auditLastError),
     diagnosis: parseOverridePocUiDiagnosis(candidate.diagnosis),
+    requestLog: parseOverridePocRequestLog(candidate.requestLog),
+    requestLogError: mapOptionalString(candidate.requestLogError),
+    planLog: parseOverridePocPlanLog(candidate.planLog),
+    planLogError: mapOptionalString(candidate.planLogError),
   };
 }
 
@@ -780,6 +897,89 @@ function renderOverridePocDiagnostics(status: OverridePocStatus): void {
   diagnosticsEl.appendChild(list);
 }
 
+function formatOverridePocLogTime(timestamp: number): string {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) {
+    return '--:--:--';
+  }
+  return new Date(timestamp).toISOString().slice(11, 19);
+}
+
+function renderOverridePocRequestLog(status: OverridePocStatus): void {
+  const logEl = document.getElementById('override-poc-request-log');
+  if (!logEl) {
+    return;
+  }
+
+  logEl.replaceChildren();
+  if (status.requestLogError) {
+    const error = document.createElement('div');
+    error.className = 'override-poc-log-empty';
+    error.textContent = `Request log unavailable: ${status.requestLogError}`;
+    logEl.appendChild(error);
+    return;
+  }
+
+  const entries = status.requestLog ?? [];
+  if (entries.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'override-poc-log-empty';
+    empty.textContent = status.runId ? 'No request rows for this run yet.' : 'No override request rows recorded.';
+    logEl.appendChild(empty);
+    return;
+  }
+
+  for (const entry of entries) {
+    const item = document.createElement('div');
+    item.className = 'override-poc-log-item';
+    item.dataset.status = entry.status;
+    const response = typeof entry.responseCode === 'number' ? ` HTTP ${entry.responseCode}` : '';
+    const failure = entry.failureCode ? ` ${entry.failureCode}` : '';
+    const error = entry.errorMessage ? `; ${entry.errorMessage}` : '';
+    item.textContent = `${formatOverridePocLogTime(entry.timestamp)} ${entry.status}${response}${failure}: ${entry.requestUrl}${error}`;
+    logEl.appendChild(item);
+  }
+}
+
+function renderOverridePocPlanLog(status: OverridePocStatus): void {
+  const logEl = document.getElementById('override-poc-plan-log');
+  if (!logEl) {
+    return;
+  }
+
+  logEl.replaceChildren();
+  if (status.planLogError) {
+    const error = document.createElement('div');
+    error.className = 'override-poc-log-empty';
+    error.textContent = `Plan log unavailable: ${status.planLogError}`;
+    logEl.appendChild(error);
+    return;
+  }
+
+  const entries = status.planLog ?? [];
+  if (entries.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'override-poc-log-empty';
+    empty.textContent = 'No generated override plans recorded.';
+    logEl.appendChild(empty);
+    return;
+  }
+
+  for (const entry of entries) {
+    const item = document.createElement('div');
+    item.className = 'override-poc-log-item';
+    item.dataset.status = entry.blockers.length > 0 ? 'failed' : entry.warnings.length > 0 ? 'warning' : 'fulfilled';
+    const size = typeof entry.originalBytes === 'number' || typeof entry.patchedBytes === 'number'
+      ? ` ${entry.originalBytes ?? '?'}->${entry.patchedBytes ?? '?'} bytes`
+      : '';
+    const notes = [
+      entry.blockers.length > 0 ? `blockers ${entry.blockers.length}` : null,
+      entry.warnings.length > 0 ? `warnings ${entry.warnings.length}` : null,
+    ].filter((value): value is string => value !== null);
+    item.textContent = `${formatOverridePocLogTime(entry.createdAt)} ${entry.plannerKind} ${entry.requestMethod} ${entry.ruleType}${size}: ${entry.targetAssetUrl}${notes.length > 0 ? '; ' + notes.join(', ') : ''}`;
+    logEl.appendChild(item);
+  }
+}
+
 function renderOverridePocStatus(status: OverridePocStatus): void {
   latestOverridePocStatus = status;
   const targetUrlEl = document.getElementById('override-poc-target-url');
@@ -856,6 +1056,8 @@ function renderOverridePocStatus(status: OverridePocStatus): void {
 
   setOverridePocStatusMessage(message, tone);
   renderOverridePocDiagnostics(status);
+  renderOverridePocRequestLog(status);
+  renderOverridePocPlanLog(status);
 
   if (enableButton) {
     enableButton.disabled = status.active || !status.configuredEnabled || status.fileExists === false;

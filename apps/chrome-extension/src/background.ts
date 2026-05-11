@@ -141,6 +141,11 @@ interface FullPageCaptureResult {
 interface ObservedOverrideAsset {
   url: string;
   kind: string;
+  ruleType?: 'asset' | 'document' | 'rsc-flight' | 'next-data' | 'api-response';
+  requestMethod?: string;
+  resourceType?: string;
+  contentType?: string;
+  statusCode?: number;
   initiatorType?: string;
   rel?: string;
   as?: string;
@@ -149,6 +154,8 @@ interface ObservedOverrideAsset {
   nonce?: string;
   fromDom: boolean;
   fromPerformance: boolean;
+  fromNavigation?: boolean;
+  fromFetch?: boolean;
 }
 
 interface ObservedOverrideAssetsResult {
@@ -159,6 +166,8 @@ interface ObservedOverrideAssetsResult {
   cspMetaTags: string[];
   assets: ObservedOverrideAsset[];
 }
+
+type OverrideRuleType = NonNullable<ObservedOverrideAsset['ruleType']>;
 
 interface OverridePocUiDiagnosisIssue {
   code: string;
@@ -177,6 +186,42 @@ interface OverridePocUiDiagnosis {
     cspMetaTagCount: number;
     sriAssetCount: number;
   };
+}
+
+interface OverridePocUiRequestLogEntry {
+  requestLogId: string;
+  runId: string;
+  requestId: string;
+  timestamp: number;
+  requestUrl: string;
+  status: string;
+  failureCode?: string | null;
+  errorMessage?: string | null;
+  responseCode?: number | null;
+}
+
+interface OverridePocUiPlanLogEntry {
+  planId: string;
+  createdAt: number;
+  plannerKind: string;
+  ruleId: string;
+  ruleType: string;
+  requestMethod: string;
+  matchMode: string;
+  targetAssetUrl: string;
+  contentType: string;
+  originalBytes?: number | null;
+  patchedBytes?: number | null;
+  warnings: string[];
+  blockers: string[];
+}
+
+interface OverridePocStatusResult extends OverridePocStatus {
+  diagnosis?: OverridePocUiDiagnosis;
+  requestLog?: OverridePocUiRequestLogEntry[];
+  requestLogError?: string;
+  planLog?: OverridePocUiPlanLogEntry[];
+  planLogError?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -495,20 +540,129 @@ async function readOverridePocDiagnosis(
   }
 }
 
+function parseStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+}
+
+function parseOverridePocRequestLogEntry(value: unknown): OverridePocUiRequestLogEntry | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  if (
+    typeof value.requestLogId !== 'string'
+    || typeof value.runId !== 'string'
+    || typeof value.requestId !== 'string'
+    || typeof value.requestUrl !== 'string'
+    || typeof value.status !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    requestLogId: value.requestLogId,
+    runId: value.runId,
+    requestId: value.requestId,
+    timestamp: typeof value.timestamp === 'number' && Number.isFinite(value.timestamp) ? Math.floor(value.timestamp) : 0,
+    requestUrl: value.requestUrl,
+    status: value.status,
+    failureCode: typeof value.failureCode === 'string' ? value.failureCode : null,
+    errorMessage: typeof value.errorMessage === 'string' ? value.errorMessage : null,
+    responseCode: typeof value.responseCode === 'number' && Number.isFinite(value.responseCode) ? Math.floor(value.responseCode) : null,
+  };
+}
+
+function parseOverridePocPlanLogEntry(value: unknown): OverridePocUiPlanLogEntry | null {
+  if (!isRecord(value)) {
+    return null;
+  }
+  if (
+    typeof value.planId !== 'string'
+    || typeof value.plannerKind !== 'string'
+    || typeof value.ruleId !== 'string'
+    || typeof value.ruleType !== 'string'
+    || typeof value.requestMethod !== 'string'
+    || typeof value.matchMode !== 'string'
+    || typeof value.targetAssetUrl !== 'string'
+    || typeof value.contentType !== 'string'
+  ) {
+    return null;
+  }
+  return {
+    planId: value.planId,
+    createdAt: typeof value.createdAt === 'number' && Number.isFinite(value.createdAt) ? Math.floor(value.createdAt) : 0,
+    plannerKind: value.plannerKind,
+    ruleId: value.ruleId,
+    ruleType: value.ruleType,
+    requestMethod: value.requestMethod,
+    matchMode: value.matchMode,
+    targetAssetUrl: value.targetAssetUrl,
+    contentType: value.contentType,
+    originalBytes: typeof value.originalBytes === 'number' && Number.isFinite(value.originalBytes) ? Math.floor(value.originalBytes) : null,
+    patchedBytes: typeof value.patchedBytes === 'number' && Number.isFinite(value.patchedBytes) ? Math.floor(value.patchedBytes) : null,
+    warnings: parseStringArray(value.warnings),
+    blockers: parseStringArray(value.blockers),
+  };
+}
+
+async function readOverridePocRequestLog(
+  sessionId: string,
+  runId: string | undefined,
+): Promise<{ entries: OverridePocUiRequestLogEntry[]; error?: string }> {
+  try {
+    const query = runId ? `?runId=${encodeURIComponent(runId)}&limit=5` : '?limit=5';
+    const payload = await fetchServer(`/sessions/${encodeURIComponent(sessionId)}/overrides/requests${query}`);
+    const entries = Array.isArray(payload.requests)
+      ? payload.requests
+        .map(parseOverridePocRequestLogEntry)
+        .filter((entry): entry is OverridePocUiRequestLogEntry => entry !== null)
+      : [];
+    return { entries };
+  } catch (error) {
+    return {
+      entries: [],
+      error: error instanceof Error ? error.message : 'Unable to read override request log.',
+    };
+  }
+}
+
+async function readOverridePocPlanLog(sessionId: string): Promise<{ entries: OverridePocUiPlanLogEntry[]; error?: string }> {
+  try {
+    const payload = await fetchServer(`/sessions/${encodeURIComponent(sessionId)}/overrides/plans?limit=5`);
+    const entries = Array.isArray(payload.plans)
+      ? payload.plans
+        .map(parseOverridePocPlanLogEntry)
+        .filter((entry): entry is OverridePocUiPlanLogEntry => entry !== null)
+      : [];
+    return { entries };
+  } catch (error) {
+    return {
+      entries: [],
+      error: error instanceof Error ? error.message : 'Unable to read override plan log.',
+    };
+  }
+}
+
 async function buildOverridePocStatusResult(
   sessionId: string | null | undefined,
   status: OverridePocStatus,
-): Promise<OverridePocStatus & { diagnosis?: OverridePocUiDiagnosis }> {
+): Promise<OverridePocStatusResult> {
   if (!sessionId) {
     return status;
   }
 
   const selectedTabId = getSelectedOverridePocTabId(sessionId);
-  const diagnosis = await readOverridePocDiagnosis(sessionId, status);
+  const [diagnosis, requestLog, planLog] = await Promise.all([
+    readOverridePocDiagnosis(sessionId, status),
+    readOverridePocRequestLog(sessionId, status.runId),
+    readOverridePocPlanLog(sessionId),
+  ]);
   return {
     ...status,
     selectedTabId: typeof selectedTabId === 'number' ? selectedTabId : status.selectedTabId,
     diagnosis,
+    requestLog: requestLog.entries,
+    requestLogError: requestLog.error,
+    planLog: planLog.entries,
+    planLogError: planLog.error,
   };
 }
 
@@ -602,6 +756,567 @@ async function executeScriptInTab<T>(tabId: number, func: (...args: unknown[]) =
   return firstResult.result as T;
 }
 
+const DEFAULT_OVERRIDE_RESPONSE_CAPTURE_BYTES = 256 * 1024;
+const MAX_OVERRIDE_RESPONSE_CAPTURE_BYTES = 1024 * 1024;
+const DEFAULT_OVERRIDE_RESPONSE_CAPTURE_TIMEOUT_MS = 10_000;
+const MAX_OVERRIDE_RESPONSE_CAPTURE_TIMEOUT_MS = 60_000;
+const BLOCKED_OVERRIDE_CAPTURE_HEADERS = new Set([
+  'authorization',
+  'cookie',
+  'host',
+  'proxy-authorization',
+  'set-cookie',
+  'content-length',
+]);
+
+type OverrideResponseCaptureMode = 'extension-fetch' | 'cdp-response';
+type OverrideResponseUrlMatchMode = 'exact' | 'prefix';
+
+interface DebuggerHeader {
+  name?: string;
+  value?: string;
+}
+
+interface CdpResponseRequestPausedPayload {
+  requestId?: string;
+  request?: {
+    url?: string;
+    method?: string;
+    headers?: Record<string, string>;
+  };
+  responseStatusCode?: number;
+  responseHeaders?: DebuggerHeader[];
+}
+
+interface CdpGetResponseBodyResult {
+  body?: string;
+  base64Encoded?: boolean;
+}
+
+function normalizeOverrideResponseCaptureBytes(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_OVERRIDE_RESPONSE_CAPTURE_BYTES;
+  }
+
+  const floored = Math.floor(value);
+  if (floored < 1024) {
+    return DEFAULT_OVERRIDE_RESPONSE_CAPTURE_BYTES;
+  }
+  return Math.min(floored, MAX_OVERRIDE_RESPONSE_CAPTURE_BYTES);
+}
+
+function normalizeOverrideResponseCaptureTimeoutMs(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_OVERRIDE_RESPONSE_CAPTURE_TIMEOUT_MS;
+  }
+
+  const floored = Math.floor(value);
+  if (floored < 1_000) {
+    return DEFAULT_OVERRIDE_RESPONSE_CAPTURE_TIMEOUT_MS;
+  }
+  return Math.min(floored, MAX_OVERRIDE_RESPONSE_CAPTURE_TIMEOUT_MS);
+}
+
+function normalizeOverrideResponseCaptureMode(value: unknown): OverrideResponseCaptureMode {
+  if (value === undefined || value === null || value === '') {
+    return 'extension-fetch';
+  }
+
+  if (value === 'extension-fetch' || value === 'cdp-response') {
+    return value;
+  }
+
+  throw new Error('captureMode must be "extension-fetch" or "cdp-response"');
+}
+
+function normalizeOverrideResponseUrlMatchMode(value: unknown): OverrideResponseUrlMatchMode {
+  if (value === undefined || value === null || value === '') {
+    return 'exact';
+  }
+
+  if (value === 'exact' || value === 'prefix') {
+    return value;
+  }
+
+  throw new Error('matchMode must be "exact" or "prefix"');
+}
+
+function normalizeOverrideResponseCaptureMethod(value: unknown): 'GET' | 'HEAD' {
+  const method = typeof value === 'string' && value.trim().length > 0 ? value.trim().toUpperCase() : 'GET';
+  if (method !== 'GET' && method !== 'HEAD') {
+    throw new Error('Response body capture only supports safe GET or HEAD requests.');
+  }
+  return method;
+}
+
+function normalizeOverrideResponseCaptureUrl(value: unknown): string {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error('targetUrl is required');
+  }
+
+  const parsed = new URL(value.trim());
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('targetUrl must use http:// or https://');
+  }
+  return parsed.toString();
+}
+
+function doesOverrideResponseUrlMatch(requestUrl: string, targetUrl: string, matchMode: OverrideResponseUrlMatchMode): boolean {
+  if (matchMode === 'prefix') {
+    return requestUrl.startsWith(targetUrl);
+  }
+
+  return requestUrl === targetUrl;
+}
+
+function normalizeOverrideResponseTriggerReload(value: unknown): boolean {
+  return value === true;
+}
+
+function normalizeOverrideResponseCaptureHeaders(value: unknown): Record<string, string> | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('requestHeaders must be an object when provided');
+  }
+
+  const headers: Record<string, string> = {};
+  for (const [name, rawHeaderValue] of Object.entries(value as Record<string, unknown>)) {
+    const normalizedName = name.trim().toLowerCase();
+    if (!normalizedName) {
+      continue;
+    }
+    if (BLOCKED_OVERRIDE_CAPTURE_HEADERS.has(normalizedName)) {
+      throw new Error(`requestHeaders cannot include sensitive or controlled header "${name}"`);
+    }
+    if (typeof rawHeaderValue !== 'string') {
+      throw new Error(`requestHeaders.${name} must be a string`);
+    }
+    headers[name] = rawHeaderValue;
+  }
+
+  return Object.keys(headers).length > 0 ? headers : undefined;
+}
+
+function isTextualOverrideResponseContentType(contentType: string): boolean {
+  const normalized = contentType.toLowerCase().split(';', 1)[0]?.trim() ?? '';
+  return normalized.startsWith('text/')
+    || normalized === 'application/json'
+    || normalized.endsWith('+json')
+    || normalized === 'application/javascript'
+    || normalized === 'application/xml'
+    || normalized.endsWith('+xml')
+    || normalized === 'application/x-ndjson'
+    || normalized === 'image/svg+xml';
+}
+
+function inferOverrideResponseRuleType(targetUrl: string, contentType: string): OverrideRuleType {
+  const parsed = new URL(targetUrl);
+  const normalizedContentType = contentType.toLowerCase();
+  if (normalizedContentType.includes('text/x-component') || parsed.searchParams.has('_rsc')) {
+    return 'rsc-flight';
+  }
+  if (parsed.pathname.includes('/_next/data/')) {
+    return 'next-data';
+  }
+  if (normalizedContentType.includes('text/html')) {
+    return 'document';
+  }
+  if (normalizedContentType.includes('json') || normalizedContentType.startsWith('text/')) {
+    return 'api-response';
+  }
+  return 'asset';
+}
+
+function getDebuggerHeaderValue(headers: DebuggerHeader[] | undefined, name: string): string {
+  if (!Array.isArray(headers)) {
+    return '';
+  }
+
+  const normalizedName = name.toLowerCase();
+  const match = headers.find((header) => {
+    return typeof header.name === 'string' && header.name.toLowerCase() === normalizedName;
+  });
+  return typeof match?.value === 'string' ? match.value : '';
+}
+
+const NEXT_RSC_CONTEXT_HEADERS = new Set([
+  'rsc',
+  'next-router-state-tree',
+  'next-router-prefetch',
+  'next-router-segment-prefetch',
+  'next-url',
+  'purpose',
+]);
+
+function selectRscRequestContextHeaders(headers: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (!headers) {
+    return undefined;
+  }
+
+  const selected: Record<string, string> = {};
+  for (const [name, value] of Object.entries(headers)) {
+    const normalizedName = name.toLowerCase();
+    if (NEXT_RSC_CONTEXT_HEADERS.has(normalizedName) && typeof value === 'string' && value.length > 0) {
+      selected[normalizedName] = value;
+    }
+  }
+  return Object.keys(selected).length > 0 ? selected : undefined;
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function decodeCdpResponseBody(body: CdpGetResponseBodyResult): { text: string; bytes: Uint8Array } {
+  const rawBody = typeof body.body === 'string' ? body.body : '';
+  if (body.base64Encoded === true) {
+    const bytes = base64ToBytes(rawBody);
+    return {
+      bytes,
+      text: new TextDecoder().decode(bytes),
+    };
+  }
+
+  return {
+    text: rawBody,
+    bytes: new TextEncoder().encode(rawBody),
+  };
+}
+
+function getMethodForPausedRequest(value: unknown): string {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim().toUpperCase() : 'GET';
+}
+
+async function sendResponseCaptureDebuggerCommand<T = unknown>(
+  source: chrome.debugger.Debuggee,
+  method: string,
+  params?: Record<string, unknown>,
+): Promise<T> {
+  const result = await chrome.debugger.sendCommand(source, method, params);
+  return result as T;
+}
+
+async function readTextResponseWithLimit(response: Response, maxBodyBytes: number): Promise<{
+  bodyText: string;
+  bodyBytes: number;
+  capturedBytes: number;
+  truncated: boolean;
+}> {
+  const contentLength = Number(response.headers.get('content-length'));
+  const expectedBytes = Number.isFinite(contentLength) && contentLength >= 0 ? Math.floor(contentLength) : undefined;
+
+  if (!response.body) {
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const captured = bytes.slice(0, maxBodyBytes);
+    return {
+      bodyText: new TextDecoder().decode(captured),
+      bodyBytes: expectedBytes ?? bytes.byteLength,
+      capturedBytes: captured.byteLength,
+      truncated: bytes.byteLength > maxBodyBytes,
+    };
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let capturedBytes = 0;
+  let readBytes = 0;
+  let truncated = false;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      readBytes += value.byteLength;
+      const remaining = maxBodyBytes - capturedBytes;
+      if (remaining > 0) {
+        const captured = value.byteLength > remaining ? value.slice(0, remaining) : value;
+        chunks.push(captured);
+        capturedBytes += captured.byteLength;
+      }
+      if (readBytes > maxBodyBytes || capturedBytes >= maxBodyBytes) {
+        truncated = true;
+        await reader.cancel().catch(() => undefined);
+        break;
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bodyBytes = expectedBytes ?? readBytes;
+  const combined = new Uint8Array(capturedBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    combined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  return {
+    bodyText: new TextDecoder().decode(combined),
+    bodyBytes,
+    capturedBytes,
+    truncated: truncated || bodyBytes > capturedBytes,
+  };
+}
+
+async function captureOverrideResponseBodyWithFetch(payload: Record<string, unknown>): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  const targetUrl = normalizeOverrideResponseCaptureUrl(payload.targetUrl ?? payload.targetAssetUrl);
+  const requestMethod = normalizeOverrideResponseCaptureMethod(payload.requestMethod);
+  const requestHeaders = normalizeOverrideResponseCaptureHeaders(payload.requestHeaders);
+  const maxBodyBytes = normalizeOverrideResponseCaptureBytes(payload.maxBodyBytes);
+  const includeBody = payload.includeBody === true;
+  const matchMode = normalizeOverrideResponseUrlMatchMode(payload.matchMode);
+  if (matchMode !== 'exact') {
+    throw new Error('extension-fetch response capture only supports exact matchMode.');
+  }
+
+  const response = await fetch(targetUrl, {
+    method: requestMethod,
+    headers: requestHeaders,
+    credentials: 'include',
+    cache: 'no-store',
+    redirect: 'follow',
+  });
+  const contentType = response.headers.get('content-type') ?? '';
+  const ruleType = inferOverrideResponseRuleType(response.url || targetUrl, contentType);
+  const basePayload: Record<string, unknown> = {
+    targetUrl,
+    finalUrl: response.url || targetUrl,
+    requestMethod,
+    matchMode,
+    captureMode: 'extension-fetch',
+    source: 'extension-fetch',
+    statusCode: response.status,
+    ok: response.ok,
+    contentType: contentType || undefined,
+    ruleType,
+    requestHeaders: ruleType === 'rsc-flight' ? selectRscRequestContextHeaders(requestHeaders) : undefined,
+    maxBodyBytes,
+  };
+
+  if (requestMethod === 'HEAD') {
+    return {
+      payload: {
+        ...basePayload,
+        bodyCaptured: false,
+        bodyBytes: Number(response.headers.get('content-length')) || undefined,
+        capturedBytes: 0,
+        truncated: false,
+      },
+    };
+  }
+
+  if (!isTextualOverrideResponseContentType(contentType)) {
+    const contentLength = Number(response.headers.get('content-length'));
+    return {
+      payload: {
+        ...basePayload,
+        bodyCaptured: false,
+        bodyBytes: Number.isFinite(contentLength) && contentLength >= 0 ? Math.floor(contentLength) : undefined,
+        capturedBytes: 0,
+        truncated: false,
+      },
+    };
+  }
+
+  const body = await readTextResponseWithLimit(response, maxBodyBytes);
+  return {
+    payload: {
+      ...basePayload,
+      bodyCaptured: true,
+      bodyBytes: body.bodyBytes,
+      capturedBytes: body.capturedBytes,
+      truncated: body.truncated,
+      bodyPreview: body.bodyText.slice(0, 500),
+      bodyText: includeBody ? body.bodyText : undefined,
+    },
+    truncated: body.truncated,
+  };
+}
+
+async function captureOverrideResponseBodyWithCdp(options: {
+  payload: Record<string, unknown>;
+  tab: chrome.tabs.Tab;
+}): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  const { payload, tab } = options;
+  const tabId = tab.id;
+  if (typeof tabId !== 'number') {
+    throw new Error('No capture tab is available for response body capture.');
+  }
+
+  const targetUrl = normalizeOverrideResponseCaptureUrl(payload.targetUrl ?? payload.targetAssetUrl);
+  const requestMethod = normalizeOverrideResponseCaptureMethod(payload.requestMethod);
+  const matchMode = normalizeOverrideResponseUrlMatchMode(payload.matchMode);
+  const requestHeaders = normalizeOverrideResponseCaptureHeaders(payload.requestHeaders);
+  if (requestHeaders) {
+    throw new Error('requestHeaders are only supported by extension-fetch response capture.');
+  }
+
+  const maxBodyBytes = normalizeOverrideResponseCaptureBytes(payload.maxBodyBytes);
+  const timeoutMs = normalizeOverrideResponseCaptureTimeoutMs(payload.timeoutMs);
+  const includeBody = payload.includeBody === true;
+  const triggerReload = normalizeOverrideResponseTriggerReload(payload.triggerReload);
+  const debuggee: chrome.debugger.Debuggee = { tabId };
+  let attached = false;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let listener: ((source: chrome.debugger.Debuggee, method: string, params?: unknown) => void) | undefined;
+
+  const cleanup = async (): Promise<void> => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = undefined;
+    }
+    if (listener) {
+      chrome.debugger.onEvent.removeListener(listener);
+      listener = undefined;
+    }
+    if (!attached) {
+      return;
+    }
+
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Fetch.disable').catch(() => undefined);
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Network.setCacheDisabled', { cacheDisabled: false }).catch(() => undefined);
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Network.setBypassServiceWorker', { bypass: false }).catch(() => undefined);
+    await chrome.debugger.detach(debuggee).catch(() => undefined);
+    attached = false;
+  };
+
+  const resultPromise = new Promise<{ payload: Record<string, unknown>; truncated?: boolean }>((resolve, reject) => {
+    const fail = (error: unknown): void => {
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+
+    timeoutId = setTimeout(() => {
+      fail(new Error(`Timed out waiting ${timeoutMs}ms for matching in-tab response: ${targetUrl}`));
+    }, timeoutMs);
+
+    listener = (source, method, params) => {
+      if (method !== 'Fetch.requestPaused' || source.tabId !== tabId) {
+        return;
+      }
+
+      void (async () => {
+        const paused = params as CdpResponseRequestPausedPayload | undefined;
+        if (!paused) {
+          return;
+        }
+
+        const requestId = paused?.requestId;
+        const requestUrl = paused?.request?.url;
+        const pausedMethod = getMethodForPausedRequest(paused?.request?.method);
+        if (typeof requestId !== 'string' || typeof requestUrl !== 'string') {
+          return;
+        }
+
+        if (!doesOverrideResponseUrlMatch(requestUrl, targetUrl, matchMode) || pausedMethod !== requestMethod) {
+          await sendResponseCaptureDebuggerCommand(debuggee, 'Fetch.continueRequest', { requestId }).catch(() => undefined);
+          return;
+        }
+
+        const contentType = getDebuggerHeaderValue(paused.responseHeaders, 'content-type');
+        const contentLength = Number(getDebuggerHeaderValue(paused.responseHeaders, 'content-length'));
+        const responseStatusCode = typeof paused.responseStatusCode === 'number' ? paused.responseStatusCode : undefined;
+        const ruleType = inferOverrideResponseRuleType(requestUrl, contentType);
+        const requestContextHeaders = ruleType === 'rsc-flight'
+          ? selectRscRequestContextHeaders(paused.request?.headers)
+          : undefined;
+        const basePayload: Record<string, unknown> = {
+          targetUrl,
+          finalUrl: requestUrl,
+          requestMethod,
+          matchMode,
+          captureMode: 'cdp-response',
+          source: 'cdp-response',
+          tabId,
+          triggerReload,
+          statusCode: responseStatusCode,
+          ok: typeof responseStatusCode === 'number' ? responseStatusCode >= 200 && responseStatusCode < 400 : undefined,
+          contentType: contentType || undefined,
+          ruleType,
+          requestHeaders: requestContextHeaders,
+          maxBodyBytes,
+        };
+
+        try {
+          if (requestMethod === 'HEAD' || !isTextualOverrideResponseContentType(contentType)) {
+            await sendResponseCaptureDebuggerCommand(debuggee, 'Fetch.continueRequest', { requestId });
+            resolve({
+              payload: {
+                ...basePayload,
+                bodyCaptured: false,
+                bodyBytes: Number.isFinite(contentLength) && contentLength >= 0 ? Math.floor(contentLength) : undefined,
+                capturedBytes: 0,
+                truncated: false,
+              },
+            });
+            return;
+          }
+
+          const cdpBody = await sendResponseCaptureDebuggerCommand<CdpGetResponseBodyResult>(
+            debuggee,
+            'Fetch.getResponseBody',
+            { requestId },
+          );
+          await sendResponseCaptureDebuggerCommand(debuggee, 'Fetch.continueRequest', { requestId });
+
+          const decoded = decodeCdpResponseBody(cdpBody);
+          const capturedBytes = Math.min(decoded.bytes.byteLength, maxBodyBytes);
+          const truncated = decoded.bytes.byteLength > capturedBytes;
+          const bodyText = truncated
+            ? new TextDecoder().decode(decoded.bytes.slice(0, capturedBytes))
+            : decoded.text;
+
+          resolve({
+            payload: {
+              ...basePayload,
+              bodyCaptured: true,
+              bodyBytes: decoded.bytes.byteLength,
+              capturedBytes,
+              truncated,
+              bodyPreview: bodyText.slice(0, 500),
+              bodyText: includeBody ? bodyText : undefined,
+            },
+            truncated,
+          });
+        } catch (error) {
+          await sendResponseCaptureDebuggerCommand(debuggee, 'Fetch.continueRequest', { requestId }).catch(() => undefined);
+          fail(error);
+        }
+      })().catch(fail);
+    };
+
+    chrome.debugger.onEvent.addListener(listener);
+  });
+
+  try {
+    await chrome.debugger.attach(debuggee, '1.3');
+    attached = true;
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Network.enable');
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Fetch.enable', {
+      patterns: [{ urlPattern: '*', requestStage: 'Response' }],
+    });
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Network.setCacheDisabled', { cacheDisabled: true });
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Network.setBypassServiceWorker', { bypass: true });
+
+    if (triggerReload) {
+      await chrome.tabs.reload(tabId, { bypassCache: true });
+    }
+
+    return await resultPromise;
+  } finally {
+    await cleanup();
+  }
+}
+
 async function observeOverrideAssetsInTab(tabId: number, includePerformance = true): Promise<ObservedOverrideAssetsResult> {
   return executeScriptInTab<ObservedOverrideAssetsResult>(tabId, (includePerformanceArg) => {
     const shouldIncludePerformance = includePerformanceArg !== false;
@@ -621,8 +1336,15 @@ async function observeOverrideAssetsInTab(tabId: number, includePerformance = tr
     const addAsset = (asset: ObservedOverrideAsset): void => {
       const existing = assets.get(asset.url);
       if (existing) {
+        existing.ruleType = existing.ruleType ?? asset.ruleType;
+        existing.requestMethod = existing.requestMethod ?? asset.requestMethod;
+        existing.resourceType = existing.resourceType ?? asset.resourceType;
+        existing.contentType = existing.contentType ?? asset.contentType;
+        existing.statusCode = existing.statusCode ?? asset.statusCode;
         existing.fromDom = existing.fromDom || asset.fromDom;
         existing.fromPerformance = existing.fromPerformance || asset.fromPerformance;
+        existing.fromNavigation = existing.fromNavigation || asset.fromNavigation;
+        existing.fromFetch = existing.fromFetch || asset.fromFetch;
         existing.integrity = existing.integrity ?? asset.integrity;
         existing.crossOrigin = existing.crossOrigin ?? asset.crossOrigin;
         existing.nonce = existing.nonce ?? asset.nonce;
@@ -635,6 +1357,48 @@ async function observeOverrideAssetsInTab(tabId: number, includePerformance = tr
       assets.set(asset.url, asset);
     };
 
+    const classifyRuleType = (
+      url: string,
+      kind: string,
+      initiatorType?: string,
+      contentType?: string,
+    ): ObservedOverrideAsset['ruleType'] => {
+      const parsed = new URL(url, window.location.href);
+      const normalizedKind = kind.toLowerCase();
+      const normalizedInitiator = (initiatorType ?? '').toLowerCase();
+      const normalizedContentType = (contentType ?? '').toLowerCase();
+      if (normalizedKind === 'document') {
+        return 'document';
+      }
+      if (normalizedContentType.includes('text/x-component') || parsed.searchParams.has('_rsc')) {
+        return 'rsc-flight';
+      }
+      if (parsed.pathname.includes('/_next/data/')) {
+        return 'next-data';
+      }
+      if (parsed.pathname.includes('/_next/static/')) {
+        return 'asset';
+      }
+      if (normalizedInitiator === 'fetch' || normalizedInitiator === 'xmlhttprequest' || normalizedKind === 'fetch') {
+        return 'api-response';
+      }
+      return 'asset';
+    };
+
+    const navigationEntry = performance.getEntriesByType('navigation')[0] as (PerformanceNavigationTiming & { responseStatus?: number }) | undefined;
+    addAsset({
+      url: window.location.href,
+      kind: 'document',
+      ruleType: 'document',
+      requestMethod: 'GET',
+      resourceType: 'document',
+      statusCode: typeof navigationEntry?.responseStatus === 'number' ? navigationEntry.responseStatus : undefined,
+      fromDom: false,
+      fromPerformance: true,
+      fromNavigation: true,
+      fromFetch: false,
+    });
+
     for (const script of Array.from(document.querySelectorAll<HTMLScriptElement>('script[src]'))) {
       const url = toAbsoluteUrl(script.getAttribute('src'));
       if (!url) {
@@ -643,6 +1407,9 @@ async function observeOverrideAssetsInTab(tabId: number, includePerformance = tr
       addAsset({
         url,
         kind: script.type === 'module' ? 'module-script' : 'script',
+        ruleType: 'asset',
+        requestMethod: 'GET',
+        resourceType: 'script',
         integrity: script.integrity || undefined,
         crossOrigin: script.crossOrigin || undefined,
         nonce: script.nonce || undefined,
@@ -665,6 +1432,9 @@ async function observeOverrideAssetsInTab(tabId: number, includePerformance = tr
       addAsset({
         url,
         kind: relTokens.includes('stylesheet') ? 'stylesheet' : relTokens.includes('modulepreload') ? 'modulepreload' : 'preload',
+        ruleType: 'asset',
+        requestMethod: 'GET',
+        resourceType: relTokens.includes('stylesheet') ? 'style' : 'link',
         rel,
         as: link.as || undefined,
         integrity: link.integrity || undefined,
@@ -681,15 +1451,28 @@ async function observeOverrideAssetsInTab(tabId: number, includePerformance = tr
         if (!url) {
           continue;
         }
-        if (!url.includes('/_next/') && !['script', 'link', 'css'].includes(entry.initiatorType)) {
+        const initiatorType = entry.initiatorType || undefined;
+        const parsed = new URL(url, window.location.href);
+        const isNextResource = parsed.pathname.includes('/_next/') || parsed.searchParams.has('_rsc');
+        const isFetchLike = initiatorType === 'fetch' || initiatorType === 'xmlhttprequest';
+        if (!isNextResource && !isFetchLike && !['script', 'link', 'css'].includes(entry.initiatorType)) {
           continue;
         }
+        const ruleType = classifyRuleType(url, initiatorType || 'resource', initiatorType);
         addAsset({
           url,
-          kind: entry.initiatorType || 'resource',
-          initiatorType: entry.initiatorType || undefined,
+          kind: initiatorType || 'resource',
+          ruleType,
+          requestMethod: 'GET',
+          resourceType: initiatorType,
+          statusCode: typeof (entry as { responseStatus?: number }).responseStatus === 'number'
+            ? (entry as { responseStatus: number }).responseStatus
+            : undefined,
+          initiatorType,
           fromDom: false,
           fromPerformance: true,
+          fromNavigation: false,
+          fromFetch: isFetchLike,
         });
       }
     }
@@ -1162,6 +1945,30 @@ async function executeCaptureCommand(
         ...observed,
       },
     };
+  }
+
+  if (command === 'CAPTURE_OVERRIDE_RESPONSE_BODY') {
+    const captureMode = normalizeOverrideResponseCaptureMode(payload.captureMode);
+    if (captureMode === 'extension-fetch') {
+      return captureOverrideResponseBodyWithFetch(payload);
+    }
+
+    const requestedTabId = resolveLiveConsoleTabId(payload.tabId);
+    const sessionScope = getSessionTabScope(context.sessionId);
+    if (requestedTabId !== undefined && sessionScope && !sessionScope.allowedTabIds.has(requestedTabId)) {
+      throw new Error(`tabId ${requestedTabId} is not bound to this session`);
+    }
+
+    const tab = await resolveOverridePocTab(context.sessionId, requestedTabId);
+    if (!tab || typeof tab.id !== 'number') {
+      throw new Error('No capture tab is available for response body capture.');
+    }
+    if (overridePocController.isActiveForTab(tab.id)) {
+      throw new Error('Disable active overrides on the target tab before CDP response body capture.');
+    }
+
+    rememberCaptureTabForSession(context.sessionId, tab);
+    return captureOverrideResponseBodyWithCdp({ payload, tab });
   }
 
   if (command === 'CAPTURE_OVERRIDE_POC_GET_STATUS') {

@@ -404,6 +404,53 @@ describe('SessionManager', () => {
     expect(response.payload.logs[0]?.message).toContain('[auth]');
   });
 
+  it('accepts override response body capture commands from server', async () => {
+    const ws = new MockWebSocket();
+    const manager = new SessionManager({
+      createSessionId: () => 'session-response-body',
+      createWebSocket: () => ws,
+      now: () => 1700000000000,
+      handleCaptureCommand: async (command, payload) => ({
+        payload: {
+          command,
+          targetUrl: payload.targetUrl,
+          bodyCaptured: true,
+        },
+        truncated: false,
+      }),
+    });
+
+    manager.startSession({ url: 'https://example.com' });
+    ws.open();
+    ws.sentMessages.length = 0;
+
+    ws.receive(
+      JSON.stringify({
+        type: 'capture_command',
+        commandId: 'cmd-response-body',
+        sessionId: 'session-response-body',
+        command: 'CAPTURE_OVERRIDE_RESPONSE_BODY',
+        payload: { targetUrl: 'https://example.com/products' },
+      }),
+    );
+
+    await Promise.resolve();
+
+    expect(ws.sentMessages).toHaveLength(1);
+    const response = JSON.parse(ws.sentMessages[0]) as {
+      type: string;
+      commandId: string;
+      ok: boolean;
+      payload: { command: string; targetUrl: string; bodyCaptured: boolean };
+    };
+    expect(response.type).toBe('capture_result');
+    expect(response.commandId).toBe('cmd-response-body');
+    expect(response.ok).toBe(true);
+    expect(response.payload.command).toBe('CAPTURE_OVERRIDE_RESPONSE_BODY');
+    expect(response.payload.targetUrl).toBe('https://example.com/products');
+    expect(response.payload.bodyCaptured).toBe(true);
+  });
+
   it('uses readable default session ids with date hints', () => {
     const manager = new SessionManager({
       createWebSocket: () => new MockWebSocket(),

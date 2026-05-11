@@ -58,6 +58,8 @@ function createDom(): void {
     <span id="override-poc-fulfilled"></span>
     <span id="override-poc-audit"></span>
     <div id="override-poc-diagnostics"></div>
+    <div id="override-poc-request-log"></div>
+    <div id="override-poc-plan-log"></div>
     <select id="override-poc-target-tab"></select>
     <button id="override-poc-enable" type="button"></button>
     <button id="override-poc-disable" type="button"></button>
@@ -160,6 +162,27 @@ describe('popup override target selection', () => {
                   message: 'The configured target asset URL was not observed.',
                 }],
               },
+              requestLog: [{
+                requestLogId: 'run-1:req-1',
+                timestamp: 1700000000200,
+                requestUrl: 'https://example.com/_next/static/chunks/app/page-prod.js',
+                status: 'failed',
+                failureCode: 'RSC_PATCH_ANCHOR_MISMATCH',
+                errorMessage: 'Patch anchor drifted',
+              }],
+              planLog: [{
+                planId: 'plan-1',
+                createdAt: 1700000000100,
+                plannerKind: 'next-source-overlay',
+                ruleType: 'rsc-flight',
+                requestMethod: 'GET',
+                matchMode: 'prefix',
+                targetAssetUrl: 'https://example.com/about?_rsc=',
+                originalBytes: 88,
+                patchedBytes: 92,
+                warnings: ['live drift possible'],
+                blockers: [],
+              }],
             },
           });
           return;
@@ -192,6 +215,8 @@ describe('popup override target selection', () => {
     const select = document.getElementById('override-poc-target-tab') as HTMLSelectElement | null;
     const selectedLabel = document.getElementById('override-poc-selected-tab-id');
     const diagnostics = document.getElementById('override-poc-diagnostics');
+    const requestLog = document.getElementById('override-poc-request-log');
+    const planLog = document.getElementById('override-poc-plan-log');
 
     expect(select).not.toBeNull();
     expect(select?.disabled).toBe(false);
@@ -202,6 +227,10 @@ describe('popup override target selection', () => {
     expect(document.getElementById('override-poc-rules')?.textContent).toBe('2/3 enabled');
     expect(diagnostics?.textContent).toContain('Observed assets: 4; target not observed');
     expect(diagnostics?.textContent).toContain('TARGET_ASSET_NOT_OBSERVED');
+    expect(requestLog?.textContent).toContain('RSC_PATCH_ANCHOR_MISMATCH');
+    expect(requestLog?.textContent).toContain('Patch anchor drifted');
+    expect(planLog?.textContent).toContain('next-source-overlay GET rsc-flight');
+    expect(planLog?.textContent).toContain('88->92 bytes');
   });
 
   it('locks the override target selector while an override is active', async () => {

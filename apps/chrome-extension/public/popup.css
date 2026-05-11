@@ -323,6 +323,48 @@ h1 {
   border-left-style: dashed;
 }
 
+.override-poc-log-block {
+  display: grid;
+  gap: 5px;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.override-poc-log-block > strong {
+  color: var(--text-main);
+}
+
+.override-poc-log {
+  display: grid;
+  gap: 5px;
+  max-height: 132px;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.74);
+}
+
+.override-poc-log-empty {
+  color: var(--text-muted);
+}
+
+.override-poc-log-item {
+  padding: 6px 7px;
+  border-left: 3px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.86);
+  word-break: break-word;
+}
+
+.override-poc-log-item[data-status="failed"] {
+  border-left-width: 5px;
+}
+
+.override-poc-log-item[data-status="warning"] {
+  border-left-style: dashed;
+}
+
 .override-poc-target {
   display: flex;
   flex-direction: column;
