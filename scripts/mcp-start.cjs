@@ -218,6 +218,115 @@ function releaseLaunchLock(lockPath) {
   }
 }
 
+function clearLaunchLockForPid(lockPath, pid) {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return;
+  }
+
+  try {
+    const existing = readLaunchLock(lockPath);
+    const lockPid = Number(existing && existing.pid);
+    if (lockPid !== pid) {
+      return;
+    }
+    unlinkSync(lockPath);
+  } catch (error) {
+    if (error && error.code !== 'ENOENT') {
+      process.stderr.write(`[mcp-start] Warning: failed to clear startup lock ${lockPath}.\n`);
+    }
+  }
+}
+
+function isStandaloneLauncherCommand(command) {
+  const normalized = String(command || '').toLowerCase();
+  return (
+    (normalized.includes('scripts\\mcp-start.cjs') || normalized.includes('scripts/mcp-start.cjs'))
+    && normalized.includes('--standalone')
+  );
+}
+
+async function tryRecoverLockedStandaloneForMcpStdio(lockPath) {
+  if (standalone || dryRun || stopRequested) {
+    return false;
+  }
+
+  const existing = readLaunchLock(lockPath);
+  const lockPid = Number(existing && existing.pid);
+  if (!Number.isInteger(lockPid) || lockPid <= 0 || lockPid === process.pid) {
+    return false;
+  }
+
+  if (!isProcessAlive(lockPid) || !isStandaloneLauncherCommand(existing && existing.command)) {
+    return false;
+  }
+
+  process.stderr.write(
+    `[mcp-start] Replacing running standalone launcher (pid ${lockPid}) so MCP stdio can own the bridge runtime.\n`,
+  );
+
+  if (!terminateProcess(lockPid)) {
+    process.stderr.write(`[mcp-start] Failed to terminate standalone launcher ${lockPid}.\n`);
+    process.exit(1);
+  }
+
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await delay(200);
+    if (!isProcessAlive(lockPid)) {
+      break;
+    }
+  }
+
+  if (isProcessAlive(lockPid)) {
+    process.stderr.write(
+      `[mcp-start] Standalone launcher ${lockPid} did not exit after termination request.\n`,
+    );
+    process.exit(1);
+  }
+
+  clearLaunchLockForPid(lockPath, lockPid);
+  return true;
+}
+
+async function tryReplaceExistingBridgeForMcpStdio(port) {
+  if (standalone || dryRun || stopRequested) {
+    return false;
+  }
+
+  const endpointLooksLikeBridge = await isBridgeHttpEndpoint(port);
+  if (!endpointLooksLikeBridge) {
+    return false;
+  }
+
+  const listenerPids = getListeningPids(port).filter((pid) => pid !== process.pid);
+  if (listenerPids.length === 0) {
+    return false;
+  }
+
+  process.stderr.write(
+    `[mcp-start] Replacing existing Browser Debug MCP Bridge listener(s) on port ${port} so MCP stdio can own the runtime.\n`,
+  );
+
+  for (const pid of listenerPids) {
+    if (!terminateProcess(pid)) {
+      process.stderr.write(`[mcp-start] Failed to terminate bridge listener ${pid} on port ${port}.\n`);
+      process.exit(1);
+    }
+  }
+
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await delay(200);
+    const inUse = await isPortInUse(port);
+    if (!inUse) {
+      return true;
+    }
+  }
+
+  process.stderr.write(
+    `[mcp-start] Existing bridge listeners stopped, but port ${port} is still in use.\n`,
+  );
+  process.exit(1);
+}
+
 function getStartupTimeoutMs() {
   const timeoutMs = Number(process.env.MCP_STARTUP_TIMEOUT_MS || '15000');
   if (!Number.isFinite(timeoutMs) || timeoutMs < 1000) {
@@ -301,7 +410,7 @@ function getWindowsProcessCommandLine(pid) {
   const result = spawnSync(
     'powershell.exe',
     ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}").CommandLine`],
-    { encoding: 'utf8' },
+    { encoding: 'utf8', timeout: 2000 },
   );
 
   if (result.status !== 0) {
@@ -322,7 +431,16 @@ function isLikelyBridgeCommandLine(commandLine) {
 }
 
 function killWindowsProcess(pid) {
-  const result = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { encoding: 'utf8' });
+  const stopResult = spawnSync(
+    'powershell.exe',
+    ['-NoProfile', '-Command', `Stop-Process -Id ${pid} -Force`],
+    { encoding: 'utf8', timeout: 5000 },
+  );
+  if (stopResult.status === 0) {
+    return true;
+  }
+
+  const result = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], { encoding: 'utf8', timeout: 5000 });
   return result.status === 0;
 }
 
@@ -514,6 +632,7 @@ if (!existsSync(packageJson)) {
 }
 
 async function spawnRuntime(runtime, port) {
+  const attachExistingBridge = !standalone && process.env.MCP_ATTACH_EXISTING_BRIDGE === '1';
   const nxTarget = standalone ? 'mcp-server:serve' : 'mcp-server:serve-mcp';
   const entryScript =
     runtime === 'dist'
@@ -543,14 +662,24 @@ async function spawnRuntime(runtime, port) {
           nxBin.endsWith('.cmd') ? ['run', nxTarget] : [nxBin, 'run', nxTarget],
           {
             cwd: repoRoot,
-            env: { ...process.env, DATA_DIR: resolvedDataDir },
+            env: {
+              ...process.env,
+              DATA_DIR: resolvedDataDir,
+              MCP_ATTACH_EXISTING_BRIDGE: attachExistingBridge ? '1' : '',
+              MCP_ATTACH_HTTP_BASE_URL: `http://127.0.0.1:${port}`,
+            },
             stdio: 'inherit',
           },
         )
       : runtime === 'dist'
         ? spawn(process.execPath, [entryScript], {
             cwd: repoRoot,
-            env: { ...process.env, DATA_DIR: resolvedDataDir },
+            env: {
+              ...process.env,
+              DATA_DIR: resolvedDataDir,
+              MCP_ATTACH_EXISTING_BRIDGE: attachExistingBridge ? '1' : '',
+              MCP_ATTACH_HTTP_BASE_URL: `http://127.0.0.1:${port}`,
+            },
             stdio: 'inherit',
           })
         : spawn(
@@ -558,7 +687,12 @@ async function spawnRuntime(runtime, port) {
             tsxCli.endsWith('.cmd') ? [entryScript] : [tsxCli, entryScript],
             {
               cwd: repoRoot,
-              env: { ...process.env, DATA_DIR: resolvedDataDir },
+              env: {
+                ...process.env,
+                DATA_DIR: resolvedDataDir,
+                MCP_ATTACH_EXISTING_BRIDGE: attachExistingBridge ? '1' : '',
+                MCP_ATTACH_HTTP_BASE_URL: `http://127.0.0.1:${port}`,
+              },
               stdio: 'inherit',
             },
           );
@@ -641,13 +775,22 @@ async function spawnRuntime(runtime, port) {
   startupFinished = true;
   const startedMessage = standalone
     ? `[mcp-start] Started Browser Debug MCP Bridge (runtime: ${runtime}, mode: standalone). Keep this terminal open.`
-    : `[mcp-start] Started Browser Debug MCP Bridge (runtime: ${runtime}, mode: mcp-stdio).`;
+    : attachExistingBridge
+      ? `[mcp-start] Attached MCP stdio to existing Browser Debug MCP Bridge (runtime: ${runtime}, mode: attach).`
+      : `[mcp-start] Started Browser Debug MCP Bridge (runtime: ${runtime}, mode: mcp-stdio).`;
   process.stderr.write(`${supportsColor ? `${greenBackground}${startedMessage}${ansiReset}` : startedMessage}\n`);
   if (!standalone && process.stdin.isTTY) {
     process.stderr.write(
       '[mcp-start] Running from interactive terminal without MCP host. ' +
       'Use --standalone for manual keep-alive testing.\n',
     );
+  }
+
+  if (standalone) {
+    await new Promise((resolve) => {
+      child.once('exit', () => resolve());
+      child.once('close', () => resolve());
+    });
   }
 }
 
@@ -663,12 +806,22 @@ async function main() {
     return;
   }
 
-  if (!dryRun) {
-    acquireLaunchLock(launchLockPath);
-    process.on('exit', () => releaseLaunchLock(launchLockPath));
+  let attachExistingBridge = false;
+  if (!standalone && !dryRun) {
+    attachExistingBridge = await isBridgeHttpEndpoint(port);
+    if (attachExistingBridge) {
+      process.env.MCP_ATTACH_EXISTING_BRIDGE = '1';
+      process.stderr.write(
+        `[mcp-start] Found existing Browser Debug MCP Bridge on port ${port}; attaching MCP stdio instead of replacing it.\n`,
+      );
+    }
   }
 
-  if (Number.isFinite(port)) {
+  if (!dryRun && !attachExistingBridge) {
+    await tryRecoverLockedStandaloneForMcpStdio(launchLockPath);
+    await tryReplaceExistingBridgeForMcpStdio(port);
+    acquireLaunchLock(launchLockPath);
+    process.on('exit', () => releaseLaunchLock(launchLockPath));
     let inUse = await isPortInUse(port);
     if (inUse) {
       const recovered = await tryRecoverStaleBridgeOnWindowsPort(port);

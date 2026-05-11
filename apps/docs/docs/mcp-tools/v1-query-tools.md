@@ -32,7 +32,14 @@ Response guidance:
 { "name": "get_live_session_health", "arguments": { "sessionId": "sess_123" } }
 ```
 
-Use this when `list_sessions` is ambiguous. It combines persisted activity, websocket heartbeats, and URL scope assessment into one health record with `nextAction`.
+Use this when `list_sessions` is ambiguous or before long live automation/debugging flows. It combines persisted activity, websocket heartbeats, tab binding, and URL scope assessment into one health record with `nextAction`.
+
+Response highlights:
+
+- persisted tab/window binding and session timestamps
+- live connection timestamps and disconnect reason when known
+- URL scope classification for likely top-level app pages versus iframe/ad noise
+- `liveConnection.recommendedForLiveCapture` and `nextAction` guidance such as `ready`, `reconnect_extension`, or `start_new_session`
 
 ## `get_session_summary`
 

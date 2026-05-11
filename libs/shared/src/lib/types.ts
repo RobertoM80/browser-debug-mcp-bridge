@@ -27,6 +27,11 @@ export type EventType =
   | 'focus'
   | 'blur'
   | 'keydown'
+  | 'automation_requested'
+  | 'automation_started'
+  | 'automation_succeeded'
+  | 'automation_failed'
+  | 'automation_stopped'
   | 'custom';
 
 export interface NetworkEvent extends Event {

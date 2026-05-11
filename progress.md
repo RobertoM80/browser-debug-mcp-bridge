@@ -289,3 +289,70 @@
   - Added MCP integration test to validate click -> snapshot lookup -> failure timeline reconstruction in `apps/mcp-server/src/mcp/server.spec.ts`
   - Extended `docs/TROUBLESHOOTING.md` with snapshot-specific diagnosis guidance for opt-in, throttle/quota, truncation, privacy redaction, and MCP verification flow
   - Marked `PRD-107` as passing in `prd.json`
+
+### Completed: 2026-03-07
+- [Extend the existing live-session command pipeline so MCP can execute UI actions inside the currently bound extension session without opening any new browser session] - COMPLETED
+  - Added shared live-action request/result schemas and trace-id helper in `libs/mcp-contracts/src/lib/live-actions.ts`
+  - Extended websocket and extension command contracts to accept `EXECUTE_UI_ACTION` alongside the existing live-session command channel
+  - Added extension-side policy checks for bound tabs and allowlist enforcement before forwarding live UI actions to the active session tab
+  - Added top-document-only V1 rejection handling with structured action results including action, traceId, timestamps, target summary, and failure reason in `apps/chrome-extension/src/content-script.ts`
+  - Added unit/integration coverage for contract parsing, session-manager command handling, content-script result shape, and websocket round-trips
+  - Verified with `pnpm test`, `pnpm nx run-many -t lint`, and `pnpm nx run-many -t build`
+
+### Completed: 2026-03-07
+- [Add explicit user controls, second opt-in for sensitive fields, and visible warnings for dangerous live automation] - COMPLETED
+  - Added persistent automation settings in `apps/chrome-extension/src/capture-controls.ts` with safe defaults: live automation OFF and sensitive-field automation OFF
+  - Added popup controls, warning copy, live automation status, and an emergency-stop button in `apps/chrome-extension/public/popup.html`, `apps/chrome-extension/public/popup.css`, and `apps/chrome-extension/src/popup.ts`
+  - Extended background config sync in `apps/chrome-extension/src/background.ts` so active session tabs receive automation policy/status updates, live actions are blocked unless enabled, sensitive selectors require the second opt-in, and emergency stop disables automation immediately
+  - Added a red in-page automation indicator with an emergency-stop action in `apps/chrome-extension/src/content-script.ts` plus extension badge state for armed/executing automation
+  - Added unit coverage for automation config normalization and indicator behavior in `apps/chrome-extension/src/capture-controls.spec.ts` and `apps/chrome-extension/src/content-script.spec.ts`
+  - Verified with `pnpm test`, `pnpm nx run-many -t lint`, and `pnpm nx run-many -t build`
+
+### Completed: 2026-03-07
+- [Implement the async extension-side executor for real page interaction inside the existing debug session] - COMPLETED
+  - Replaced the placeholder live-action rejection path in `apps/chrome-extension/src/content-script.ts` with a real top-document executor for `click`, `input`, `focus`, `blur`, `scroll`, `press_key`, and `submit`
+  - Added realistic DOM event dispatch plus editable-field mutation so page code observes the same interaction flow as live users, while keeping input results redacted to metadata only
+  - Routed `reload` through the background layer in `apps/chrome-extension/src/background.ts` so the active bound tab reloads without introducing a new browser session
+  - Added unit coverage for successful live-action execution and non-editable target rejection in `apps/chrome-extension/src/content-script.spec.ts`
+  - Verified with `pnpm typecheck`, `pnpm lint`, `pnpm test`, `pnpm build`, and `pnpm test:e2e`
+
+### Completed: 2026-03-07
+- [Persist V1 automation activity using the existing events table with explicit automation event types] - COMPLETED
+  - Added automation lifecycle payload builders in `apps/chrome-extension/src/automation-events.ts` so requested, started, succeeded, failed, and stopped events persist only redacted metadata for live actions
+  - Updated `apps/chrome-extension/src/background.ts` to emit automation lifecycle events during policy rejection, execution start, success/failure completion, and emergency stop
+  - Extended event contracts and persistence mapping for `automation_*` event types in `apps/mcp-server/src/websocket/messages.ts`, `apps/mcp-server/src/db/events-repository.ts`, and `libs/shared/src/lib/*`
+  - Added unit coverage for automation payload redaction and stop events in `apps/chrome-extension/src/automation-events.spec.ts`, plus server persistence coverage in `apps/mcp-server/src/db/events-repository.spec.ts` and websocket validation coverage in `apps/mcp-server/src/websocket/websocket.spec.ts`
+  - Verified with `pnpm test`, `pnpm typecheck`, `pnpm lint`, `pnpm build`, and `pnpm test:e2e`
+
+### Completed: 2026-03-07
+- [Expose live UI automation through MCP so the LLM can drive and debug full flows in the existing session] - COMPLETED
+  - Added `execute_ui_action` to MCP contracts and tool discovery in `libs/mcp-contracts/src/lib/tool-definitions.ts`, `libs/mcp-contracts/src/lib/tool-schemas.ts`, and `apps/e2e-playwright/tests/utils/mcp-client.ts`
+  - Implemented the MCP handler in `apps/mcp-server/src/mcp/server.ts` to validate typed action payloads, execute actions over the existing live-session command channel, and return structured action/tab context plus failure details
+  - Added optional `captureOnFailure` evidence capture that reuses the existing snapshot path when an action is rejected or fails
+  - Added MCP server coverage for successful action execution and failure-evidence capture in `apps/mcp-server/src/mcp/server.spec.ts`
+  - Documented the new live automation tool contract in `apps/docs/docs/mcp-tools/overview.md` and `apps/docs/docs/mcp-tools/v5-live-automation.md`
+  - Verified `pnpm nx test mcp-contracts`, `pnpm nx test mcp-server`, and `pnpm nx build mcp-server`
+  - Ran `pnpm test`; it still fails in unrelated existing e2e test `apps/e2e-playwright/tests/full.extension-db.spec.ts` (`Timed out waiting for expected DB entries`)
+
+### Completed: 2026-03-07
+- [Validate the extension-native automation flow end-to-end with policy checks, sensitive-field gating, observability, and MCP execution] - COMPLETED
+  - Extended Playwright popup coverage in `apps/e2e-playwright/tests/full.extension-ui-controls.spec.ts` to validate live automation arming defaults, saved config state, status messaging, and emergency stop behavior
+  - Updated `docs/MCP_TOOLS.md` with the `execute_ui_action` contract, top-document-only limitation, popup opt-ins, emergency stop, and failure evidence behavior
+  - Extended `docs/TROUBLESHOOTING.md` with automation-specific rejection and recovery guidance for disabled automation, sensitive-field blocks, iframe limits, and post-failure debugging
+  - Expanded `docs/SECURITY.md` with live automation guardrails covering default-off behavior, second opt-in requirements, visible warnings, emergency stop, and input redaction guarantees
+
+### Completed: 2026-03-07
+- [Add dedicated automation tables once the action model and result contract stabilize] - COMPLETED
+  - Added dedicated `automation_runs` and `automation_steps` schema support in `apps/mcp-server/src/db/schema.ts` with migration/backfill logic in `apps/mcp-server/src/db/migrations.ts`
+  - Added `apps/mcp-server/src/db/automation-repository.ts` to dual-write automation lifecycle events into first-class run/step records while keeping the existing `events` timeline intact
+  - Updated `apps/mcp-server/src/db/events-repository.ts` to persist automation lifecycle events into both the generic UI event stream and the new dedicated automation tables
+  - Added migration/schema/foreign-key coverage in `apps/mcp-server/src/db/db.spec.ts` and dual-write lifecycle coverage in `apps/mcp-server/src/db/events-repository.spec.ts`
+  - Verified with `pnpm nx test mcp-server`, `pnpm test`, `pnpm typecheck`, `pnpm lint`, and `pnpm build`
+
+### Completed: 2026-03-07
+- [Add run-centric MCP queries and move automation analysis from generic events to first-class automation records] - COMPLETED
+  - Added `list_automation_runs` and `get_automation_run` MCP contracts plus server handlers in `libs/mcp-contracts/src/lib/tool-definitions.ts`, `libs/mcp-contracts/src/lib/tool-schemas.ts`, and `apps/mcp-server/src/mcp/server.ts`
+  - Wired the new tools to read from dedicated `automation_runs` and `automation_steps` tables, including bounded pagination and byte budgets for step inspection
+  - Added MCP coverage for run history filtering and paginated step inspection in `apps/mcp-server/src/mcp/server.spec.ts`
+  - Documented the new automation-history workflow in `docs/MCP_TOOLS.md`, `apps/docs/docs/mcp-tools/overview.md`, and `apps/docs/docs/mcp-tools/v6-automation-history.md`
+  - Marked `PRD-115` as passing in `prd.json`

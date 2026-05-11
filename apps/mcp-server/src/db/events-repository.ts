@@ -9,6 +9,7 @@ import type {
 import { resolveErrorFingerprint } from './error-fingerprints.js';
 import { getDatabasePath } from '../runtime-paths.js';
 import { writeSnapshot } from '../retention.js';
+import { AutomationRepository, isAutomationLifecycleEventType } from './automation-repository.js';
 
 const INLINE_BODY_BYTES_THRESHOLD = 16 * 1024;
 const BODY_KIND_REQUEST = 'request';
@@ -139,6 +140,7 @@ export class EventsRepository {
         url_last = COALESCE(?, url_last)
       WHERE session_id = ?
     `);
+    const automationRepository = new AutomationRepository(this.db);
 
     const runBatch = this.db.transaction((batch: EventMessage[]) => {
       for (const message of batch) {
@@ -189,6 +191,17 @@ export class EventsRepository {
 
         if (message.eventType === 'ui_snapshot') {
           this.insertSnapshotPrepared(message.sessionId, eventId, sanitizedData);
+        }
+
+        if (isAutomationLifecycleEventType(message.eventType)) {
+          automationRepository.upsertLifecycleEvent({
+            eventId,
+            eventType: message.eventType,
+            sessionId: message.sessionId,
+            timestamp: message.timestamp ?? Date.now(),
+            tabId: eventTabId,
+            payload: sanitizedData,
+          });
         }
       }
     });
@@ -316,6 +329,11 @@ export class EventsRepository {
       blur: 'ui',
       keydown: 'ui',
       ui_snapshot: 'ui',
+      automation_requested: 'ui',
+      automation_started: 'ui',
+      automation_succeeded: 'ui',
+      automation_failed: 'ui',
+      automation_stopped: 'ui',
       custom: 'ui',
     };
     return mapping[eventType] || 'ui';

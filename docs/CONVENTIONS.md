@@ -48,3 +48,11 @@ pnpm nx lint <project>
 
 - Keep changes minimal and aligned to existing patterns
 - Ensure lint and format pass before pushing
+
+## Conventional Commits
+
+- Use conventional commit subjects for commits: `type(optional-scope): summary`
+- Valid types in this repo: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`, `build`, `ci`, `chore`, `revert`, `deps`
+- Keep scopes lowercase when present, for example `feat(mcp): ...` or `fix(ci): ...`
+- If you use squash merge, the pull request title becomes the merge commit title, so the PR title must also follow the same format
+- `release-please` only generates release notes from releasable conventional commits, so a non-conventional squash title can hide shipped work from the changelog
