@@ -25,12 +25,16 @@ import {
 } from './override-poc.js';
 import {
   diagnoseOverridePoc,
+  insertOverridePlanAudit,
+  listOverridePlanAudits,
   listOverridePocRequests,
   listOverridePocRuns,
   upsertOverridePocRequest,
   upsertOverridePocRun,
 } from './override-audit.js';
 import {
+  isOverridePlanAuditKind,
+  type OverridePlanAuditRecord,
   type OverridePocRequestRecord,
   type OverridePocRunRecord,
   isOverridePocFailureCode,
@@ -191,8 +195,9 @@ fastify.get('/overrides/poc/config', async (_request, reply) => {
 });
 
 fastify.get('/overrides/poc/asset', async (request, reply) => {
-  const query = (request.query ?? {}) as { assetUrl?: string };
+  const query = (request.query ?? {}) as { assetUrl?: string; requestMethod?: string };
   const assetUrl = typeof query.assetUrl === 'string' ? query.assetUrl.trim() : '';
+  const requestMethod = typeof query.requestMethod === 'string' ? query.requestMethod.trim() : 'GET';
   if (!assetUrl) {
     return reply.code(400).send({
       ok: false,
@@ -201,7 +206,7 @@ fastify.get('/overrides/poc/asset', async (request, reply) => {
   }
 
   try {
-    const result = getOverridePocAssetResponse(assetUrl);
+    const result = getOverridePocAssetResponse(assetUrl, undefined, requestMethod);
     reply.header('Content-Type', result.contentType);
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate');
     reply.header('X-BDMCP-Override-Poc', '1');
@@ -376,6 +381,95 @@ fastify.get('/sessions/:sessionId/overrides/requests', async (request, reply) =>
     hasMore: result.hasMore,
     nextOffset: result.nextOffset,
     requests: result.requests,
+  };
+});
+
+fastify.post('/sessions/:sessionId/overrides/plans', async (request, reply) => {
+  const params = request.params as { sessionId: string };
+  if (!hasSession(params.sessionId)) {
+    return reply.code(404).send({ ok: false, error: 'Session not found' });
+  }
+
+  if (!isRecord(request.body)) {
+    return reply.code(400).send({ ok: false, error: 'Invalid override plan payload' });
+  }
+
+  try {
+    const body = request.body;
+    const plannerKind = body.plannerKind;
+    if (!isOverridePlanAuditKind(plannerKind)) {
+      throw new Error('plannerKind must be a valid override plan audit kind');
+    }
+
+    const stringArrayField = (fieldName: string): string[] => {
+      const value = body[fieldName];
+      return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+    };
+
+    const record: OverridePlanAuditRecord = {
+      planId: requireStringField(body, 'planId'),
+      sessionId: params.sessionId,
+      createdAt: optionalIntegerField(body, 'createdAt') ?? Date.now(),
+      plannerKind,
+      toolName: requireStringField(body, 'toolName'),
+      profileId: optionalStringField(body, 'profileId'),
+      ruleId: requireStringField(body, 'ruleId'),
+      ruleType: requireStringField(body, 'ruleType'),
+      requestMethod: requireStringField(body, 'requestMethod'),
+      matchMode: requireStringField(body, 'matchMode'),
+      targetAssetUrl: requireStringField(body, 'targetAssetUrl'),
+      localFilePath: optionalStringField(body, 'localFilePath'),
+      configPath: optionalStringField(body, 'configPath'),
+      contentType: requireStringField(body, 'contentType'),
+      originalSha256: optionalStringField(body, 'originalSha256'),
+      patchedSha256: optionalStringField(body, 'patchedSha256'),
+      originalBytes: optionalIntegerField(body, 'originalBytes'),
+      patchedBytes: optionalIntegerField(body, 'patchedBytes'),
+      patchSummary: body.patchSummary ?? null,
+      preview: body.preview ?? null,
+      warnings: stringArrayField('warnings'),
+      blockers: stringArrayField('blockers'),
+      capturedFromLiveSession: body.capturedFromLiveSession ?? null,
+      rollback: body.rollback ?? null,
+    };
+
+    return {
+      ok: true,
+      plan: insertOverridePlanAudit(getConnection().db, record),
+    };
+  } catch (error) {
+    return reply.code(400).send({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Invalid override plan payload',
+    });
+  }
+});
+
+fastify.get('/sessions/:sessionId/overrides/plans', async (request, reply) => {
+  const params = request.params as { sessionId: string };
+  if (!hasSession(params.sessionId)) {
+    return reply.code(404).send({ ok: false, error: 'Session not found' });
+  }
+
+  const query = (request.query ?? {}) as {
+    limit?: string | number;
+    offset?: string | number;
+    planId?: string;
+  };
+  const limit = parseLimit(query.limit, 50, 500);
+  const offset = parseOffset(query.offset);
+  const planId = typeof query.planId === 'string' && query.planId.trim().length > 0 ? query.planId.trim() : undefined;
+  const result = listOverridePlanAudits(getConnection().db, { sessionId: params.sessionId, limit, offset, planId });
+
+  return {
+    ok: true,
+    sessionId: params.sessionId,
+    planId: planId ?? null,
+    limit,
+    offset,
+    hasMore: result.hasMore,
+    nextOffset: result.nextOffset,
+    plans: result.plans,
   };
 });
 

@@ -1,9 +1,12 @@
 import { Database } from 'better-sqlite3';
 import {
   type OverridePocFailureCode,
+  type OverridePlanAuditKind,
+  type OverridePlanAuditRecord,
   type OverridePocRequestRecord,
   type OverridePocRunRecord,
   isOverridePocFailureCode,
+  isOverridePlanAuditKind,
   type OverridePocRunStatus,
 } from './override-audit-contract.js';
 
@@ -15,6 +18,12 @@ export interface OverridePocRunListResult {
 
 export interface OverridePocRequestListResult {
   requests: OverridePocRequestRecord[];
+  hasMore: boolean;
+  nextOffset: number | null;
+}
+
+export interface OverridePlanAuditListResult {
+  plans: OverridePlanAuditRecord[];
   hasMore: boolean;
   nextOffset: number | null;
 }
@@ -59,6 +68,27 @@ export interface OverridePocDiagnosis {
   issues: OverridePocDiagnosisIssue[];
 }
 
+const DEBUGGER_SETUP_FAILURE_CODES = new Set<OverridePocFailureCode>([
+  'DEBUGGER_ATTACH_FAILED',
+  'DEBUGGER_SETUP_FAILED',
+  'NETWORK_ENABLE_FAILED',
+  'FETCH_ENABLE_FAILED',
+  'CACHE_DISABLE_FAILED',
+  'SERVICE_WORKER_BYPASS_FAILED',
+  'BROWSER_CACHE_CLEAR_FAILED',
+  'TAB_RELOAD_FAILED',
+]);
+
+const RSC_FAILURE_CODES = new Set<OverridePocFailureCode>([
+  'RESPONSE_BODY_READ_FAILED',
+  'RSC_PATCH_UNSUPPORTED',
+  'RSC_CONTENT_TYPE_MISMATCH',
+  'RSC_FLIGHT_UNSUPPORTED_RECORD',
+  'RSC_FLIGHT_STRUCTURAL_DRIFT',
+  'RSC_PATCH_ANCHOR_MISMATCH',
+  'RSC_PATCH_UNSAFE',
+]);
+
 interface OverrideRunRow {
   run_id: string;
   session_id: string;
@@ -96,12 +126,57 @@ interface OverrideRequestRow {
   response_code: number | null;
 }
 
+interface OverridePlanAuditRow {
+  plan_id: string;
+  session_id: string | null;
+  created_at: number;
+  planner_kind: string;
+  tool_name: string;
+  profile_id: string | null;
+  rule_id: string;
+  rule_type: string;
+  request_method: string;
+  match_mode: string;
+  target_asset_url: string;
+  local_file_path: string | null;
+  config_path: string | null;
+  content_type: string;
+  original_sha256: string | null;
+  patched_sha256: string | null;
+  original_bytes: number | null;
+  patched_bytes: number | null;
+  patch_summary_json: string;
+  preview_json: string | null;
+  warnings_json: string;
+  blockers_json: string;
+  captured_from_live_session_json: string | null;
+  rollback_json: string;
+}
+
 interface ObservedAssetDiagnosticRow {
   asset_url: string;
   last_seen_at: number;
   integrity: string | null;
   service_worker_controlled: number;
   csp_meta_json: string | null;
+}
+
+function parseJsonValue(value: string | null): unknown {
+  if (!value) {
+    return null;
+  }
+  try {
+    return JSON.parse(value) as unknown;
+  } catch {
+    return null;
+  }
+}
+
+function parseJsonStringArray(value: string): string[] {
+  const parsed = parseJsonValue(value);
+  return Array.isArray(parsed)
+    ? parsed.filter((entry): entry is string => typeof entry === 'string')
+    : [];
 }
 
 function mapRunRow(row: OverrideRunRow): OverridePocRunRecord {
@@ -127,6 +202,38 @@ function mapRunRow(row: OverrideRunRow): OverridePocRunRecord {
     lastFulfilledAt: row.last_fulfilled_at,
     lastErrorCode: isOverridePocFailureCode(row.last_error_code) ? row.last_error_code : null,
     lastErrorMessage: row.last_error_message,
+  };
+}
+
+function mapPlanAuditRow(row: OverridePlanAuditRow): OverridePlanAuditRecord {
+  const plannerKind: OverridePlanAuditKind = isOverridePlanAuditKind(row.planner_kind)
+    ? row.planner_kind
+    : 'response-patch';
+  return {
+    planId: row.plan_id,
+    sessionId: row.session_id,
+    createdAt: row.created_at,
+    plannerKind,
+    toolName: row.tool_name,
+    profileId: row.profile_id,
+    ruleId: row.rule_id,
+    ruleType: row.rule_type,
+    requestMethod: row.request_method,
+    matchMode: row.match_mode,
+    targetAssetUrl: row.target_asset_url,
+    localFilePath: row.local_file_path,
+    configPath: row.config_path,
+    contentType: row.content_type,
+    originalSha256: row.original_sha256,
+    patchedSha256: row.patched_sha256,
+    originalBytes: row.original_bytes,
+    patchedBytes: row.patched_bytes,
+    patchSummary: parseJsonValue(row.patch_summary_json),
+    preview: parseJsonValue(row.preview_json),
+    warnings: parseJsonStringArray(row.warnings_json),
+    blockers: parseJsonStringArray(row.blockers_json),
+    capturedFromLiveSession: parseJsonValue(row.captured_from_live_session_json),
+    rollback: parseJsonValue(row.rollback_json),
   };
 }
 
@@ -311,6 +418,97 @@ export function upsertOverridePocRequest(db: Database, record: OverridePocReques
   return record;
 }
 
+function encodeJson(value: unknown): string {
+  return JSON.stringify(value ?? null);
+}
+
+export function insertOverridePlanAudit(db: Database, record: OverridePlanAuditRecord): OverridePlanAuditRecord {
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO override_plan_audits (
+      plan_id,
+      session_id,
+      created_at,
+      planner_kind,
+      tool_name,
+      profile_id,
+      rule_id,
+      rule_type,
+      request_method,
+      match_mode,
+      target_asset_url,
+      local_file_path,
+      config_path,
+      content_type,
+      original_sha256,
+      patched_sha256,
+      original_bytes,
+      patched_bytes,
+      patch_summary_json,
+      preview_json,
+      warnings_json,
+      blockers_json,
+      captured_from_live_session_json,
+      rollback_json,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(plan_id) DO UPDATE SET
+      session_id = excluded.session_id,
+      planner_kind = excluded.planner_kind,
+      tool_name = excluded.tool_name,
+      profile_id = excluded.profile_id,
+      rule_id = excluded.rule_id,
+      rule_type = excluded.rule_type,
+      request_method = excluded.request_method,
+      match_mode = excluded.match_mode,
+      target_asset_url = excluded.target_asset_url,
+      local_file_path = excluded.local_file_path,
+      config_path = excluded.config_path,
+      content_type = excluded.content_type,
+      original_sha256 = excluded.original_sha256,
+      patched_sha256 = excluded.patched_sha256,
+      original_bytes = excluded.original_bytes,
+      patched_bytes = excluded.patched_bytes,
+      patch_summary_json = excluded.patch_summary_json,
+      preview_json = excluded.preview_json,
+      warnings_json = excluded.warnings_json,
+      blockers_json = excluded.blockers_json,
+      captured_from_live_session_json = excluded.captured_from_live_session_json,
+      rollback_json = excluded.rollback_json,
+      updated_at = excluded.updated_at
+  `).run(
+    record.planId,
+    record.sessionId ?? null,
+    record.createdAt,
+    record.plannerKind,
+    record.toolName,
+    record.profileId ?? null,
+    record.ruleId,
+    record.ruleType,
+    record.requestMethod,
+    record.matchMode,
+    record.targetAssetUrl,
+    record.localFilePath ?? null,
+    record.configPath ?? null,
+    record.contentType,
+    record.originalSha256 ?? null,
+    record.patchedSha256 ?? null,
+    record.originalBytes ?? null,
+    record.patchedBytes ?? null,
+    encodeJson(record.patchSummary),
+    record.preview === undefined || record.preview === null ? null : encodeJson(record.preview),
+    encodeJson(record.warnings),
+    encodeJson(record.blockers),
+    record.capturedFromLiveSession === undefined || record.capturedFromLiveSession === null
+      ? null
+      : encodeJson(record.capturedFromLiveSession),
+    encodeJson(record.rollback),
+    now,
+  );
+
+  return record;
+}
+
 export function listOverridePocRuns(
   db: Database,
   sessionId: string,
@@ -352,6 +550,88 @@ export function listOverridePocRuns(
     runs: page,
     hasMore,
     nextOffset: hasMore ? offset + limit : null,
+  };
+}
+
+export function listOverridePlanAudits(
+  db: Database,
+  options: {
+    sessionId: string;
+    limit: number;
+    offset: number;
+    planId?: string;
+  },
+): OverridePlanAuditListResult {
+  const rows = (options.planId
+    ? db.prepare(`
+      SELECT
+        plan_id,
+        session_id,
+        created_at,
+        planner_kind,
+        tool_name,
+        profile_id,
+        rule_id,
+        rule_type,
+        request_method,
+        match_mode,
+        target_asset_url,
+        local_file_path,
+        config_path,
+        content_type,
+        original_sha256,
+        patched_sha256,
+        original_bytes,
+        patched_bytes,
+        patch_summary_json,
+        preview_json,
+        warnings_json,
+        blockers_json,
+        captured_from_live_session_json,
+        rollback_json
+      FROM override_plan_audits
+      WHERE session_id = ? AND plan_id = ?
+      ORDER BY created_at DESC, plan_id DESC
+      LIMIT ? OFFSET ?
+    `).all(options.sessionId, options.planId, options.limit + 1, options.offset)
+    : db.prepare(`
+      SELECT
+        plan_id,
+        session_id,
+        created_at,
+        planner_kind,
+        tool_name,
+        profile_id,
+        rule_id,
+        rule_type,
+        request_method,
+        match_mode,
+        target_asset_url,
+        local_file_path,
+        config_path,
+        content_type,
+        original_sha256,
+        patched_sha256,
+        original_bytes,
+        patched_bytes,
+        patch_summary_json,
+        preview_json,
+        warnings_json,
+        blockers_json,
+        captured_from_live_session_json,
+        rollback_json
+      FROM override_plan_audits
+      WHERE session_id = ?
+      ORDER BY created_at DESC, plan_id DESC
+      LIMIT ? OFFSET ?
+    `).all(options.sessionId, options.limit + 1, options.offset)) as OverridePlanAuditRow[];
+
+  const hasMore = rows.length > options.limit;
+  const page = rows.slice(0, options.limit).map(mapPlanAuditRow);
+  return {
+    plans: page,
+    hasMore,
+    nextOffset: hasMore ? options.offset + options.limit : null,
   };
 }
 
@@ -542,15 +822,22 @@ export function diagnoseOverridePoc(
     });
   }
 
-  if (run.lastErrorCode === 'DEBUGGER_ATTACH_FAILED' || run.lastErrorCode === 'DEBUGGER_SETUP_FAILED') {
+  if (run.lastErrorCode && DEBUGGER_SETUP_FAILURE_CODES.has(run.lastErrorCode)) {
     debuggerLifecycleIssue = 'observed';
+    if (run.lastErrorCode === 'TAB_RELOAD_FAILED') {
+      cacheOrNoReload = 'observed';
+    }
+    if (run.lastErrorCode === 'SERVICE_WORKER_BYPASS_FAILED') {
+      serviceWorkerInterference = 'observed';
+    }
     issues.push({
       code: run.lastErrorCode,
       severity: 'error',
-      message: 'Chrome debugger attach/setup failed before the override could intercept requests.',
+      message: 'Chrome debugger attach/setup failed before the override was fully armed.',
       suggestedActions: [
         'Retry after closing any other debugger attached to the same tab.',
-        'Confirm the selected tab is still open and bound to the active session.',
+        'Confirm the selected tab is still open, bound to the active session, and can be reloaded.',
+        'If this is repeatable, inspect the precise failure code to see which CDP setup command failed.',
       ],
     });
   }
@@ -652,7 +939,7 @@ export function diagnoseOverridePoc(
       severity: 'warning',
       message: 'The target asset was matched, but no fulfilled response was recorded.',
       suggestedActions: [
-        'Inspect failed override request rows for `OVERRIDE_ASSET_FETCH_FAILED` or `FULFILL_FAILED`.',
+        'Inspect failed override request rows for exact failure codes such as `OVERRIDE_ASSET_FETCH_FAILED`, `FULFILL_FAILED`, or `RSC_PATCH_ANCHOR_MISMATCH`.',
         'Check the page for integrity or CSP restrictions if the fulfilled asset still does not execute.',
       ],
     });
@@ -679,6 +966,23 @@ export function diagnoseOverridePoc(
       suggestedActions: [
         'Review the failed request rows and browser console for blocking errors.',
         'Check for CSP, integrity, or page-specific script loading constraints.',
+      ],
+    });
+  }
+
+  for (const failureCode of RSC_FAILURE_CODES) {
+    if (!requestFailureCodes.has(failureCode)) {
+      continue;
+    }
+
+    issues.push({
+      code: failureCode,
+      severity: failureCode === 'RSC_PATCH_UNSUPPORTED' ? 'warning' : 'error',
+      message: 'A Next.js RSC override request matched, but the live Flight response could not be safely patched.',
+      suggestedActions: [
+        'Regenerate the source override plan from the current production route and rebuild the local Next.js app.',
+        'Verify the captured RSC headers, content type, original hash, and literal patch anchors still match the live response.',
+        'Keep the override blocked if the patch would mutate Flight protocol structure instead of literal rendered text.',
       ],
     });
   }

@@ -1317,6 +1317,7 @@ describe('mcp/server V1 query tools', () => {
       expect((profiles.profiles as Array<{ profileId: string }>)[0]?.profileId).toBe('poc');
       expect(validation.valid).toBe(true);
       expect((status.latestRun as { runId?: string } | null)?.runId).toBe('run-override');
+      expect((status.recentRequests as Array<{ requestLogId: string }>)[0]?.requestLogId).toBe('run-override:req-1');
       expect((requests.requests as Array<{ requestLogId: string }>)[0]?.requestLogId).toBe('run-override:req-1');
       const diagnosisPayload = diagnosis.diagnosis as {
         observedAssets: { targetAssetObserved: boolean; serviceWorkerControlled: boolean; cspMetaTagCount: number };
@@ -1372,6 +1373,467 @@ describe('mcp/server V1 query tools', () => {
       rmSync(tempRoot, { recursive: true, force: true });
     }
   });
+
+  it('marks RSC flight override profiles invalid before enablement', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-override-rsc-validation-'));
+    const db = createTestDb();
+
+    try {
+      const localResponsePath = join(tempRoot, 'products.rsc.txt');
+      writeFileSync(localResponsePath, '1:["$","h1",null,{"children":"Override"}]', 'utf8');
+      const configPath = join(tempRoot, 'override-poc.local.json');
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          enabled: true,
+          activeProfileId: 'rsc-profile',
+          profiles: [{
+            profileId: 'rsc-profile',
+            name: 'RSC profile',
+            enabled: true,
+            autoReload: true,
+            rules: [{
+              ruleId: 'rsc-rule',
+              enabled: true,
+              ruleType: 'rsc-flight',
+              requestMethod: 'GET',
+              matchMode: 'prefix',
+              targetAssetUrl: 'https://example.com/products?_rsc=',
+              localFilePath: localResponsePath,
+              contentType: 'text/x-component; charset=utf-8',
+            }],
+          }],
+        }, null, 2),
+        'utf8',
+      );
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+
+      const tools = createToolRegistry(createV1ToolHandlers(() => db));
+      const validation = await routeToolCall(tools, 'validate_override_profile', { profileId: 'rsc-profile' });
+
+      expect(validation.valid).toBe(false);
+      expect((validation.issues as Array<{ code?: string; severity?: string }>)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: 'UNSUPPORTED_RSC_FLIGHT_RULE',
+            severity: 'error',
+          }),
+        ]),
+      );
+      expect((validation.nextActions as Array<{ code?: string }>)[0]?.code).toBe('REPLAN_RSC_RESPONSE_OVERRIDE');
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('validates planner-generated production RSC flight override profiles', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-override-rsc-production-validation-'));
+    const configPath = join(tempRoot, 'override-poc.local.json');
+    const db = createTestDb();
+
+    try {
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+      const tools = createToolRegistry(createV1ToolHandlers(() => db));
+      const plan = await routeToolCall(tools, 'plan_override_response_patch', {
+        targetUrl: 'https://example.com/products?_rsc=',
+        matchMode: 'prefix',
+        captureMode: 'cdp-response',
+        contentType: 'text/x-component; charset=utf-8',
+        responseBodyText: '1:["$","h1",null,{"children":"Original debugging kits"}]',
+        requestHeaders: {
+          RSC: '1',
+        },
+        textPatches: [{ search: 'Original debugging kits', replacement: 'Override debugging kits', expectedCount: 1 }],
+        configPath,
+        writeConfig: true,
+        overwrite: true,
+        profileId: 'rsc-production-profile',
+      });
+
+      expect(plan.configWritten).toBe(true);
+      expect(plan.rule).toMatchObject({
+        ruleType: 'rsc-flight',
+        rscFlight: {
+          productionMode: 'structured-flight-v1',
+          source: 'cdp-response',
+          patchKind: 'string-value-text',
+        },
+      });
+
+      const validation = await routeToolCall(tools, 'validate_override_profile', { profileId: 'rsc-production-profile' });
+      expect(validation.valid).toBe(true);
+      expect(validation.issues).toEqual([]);
+      expect((validation.nextActions as Array<{ code?: string }>)[0]?.code).toBe('ENABLE_OVERRIDES');
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('marks manual Next.js server action rules invalid with a dedicated blocker', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-override-server-action-validation-'));
+    const db = createTestDb();
+
+    try {
+      const localResponsePath = join(tempRoot, 'server-action.rsc.txt');
+      writeFileSync(localResponsePath, '1:["$","div",null,{"children":"Override"}]', 'utf8');
+      const configPath = join(tempRoot, 'override-poc.local.json');
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          enabled: true,
+          activeProfileId: 'server-action-profile',
+          profiles: [{
+            profileId: 'server-action-profile',
+            name: 'Server action profile',
+            enabled: true,
+            autoReload: true,
+            rules: [{
+              ruleId: 'server-action-rule',
+              enabled: true,
+              ruleType: 'rsc-flight',
+              requestMethod: 'POST',
+              requestHeaders: {
+                'next-action': 'fixture-action',
+                rsc: '1',
+              },
+              matchMode: 'exact',
+              targetAssetUrl: 'https://example.com/server-actions',
+              localFilePath: localResponsePath,
+              contentType: 'text/x-component; charset=utf-8',
+            }],
+          }],
+        }, null, 2),
+        'utf8',
+      );
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+
+      const tools = createToolRegistry(createV1ToolHandlers(() => db));
+      const validation = await routeToolCall(tools, 'validate_override_profile', { profileId: 'server-action-profile' });
+
+      expect(validation.valid).toBe(false);
+      expect((validation.issues as Array<{ code?: string; severity?: string }>)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: 'UNSAFE_REQUEST_METHOD', severity: 'error' }),
+          expect.objectContaining({ code: 'SERVER_ACTION_UNSUPPORTED', severity: 'error' }),
+        ]),
+      );
+      expect((validation.nextActions as Array<{ code?: string }>)[0]?.code).toBe('REPLAN_SERVER_ACTION_OVERRIDE');
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('preflights override enablement with GET-only validation and observed browser constraints', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-override-preflight-'));
+    const db = createTestDb();
+
+    try {
+      const localResponsePath = join(tempRoot, 'mutation.json');
+      writeFileSync(localResponsePath, '{"message":"override"}', 'utf8');
+      const configPath = join(tempRoot, 'override-poc.local.json');
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          enabled: true,
+          activeProfileId: 'mutation-profile',
+          profiles: [{
+            profileId: 'mutation-profile',
+            name: 'Mutation profile',
+            enabled: true,
+            autoReload: true,
+            rules: [{
+              ruleId: 'mutation-rule',
+              enabled: true,
+              ruleType: 'api-response',
+              requestMethod: 'POST',
+              matchMode: 'exact',
+              targetAssetUrl: 'https://example.com/api/cart',
+              localFilePath: localResponsePath,
+              contentType: 'application/json; charset=utf-8',
+            }],
+          }],
+        }, null, 2),
+        'utf8',
+      );
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode)
+        VALUES ('session-preflight', 1000, 1100, 0)
+      `).run();
+      persistObservedOverrideAssets(db, {
+        sessionId: 'session-preflight',
+        serviceWorkerControlled: true,
+        cspMetaTags: ["default-src 'self'"],
+        assets: [{
+          url: 'https://example.com/api/cart',
+          ruleType: 'api-response',
+          requestMethod: 'POST',
+          kind: 'fetch',
+          integrity: 'sha384-cart',
+          fromFetch: true,
+        }],
+      });
+
+      const tools = createToolRegistry(
+        createV1ToolHandlers(
+          () => db,
+          (sessionId) => sessionId === 'session-preflight'
+            ? { connected: true, connectedAt: 1200, lastHeartbeatAt: 1300 }
+            : undefined,
+        ),
+      );
+      const preflight = await routeToolCall(tools, 'preflight_overrides', { sessionId: 'session-preflight' });
+      const status = await routeToolCall(tools, 'get_override_status', { sessionId: 'session-preflight' });
+
+      expect(preflight.ready).toBe(false);
+      expect(preflight.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'UNSAFE_REQUEST_METHOD', severity: 'error', source: 'profile' }),
+        expect.objectContaining({ code: 'MUTATION_REPLAY_UNSUPPORTED', severity: 'error', source: 'profile' }),
+        expect.objectContaining({ code: 'TARGET_ASSET_SRI_PRESENT', severity: 'error', source: 'observed-assets' }),
+        expect.objectContaining({ code: 'SERVICE_WORKER_CONTROLLED', severity: 'warning', source: 'observed-assets' }),
+        expect.objectContaining({ code: 'CSP_META_PRESENT', severity: 'warning', source: 'observed-assets' }),
+      ]));
+      expect((preflight.nextActions as Array<{ code?: string }>)[0]?.code).toBe('REPLAN_MUTATION_OVERRIDE');
+      expect((status.preflight as { ready?: boolean }).ready).toBe(false);
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('plans structured JSON response patches through MCP', async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-json-response-patch-'));
+    const configPath = join(tempRoot, 'override-poc.local.json');
+    const db = createTestDb();
+
+    try {
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode)
+        VALUES ('session-audit', 1000, 1000, 0)
+      `).run();
+      const tools = createToolRegistry(createV1ToolHandlers(() => db));
+      const plan = await routeToolCall(tools, 'plan_override_response_patch', {
+        sessionId: 'session-audit',
+        targetUrl: 'https://example.com/api/override-signal',
+        ruleType: 'api-response',
+        contentType: 'application/json; charset=utf-8',
+        responseBodyText: '{"mode":"original-api","message":"Original","badge":"stable"}',
+        jsonPatches: [
+          { path: '/mode', value: 'override-api', expectedValue: 'original-api' },
+          { path: '/message', value: 'Override' },
+          { path: '/badge', value: 'override' },
+        ],
+        configPath,
+        writeConfig: true,
+        overwrite: true,
+        profileId: 'json-response-profile',
+        includePreview: true,
+      });
+
+      expect(plan.configWritten).toBe(true);
+      expect(plan.audit).toMatchObject({
+        persisted: true,
+        plans: [{
+          plannerKind: 'response-patch',
+          ruleType: 'api-response',
+          profileId: 'json-response-profile',
+          targetAssetUrl: 'https://example.com/api/override-signal',
+        }],
+      });
+      expect(plan.patches).toEqual([]);
+      expect(plan.jsonPatches).toHaveLength(3);
+      expect(plan.variantContext).toMatchObject({
+        pathname: '/api/override-signal',
+        requestMethod: 'GET',
+        ruleType: 'api-response',
+        searchParamKeys: [],
+      });
+      expect(plan.rule).toMatchObject({
+        ruleType: 'api-response',
+        targetAssetUrl: 'https://example.com/api/override-signal',
+      });
+      const generated = JSON.parse(readFileSync((plan.rule as { localFilePath: string }).localFilePath, 'utf8')) as {
+        mode: string;
+        message: string;
+        badge: string;
+      };
+      expect(generated).toEqual({
+        mode: 'override-api',
+        message: 'Override',
+        badge: 'override',
+      });
+
+      const planLog = await routeToolCall(tools, 'get_override_plan_log', {
+        sessionId: 'session-audit',
+        planId: ((plan.audit as { plans: Array<{ planId: string }> }).plans[0] as { planId: string }).planId,
+      });
+      expect(planLog.plans).toHaveLength(1);
+      expect((planLog.plans as Array<{
+        originalSha256?: string;
+        patchedSha256?: string;
+        patchSummary?: { jsonPatches?: unknown[]; variantContext?: { pathname?: string; requestMethod?: string; variantKey?: string } };
+        preview?: { before?: string; after?: string };
+        rollback?: { disableTool?: string; generatedFiles?: string[]; configPath?: string };
+      }>)[0]).toMatchObject({
+        originalSha256: plan.originalSha256,
+        patchedSha256: plan.patchedSha256,
+        patchSummary: {
+          jsonPatches: expect.any(Array),
+          variantContext: {
+            pathname: '/api/override-signal',
+            requestMethod: 'GET',
+            variantKey: expect.any(String),
+          },
+        },
+        preview: { before: expect.stringContaining('original-api'), after: expect.stringContaining('override-api') },
+        rollback: {
+          disableTool: 'disable_overrides',
+          configPath,
+          generatedFiles: [(plan.rule as { localFilePath: string }).localFilePath],
+        },
+      });
+    } finally {
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('plans structured document patches through MCP and persists document patch metadata', async () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-document-response-patch-'));
+    const configPath = join(tempRoot, 'override-poc.local.json');
+    const db = createTestDb();
+
+    try {
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode)
+        VALUES ('session-document-audit', 1000, 1000, 0)
+      `).run();
+      const tools = createToolRegistry(createV1ToolHandlers(() => db));
+      const plan = await routeToolCall(tools, 'plan_override_response_patch', {
+        sessionId: 'session-document-audit',
+        targetUrl: 'https://example.com/products',
+        ruleType: 'document',
+        contentType: 'text/html; charset=utf-8',
+        responseBodyText: '<!doctype html><html><body><h1>Original products</h1><p id="mode">boot-extra</p><script src="/extra.js"></script></body></html>',
+        documentPatches: [
+          {
+            operation: 'replaceText',
+            selector: 'h1',
+            search: 'Original products',
+            replacement: 'Document patched products',
+            expectedCount: 1,
+          },
+          {
+            operation: 'removeElement',
+            selector: 'script[src="/extra.js"]',
+            expectedCount: 1,
+          },
+        ],
+        configPath,
+        writeConfig: true,
+        overwrite: true,
+        profileId: 'document-response-profile',
+        includePreview: true,
+      });
+
+      expect(plan.configWritten).toBe(true);
+      expect(plan.documentPatches).toEqual(expect.arrayContaining([
+        expect.objectContaining({ operation: 'replaceText', matchedTextCount: 1 }),
+        expect.objectContaining({ operation: 'removeElement', removedCount: 1 }),
+      ]));
+
+      const planLog = await routeToolCall(tools, 'get_override_plan_log', {
+        sessionId: 'session-document-audit',
+        planId: ((plan.audit as { plans: Array<{ planId: string }> }).plans[0] as { planId: string }).planId,
+      });
+      expect((planLog.plans as Array<{
+        patchSummary?: {
+          documentPatches?: Array<{ operation?: string; matchedTextCount?: number; removedCount?: number }>;
+        };
+      }>)[0]).toMatchObject({
+        patchSummary: {
+          documentPatches: expect.arrayContaining([
+            expect.objectContaining({ operation: 'replaceText', matchedTextCount: 1 }),
+            expect.objectContaining({ operation: 'removeElement', removedCount: 1 }),
+          ]),
+        },
+      });
+    } finally {
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects Next.js server action response plans through MCP', async () => {
+    const db = createTestDb();
+
+    try {
+      const tools = createToolRegistry(createV1ToolHandlers(() => db));
+      await expect(routeToolCall(tools, 'plan_override_response_patch', {
+        targetUrl: 'https://example.com/server-actions',
+        ruleType: 'rsc-flight',
+        requestMethod: 'POST',
+        requestHeaders: {
+          'next-action': 'fixture-action',
+          rsc: '1',
+        },
+        contentType: 'text/x-component; charset=utf-8',
+        responseBodyText: '1:["$","div",null,{"children":"Original server action payload"}]',
+        textPatches: [{ search: 'Original server action payload', replacement: 'Override server action payload', expectedCount: 1 }],
+      })).rejects.toThrow('SERVER_ACTION_UNSUPPORTED');
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rejects generic mutation response plans through MCP', async () => {
+    const db = createTestDb();
+
+    try {
+      const tools = createToolRegistry(createV1ToolHandlers(() => db));
+      await expect(routeToolCall(tools, 'plan_override_response_patch', {
+        targetUrl: 'https://example.com/api/mutation-signal',
+        ruleType: 'api-response',
+        requestMethod: 'POST',
+        requestHeaders: {
+          'content-type': 'application/json',
+        },
+        contentType: 'application/json; charset=utf-8',
+        responseBodyText: '{"mode":"original","message":"Original mutation response"}',
+        jsonPatches: [{ path: '/mode', value: 'override' }],
+      })).rejects.toThrow('MUTATION_REPLAY_UNSUPPORTED');
+    } finally {
+      db.close();
+    }
+  });
 });
 
 describe('mcp/server V2 capture tools', () => {
@@ -1408,6 +1870,410 @@ describe('mcp/server V2 capture tools', () => {
     expect(status.configuredEnabled).toBe(true);
     expect(enabled.active).toBe(true);
     expect(disabled.active).toBe(false);
+  });
+
+  it('rejects non-GET response body capture requests before hitting the live bridge', async () => {
+    const captureCalls: Array<{ sessionId: string; command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (sessionId, command, payload) => {
+          captureCalls.push({ sessionId, command, payload });
+          return { ok: true, payload: {} };
+        },
+      }),
+    );
+
+    await expect(routeToolCall(tools, 'capture_override_response_body', {
+      sessionId: 'session-live',
+      targetUrl: 'https://example.com/server-actions',
+      requestMethod: 'POST',
+      requestHeaders: {
+        'next-action': 'fixture-action',
+        rsc: '1',
+      },
+    })).rejects.toThrow('SERVER_ACTION_UNSUPPORTED');
+    expect(captureCalls).toEqual([]);
+  });
+
+  it('blocks enable_overrides when preflight finds production-safety errors', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-v2-preflight-enable-'));
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const captureCalls: Array<{ sessionId: string; command: string; payload: Record<string, unknown> }> = [];
+
+    try {
+      const localResponsePath = join(tempRoot, 'mutation.json');
+      writeFileSync(localResponsePath, '{"message":"override"}', 'utf8');
+      const configPath = join(tempRoot, 'override-poc.local.json');
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          enabled: true,
+          activeProfileId: 'mutation-profile',
+          profiles: [{
+            profileId: 'mutation-profile',
+            name: 'Mutation profile',
+            enabled: true,
+            autoReload: true,
+            rules: [{
+              ruleId: 'mutation-rule',
+              enabled: true,
+              ruleType: 'api-response',
+              requestMethod: 'POST',
+              matchMode: 'exact',
+              targetAssetUrl: 'https://example.com/api/cart',
+              localFilePath: localResponsePath,
+              contentType: 'application/json; charset=utf-8',
+            }],
+          }],
+        }, null, 2),
+        'utf8',
+      );
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode)
+        VALUES ('session-live', 1000, 1100, 0)
+      `).run();
+
+      const tools = createToolRegistry(
+        createV2ToolHandlers(
+          {
+            execute: async (sessionId, command, payload) => {
+              captureCalls.push({ sessionId, command, payload });
+              return { ok: true, payload: { active: true } };
+            },
+          },
+          () => db,
+          () => ({ connected: true, connectedAt: 1200, lastHeartbeatAt: 1300 }),
+        ),
+      );
+
+      await expect(routeToolCall(tools, 'enable_overrides', { sessionId: 'session-live', tabId: 7 })).rejects.toThrow(
+        'MUTATION_REPLAY_UNSUPPORTED',
+      );
+      expect(captureCalls).toEqual([]);
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps manual experimental RSC rules invalid but allows the explicit lab-only enable path', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-v2-rsc-experimental-enable-'));
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const captureCalls: Array<{ sessionId: string; command: string; payload: Record<string, unknown> }> = [];
+
+    try {
+      const localResponsePath = join(tempRoot, 'products.rsc.txt');
+      writeFileSync(localResponsePath, '1:["$","h1",null,{"children":"Override"}]', 'utf8');
+      const configPath = join(tempRoot, 'override-poc.local.json');
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          enabled: true,
+          activeProfileId: 'experimental-rsc-profile',
+          profiles: [{
+            profileId: 'experimental-rsc-profile',
+            name: 'Experimental RSC profile',
+            enabled: true,
+            autoReload: true,
+            rules: [{
+              ruleId: 'experimental-rsc-rule',
+              enabled: true,
+              ruleType: 'rsc-flight',
+              requestMethod: 'GET',
+              matchMode: 'prefix',
+              allowExperimentalRscFlightFulfillment: true,
+              targetAssetUrl: 'https://example.com/products?_rsc=',
+              localFilePath: localResponsePath,
+              contentType: 'text/x-component; charset=utf-8',
+            }],
+          }],
+        }, null, 2),
+        'utf8',
+      );
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode)
+        VALUES ('session-live', 1000, 1100, 0)
+      `).run();
+
+      const tools = createToolRegistry(
+        createV2ToolHandlers(
+          {
+            execute: async (sessionId, command, payload) => {
+              captureCalls.push({ sessionId, command, payload });
+              return { ok: true, payload: { active: true, matchedRequests: 0, fulfilledRequests: 0 } };
+            },
+          },
+          () => db,
+          () => ({ connected: true, connectedAt: 1200, lastHeartbeatAt: 1300 }),
+        ),
+      );
+
+      const preflight = await routeToolCall(tools, 'preflight_overrides', { sessionId: 'session-live' });
+      expect(preflight.ready).toBe(false);
+      expect(preflight.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: 'UNSUPPORTED_RSC_FLIGHT_RULE',
+          severity: 'error',
+        }),
+      ]));
+
+      const enabled = await routeToolCall(tools, 'enable_overrides', { sessionId: 'session-live', tabId: 7 });
+      expect(enabled.active).toBe(true);
+      expect(captureCalls).toEqual([
+        {
+          sessionId: 'session-live',
+          command: 'CAPTURE_OVERRIDE_POC_ENABLE',
+          payload: { tabId: 7 },
+        },
+      ]);
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('routes bounded override response body capture through the live extension session', async () => {
+    const captureCalls: Array<{ sessionId: string; command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (sessionId, command, payload) => {
+          captureCalls.push({ sessionId, command, payload });
+          return {
+            ok: true,
+            payload: {
+              targetUrl: payload.targetUrl,
+              requestMethod: 'GET',
+              statusCode: 200,
+              contentType: 'text/html; charset=utf-8',
+              ruleType: 'document',
+              bodyCaptured: true,
+              bodyBytes: 39,
+              capturedBytes: 39,
+              truncated: false,
+              bodyPreview: '<h1>Original response</h1>',
+            },
+          };
+        },
+      }),
+    );
+
+    const captured = await routeToolCall(tools, 'capture_override_response_body', {
+      sessionId: 'session-live',
+      targetUrl: 'https://example.com/products',
+      maxBodyBytes: 64_000,
+    });
+
+    expect(captureCalls).toHaveLength(1);
+    expect(captureCalls[0]).toMatchObject({
+      sessionId: 'session-live',
+      command: 'CAPTURE_OVERRIDE_RESPONSE_BODY',
+      payload: {
+        targetUrl: 'https://example.com/products',
+        includeBody: false,
+        matchMode: undefined,
+        maxBodyBytes: 64_000,
+      },
+    });
+    expect(captured).toMatchObject({
+      targetUrl: 'https://example.com/products',
+      bodyCaptured: true,
+      ruleType: 'document',
+    });
+  });
+
+  it('captures a live response body before planning a response patch when no body is provided', async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'mcp-response-patch-'));
+    const configPath = join(fixtureRoot, 'override-poc.local.json');
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    try {
+      const tools = createToolRegistry(
+        createV2ToolHandlers({
+          execute: async (_sessionId, command, payload) => {
+            captureCalls.push({ command, payload });
+            return {
+              ok: true,
+              payload: {
+                targetUrl: payload.targetUrl,
+                requestMethod: 'GET',
+                statusCode: 200,
+                contentType: 'text/html; charset=utf-8',
+                ruleType: 'document',
+                bodyCaptured: true,
+                bodyBytes: 36,
+                capturedBytes: 36,
+                truncated: false,
+                bodyText: '<h1>Original response</h1>',
+              },
+            };
+          },
+        }),
+      );
+
+      const plan = await routeToolCall(tools, 'plan_override_response_patch', {
+        sessionId: 'session-live',
+        targetUrl: 'https://example.com/products',
+        textPatches: [{ search: 'Original response', replacement: 'Patched response' }],
+        configPath,
+        writeConfig: true,
+        overwrite: false,
+      });
+
+      expect(captureCalls).toEqual([{
+        command: 'CAPTURE_OVERRIDE_RESPONSE_BODY',
+        payload: {
+          targetUrl: 'https://example.com/products',
+          tabId: undefined,
+          captureMode: undefined,
+          triggerReload: undefined,
+          matchMode: undefined,
+          requestMethod: undefined,
+          requestHeaders: undefined,
+          timeoutMs: 10_000,
+          maxBodyBytes: undefined,
+          includeBody: true,
+        },
+      }]);
+      expect(plan.capturedFromLiveSession).toMatchObject({
+        sessionId: 'session-live',
+        targetUrl: 'https://example.com/products',
+        requestMethod: 'GET',
+        ruleType: 'document',
+        variantContext: {
+          pathname: '/products',
+          requestMethod: 'GET',
+          ruleType: 'document',
+          searchParamKeys: [],
+        },
+      });
+      expect(plan.variantContext).toMatchObject({
+        pathname: '/products',
+        requestMethod: 'GET',
+        ruleType: 'document',
+      });
+      expect(plan.configWritten).toBe(true);
+      expect(readFileSync(configPath, 'utf8')).toContain('https://example.com/products');
+      expect(readFileSync((plan.rule as { localFilePath: string }).localFilePath, 'utf8')).toContain('Patched response');
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('forwards CDP response capture controls for live response patch planning', async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'mcp-response-patch-cdp-'));
+    const configPath = join(fixtureRoot, 'override-poc.local.json');
+    const captureCalls: Array<{
+      sessionId: string;
+      command: string;
+      payload: Record<string, unknown>;
+      timeoutMs?: number;
+    }> = [];
+
+    try {
+      const tools = createToolRegistry(
+        createV2ToolHandlers({
+          execute: async (sessionId, command, payload, timeoutMs) => {
+            captureCalls.push({ sessionId, command, payload, timeoutMs });
+            return {
+              ok: true,
+              payload: {
+                targetUrl: payload.targetUrl,
+                requestMethod: 'GET',
+                captureMode: payload.captureMode,
+                matchMode: payload.matchMode,
+                source: 'cdp-response',
+                tabId: payload.tabId,
+                triggerReload: payload.triggerReload,
+                statusCode: 200,
+                contentType: 'text/html; charset=utf-8',
+                ruleType: 'document',
+                bodyCaptured: true,
+                bodyBytes: 36,
+                capturedBytes: 36,
+                truncated: false,
+                bodyText: '<h1>Original response</h1>',
+              },
+            };
+          },
+        }),
+      );
+
+      const plan = await routeToolCall(tools, 'plan_override_response_patch', {
+        sessionId: 'session-live',
+        tabId: 42,
+        targetUrl: 'https://example.com/products',
+        captureMode: 'cdp-response',
+        triggerReload: true,
+        matchMode: 'prefix',
+        timeoutMs: 12_000,
+        textPatches: [{ search: 'Original response', replacement: 'CDP response' }],
+        configPath,
+        writeConfig: true,
+        overwrite: false,
+      });
+
+      expect(captureCalls).toEqual([{
+        sessionId: 'session-live',
+        command: 'CAPTURE_OVERRIDE_RESPONSE_BODY',
+        payload: {
+          targetUrl: 'https://example.com/products',
+          tabId: 42,
+          captureMode: 'cdp-response',
+          triggerReload: true,
+          matchMode: 'prefix',
+          requestMethod: undefined,
+          requestHeaders: undefined,
+          timeoutMs: 12_000,
+          maxBodyBytes: undefined,
+          includeBody: true,
+        },
+        timeoutMs: 14_000,
+      }]);
+      expect(plan.capturedFromLiveSession).toMatchObject({
+        sessionId: 'session-live',
+        targetUrl: 'https://example.com/products',
+        requestMethod: 'GET',
+        captureMode: 'cdp-response',
+        matchMode: 'prefix',
+        source: 'cdp-response',
+        tabId: 42,
+        triggerReload: true,
+        variantContext: {
+          pathname: '/products',
+          requestMethod: 'GET',
+          matchMode: 'prefix',
+          captureMode: 'cdp-response',
+          source: 'cdp-response',
+        },
+      });
+      expect(plan.variantContext).toMatchObject({
+        pathname: '/products',
+        requestMethod: 'GET',
+        matchMode: 'prefix',
+        captureMode: 'cdp-response',
+        source: 'cdp-response',
+      });
+      expect(readFileSync((plan.rule as { localFilePath: string }).localFilePath, 'utf8')).toContain('CDP response');
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 
   it('routes observed Next.js asset mapping through the live extension session', async () => {

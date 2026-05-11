@@ -2,19 +2,33 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { Database } from 'better-sqlite3';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { createHash, randomUUID } from 'crypto';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { getConnection } from '../db/connection.js';
-import { diagnoseOverridePoc, listOverridePocRequests, listOverridePocRuns } from '../override-audit.js';
+import {
+  diagnoseOverridePoc,
+  insertOverridePlanAudit,
+  listOverridePlanAudits,
+  listOverridePocRequests,
+  listOverridePocRuns,
+} from '../override-audit.js';
+import type { OverridePlanAuditRecord } from '../override-audit-contract.js';
 import {
   createOverrideProfileConfig,
   OVERRIDE_PROFILE_ADAPTERS,
   type OverrideProfileAdapterId,
 } from '../override-profile-generator.js';
+import {
+  assertOverrideResponseRequestCaptureSafe,
+  classifyOverrideResponseRequestCapability,
+} from '../override-capabilities.js';
 import { getOverridePocConfigSummary } from '../override-poc.js';
+import { normalizeOverrideRequestMethod } from '../override-rule-types.js';
 import { mapNextOverrideAssetsWithDrift } from '../next-asset-mapper.js';
-import { planNextSourceOverride } from '../next-source-override-planner.js';
+import { planNextSourceOverride, type NextSourceOverridePlanResult, type PlannedNextOverrideRule } from '../next-source-override-planner.js';
 import { listObservedOverrideAssets, persistObservedOverrideAssets } from '../override-observed-assets.js';
+import { planOverrideResponsePatch, type OverrideResponsePatchPlanResult } from '../override-response-planner.js';
 
 type ToolInput = Record<string, unknown>;
 
@@ -357,6 +371,14 @@ const TOOL_SCHEMAS: Record<string, object> = {
       profileId: { type: 'string' },
     },
   },
+  preflight_overrides: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      profileId: { type: 'string' },
+    },
+  },
   observe_override_assets: {
     type: 'object',
     required: ['sessionId'],
@@ -364,6 +386,24 @@ const TOOL_SCHEMAS: Record<string, object> = {
       sessionId: { type: 'string' },
       tabId: { type: 'number' },
       includePerformance: { type: 'boolean' },
+    },
+  },
+  capture_override_response_body: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      tabId: { type: 'number' },
+      targetUrl: { type: 'string' },
+      targetAssetUrl: { type: 'string' },
+      captureMode: { type: 'string', enum: ['extension-fetch', 'cdp-response'] },
+      triggerReload: { type: 'boolean' },
+      matchMode: { type: 'string', enum: ['exact', 'prefix'] },
+      requestMethod: { type: 'string' },
+      requestHeaders: { type: 'object' },
+      timeoutMs: { type: 'number' },
+      maxBodyBytes: { type: 'number' },
+      includeBody: { type: 'boolean' },
     },
   },
   list_observed_override_assets: {
@@ -392,6 +432,43 @@ const TOOL_SCHEMAS: Record<string, object> = {
       maxProductionAssetBytes: { type: 'number' },
       maxDriftCandidates: { type: 'number' },
       productionFetchConcurrency: { type: 'number' },
+    },
+  },
+  plan_override_response_patch: {
+    type: 'object',
+    properties: {
+      sessionId: { type: 'string' },
+      tabId: { type: 'number' },
+      targetUrl: { type: 'string' },
+      targetAssetUrl: { type: 'string' },
+      captureMode: { type: 'string', enum: ['extension-fetch', 'cdp-response'] },
+      triggerReload: { type: 'boolean' },
+      ruleType: { type: 'string' },
+      requestMethod: { type: 'string' },
+      matchMode: { type: 'string', enum: ['exact', 'prefix'] },
+      requestHeaders: { type: 'object' },
+      timeoutMs: { type: 'number' },
+      contentType: { type: 'string' },
+      responseBodyText: { type: 'string' },
+      bodyText: { type: 'string' },
+      responseBodyBase64: { type: 'string' },
+      bodyBase64: { type: 'string' },
+      textPatches: { type: 'array', items: { type: 'object' } },
+      jsonPatches: { type: 'array', items: { type: 'object' } },
+      documentPatches: { type: 'array', items: { type: 'object' } },
+      maxBodyBytes: { type: 'number' },
+      outputRoot: { type: 'string' },
+      configPath: { type: 'string' },
+      writeBody: { type: 'boolean' },
+      writeConfig: { type: 'boolean' },
+      overwrite: { type: 'boolean' },
+      enabled: { type: 'boolean' },
+      profileEnabled: { type: 'boolean' },
+      autoReload: { type: 'boolean' },
+      profileId: { type: 'string' },
+      profileName: { type: 'string' },
+      ruleId: { type: 'string' },
+      includePreview: { type: 'boolean' },
     },
   },
   plan_next_source_override: {
@@ -430,6 +507,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       tabId: { type: 'number' },
+      profileId: { type: 'string' },
     },
   },
   disable_overrides: {
@@ -452,6 +530,17 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       runId: { type: 'string' },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
+    },
+  },
+  get_override_plan_log: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      planId: { type: 'string' },
       limit: { type: 'number' },
       offset: { type: 'number' },
       maxResponseBytes: { type: 'number' },
@@ -543,14 +632,18 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   list_override_profiles: 'List configured browser override profiles',
   create_override_profile: 'Generate a candidate browser override profile from local build assets',
   validate_override_profile: 'Validate the current browser override profile and local asset readiness',
-  observe_override_assets: 'Observe production script/style assets from a live extension tab',
-  list_observed_override_assets: 'List persisted production script/style assets observed for a session',
+  preflight_overrides: 'Run production-safety checks before enabling browser overrides for a live session',
+  observe_override_assets: 'Observe production render artifacts from a live extension tab',
+  capture_override_response_body: 'Capture a bounded text response body from a live extension session for override planning, using extension fetch or explicit CDP response-stage capture',
+  list_observed_override_assets: 'List persisted production render artifacts observed for a session',
   map_next_override_assets: 'Map observed production Next.js assets to local build chunks and source paths',
+  plan_override_response_patch: 'Patch a supplied or live-captured text response body with literal textPatches or JSON Pointer jsonPatches and write an exact or prefix override rule for supported response types',
   plan_next_source_override: 'Apply source edits in a temp Next.js overlay build and plan exact browser override rules',
   enable_overrides: 'Enable browser overrides for a live extension session',
   disable_overrides: 'Disable browser overrides for a live extension session',
   get_override_status: 'Read live or persisted browser override status for a session',
   get_override_request_log: 'Read persisted browser override request audit rows',
+  get_override_plan_log: 'Read persisted generated override plan audit rows with previews, hashes, and rollback metadata',
   diagnose_overrides: 'Diagnose persisted browser override runs and failure indicators',
   explain_last_failure: 'Explain the latest failure timeline',
   get_event_correlation: 'Correlate related events by window',
@@ -774,6 +867,7 @@ export interface CaptureCommandClient {
       | 'CAPTURE_UI_SNAPSHOT'
       | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
       | 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
+      | 'CAPTURE_OVERRIDE_RESPONSE_BODY'
       | 'CAPTURE_OVERRIDE_POC_GET_STATUS'
       | 'CAPTURE_OVERRIDE_POC_ENABLE'
       | 'CAPTURE_OVERRIDE_POC_DISABLE',
@@ -1106,6 +1200,159 @@ function resolveOverrideProfileRecord(value: unknown): Record<string, unknown> {
   return profile;
 }
 
+const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
+
+function sha256Text(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function isRecordWithRscFlightMetadata(value: unknown): value is Record<string, unknown> {
+  return isRecord(value)
+    && (
+      value.productionMode === 'structured-flight-v1' && value.patchKind === 'string-value-text'
+      || value.productionMode === 'literal-response-v1' && value.patchKind === 'literal-text'
+    )
+    && value.source !== undefined
+    && value.patchKind !== undefined;
+}
+
+function buildRscFlightRuleIssues(rule: Record<string, unknown>): Array<Record<string, unknown>> {
+  const ruleId = String(rule.ruleId ?? 'unknown');
+  const issues: Array<Record<string, unknown>> = [];
+  const rscFlight = rule.rscFlight;
+  if (!isRecordWithRscFlightMetadata(rscFlight)) {
+    return [{
+      code: 'UNSUPPORTED_RSC_FLIGHT_RULE',
+      severity: 'error',
+      message: `Rule ${ruleId} targets a Next.js RSC flight response without production RSC metadata generated by the response planner.`,
+    }];
+  }
+
+  const source = rscFlight.source;
+  if (source !== 'cdp-response' && source !== 'extension-fetch') {
+    issues.push({
+      code: 'RSC_FLIGHT_METADATA_INVALID',
+      severity: 'error',
+      message: `Rule ${ruleId} RSC metadata source must be cdp-response or extension-fetch.`,
+    });
+  }
+
+  if (!Array.isArray(rscFlight.textPatches) || rscFlight.textPatches.length === 0) {
+    issues.push({
+      code: 'RSC_FLIGHT_PATCHES_INVALID',
+      severity: 'error',
+      message: `Rule ${ruleId} RSC flight metadata must include string-value text patches.`,
+    });
+  } else {
+    for (const [index, patch] of rscFlight.textPatches.entries()) {
+      if (
+        !isRecord(patch)
+        || typeof patch.search !== 'string'
+        || patch.search.length === 0
+        || typeof patch.replacement !== 'string'
+        || typeof patch.expectedCount !== 'number'
+        || !Number.isFinite(patch.expectedCount)
+        || patch.expectedCount < 0
+      ) {
+        issues.push({
+          code: 'RSC_FLIGHT_PATCHES_INVALID',
+          severity: 'error',
+          message: `Rule ${ruleId} RSC flight textPatches[${index}] is invalid.`,
+        });
+      }
+    }
+  }
+
+  if (rule.requestMethod !== 'GET') {
+    issues.push({
+      code: 'RSC_FLIGHT_METHOD_UNSUPPORTED',
+      severity: 'error',
+      message: `Rule ${ruleId} RSC flight overrides only support GET requests.`,
+    });
+  }
+
+  const targetAssetUrl = typeof rule.targetAssetUrl === 'string' ? rule.targetAssetUrl : '';
+  try {
+    const parsed = new URL(targetAssetUrl);
+    if (!parsed.searchParams.has('_rsc')) {
+      issues.push({
+        code: 'RSC_FLIGHT_TARGET_INVALID',
+        severity: 'error',
+        message: `Rule ${ruleId} RSC flight targetAssetUrl must include the _rsc search parameter.`,
+      });
+    }
+  } catch {
+    issues.push({
+      code: 'RSC_FLIGHT_TARGET_INVALID',
+      severity: 'error',
+      message: `Rule ${ruleId} RSC flight targetAssetUrl must be an absolute http(s) URL.`,
+    });
+  }
+
+  const contentType = typeof rule.contentType === 'string' ? rule.contentType : '';
+  const metadataContentType = typeof rscFlight.contentType === 'string' ? rscFlight.contentType : '';
+  if (!contentType.toLowerCase().includes('text/x-component') || !metadataContentType.toLowerCase().includes('text/x-component')) {
+    issues.push({
+      code: 'RSC_FLIGHT_CONTENT_TYPE_INVALID',
+      severity: 'error',
+      message: `Rule ${ruleId} RSC flight overrides require text/x-component content types.`,
+    });
+  }
+
+  const originalSha256 = typeof rscFlight.originalSha256 === 'string' ? rscFlight.originalSha256 : '';
+  const patchedSha256 = typeof rscFlight.patchedSha256 === 'string' ? rscFlight.patchedSha256 : '';
+  if (!SHA256_HEX_PATTERN.test(originalSha256) || !SHA256_HEX_PATTERN.test(patchedSha256) || originalSha256 === patchedSha256) {
+    issues.push({
+      code: 'RSC_FLIGHT_HASH_INVALID',
+      severity: 'error',
+      message: `Rule ${ruleId} RSC flight metadata must include distinct original and patched sha256 hashes.`,
+    });
+  }
+
+  const patchedBytes = typeof rscFlight.patchedBytes === 'number' && Number.isFinite(rscFlight.patchedBytes)
+    ? Math.floor(rscFlight.patchedBytes)
+    : null;
+  if (patchedBytes === null || patchedBytes < 1) {
+    issues.push({
+      code: 'RSC_FLIGHT_BYTES_INVALID',
+      severity: 'error',
+      message: `Rule ${ruleId} RSC flight metadata must include a positive patchedBytes value.`,
+    });
+  }
+
+  const fileSizeBytes = typeof rule.fileSizeBytes === 'number' && Number.isFinite(rule.fileSizeBytes)
+    ? Math.floor(rule.fileSizeBytes)
+    : null;
+  if (patchedBytes !== null && fileSizeBytes !== null && patchedBytes !== fileSizeBytes) {
+    issues.push({
+      code: 'RSC_FLIGHT_LOCAL_FILE_MISMATCH',
+      severity: 'error',
+      message: `Rule ${ruleId} local RSC file size does not match patchedBytes metadata.`,
+    });
+  }
+
+  const resolvedLocalFilePath = typeof rule.resolvedLocalFilePath === 'string' ? rule.resolvedLocalFilePath : '';
+  if (resolvedLocalFilePath && existsSync(resolvedLocalFilePath) && SHA256_HEX_PATTERN.test(patchedSha256)) {
+    const body = readFileSync(resolvedLocalFilePath, 'utf8');
+    if (!/(^|\n)\d+:/u.test(body)) {
+      issues.push({
+        code: 'RSC_FLIGHT_BODY_INVALID',
+        severity: 'error',
+        message: `Rule ${ruleId} local RSC file does not match the supported Flight payload shape.`,
+      });
+    }
+    if (sha256Text(body) !== patchedSha256) {
+      issues.push({
+        code: 'RSC_FLIGHT_LOCAL_FILE_MISMATCH',
+        severity: 'error',
+        message: `Rule ${ruleId} local RSC file hash does not match patchedSha256 metadata.`,
+      });
+    }
+  }
+
+  return issues;
+}
+
 function buildOverrideProfileIssues(profile: Record<string, unknown>): Array<Record<string, unknown>> {
   const issues: Array<Record<string, unknown>> = [];
   const rules = Array.isArray(profile.rules)
@@ -1156,6 +1403,17 @@ function buildOverrideProfileIssues(profile: Record<string, unknown>): Array<Rec
         message: `Rule ${String(rule.ruleId ?? 'unknown')} local override file does not exist.`,
       });
     }
+
+    issues.push(...classifyOverrideResponseRequestCapability({
+      ruleId: rule.ruleId,
+      requestMethod: rule.requestMethod,
+      requestHeaders: rule.requestHeaders,
+      ruleType: rule.ruleType,
+    }).issues.map((issue) => ({ ...issue })));
+
+    if (rule.ruleType === 'rsc-flight') {
+      issues.push(...buildRscFlightRuleIssues(rule));
+    }
   }
 
   return issues;
@@ -1165,6 +1423,27 @@ function buildOverrideProfileNextActions(
   profile: Record<string, unknown>,
   issues: Array<Record<string, unknown>>,
 ): Array<Record<string, string>> {
+  if (issues.some((issue) => issue.code === 'SERVER_ACTION_UNSUPPORTED')) {
+    return [{
+      code: 'REPLAN_SERVER_ACTION_OVERRIDE',
+      message: 'Server actions stay unsupported in production override mode; replace the flow with a GET document/data/API response path instead.',
+    }];
+  }
+
+  if (issues.some((issue) => issue.code === 'MUTATION_REPLAY_UNSUPPORTED')) {
+    return [{
+      code: 'REPLAN_MUTATION_OVERRIDE',
+      message: 'Mutation responses are not replay-safe; move the override to a GET document/data/API response or remove the non-GET rule.',
+    }];
+  }
+
+  if (issues.some((issue) => issue.code === 'UNSAFE_REQUEST_METHOD')) {
+    return [{
+      code: 'REPLAN_GET_ONLY_OVERRIDE',
+      message: 'Response override rules are production-safe only for GET requests; regenerate or remove non-GET rules.',
+    }];
+  }
+
   if (issues.some((issue) => issue.code === 'LOCAL_FILE_MISSING')) {
     return [{
       code: 'REBUILD_OR_FIX_LOCAL_PATHS',
@@ -1186,6 +1465,14 @@ function buildOverrideProfileNextActions(
     }];
   }
 
+  if (issues.some((issue) => typeof issue.code === 'string' && issue.code.startsWith('RSC_FLIGHT_'))
+    || issues.some((issue) => issue.code === 'UNSUPPORTED_RSC_FLIGHT_RULE')) {
+    return [{
+      code: 'REPLAN_RSC_RESPONSE_OVERRIDE',
+      message: 'Regenerate the RSC rule with plan_override_response_patch from a captured text/x-component response body.',
+    }];
+  }
+
   if (profile.configEnabled !== true) {
     return [{
       code: 'ENABLE_CONFIG',
@@ -1204,6 +1491,384 @@ function buildOverrideProfileNextActions(
     code: 'ENABLE_OVERRIDES',
     message: 'Enable overrides on a connected session, then reload the target tab if needed.',
   }];
+}
+
+function hasEnabledExperimentalRscFlightRule(profile: Record<string, unknown>): boolean {
+  const rules = Array.isArray(profile.rules)
+    ? profile.rules.filter((rule): rule is Record<string, unknown> => isRecord(rule))
+    : [];
+  return rules.some((rule) => {
+    return rule.enabled === true
+      && rule.ruleType === 'rsc-flight'
+      && rule.allowExperimentalRscFlightFulfillment === true;
+  });
+}
+
+function canBypassPreflightForExperimentalRsc(
+  profile: Record<string, unknown>,
+  blockingCodes: string[],
+): boolean {
+  return blockingCodes.length > 0
+    && blockingCodes.every((code) => code === 'UNSUPPORTED_RSC_FLIGHT_RULE')
+    && hasEnabledExperimentalRscFlightRule(profile);
+}
+
+const OVERRIDE_VARIANT_HEADER_ALLOWLIST = new Set([
+  'accept',
+  'content-type',
+  'next-router-prefetch',
+  'next-router-state-tree',
+  'purpose',
+  'rsc',
+  'x-nextjs-data',
+]);
+
+function normalizeOverrideVariantHeaders(value: unknown): Record<string, string> {
+  if (!isRecord(value)) {
+    return {};
+  }
+
+  const normalized: Record<string, string> = {};
+  for (const [rawName, rawValue] of Object.entries(value)) {
+    const name = rawName.trim().toLowerCase();
+    if (!OVERRIDE_VARIANT_HEADER_ALLOWLIST.has(name)) {
+      continue;
+    }
+    if (typeof rawValue === 'string' && rawValue.trim().length > 0) {
+      normalized[name] = rawValue.trim();
+      continue;
+    }
+    if (typeof rawValue === 'number' || typeof rawValue === 'boolean') {
+      normalized[name] = String(rawValue);
+    }
+  }
+
+  return normalized;
+}
+
+function buildOverrideVariantContext(options: {
+  targetUrl?: unknown;
+  requestMethod?: unknown;
+  matchMode?: unknown;
+  ruleType?: unknown;
+  captureMode?: unknown;
+  source?: unknown;
+  triggerReload?: unknown;
+  requestHeaders?: unknown;
+}): Record<string, unknown> | null {
+  const targetUrl = normalizeOptionalString(options.targetUrl);
+  if (!targetUrl) {
+    return null;
+  }
+
+  const requestMethod = normalizeOverrideRequestMethod(options.requestMethod);
+  const matchMode = normalizeOptionalString(options.matchMode) ?? 'exact';
+  const ruleType = normalizeOptionalString(options.ruleType) ?? 'document';
+  const captureMode = normalizeOptionalString(options.captureMode);
+  const source = normalizeOptionalString(options.source);
+  const headers = normalizeOverrideVariantHeaders(options.requestHeaders);
+  const isPrefetchVariant = headers['next-router-prefetch'] === '1'
+    || headers.purpose?.toLowerCase() === 'prefetch';
+  const isRscRequest = ruleType === 'rsc-flight' || headers.rsc === '1';
+  let isNextDataRequest = ruleType === 'next-data' || headers['x-nextjs-data'] === '1';
+
+  let origin: string | undefined;
+  let pathname: string | undefined;
+  let searchParams: Array<{ name: string; value: string }> = [];
+
+  try {
+    const parsed = new URL(targetUrl);
+    origin = parsed.origin;
+    pathname = parsed.pathname;
+    searchParams = Array.from(parsed.searchParams.entries()).map(([name, value]) => ({ name, value }));
+    if (pathname.startsWith('/_next/data/')) {
+      isNextDataRequest = true;
+    }
+  } catch {
+    pathname = undefined;
+  }
+
+  const searchParamKeys = [...new Set(searchParams.map((entry) => entry.name))].sort();
+  const variantBasis = {
+    targetUrl,
+    origin: origin ?? null,
+    pathname: pathname ?? null,
+    searchParams,
+    requestMethod,
+    matchMode,
+    ruleType,
+    captureMode: captureMode ?? null,
+    source: source ?? null,
+    triggerReload: options.triggerReload === true,
+    headers,
+    isPrefetchVariant,
+    isRscRequest,
+    isNextDataRequest,
+  };
+
+  return {
+    ...variantBasis,
+    searchParamKeys,
+    variantKey: sha256Text(JSON.stringify(variantBasis)),
+  };
+}
+
+function extractPlanVariantContext(plan: OverridePlanAuditRecord): Record<string, unknown> | null {
+  if (isRecord(plan.patchSummary) && isRecord(plan.patchSummary.variantContext)) {
+    return plan.patchSummary.variantContext;
+  }
+
+  if (isRecord(plan.capturedFromLiveSession)) {
+    if (isRecord(plan.capturedFromLiveSession.variantContext)) {
+      return plan.capturedFromLiveSession.variantContext;
+    }
+    return buildOverrideVariantContext({
+      targetUrl: plan.capturedFromLiveSession.targetUrl ?? plan.targetAssetUrl,
+      requestMethod: plan.capturedFromLiveSession.requestMethod ?? plan.requestMethod,
+      matchMode: plan.capturedFromLiveSession.matchMode ?? plan.matchMode,
+      ruleType: plan.capturedFromLiveSession.ruleType ?? plan.ruleType,
+      captureMode: plan.capturedFromLiveSession.captureMode,
+      source: plan.capturedFromLiveSession.source,
+      triggerReload: plan.capturedFromLiveSession.triggerReload,
+      requestHeaders: plan.capturedFromLiveSession.requestHeaders,
+    });
+  }
+
+  return buildOverrideVariantContext({
+    targetUrl: plan.targetAssetUrl,
+    requestMethod: plan.requestMethod,
+    matchMode: plan.matchMode,
+    ruleType: plan.ruleType,
+  });
+}
+
+function pushOverridePreflightIssue(
+  issues: Array<Record<string, unknown>>,
+  issue: Record<string, unknown>,
+): void {
+  const code = typeof issue.code === 'string' ? issue.code : '';
+  const source = typeof issue.source === 'string' ? issue.source : '';
+  const message = typeof issue.message === 'string' ? issue.message : '';
+  if (issues.some((existing) => existing.code === code && existing.source === source && existing.message === message)) {
+    return;
+  }
+  issues.push(issue);
+}
+
+function buildOverridePreflight(options: {
+  db: Database;
+  sessionId: string;
+  profileId?: unknown;
+  getSessionConnectionState?: (sessionId: string) => SessionConnectionLookupResult | undefined;
+}): Record<string, unknown> {
+  const session = options.db
+    .prepare(`
+      SELECT
+        session_id,
+        created_at,
+        last_seen_at,
+        paused_at,
+        ended_at,
+        tab_id,
+        window_id,
+        url_start,
+        url_last,
+        user_agent,
+        viewport_w,
+        viewport_h,
+        dpr,
+        safe_mode,
+        pinned
+      FROM sessions
+      WHERE session_id = ?
+      LIMIT 1
+    `)
+    .get(options.sessionId) as SessionRow | undefined;
+  const profile = resolveOverrideProfileRecord(options.profileId);
+  const issues: Array<Record<string, unknown>> = [];
+  const observedAssets = session
+    ? listObservedOverrideAssets(options.db, { sessionId: options.sessionId, limit: 200 })
+    : [];
+  const latestRun = session ? listOverridePocRuns(options.db, options.sessionId, 1, 0).runs[0] ?? null : null;
+  const recentPlans = session
+    ? listOverridePlanAudits(options.db, { sessionId: options.sessionId, limit: 5, offset: 0 }).plans
+    : [];
+  const variantContexts = [...new Map(
+    recentPlans
+      .map((plan) => extractPlanVariantContext(plan))
+      .filter((context): context is Record<string, unknown> => context !== null)
+      .map((context) => [String(context.variantKey ?? JSON.stringify(context)), context]),
+  ).values()];
+  const sessionState = options.getSessionConnectionState?.(options.sessionId);
+  const diagnosis = session ? diagnoseOverridePoc(options.db, options.sessionId, latestRun?.runId) : null;
+
+  for (const issue of buildOverrideProfileIssues(profile)) {
+    pushOverridePreflightIssue(issues, { ...issue, source: 'profile' });
+  }
+
+  if (!session) {
+    pushOverridePreflightIssue(issues, {
+      code: 'SESSION_NOT_FOUND',
+      severity: 'error',
+      source: 'session',
+      message: `Session not found: ${options.sessionId}`,
+    });
+  } else {
+    const sessionStatus = getSessionStatus(session);
+    if (sessionStatus === 'paused') {
+      pushOverridePreflightIssue(issues, {
+        code: 'SESSION_PAUSED',
+        severity: 'error',
+        source: 'session',
+        message: `Session ${options.sessionId} is paused and cannot enable overrides until it resumes.`,
+      });
+    }
+    if (sessionStatus === 'ended') {
+      pushOverridePreflightIssue(issues, {
+        code: 'SESSION_ENDED',
+        severity: 'error',
+        source: 'session',
+        message: `Session ${options.sessionId} has ended and cannot enable overrides.`,
+      });
+    }
+    if (sessionState && sessionState.connected !== true) {
+      pushOverridePreflightIssue(issues, {
+        code: LIVE_SESSION_DISCONNECTED_CODE,
+        severity: 'error',
+        source: 'connection',
+        message: `Session ${options.sessionId} is not currently connected to the live extension bridge.`,
+      });
+    }
+  }
+
+  const enabledRules = Array.isArray(profile.rules)
+    ? profile.rules.filter((rule): rule is Record<string, unknown> => isRecord(rule) && rule.enabled === true)
+    : [];
+  const anyServiceWorkerControlled = observedAssets.some((asset) => asset.serviceWorkerControlled);
+  const cspMetaTags = [...new Set(observedAssets.flatMap((asset) => asset.cspMetaTags))];
+
+  if (observedAssets.length === 0) {
+    pushOverridePreflightIssue(issues, {
+      code: 'NO_OBSERVED_ASSETS',
+      severity: 'warning',
+      source: 'observed-assets',
+      message: 'No observed production assets are stored for this session yet.',
+    });
+  }
+
+  for (const rule of enabledRules) {
+    const ruleId = String(rule.ruleId ?? 'unknown');
+    const targetAssetUrl = normalizeOptionalString(rule.targetAssetUrl);
+    if (!targetAssetUrl) {
+      continue;
+    }
+    const requestMethod = normalizeOverrideRequestMethod(rule.requestMethod);
+    const matchingAssets = observedAssets.filter((asset) => {
+      return asset.url === targetAssetUrl
+        && normalizeOverrideRequestMethod(asset.requestMethod) === requestMethod;
+    });
+
+    if (observedAssets.length > 0 && matchingAssets.length === 0) {
+      pushOverridePreflightIssue(issues, {
+        code: 'TARGET_ASSET_NOT_OBSERVED',
+        severity: 'warning',
+        source: 'observed-assets',
+        message: `Rule ${ruleId} target asset was not observed for ${requestMethod} ${targetAssetUrl}.`,
+      });
+      continue;
+    }
+
+    for (const asset of matchingAssets) {
+      if (typeof asset.integrity === 'string' && asset.integrity.length > 0) {
+        pushOverridePreflightIssue(issues, {
+          code: 'TARGET_ASSET_SRI_PRESENT',
+          severity: 'error',
+          source: 'observed-assets',
+          message: `Rule ${ruleId} target asset ${asset.url} includes integrity="${asset.integrity}" and cannot be overridden safely.`,
+        });
+      }
+    }
+  }
+
+  if (anyServiceWorkerControlled) {
+    pushOverridePreflightIssue(issues, {
+      code: 'SERVICE_WORKER_CONTROLLED',
+      severity: 'warning',
+      source: 'observed-assets',
+      message: 'The observed page is service-worker controlled; verify the target requests still reach the network path that the debugger can fulfill.',
+    });
+  }
+
+  if (cspMetaTags.length > 0) {
+    pushOverridePreflightIssue(issues, {
+      code: 'CSP_META_PRESENT',
+      severity: 'warning',
+      source: 'observed-assets',
+      message: `The observed page emitted ${cspMetaTags.length} CSP meta tag(s); document or bootstrap rewrites may still be constrained by page policy.`,
+    });
+  }
+
+  const ready = !issues.some((issue) => issue.severity === 'error');
+  const nextActions = !ready
+    ? issues.some((issue) => issue.code === 'SERVER_ACTION_UNSUPPORTED')
+      ? [{
+          code: 'REPLAN_SERVER_ACTION_OVERRIDE',
+          message: 'Server actions stay unsupported in production override mode; move the override to a GET document/data/API response.',
+        }]
+      : issues.some((issue) => issue.code === 'MUTATION_REPLAY_UNSUPPORTED')
+        ? [{
+            code: 'REPLAN_MUTATION_OVERRIDE',
+            message: 'Mutation responses are not replay-safe; use a GET document/data/API response path instead.',
+          }]
+        : issues.some((issue) => issue.code === 'UNSAFE_REQUEST_METHOD')
+          ? [{ code: 'REPLAN_GET_ONLY_OVERRIDE', message: 'Remove or regenerate non-GET rules before enabling overrides.' }]
+          : issues.some((issue) => issue.code === 'TARGET_ASSET_SRI_PRESENT')
+            ? [{ code: 'CHOOSE_ANOTHER_OVERRIDE_PATH', message: 'Choose a document/data response path or remove SRI on the production asset before enabling overrides.' }]
+            : issues.some((issue) => issue.code === 'SESSION_NOT_FOUND' || issue.code === 'SESSION_PAUSED' || issue.code === 'SESSION_ENDED' || issue.code === LIVE_SESSION_DISCONNECTED_CODE)
+              ? [{ code: 'RECONNECT_SESSION', message: 'Reconnect or resume the target session before enabling overrides.' }]
+              : buildOverrideProfileNextActions(profile, issues)
+    : observedAssets.length === 0
+      ? [{ code: 'OBSERVE_OVERRIDE_ASSETS', message: 'Run observe_override_assets on the target route before enabling overrides in production workflows.' }]
+      : [{ code: 'ENABLE_OVERRIDES', message: 'Preflight checks passed; the selected profile can be enabled on the live session.' }];
+
+  return {
+    ready,
+    profileId: profile.profileId,
+    profile,
+    session: session
+      ? {
+          sessionId: session.session_id,
+          status: getSessionStatus(session),
+          lastSeenAt: resolveSessionLastSeenAt(session, sessionState),
+          connected: sessionState?.connected === true,
+          disconnectedAt: sessionState?.disconnectedAt,
+          disconnectReason: sessionState?.disconnectReason,
+          urlLast: session.url_last ?? undefined,
+          tabId: session.tab_id ?? undefined,
+        }
+      : null,
+    issues,
+    checks: {
+      sessionFound: session !== undefined,
+      connected: sessionState?.connected === true,
+      observedAssetCount: observedAssets.length,
+      targetAssetObserved: issues.every((issue) => issue.code !== 'TARGET_ASSET_NOT_OBSERVED'),
+      serviceWorkerControlled: anyServiceWorkerControlled,
+      cspMetaTagCount: cspMetaTags.length,
+      recentPlanCount: recentPlans.length,
+      variantContextCount: variantContexts.length,
+    },
+    observedAssets: {
+      count: observedAssets.length,
+      serviceWorkerControlled: anyServiceWorkerControlled,
+      cspMetaTags,
+    },
+    latestRun,
+    recentPlans,
+    variantContexts,
+    diagnosis,
+    nextActions,
+  };
 }
 
 function normalizeOptionalBooleanInput(value: unknown, fieldName: string): boolean | undefined {
@@ -1895,6 +2560,7 @@ async function executeLiveCapture(
     | 'CAPTURE_UI_SNAPSHOT'
     | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
     | 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
+    | 'CAPTURE_OVERRIDE_RESPONSE_BODY'
     | 'CAPTURE_OVERRIDE_POC_GET_STATUS'
     | 'CAPTURE_OVERRIDE_POC_ENABLE'
     | 'CAPTURE_OVERRIDE_POC_DISABLE',
@@ -1914,6 +2580,172 @@ function ensureCaptureSuccess(result: CaptureClientResult, sessionId: string): R
   }
 
   return result.payload ?? {};
+}
+
+function auditSessionExists(db: Database, sessionId: string): boolean {
+  const row = db.prepare('SELECT 1 FROM sessions WHERE session_id = ? LIMIT 1').get(sessionId);
+  return row !== undefined;
+}
+
+function hashLocalFileIfPresent(filePath: string | undefined): { sha256: string | null; bytes: number | null } {
+  if (!filePath || !existsSync(filePath)) {
+    return { sha256: null, bytes: null };
+  }
+  const stat = statSync(filePath);
+  if (!stat.isFile()) {
+    return { sha256: null, bytes: null };
+  }
+  return {
+    sha256: createHash('sha256').update(readFileSync(filePath)).digest('hex'),
+    bytes: stat.size,
+  };
+}
+
+function resolveAuditProfileId(input: ToolInput): string | null {
+  return normalizeOptionalString(input.profileId) ?? null;
+}
+
+function buildOverrideRollbackMetadata(options: {
+  sessionId: string;
+  profileId: string | null;
+  configPath?: string | null;
+  generatedFiles: string[];
+  generatedDirectories?: string[];
+  note?: string;
+}): Record<string, unknown> {
+  return {
+    disableTool: 'disable_overrides',
+    validateTool: 'validate_override_profile',
+    sessionId: options.sessionId,
+    profileId: options.profileId,
+    configPath: options.configPath ?? null,
+    generatedFiles: Array.from(new Set(options.generatedFiles.filter((entry) => entry.trim().length > 0))),
+    generatedDirectories: Array.from(new Set((options.generatedDirectories ?? []).filter((entry) => entry.trim().length > 0))),
+    notes: [
+      'Disable overrides for this session before deleting generated files or config entries.',
+      'Re-run validate_override_profile after editing or removing generated config rules.',
+      options.note,
+    ].filter((entry): entry is string => typeof entry === 'string' && entry.length > 0),
+  };
+}
+
+function persistResponsePlanAudit(options: {
+  db: Database;
+  sessionId?: string;
+  input: ToolInput;
+  plan: OverrideResponsePatchPlanResult;
+  capturedFromLiveSession?: unknown;
+  variantContext?: unknown;
+}): OverridePlanAuditRecord | undefined {
+  if (!options.sessionId || !options.plan.rule || !auditSessionExists(options.db, options.sessionId)) {
+    return undefined;
+  }
+
+  const profileId = resolveAuditProfileId(options.input);
+  const record: OverridePlanAuditRecord = {
+    planId: randomUUID(),
+    sessionId: options.sessionId,
+    createdAt: Date.now(),
+    plannerKind: 'response-patch',
+    toolName: 'plan_override_response_patch',
+    profileId,
+    ruleId: options.plan.rule.ruleId,
+    ruleType: options.plan.rule.ruleType,
+    requestMethod: options.plan.requestMethod,
+    matchMode: options.plan.matchMode,
+    targetAssetUrl: options.plan.targetUrl,
+    localFilePath: options.plan.localFilePath ?? options.plan.rule.localFilePath,
+    configPath: options.plan.configPath ?? null,
+    contentType: options.plan.contentType,
+    originalSha256: options.plan.originalSha256,
+    patchedSha256: options.plan.patchedSha256,
+    originalBytes: options.plan.originalBytes,
+    patchedBytes: options.plan.patchedBytes,
+    patchSummary: {
+      textPatches: options.plan.patches,
+      jsonPatches: options.plan.jsonPatches,
+      documentPatches: options.plan.documentPatches,
+      ruleType: options.plan.ruleType,
+      configWritten: options.plan.configWritten,
+      rscFlight: options.plan.rule.rscFlight ?? null,
+      variantContext: options.variantContext ?? null,
+    },
+    preview: options.plan.preview ?? null,
+    warnings: options.plan.warnings,
+    blockers: options.plan.blockers,
+    capturedFromLiveSession: options.capturedFromLiveSession ?? null,
+    rollback: buildOverrideRollbackMetadata({
+      sessionId: options.sessionId,
+      profileId,
+      configPath: options.plan.configPath ?? null,
+      generatedFiles: options.plan.localFilePath ? [options.plan.localFilePath] : [],
+      note: 'Generated response override bodies are disposable once the override has been disabled.',
+    }),
+  };
+
+  return insertOverridePlanAudit(options.db, record);
+}
+
+function persistNextSourcePlanAudits(options: {
+  db: Database;
+  sessionId?: string;
+  input: ToolInput;
+  plan: NextSourceOverridePlanResult;
+}): OverridePlanAuditRecord[] {
+  if (!options.sessionId || !auditSessionExists(options.db, options.sessionId)) {
+    return [];
+  }
+
+  const sessionId = options.sessionId;
+  const profileId = resolveAuditProfileId(options.input);
+  const generatedFiles = options.plan.rules.map((rule) => rule.localFilePath);
+  return options.plan.rules.map((rule: PlannedNextOverrideRule) => {
+    const localFile = hashLocalFileIfPresent(rule.localFilePath);
+    const record: OverridePlanAuditRecord = {
+      planId: randomUUID(),
+      sessionId: options.sessionId,
+      createdAt: Date.now(),
+      plannerKind: 'next-source-overlay',
+      toolName: 'plan_next_source_override',
+      profileId,
+      ruleId: rule.ruleId,
+      ruleType: rule.ruleType,
+      requestMethod: rule.requestMethod,
+      matchMode: rule.matchMode,
+      targetAssetUrl: rule.targetAssetUrl,
+      localFilePath: rule.localFilePath,
+      configPath: options.plan.configPath ?? null,
+      contentType: rule.contentType,
+      originalSha256: null,
+      patchedSha256: localFile.sha256,
+      originalBytes: null,
+      patchedBytes: localFile.bytes,
+      patchSummary: {
+        sourcePaths: options.plan.sourcePaths,
+        editsApplied: options.plan.editsApplied,
+        ruleReason: rule.reason,
+        confidence: rule.confidence,
+        score: rule.score,
+        matchedSourcePaths: rule.matchedSourcePaths,
+        originalAssetPath: rule.originalAssetPath ?? null,
+        build: options.plan.build,
+        configWritten: options.plan.configWritten,
+      },
+      preview: null,
+      warnings: [...options.plan.warnings, ...rule.blockers.map((blocker) => `rule ${rule.ruleId}: ${blocker}`)],
+      blockers: options.plan.blockers,
+      capturedFromLiveSession: null,
+      rollback: buildOverrideRollbackMetadata({
+        sessionId,
+        profileId,
+        configPath: options.plan.configPath ?? null,
+        generatedFiles,
+        generatedDirectories: [options.plan.overlayRoot],
+        note: 'Generated Next.js overlay folders are disposable once the override has been disabled.',
+      }),
+    };
+    return insertOverridePlanAudit(options.db, record);
+  });
 }
 
 export function createV1ToolHandlers(
@@ -2295,6 +3127,26 @@ export function createV1ToolHandlers(
       };
     },
 
+    preflight_overrides: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const preflight = buildOverridePreflight({
+        db,
+        sessionId,
+        profileId: input.profileId,
+        getSessionConnectionState,
+      });
+
+      return {
+        ...createBaseResponse(sessionId),
+        ...preflight,
+      };
+    },
+
     list_observed_override_assets: async (input) => {
       const sessionId = getSessionId(input);
       if (!sessionId) {
@@ -2314,6 +3166,42 @@ export function createV1ToolHandlers(
           truncated: false,
         },
         assets,
+      };
+    },
+
+    plan_override_response_patch: async (input) => {
+      const sessionId = getSessionId(input);
+      const plan = planOverrideResponsePatch(input);
+      const variantContext = buildOverrideVariantContext({
+        targetUrl: plan.targetUrl,
+        requestMethod: plan.requestMethod,
+        matchMode: plan.matchMode,
+        ruleType: plan.ruleType,
+        captureMode: input.captureMode,
+        source: input.source,
+        triggerReload: input.triggerReload,
+        requestHeaders: input.requestHeaders,
+      });
+      const auditPlan = persistResponsePlanAudit({
+        db: getDb(),
+        sessionId,
+        input,
+        plan,
+        variantContext,
+      });
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: plan.rule ? 1 : 0,
+          truncated: false,
+        },
+        variantContext,
+        audit: {
+          persisted: auditPlan !== undefined,
+          plans: auditPlan ? [auditPlan] : [],
+        },
+        ...plan,
       };
     },
 
@@ -2394,6 +3282,12 @@ export function createV1ToolHandlers(
         productionFetchConcurrency: input.productionFetchConcurrency,
         overlayTtlMs: input.overlayTtlMs,
       });
+      const auditPlans = persistNextSourcePlanAudits({
+        db: getDb(),
+        sessionId,
+        input,
+        plan,
+      });
 
       return {
         ...createBaseResponse(sessionId),
@@ -2404,6 +3298,10 @@ export function createV1ToolHandlers(
         observedFromPersisted: !Array.isArray(input.observedAssets) && sessionId
           ? { sessionId, assetCount: Array.isArray(observedAssets) ? observedAssets.length : 0 }
           : undefined,
+        audit: {
+          persisted: auditPlans.length > 0,
+          plans: auditPlans,
+        },
         ...plan,
       };
     },
@@ -2413,11 +3311,27 @@ export function createV1ToolHandlers(
       const sessionId = getSessionId(input);
       const profile = resolveOverrideProfileRecord(input.profileId);
       const latestRun = sessionId ? listOverridePocRuns(db, sessionId, 1, 0).runs[0] ?? null : null;
+      const recentRequests = sessionId
+        ? listOverridePocRequests(db, sessionId, 5, 0, latestRun?.runId).requests
+        : [];
+      const recentPlans = sessionId
+        ? listOverridePlanAudits(db, { sessionId, limit: 5, offset: 0 }).plans
+        : [];
 
       return {
         ...createBaseResponse(sessionId),
         profile,
         latestRun,
+        recentRequests,
+        recentPlans,
+        preflight: sessionId
+          ? buildOverridePreflight({
+              db,
+              sessionId,
+              profileId: input.profileId,
+              getSessionConnectionState,
+            })
+          : null,
         diagnosis: sessionId ? diagnoseOverridePoc(db, sessionId, latestRun?.runId) : null,
         nextActions: latestRun?.lastErrorCode
           ? [{ code: 'DIAGNOSE_OVERRIDES', message: 'Run diagnose_overrides for the latest failed override run.' }]
@@ -2457,6 +3371,39 @@ export function createV1ToolHandlers(
         nextActions: bytePage.items.length === 0
           ? [{ code: 'RELOAD_TAB', message: 'Reload the selected tab after enabling overrides so matching requests are observed.' }]
           : [{ code: 'DIAGNOSE_OVERRIDES', message: 'Run diagnose_overrides if any matched request failed or did not fulfill.' }],
+      };
+    },
+
+    get_override_plan_log: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
+      const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
+      const planId = typeof input.planId === 'string' && input.planId.trim().length > 0
+        ? input.planId.trim()
+        : undefined;
+      const result = listOverridePlanAudits(db, { sessionId, limit, offset, planId });
+      const bytePage = applyByteBudget(result.plans, maxResponseBytes);
+      const truncated = result.hasMore || bytePage.truncatedByBytes;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: limit,
+          truncated,
+        },
+        planId: planId ?? null,
+        pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+        responseBytes: bytePage.responseBytes,
+        plans: bytePage.items,
+        nextActions: bytePage.items.length === 0
+          ? [{ code: 'PLAN_OVERRIDE', message: 'Run plan_override_response_patch or plan_next_source_override with sessionId to persist generated rule metadata.' }]
+          : [{ code: 'REVIEW_ROLLBACK', message: 'Review rollback metadata before enabling or deleting generated override files.' }],
       };
     },
 
@@ -3840,6 +4787,7 @@ export function createV1ToolHandlers(
 export function createV2ToolHandlers(
   captureClient: CaptureCommandClient,
   getDb?: () => Database,
+  getSessionConnectionState?: (sessionId: string) => SessionConnectionLookupResult | undefined,
 ): Partial<Record<string, ToolHandler>> {
   return {
     observe_override_assets: async (input) => {
@@ -3872,7 +4820,177 @@ export function createV2ToolHandlers(
         ...payload,
         nextActions: assetCount > 0
           ? [{ code: 'MAP_NEXT_ASSETS', message: 'Run map_next_override_assets with projectRoot and sourcePaths to score override candidates.' }]
-          : [{ code: 'LOAD_ROUTE', message: 'Load or interact with the target route so script/style assets are requested, then observe again.' }],
+          : [{ code: 'LOAD_ROUTE', message: 'Load or interact with the target route so document, asset, and fetch resources are requested, then observe again.' }],
+      };
+    },
+
+    capture_override_response_body: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const targetUrl = normalizeOptionalString(input.targetUrl) ?? normalizeOptionalString(input.targetAssetUrl);
+      if (!targetUrl) {
+        throw new Error('targetUrl is required');
+      }
+      assertOverrideResponseRequestCaptureSafe({
+        requestMethod: input.requestMethod,
+        requestHeaders: input.requestHeaders,
+        subject: 'Response body capture request',
+      });
+
+      const tabId = resolveOptionalTabId(input.tabId);
+      const timeoutMs = resolveTimeoutMs(input.timeoutMs, 10_000, 60_000);
+      const capture = await executeLiveCapture(
+        captureClient,
+        sessionId,
+        'CAPTURE_OVERRIDE_RESPONSE_BODY',
+        {
+          targetUrl,
+          tabId,
+          captureMode: normalizeOptionalString(input.captureMode),
+          triggerReload: typeof input.triggerReload === 'boolean' ? input.triggerReload : undefined,
+          matchMode: normalizeOptionalString(input.matchMode),
+          requestMethod: input.requestMethod,
+          requestHeaders: isRecord(input.requestHeaders) ? input.requestHeaders : undefined,
+          timeoutMs,
+          maxBodyBytes: input.maxBodyBytes,
+          includeBody: input.includeBody === true,
+        },
+        timeoutMs + 2_000,
+      );
+      const payload = ensureCaptureSuccess(capture, sessionId);
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: capture.truncated ?? payload.truncated === true,
+        },
+        ...payload,
+        nextActions: payload.bodyCaptured === true
+          ? [{ code: 'PLAN_RESPONSE_PATCH', message: 'Run plan_override_response_patch with textPatches or jsonPatches to generate an exact response override.' }]
+          : [{ code: 'UNSUPPORTED_RESPONSE_BODY', message: 'Only bounded text-like response bodies can be patched safely.' }],
+      };
+    },
+
+    plan_override_response_patch: async (input) => {
+      const sessionId = getSessionId(input);
+      let plannerInput: ToolInput = input;
+      let capturedFromLiveSession: Record<string, unknown> | undefined;
+      const hasProvidedBody = typeof input.responseBodyText === 'string'
+        || typeof input.bodyText === 'string'
+        || typeof input.responseBodyBase64 === 'string'
+        || typeof input.bodyBase64 === 'string';
+
+      if (!hasProvidedBody && sessionId) {
+        const targetUrl = normalizeOptionalString(input.targetUrl) ?? normalizeOptionalString(input.targetAssetUrl);
+        if (!targetUrl) {
+          throw new Error('targetUrl is required');
+        }
+        const tabId = resolveOptionalTabId(input.tabId);
+        const timeoutMs = resolveTimeoutMs(input.timeoutMs, 10_000, 60_000);
+        const capture = await executeLiveCapture(
+          captureClient,
+          sessionId,
+          'CAPTURE_OVERRIDE_RESPONSE_BODY',
+          {
+            targetUrl,
+            tabId,
+            captureMode: normalizeOptionalString(input.captureMode),
+            triggerReload: typeof input.triggerReload === 'boolean' ? input.triggerReload : undefined,
+            matchMode: normalizeOptionalString(input.matchMode),
+            requestMethod: input.requestMethod,
+            requestHeaders: isRecord(input.requestHeaders) ? input.requestHeaders : undefined,
+            timeoutMs,
+            maxBodyBytes: input.maxBodyBytes,
+            includeBody: true,
+          },
+          timeoutMs + 2_000,
+        );
+        const payload = ensureCaptureSuccess(capture, sessionId);
+        if (payload.truncated === true) {
+          throw new Error('Captured response body was truncated; increase maxBodyBytes before planning a patch.');
+        }
+        if (typeof payload.bodyText !== 'string') {
+          throw new Error('Captured response did not include a text body that can be patched.');
+        }
+        plannerInput = {
+          ...input,
+          responseBodyText: payload.bodyText,
+          contentType: input.contentType ?? payload.contentType,
+          ruleType: input.ruleType ?? payload.ruleType,
+          requestMethod: input.requestMethod ?? payload.requestMethod,
+          captureMode: input.captureMode ?? payload.captureMode,
+          source: payload.source,
+          requestHeaders: payload.requestHeaders,
+        };
+        const variantContext = buildOverrideVariantContext({
+          targetUrl: payload.targetUrl,
+          requestMethod: input.requestMethod ?? payload.requestMethod,
+          matchMode: payload.matchMode,
+          ruleType: input.ruleType ?? payload.ruleType,
+          captureMode: payload.captureMode,
+          source: payload.source,
+          triggerReload: payload.triggerReload,
+          requestHeaders: payload.requestHeaders,
+        });
+        capturedFromLiveSession = {
+          sessionId,
+          targetUrl: payload.targetUrl,
+          requestMethod: input.requestMethod ?? payload.requestMethod,
+          statusCode: payload.statusCode,
+          contentType: payload.contentType,
+          bodyBytes: payload.bodyBytes,
+          capturedBytes: payload.capturedBytes,
+          truncated: payload.truncated === true,
+          ruleType: payload.ruleType,
+          matchMode: payload.matchMode,
+          captureMode: payload.captureMode,
+          source: payload.source,
+          tabId: payload.tabId,
+          triggerReload: payload.triggerReload,
+          requestHeaders: payload.requestHeaders,
+          variantContext,
+        };
+      }
+
+      const plan = planOverrideResponsePatch(plannerInput);
+      const variantContext = buildOverrideVariantContext({
+        targetUrl: plan.targetUrl,
+        requestMethod: plan.requestMethod,
+        matchMode: plan.matchMode,
+        ruleType: plan.ruleType,
+        captureMode: plannerInput.captureMode,
+        source: plannerInput.source,
+        triggerReload: plannerInput.triggerReload,
+        requestHeaders: plannerInput.requestHeaders,
+      });
+      const auditPlan = getDb
+        ? persistResponsePlanAudit({
+            db: getDb(),
+            sessionId,
+            input,
+            plan,
+            capturedFromLiveSession,
+            variantContext,
+          })
+        : undefined;
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: plan.rule ? 1 : 0,
+          truncated: false,
+        },
+        capturedFromLiveSession,
+        variantContext,
+        audit: {
+          persisted: auditPlan !== undefined,
+          plans: auditPlan ? [auditPlan] : [],
+        },
+        ...plan,
       };
     },
 
@@ -4000,6 +5118,14 @@ export function createV2ToolHandlers(
         productionFetchConcurrency: input.productionFetchConcurrency,
         overlayTtlMs: input.overlayTtlMs,
       });
+      const auditPlans = getDb
+        ? persistNextSourcePlanAudits({
+            db: getDb(),
+            sessionId,
+            input,
+            plan,
+          })
+        : [];
 
       return {
         ...createBaseResponse(sessionId),
@@ -4015,6 +5141,10 @@ export function createV2ToolHandlers(
             }
           : undefined,
         observedFromPersisted,
+        audit: {
+          persisted: auditPlans.length > 0,
+          plans: auditPlans,
+        },
         ...plan,
       };
     },
@@ -4040,6 +5170,14 @@ export function createV2ToolHandlers(
           maxResults: 1,
           truncated: capture.truncated ?? false,
         },
+        preflight: getDb
+          ? buildOverridePreflight({
+              db: getDb(),
+              sessionId,
+              profileId: input.profileId,
+              getSessionConnectionState,
+            })
+          : null,
         ...payload,
         nextActions: payload.lastErrorCode
           ? [{ code: 'DIAGNOSE_OVERRIDES', message: 'Run diagnose_overrides for the latest override failure.' }]
@@ -4049,10 +5187,49 @@ export function createV2ToolHandlers(
       };
     },
 
+    preflight_overrides: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+      if (!getDb) {
+        throw new Error('preflight_overrides requires database-backed override state');
+      }
+
+      return {
+        ...createBaseResponse(sessionId),
+        ...buildOverridePreflight({
+          db: getDb(),
+          sessionId,
+          profileId: input.profileId,
+          getSessionConnectionState,
+        }),
+      };
+    },
+
     enable_overrides: async (input) => {
       const sessionId = getSessionId(input);
       if (!sessionId) {
         throw new Error('sessionId is required');
+      }
+      const preflight = getDb
+        ? buildOverridePreflight({
+            db: getDb(),
+            sessionId,
+            profileId: input.profileId,
+            getSessionConnectionState,
+          })
+        : null;
+      if (preflight && preflight.ready !== true) {
+        const blockingCodes = Array.isArray(preflight.issues)
+          ? preflight.issues
+            .filter((issue): issue is Record<string, unknown> => isRecord(issue) && issue.severity === 'error')
+            .map((issue) => String(issue.code ?? 'UNKNOWN'))
+          : [];
+        const profile = isRecord(preflight.profile) ? preflight.profile : {};
+        if (!canBypassPreflightForExperimentalRsc(profile, blockingCodes)) {
+          throw new Error(`Override preflight failed: ${blockingCodes.join(', ') || 'UNKNOWN'}`);
+        }
       }
 
       const tabId = resolveOptionalTabId(input.tabId);
@@ -4071,6 +5248,7 @@ export function createV2ToolHandlers(
           maxResults: 1,
           truncated: capture.truncated ?? false,
         },
+        preflight,
         ...payload,
         nextActions: [{ code: 'RELOAD_OR_INTERACT', message: 'Reload or interact with the tab so configured asset requests occur under the active override.' }],
       };
@@ -4473,7 +5651,9 @@ export function createMCPServer(
   options: MCPServerOptions = {},
 ): MCPServerRuntime {
   const logger = options.logger ?? createDefaultMcpLogger();
-  const v2Handlers = options.captureClient ? createV2ToolHandlers(options.captureClient, () => getConnection().db) : {};
+  const v2Handlers = options.captureClient
+    ? createV2ToolHandlers(options.captureClient, () => getConnection().db, options.getSessionConnectionState)
+    : {};
   const tools = createToolRegistry({
     ...createV1ToolHandlers(() => getConnection().db, options.getSessionConnectionState),
     ...v2Handlers,

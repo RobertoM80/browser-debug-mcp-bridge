@@ -46,6 +46,11 @@ interface ObservedAssetRow {
   service_worker_controlled: number;
   csp_meta_json: string | null;
   asset_url: string;
+  rule_type: StoredObservedOverrideAsset['ruleType'];
+  request_method: string;
+  resource_type: string | null;
+  content_type: string | null;
+  status_code: number | null;
   asset_path: string | null;
   pathname: string;
   kind: string | null;
@@ -55,6 +60,8 @@ interface ObservedAssetRow {
   integrity: string | null;
   from_dom: number;
   from_performance: number;
+  from_navigation: number;
+  from_fetch: number;
   payload_json: string;
 }
 
@@ -76,8 +83,8 @@ function normalizeStringArray(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0);
 }
 
-function createObservedAssetId(sessionId: string, assetUrl: string): string {
-  return createHash('sha256').update(`${sessionId}\0${assetUrl}`).digest('hex');
+function createObservedAssetId(sessionId: string, requestMethod: string, assetUrl: string): string {
+  return createHash('sha256').update(`${sessionId}\0${requestMethod}\0${assetUrl}`).digest('hex');
 }
 
 function safeParseStringArray(value: string | null): string[] {
@@ -105,6 +112,11 @@ function rowToStoredAsset(row: ObservedAssetRow): StoredObservedOverrideAsset {
     serviceWorkerControlled: row.service_worker_controlled === 1,
     cspMetaTags: safeParseStringArray(row.csp_meta_json),
     url: row.asset_url,
+    ruleType: row.rule_type,
+    requestMethod: row.request_method,
+    resourceType: row.resource_type ?? undefined,
+    contentType: row.content_type ?? undefined,
+    statusCode: row.status_code ?? undefined,
     assetPath: row.asset_path,
     pathname: row.pathname,
     kind: row.kind ?? undefined,
@@ -114,6 +126,8 @@ function rowToStoredAsset(row: ObservedAssetRow): StoredObservedOverrideAsset {
     integrity: row.integrity ?? undefined,
     fromDom: row.from_dom === 1,
     fromPerformance: row.from_performance === 1,
+    fromNavigation: row.from_navigation === 1,
+    fromFetch: row.from_fetch === 1,
   };
 }
 
@@ -150,6 +164,11 @@ export function persistObservedOverrideAssets(
       service_worker_controlled,
       csp_meta_json,
       asset_url,
+      rule_type,
+      request_method,
+      resource_type,
+      content_type,
+      status_code,
       asset_path,
       pathname,
       kind,
@@ -159,11 +178,13 @@ export function persistObservedOverrideAssets(
       integrity,
       from_dom,
       from_performance,
+      from_navigation,
+      from_fetch,
       payload_json,
       created_at,
       updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(session_id, asset_url) DO UPDATE SET
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(session_id, request_method, asset_url) DO UPDATE SET
       last_seen_at = excluded.last_seen_at,
       tab_id = excluded.tab_id,
       page_url = excluded.page_url,
@@ -171,6 +192,10 @@ export function persistObservedOverrideAssets(
       page_title = excluded.page_title,
       service_worker_controlled = excluded.service_worker_controlled,
       csp_meta_json = excluded.csp_meta_json,
+      rule_type = excluded.rule_type,
+      resource_type = COALESCE(excluded.resource_type, override_observed_assets.resource_type),
+      content_type = COALESCE(excluded.content_type, override_observed_assets.content_type),
+      status_code = COALESCE(excluded.status_code, override_observed_assets.status_code),
       asset_path = excluded.asset_path,
       pathname = excluded.pathname,
       kind = COALESCE(excluded.kind, override_observed_assets.kind),
@@ -180,6 +205,8 @@ export function persistObservedOverrideAssets(
       integrity = COALESCE(excluded.integrity, override_observed_assets.integrity),
       from_dom = CASE WHEN excluded.from_dom = 1 THEN 1 ELSE override_observed_assets.from_dom END,
       from_performance = CASE WHEN excluded.from_performance = 1 THEN 1 ELSE override_observed_assets.from_performance END,
+      from_navigation = CASE WHEN excluded.from_navigation = 1 THEN 1 ELSE override_observed_assets.from_navigation END,
+      from_fetch = CASE WHEN excluded.from_fetch = 1 THEN 1 ELSE override_observed_assets.from_fetch END,
       payload_json = excluded.payload_json,
       updated_at = excluded.updated_at
   `);
@@ -187,7 +214,7 @@ export function persistObservedOverrideAssets(
   const persist = db.transaction(() => {
     for (const asset of assets) {
       statement.run(
-        createObservedAssetId(sessionId, asset.url),
+        createObservedAssetId(sessionId, asset.requestMethod, asset.url),
         sessionId,
         observedAt,
         observedAt,
@@ -198,6 +225,11 @@ export function persistObservedOverrideAssets(
         serviceWorkerControlled,
         JSON.stringify(cspMetaTags),
         asset.url,
+        asset.ruleType,
+        asset.requestMethod,
+        asset.resourceType ?? null,
+        asset.contentType ?? null,
+        asset.statusCode ?? null,
         asset.assetPath,
         asset.pathname,
         asset.kind ?? null,
@@ -207,6 +239,8 @@ export function persistObservedOverrideAssets(
         asset.integrity ?? null,
         asset.fromDom ? 1 : 0,
         asset.fromPerformance ? 1 : 0,
+        asset.fromNavigation ? 1 : 0,
+        asset.fromFetch ? 1 : 0,
         JSON.stringify(asset),
         observedAt,
         observedAt,

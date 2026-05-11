@@ -165,17 +165,30 @@ describe('Database Schema', () => {
       initializeSchema(db);
       const runs = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_runs'").get();
       const requests = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_requests'").get();
+      const plans = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_plan_audits'").get();
       expect(runs).toBeDefined();
       expect(requests).toBeDefined();
+      expect(plans).toBeDefined();
     });
 
     it('should create observed override asset table', () => {
       initializeSchema(db);
       const table = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_observed_assets'").get();
       const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_observed_assets'").all() as { name: string }[];
+      const columns = db.prepare("PRAGMA table_info('override_observed_assets')").all() as { name: string }[];
       expect(table).toBeDefined();
-      expect(indexes.map((index) => index.name)).toContain('idx_override_observed_assets_session_url');
+      expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([
+        'rule_type',
+        'request_method',
+        'resource_type',
+        'content_type',
+        'status_code',
+        'from_navigation',
+        'from_fetch',
+      ]));
+      expect(indexes.map((index) => index.name)).toContain('idx_override_observed_assets_session_method_url');
       expect(indexes.map((index) => index.name)).toContain('idx_override_observed_assets_session_seen');
+      expect(indexes.map((index) => index.name)).toContain('idx_override_observed_assets_rule_type');
     });
 
     it('should create schema_version table', () => {
@@ -244,12 +257,16 @@ describe('Database Schema', () => {
       initializeSchema(db);
       const runIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_runs'").all() as { name: string }[];
       const requestIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_requests'").all() as { name: string }[];
+      const planIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_plan_audits'").all() as { name: string }[];
 
       expect(runIndexes.map((index) => index.name)).toContain('idx_override_runs_session_started_at');
       expect(runIndexes.map((index) => index.name)).toContain('idx_override_runs_session_status_started_at');
       expect(requestIndexes.map((index) => index.name)).toContain('idx_override_requests_session_ts');
       expect(requestIndexes.map((index) => index.name)).toContain('idx_override_requests_run_ts');
       expect(requestIndexes.map((index) => index.name)).toContain('idx_override_requests_status_ts');
+      expect(planIndexes.map((index) => index.name)).toContain('idx_override_plan_audits_session_created_at');
+      expect(planIndexes.map((index) => index.name)).toContain('idx_override_plan_audits_target_url');
+      expect(planIndexes.map((index) => index.name)).toContain('idx_override_plan_audits_planner_kind');
     });
 
     it('should record schema version when using migrations', () => {
@@ -332,6 +349,7 @@ describe('Database Migrations', () => {
       expect(tableNames).toContain('snapshots');
       expect(tableNames).toContain('override_runs');
       expect(tableNames).toContain('override_requests');
+      expect(tableNames).toContain('override_plan_audits');
       expect(tableNames).toContain('override_observed_assets');
       expect(tableNames).toContain('schema_version');
     });
@@ -463,11 +481,11 @@ describe('Database Integration', () => {
   describe('Data Insertion', () => {
     it('should insert and retrieve session data', () => {
       const insert = db.prepare(`
-        INSERT INTO sessions (session_id, created_at, last_seen_at, ended_at, tab_id, window_id, 
+        INSERT INTO sessions (session_id, created_at, last_seen_at, ended_at, tab_id, window_id,
           url_start, url_last, user_agent, viewport_w, viewport_h, dpr, safe_mode, allowlist_hash)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
-      
+
       insert.run('sess-1', 123456789, 123456799, null, 1, 1, 'https://start.com', 'https://last.com',
         'Mozilla/5.0', 1920, 1080, 2.0, 1, 'hash123');
       
@@ -601,6 +619,43 @@ describe('Database Integration', () => {
       expect(request).toBeDefined();
       expect(request.request_status).toBe('fulfilled');
     });
+
+    it('should insert and retrieve override plan audit metadata', () => {
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, safe_mode)
+        VALUES ('sess-1', 123456789, 0)
+      `).run();
+
+      db.prepare(`
+        INSERT INTO override_plan_audits (
+          plan_id, session_id, created_at, planner_kind, tool_name, profile_id, rule_id, rule_type,
+          request_method, match_mode, target_asset_url, local_file_path, config_path, content_type,
+          original_sha256, patched_sha256, original_bytes, patched_bytes, patch_summary_json,
+          preview_json, warnings_json, blockers_json, captured_from_live_session_json, rollback_json, updated_at
+        )
+        VALUES (
+          'plan-1', 'sess-1', 123456789, 'response-patch', 'plan_override_response_patch',
+          'profile-1', 'rule-1', 'api-response', 'GET', 'exact', 'https://example.com/api',
+          'C:/tmp/override.json', 'C:/tmp/override.config.json', 'application/json',
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          20, 22, '{"jsonPatches":[{"path":"/mode"}]}', '{"before":"a","after":"b"}',
+          '["warning"]', '[]', '{"source":"cdp-response"}', '{"disableTool":"disable_overrides"}',
+          123456790
+        )
+      `).run();
+
+      const plan = db.prepare('SELECT * FROM override_plan_audits WHERE plan_id = ?').get('plan-1') as {
+        planner_kind: string;
+        patch_summary_json: string;
+        rollback_json: string;
+      };
+
+      expect(plan).toBeDefined();
+      expect(plan.planner_kind).toBe('response-patch');
+      expect(JSON.parse(plan.patch_summary_json)).toMatchObject({ jsonPatches: [{ path: '/mode' }] });
+      expect(JSON.parse(plan.rollback_json)).toMatchObject({ disableTool: 'disable_overrides' });
+    });
   });
 
   describe('observed override assets', () => {
@@ -622,6 +677,9 @@ describe('Database Integration', () => {
         assets: [{
           url: 'https://example.test/_next/static/chunks/app.js',
           kind: 'script',
+          resourceType: 'script',
+          contentType: 'application/javascript',
+          statusCode: 200,
           fromDom: true,
         }],
         observedAt: 1000,
@@ -646,9 +704,61 @@ describe('Database Integration', () => {
         lastSeenAt: 2000,
         pageUrl: 'https://example.test/products',
         url: 'https://example.test/_next/static/chunks/app.js',
+        ruleType: 'asset',
+        requestMethod: 'GET',
+        resourceType: 'script',
+        contentType: 'application/javascript',
+        statusCode: 200,
         assetPath: 'static/chunks/app.js',
         fromDom: true,
         fromPerformance: true,
+        fromNavigation: false,
+        fromFetch: false,
+      });
+    });
+
+    it('persists document and RSC observations as distinct request types', () => {
+      initializeSchema(db);
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode)
+        VALUES ('session-render-artifacts', 123456789, 123456789, 0)
+      `).run();
+
+      persistObservedOverrideAssets(db, {
+        sessionId: 'session-render-artifacts',
+        assets: [
+          {
+            url: 'https://example.test/products',
+            kind: 'document',
+            resourceType: 'document',
+            contentType: 'text/html; charset=utf-8',
+            statusCode: 200,
+            fromNavigation: true,
+          },
+          {
+            url: 'https://example.test/products?_rsc=abc',
+            kind: 'fetch',
+            initiatorType: 'fetch',
+            contentType: 'text/x-component',
+            fromPerformance: true,
+            fromFetch: true,
+          },
+        ],
+        observedAt: 3000,
+      });
+
+      const assets = listObservedOverrideAssets(db, { sessionId: 'session-render-artifacts' });
+      expect(assets.map((asset) => asset.ruleType).sort()).toEqual(['document', 'rsc-flight']);
+      expect(assets.find((asset) => asset.ruleType === 'document')).toMatchObject({
+        requestMethod: 'GET',
+        resourceType: 'document',
+        contentType: 'text/html; charset=utf-8',
+        statusCode: 200,
+        fromNavigation: true,
+      });
+      expect(assets.find((asset) => asset.ruleType === 'rsc-flight')).toMatchObject({
+        initiatorType: 'fetch',
+        fromFetch: true,
       });
     });
   });

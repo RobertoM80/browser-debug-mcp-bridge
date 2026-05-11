@@ -2,6 +2,7 @@ import { Database } from 'better-sqlite3';
 import { initializeSchema, getSchemaVersion, clearDatabase, SCHEMA_VERSION } from './schema.js';
 import {
   OVERRIDE_POC_FAILURE_CODES,
+  OVERRIDE_PLAN_AUDIT_KINDS,
   OVERRIDE_POC_REQUEST_STATUSES,
   OVERRIDE_POC_RUN_STATUSES,
 } from '../override-audit-contract.js';
@@ -56,6 +57,157 @@ function extractEventOrigin(payload: Record<string, unknown>): string | null {
 const OVERRIDE_POC_RUN_STATUS_SQL = OVERRIDE_POC_RUN_STATUSES.map((value) => `'${value}'`).join(', ');
 const OVERRIDE_POC_REQUEST_STATUS_SQL = OVERRIDE_POC_REQUEST_STATUSES.map((value) => `'${value}'`).join(', ');
 const OVERRIDE_POC_FAILURE_CODE_SQL = OVERRIDE_POC_FAILURE_CODES.map((value) => `'${value}'`).join(', ');
+const OVERRIDE_PLAN_AUDIT_KIND_SQL = OVERRIDE_PLAN_AUDIT_KINDS.map((value) => `'${value}'`).join(', ');
+
+function rebuildOverrideFailureCodeChecks(db: Database): void {
+  db.exec(`
+    PRAGMA foreign_keys=OFF;
+
+    DROP INDEX IF EXISTS idx_override_requests_session_ts;
+    DROP INDEX IF EXISTS idx_override_requests_run_ts;
+    DROP INDEX IF EXISTS idx_override_requests_status_ts;
+    DROP INDEX IF EXISTS idx_override_runs_session_started_at;
+    DROP INDEX IF EXISTS idx_override_runs_session_status_started_at;
+
+    ALTER TABLE override_requests RENAME TO override_requests_v11;
+    ALTER TABLE override_runs RENAME TO override_runs_v11;
+
+    CREATE TABLE override_runs (
+      run_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      started_at INTEGER NOT NULL,
+      ended_at INTEGER,
+      run_status TEXT NOT NULL CHECK(run_status IN (${OVERRIDE_POC_RUN_STATUS_SQL})),
+      tab_id INTEGER NOT NULL,
+      selected_tab_id INTEGER,
+      target_asset_url TEXT NOT NULL,
+      local_file_path TEXT NOT NULL,
+      resolved_local_file_path TEXT NOT NULL,
+      content_type TEXT NOT NULL,
+      auto_reload INTEGER NOT NULL DEFAULT 0,
+      config_path TEXT NOT NULL,
+      file_exists INTEGER NOT NULL DEFAULT 0,
+      file_size_bytes INTEGER,
+      matched_requests INTEGER NOT NULL DEFAULT 0,
+      fulfilled_requests INTEGER NOT NULL DEFAULT 0,
+      last_matched_at INTEGER,
+      last_fulfilled_at INTEGER,
+      last_error_code TEXT CHECK(last_error_code IN (${OVERRIDE_POC_FAILURE_CODE_SQL})),
+      last_error_message TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE override_requests (
+      request_log_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      session_id TEXT NOT NULL,
+      request_id TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      request_url TEXT NOT NULL,
+      request_status TEXT NOT NULL CHECK(request_status IN (${OVERRIDE_POC_REQUEST_STATUS_SQL})),
+      failure_code TEXT CHECK(failure_code IN (${OVERRIDE_POC_FAILURE_CODE_SQL})),
+      error_message TEXT,
+      response_code INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (run_id) REFERENCES override_runs(run_id) ON DELETE CASCADE,
+      FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+    );
+
+    INSERT INTO override_runs (
+      run_id,
+      session_id,
+      started_at,
+      ended_at,
+      run_status,
+      tab_id,
+      selected_tab_id,
+      target_asset_url,
+      local_file_path,
+      resolved_local_file_path,
+      content_type,
+      auto_reload,
+      config_path,
+      file_exists,
+      file_size_bytes,
+      matched_requests,
+      fulfilled_requests,
+      last_matched_at,
+      last_fulfilled_at,
+      last_error_code,
+      last_error_message,
+      created_at,
+      updated_at
+    )
+    SELECT
+      run_id,
+      session_id,
+      started_at,
+      ended_at,
+      run_status,
+      tab_id,
+      selected_tab_id,
+      target_asset_url,
+      local_file_path,
+      resolved_local_file_path,
+      content_type,
+      auto_reload,
+      config_path,
+      file_exists,
+      file_size_bytes,
+      matched_requests,
+      fulfilled_requests,
+      last_matched_at,
+      last_fulfilled_at,
+      last_error_code,
+      last_error_message,
+      created_at,
+      updated_at
+    FROM override_runs_v11;
+
+    INSERT INTO override_requests (
+      request_log_id,
+      run_id,
+      session_id,
+      request_id,
+      ts,
+      request_url,
+      request_status,
+      failure_code,
+      error_message,
+      response_code,
+      created_at,
+      updated_at
+    )
+    SELECT
+      request_log_id,
+      run_id,
+      session_id,
+      request_id,
+      ts,
+      request_url,
+      request_status,
+      failure_code,
+      error_message,
+      response_code,
+      created_at,
+      updated_at
+    FROM override_requests_v11;
+
+    DROP TABLE override_requests_v11;
+    DROP TABLE override_runs_v11;
+
+    CREATE INDEX IF NOT EXISTS idx_override_runs_session_started_at ON override_runs(session_id, started_at);
+    CREATE INDEX IF NOT EXISTS idx_override_runs_session_status_started_at ON override_runs(session_id, run_status, started_at);
+    CREATE INDEX IF NOT EXISTS idx_override_requests_session_ts ON override_requests(session_id, ts);
+    CREATE INDEX IF NOT EXISTS idx_override_requests_run_ts ON override_requests(run_id, ts);
+    CREATE INDEX IF NOT EXISTS idx_override_requests_status_ts ON override_requests(request_status, ts);
+
+    PRAGMA foreign_keys=ON;
+  `);
+}
 
 const migrations: Migration[] = [
   {
@@ -477,6 +629,88 @@ const migrations: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_override_observed_assets_asset_path ON override_observed_assets(asset_path);
       `);
     },
+  },
+  {
+    version: 10,
+    name: 'override_observed_request_metadata',
+    up: (db) => {
+      const columns = getColumnNames(db, 'override_observed_assets');
+      const addColumn = (name: string, sql: string): void => {
+        if (!columns.has(name)) {
+          db.exec(`ALTER TABLE override_observed_assets ADD COLUMN ${sql};`);
+        }
+      };
+
+      addColumn('rule_type', "rule_type TEXT NOT NULL DEFAULT 'asset'");
+      addColumn('request_method', "request_method TEXT NOT NULL DEFAULT 'GET'");
+      addColumn('resource_type', 'resource_type TEXT');
+      addColumn('content_type', 'content_type TEXT');
+      addColumn('status_code', 'status_code INTEGER');
+      addColumn('from_navigation', 'from_navigation INTEGER NOT NULL DEFAULT 0');
+      addColumn('from_fetch', 'from_fetch INTEGER NOT NULL DEFAULT 0');
+
+      db.exec(`
+        UPDATE override_observed_assets
+        SET
+          rule_type = COALESCE(NULLIF(rule_type, ''), 'asset'),
+          request_method = COALESCE(NULLIF(request_method, ''), 'GET');
+
+        DROP INDEX IF EXISTS idx_override_observed_assets_session_url;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_override_observed_assets_session_method_url
+          ON override_observed_assets(session_id, request_method, asset_url);
+        CREATE INDEX IF NOT EXISTS idx_override_observed_assets_rule_type
+          ON override_observed_assets(rule_type);
+      `);
+    },
+  },
+  {
+    version: 11,
+    name: 'override_plan_audits',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS override_plan_audits (
+          plan_id TEXT PRIMARY KEY,
+          session_id TEXT,
+          created_at INTEGER NOT NULL,
+          planner_kind TEXT NOT NULL CHECK(planner_kind IN (${OVERRIDE_PLAN_AUDIT_KIND_SQL})),
+          tool_name TEXT NOT NULL,
+          profile_id TEXT,
+          rule_id TEXT NOT NULL,
+          rule_type TEXT NOT NULL,
+          request_method TEXT NOT NULL,
+          match_mode TEXT NOT NULL,
+          target_asset_url TEXT NOT NULL,
+          local_file_path TEXT,
+          config_path TEXT,
+          content_type TEXT NOT NULL,
+          original_sha256 TEXT,
+          patched_sha256 TEXT,
+          original_bytes INTEGER,
+          patched_bytes INTEGER,
+          patch_summary_json TEXT NOT NULL,
+          preview_json TEXT,
+          warnings_json TEXT NOT NULL,
+          blockers_json TEXT NOT NULL,
+          captured_from_live_session_json TEXT,
+          rollback_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL,
+          FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE SET NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_override_plan_audits_session_created_at
+          ON override_plan_audits(session_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_override_plan_audits_target_url
+          ON override_plan_audits(target_asset_url);
+        CREATE INDEX IF NOT EXISTS idx_override_plan_audits_planner_kind
+          ON override_plan_audits(planner_kind);
+      `);
+    },
+  },
+  {
+    version: 12,
+    name: 'override_failure_code_taxonomy',
+    up: rebuildOverrideFailureCodeChecks,
   },
 ];
 

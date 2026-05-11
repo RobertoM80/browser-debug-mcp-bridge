@@ -31,6 +31,9 @@ export interface AppliedNextSourceEdit {
 
 export interface PlannedNextOverrideRule {
   ruleId: string;
+  ruleType: 'asset';
+  requestMethod: 'GET';
+  matchMode: 'exact';
   targetAssetUrl: string;
   localFilePath: string;
   localAssetPath: string;
@@ -216,6 +219,12 @@ export function cleanupNextSourceOverlayRoots(workspaceRoot: string, ttlMs: numb
     }
 
     const fullPath = resolve(overlayBase, entry.name);
+    if (ttlMs <= 0) {
+      rmSync(fullPath, { recursive: true, force: true });
+      removed += 1;
+      continue;
+    }
+
     const ageMs = now - statSync(fullPath).mtimeMs;
     if (ageMs >= ttlMs) {
       rmSync(fullPath, { recursive: true, force: true });
@@ -433,15 +442,15 @@ function candidateUrlPrefix(candidate: NextAssetMappingCandidate): string | unde
   return candidate.targetAssetUrl.slice(0, index);
 }
 
-function assetMatchesAnySource(asset: NextAssetRecord, sourcePaths: string[]): string[] {
+function assetSourceMapMatchesAnySource(asset: NextAssetRecord, sourcePaths: string[]): string[] {
   return sourcePaths.filter((sourcePath) => {
-    return asset.sources.some((source) => nextAssetSourceMatches(source, sourcePath));
+    return asset.sourceMapSources.some((source) => nextAssetSourceMatches(source, sourcePath));
   });
 }
 
 function scoreTempAssetForCandidate(asset: NextAssetRecord, candidate: NextAssetMappingCandidate, sourcePaths: string[]): number {
   const requestedSources = candidate.matchedSourcePaths.length > 0 ? candidate.matchedSourcePaths : sourcePaths;
-  const sourceScore = assetMatchesAnySource(asset, requestedSources).length * 100;
+  const sourceScore = assetSourceMapMatchesAnySource(asset, requestedSources).length * 100;
   const extensionScore = extname(candidate.localFilePath).toLowerCase() === asset.extension ? 20 : 0;
   const routeScore = candidate.manifestRoutes.some((route) => asset.manifestRoutes.includes(route)) ? 10 : 0;
   return sourceScore + extensionScore + routeScore;
@@ -494,6 +503,9 @@ function createRule(options: {
 }): PlannedNextOverrideRule {
   return {
     ruleId: options.ruleId,
+    ruleType: 'asset',
+    requestMethod: 'GET',
+    matchMode: 'exact',
     targetAssetUrl: options.targetAssetUrl,
     localFilePath: options.localAsset.localFilePath,
     localAssetPath: options.localAsset.assetPath,
@@ -535,6 +547,9 @@ function writeOverrideConfig(options: {
         autoReload: options.autoReload ?? true,
         rules: options.rules.map((rule) => ({
           ruleId: rule.ruleId,
+          ruleType: rule.ruleType,
+          requestMethod: rule.requestMethod,
+          matchMode: rule.matchMode,
           targetAssetUrl: rule.targetAssetUrl,
           localFilePath: rule.localFilePath,
           contentType: rule.contentType,
@@ -652,7 +667,7 @@ export async function planNextSourceOverride(options: {
   const overlayIndex = createNextAssetIndex(overlayProjectRoot, originalNextDir);
   warnings.push(...overlayIndex.warnings.map((warning) => `overlay: ${warning}`));
 
-  const tempAssetsForSources = overlayIndex.assets.filter((asset) => assetMatchesAnySource(asset, sourcePaths).length > 0);
+  const tempAssetsForSources = overlayIndex.assets.filter((asset) => assetSourceMapMatchesAnySource(asset, sourcePaths).length > 0);
   const changedAssets = tempAssetsForSources.filter((asset) => {
     const original = originalIndex.byAssetPath.get(asset.assetPath);
     return !original || original.sha256 !== asset.sha256 || original.sizeBytes !== asset.sizeBytes;
@@ -670,6 +685,8 @@ export async function planNextSourceOverride(options: {
 
     const tempAsset = findBestTempAssetForCandidate(changedAssets, candidate, sourcePaths);
     const originalAsset = originalIndex.byAssetPath.get(candidate.assetPath);
+    const originalSourceMapMatches = originalAsset ? assetSourceMapMatchesAnySource(originalAsset, sourcePaths) : [];
+    const exactChangedAsset = changedAssets.find((asset) => asset.assetPath === candidate.assetPath);
     const patchedAsset = originalAsset
       ? createPatchedObservedAsset({
           originalAsset,
@@ -678,13 +695,13 @@ export async function planNextSourceOverride(options: {
           ruleIndex: rules.length + 1,
         })
       : undefined;
-    const localAsset = patchedAsset ?? tempAsset;
+    const localAsset = patchedAsset ?? exactChangedAsset ?? (originalSourceMapMatches.length > 0 ? tempAsset : undefined);
     if (!localAsset) {
       warnings.push(`No changed overlay chunk matched observed asset ${candidate.targetAssetUrl}.`);
       continue;
     }
 
-    const matchedSourcePaths = patchedAsset ? candidate.matchedSourcePaths : assetMatchesAnySource(localAsset, sourcePaths);
+    const matchedSourcePaths = patchedAsset ? candidate.matchedSourcePaths : assetSourceMapMatchesAnySource(localAsset, sourcePaths);
     const rule = createRule({
       ruleId: `source-${rules.length + 1}`,
       targetAssetUrl: candidate.targetAssetUrl,
@@ -737,7 +754,7 @@ export async function planNextSourceOverride(options: {
           : 'edited_source_chunk_without_observed_original',
         confidence: 'medium',
         score: LOW_CONFIDENCE_SCORE + 1,
-        matchedSourcePaths: assetMatchesAnySource(dependencyAsset, sourcePaths),
+        matchedSourcePaths: assetSourceMapMatchesAnySource(dependencyAsset, sourcePaths),
       }));
     }
   } else if (changedAssets.length > 0) {
@@ -754,6 +771,7 @@ export async function planNextSourceOverride(options: {
   if (limitedRules.length === 0) {
     blockers.push('No override rules could be planned from the edited source files.');
   }
+  const patchedObservedAssetCount = limitedRules.filter((rule) => rule.reason === 'observed_asset_patched_from_source_edit').length;
 
   const configPath = normalizeOptionalString(options.configPath);
   const shouldWriteConfig = options.writeConfig === true;
@@ -784,7 +802,7 @@ export async function planNextSourceOverride(options: {
     editsApplied,
     build,
     mappingCandidateCount: mappingCandidates.length,
-    changedAssetCount: changedAssets.length,
+    changedAssetCount: changedAssets.length + patchedObservedAssetCount,
     dependencyRuleCount: limitedRules.filter((rule) => rule.reason.includes('dependency') || rule.reason.includes('without_observed')).length,
     rules: limitedRules,
     configPath,

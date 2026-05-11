@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
 import { createServer } from 'http';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -9,7 +9,7 @@ import {
   resolveOverridePocConfigPath,
 } from './override-poc.js';
 import { createOverrideProfileConfig } from './override-profile-generator.js';
-import { mapNextOverrideAssets, mapNextOverrideAssetsWithDrift } from './next-asset-mapper.js';
+import { createNextAssetIndex, mapNextOverrideAssets, mapNextOverrideAssetsWithDrift } from './next-asset-mapper.js';
 import { cleanupNextSourceOverlayRoots } from './next-source-override-planner.js';
 
 const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
@@ -92,6 +92,55 @@ describe('override-poc config', () => {
     expect(response.buffer.toString('utf8')).toBe(fixture.assetBody);
     expect(response.summary.targetAssetUrl).toBe(fixture.assetUrl);
     expect(response.rule.ruleId).toBe('default');
+  });
+
+  it('requires exact request method matches when serving duplicate target URLs', () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'override-poc-method-'));
+    const getPath = join(fixtureRoot, 'get.json');
+    const postPath = join(fixtureRoot, 'post.json');
+    const configPath = join(fixtureRoot, 'override-poc.config.json');
+    writeFileSync(getPath, '{"mode":"get"}', 'utf8');
+    writeFileSync(postPath, '{"mode":"post"}', 'utf8');
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        enabled: true,
+        activeProfileId: 'methods',
+        profiles: [{
+          profileId: 'methods',
+          name: 'Method rules',
+          enabled: true,
+          autoReload: true,
+          rules: [
+            {
+              ruleId: 'get-rule',
+              ruleType: 'api-response',
+              requestMethod: 'GET',
+              targetAssetUrl: 'https://example.com/api/products',
+              localFilePath: './get.json',
+              contentType: 'application/json; charset=utf-8',
+            },
+            {
+              ruleId: 'post-rule',
+              ruleType: 'api-response',
+              requestMethod: 'POST',
+              targetAssetUrl: 'https://example.com/api/products',
+              localFilePath: './post.json',
+              contentType: 'application/json; charset=utf-8',
+            },
+          ],
+        }],
+      }),
+      'utf8',
+    );
+
+    const getResponse = getOverridePocAssetResponse('https://example.com/api/products', configPath, 'GET');
+    const postResponse = getOverridePocAssetResponse('https://example.com/api/products', configPath, 'post');
+
+    expect(getResponse.rule.ruleId).toBe('get-rule');
+    expect(getResponse.buffer.toString('utf8')).toContain('"get"');
+    expect(postResponse.rule.ruleId).toBe('post-rule');
+    expect(postResponse.buffer.toString('utf8')).toContain('"post"');
   });
 
   it('serves multiple enabled rules from the active profile', () => {
@@ -235,6 +284,50 @@ describe('override-poc config', () => {
     expect(summary.targetAssetUrl).toBe('https://example.com/env.js');
   });
 
+  it('preserves prefix match mode for response override rules', () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'override-poc-prefix-'));
+    const configPath = join(fixtureRoot, 'override-poc.local.json');
+    const bodyPath = join(fixtureRoot, 'about.rsc');
+
+    try {
+      writeFileSync(bodyPath, '1:["$","h1",null,{"children":"Override proof"}]', 'utf8');
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          enabled: true,
+          activeProfileId: 'rsc',
+          profiles: [{
+            profileId: 'rsc',
+            name: 'RSC prefix',
+            enabled: true,
+            autoReload: true,
+            rules: [{
+              ruleId: 'about-rsc',
+              enabled: true,
+              ruleType: 'rsc-flight',
+              requestMethod: 'GET',
+              matchMode: 'prefix',
+              targetAssetUrl: 'https://example.com/about?_rsc=',
+              localFilePath: './about.rsc',
+              contentType: 'text/x-component',
+            }],
+          }],
+        }, null, 2),
+        'utf8',
+      );
+
+      const summary = getOverridePocConfigSummary(configPath);
+      expect(summary.matchMode).toBe('prefix');
+      expect(summary.rules[0]?.matchMode).toBe('prefix');
+
+      const response = getOverridePocAssetResponse('https://example.com/about?_rsc=', configPath, 'GET');
+      expect(response.rule.matchMode).toBe('prefix');
+      expect(response.buffer.toString('utf8')).toContain('Override proof');
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   it('generates Next.js candidate profiles from manifests and static assets', () => {
     const fixtureRoot = mkdtempSync(join(tmpdir(), 'override-poc-next-profile-'));
     const chunksDir = join(fixtureRoot, '.next', 'static', 'chunks');
@@ -335,6 +428,67 @@ describe('override-poc config', () => {
         confidence: 'high',
         matchedSourcePaths: ['src/app/scenario-boot.tsx'],
       });
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('separates direct source-map ownership from client-reference chunk membership', () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'next-asset-source-split-'));
+    try {
+      const chunkDir = join(fixtureRoot, '.next', 'static', 'chunks');
+      const manifestDir = join(fixtureRoot, '.next', 'server', 'app', 'about');
+      mkdirSync(chunkDir, { recursive: true });
+      mkdirSync(manifestDir, { recursive: true });
+
+      const sharedChunkPath = join(chunkDir, 'shared.js');
+      writeFileSync(sharedChunkPath, 'console.log("shared next/link chunk");\n', 'utf8');
+      writeFileSync(
+        `${sharedChunkPath}.map`,
+        JSON.stringify({
+          version: 3,
+          sources: ['webpack://_N_E/./node_modules/next/dist/client/app-dir/link.js'],
+          mappings: '',
+        }),
+        'utf8',
+      );
+
+      const pageChunkPath = join(chunkDir, 'page.js');
+      writeFileSync(pageChunkPath, 'console.log("scenario chunk");\n', 'utf8');
+      writeFileSync(
+        `${pageChunkPath}.map`,
+        JSON.stringify({
+          version: 3,
+          sources: ['webpack://_N_E/./src/app/scenario-boot.tsx'],
+          mappings: '',
+        }),
+        'utf8',
+      );
+
+      writeFileSync(
+        join(manifestDir, 'page_client-reference-manifest.js'),
+        `globalThis.__RSC_MANIFEST["/about/page"] = ${JSON.stringify({
+          clientModules: {
+            '[project]/apps/override-next-fixture/src/app/scenario-boot.tsx': {
+              chunks: [
+                '/_next/static/chunks/shared.js',
+                '/_next/static/chunks/page.js',
+              ],
+            },
+          },
+        })};`,
+        'utf8',
+      );
+
+      const index = createNextAssetIndex(fixtureRoot);
+      const shared = index.byAssetPath.get('static/chunks/shared.js');
+      const page = index.byAssetPath.get('static/chunks/page.js');
+
+      expect(shared?.manifestSources).toContain('[project]/apps/override-next-fixture/src/app/scenario-boot.tsx');
+      expect(shared?.sources).toContain('[project]/apps/override-next-fixture/src/app/scenario-boot.tsx');
+      expect(shared?.sourceMapSources).not.toContain('[project]/apps/override-next-fixture/src/app/scenario-boot.tsx');
+      expect(page?.sourceMapSources).toContain('src/app/scenario-boot.tsx');
+      expect(page?.manifestSources).toContain('[project]/apps/override-next-fixture/src/app/scenario-boot.tsx');
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });
     }
@@ -462,9 +616,26 @@ describe('override-poc config', () => {
       mkdirSync(join(workspaceRoot, 'tmp', 'bn', 'old-a'), { recursive: true });
       mkdirSync(join(workspaceRoot, 'tmp', 'bn', 'old-b'), { recursive: true });
 
-      const removed = cleanupNextSourceOverlayRoots(workspaceRoot, 0, Date.now() + 1);
+      const removed = cleanupNextSourceOverlayRoots(workspaceRoot, 0);
 
       expect(removed).toBe(2);
+      expect(existsSync(join(workspaceRoot, 'tmp', 'bn', 'old-a'))).toBe(false);
+      expect(existsSync(join(workspaceRoot, 'tmp', 'bn', 'old-b'))).toBe(false);
+    } finally {
+      rmSync(workspaceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves unexpired Next.js source overlay folders', () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'next-overlay-keep-'));
+    const overlayPath = join(workspaceRoot, 'tmp', 'bn', 'fresh');
+    try {
+      mkdirSync(overlayPath, { recursive: true });
+
+      const removed = cleanupNextSourceOverlayRoots(workspaceRoot, 60_000, Date.now());
+
+      expect(removed).toBe(0);
+      expect(existsSync(overlayPath)).toBe(true);
     } finally {
       rmSync(workspaceRoot, { recursive: true, force: true });
     }

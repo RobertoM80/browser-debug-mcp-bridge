@@ -493,6 +493,10 @@ export function createOverrideProfileConfig(options: OverrideProfileGenerationOp
     return {
       ruleId: createRuleId(assetPath, index, usedRuleIds),
       enabled: true,
+      ruleType: 'asset',
+      requestMethod: 'GET',
+      matchMode: 'exact',
+      allowExperimentalRscFlightFulfillment: false,
       targetAssetUrl: new URL(assetPath, targetBase.targetBaseUrl).toString(),
       localFilePath: toPortablePath(relative(configDir, absoluteLocalFilePath)),
       contentType: resolveContentType(assetPath),

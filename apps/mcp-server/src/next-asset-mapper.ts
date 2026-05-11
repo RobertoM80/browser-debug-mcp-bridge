@@ -1,6 +1,11 @@
 import { createHash } from 'crypto';
 import { existsSync, readFileSync, readdirSync, statSync } from 'fs';
 import { extname, relative, resolve } from 'path';
+import {
+  isOverridePocRuleType,
+  normalizeOverrideRequestMethod,
+  type OverridePocRuleType,
+} from './override-rule-types.js';
 
 export type OverrideAssetConfidence = 'high' | 'medium' | 'low';
 
@@ -13,14 +18,26 @@ export interface ObservedOverrideAssetInput {
   rel?: unknown;
   as?: unknown;
   integrity?: unknown;
+  ruleType?: unknown;
+  requestMethod?: unknown;
+  resourceType?: unknown;
+  contentType?: unknown;
+  statusCode?: unknown;
   fromDom?: unknown;
   fromPerformance?: unknown;
+  fromNavigation?: unknown;
+  fromFetch?: unknown;
 }
 
 export interface NormalizedObservedOverrideAsset {
   url: string;
   assetPath: string | null;
   pathname: string;
+  ruleType: OverridePocRuleType;
+  requestMethod: string;
+  resourceType?: string;
+  contentType?: string;
+  statusCode?: number;
   kind?: string;
   initiatorType?: string;
   rel?: string;
@@ -28,6 +45,8 @@ export interface NormalizedObservedOverrideAsset {
   integrity?: string;
   fromDom: boolean;
   fromPerformance: boolean;
+  fromNavigation: boolean;
+  fromFetch: boolean;
 }
 
 export interface NextAssetRecord {
@@ -38,6 +57,8 @@ export interface NextAssetRecord {
   sha256: string;
   sourceMapPath?: string;
   sourceCount: number;
+  sourceMapSources: string[];
+  manifestSources: string[];
   sources: string[];
   manifestRoutes: string[];
   manifestFiles: string[];
@@ -137,6 +158,42 @@ function normalizeOptionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 }
 
+function normalizeOptionalInteger(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return undefined;
+  }
+  return Math.floor(value);
+}
+
+function inferObservedRuleType(value: Record<string, unknown>, url: string, normalized: { assetPath: string | null; pathname: string }): OverridePocRuleType {
+  if (isOverridePocRuleType(value.ruleType)) {
+    return value.ruleType;
+  }
+
+  const kind = normalizeOptionalString(value.kind)?.toLowerCase();
+  const resourceType = normalizeOptionalString(value.resourceType)?.toLowerCase();
+  const initiatorType = normalizeOptionalString(value.initiatorType)?.toLowerCase();
+  const contentType = normalizeOptionalString(value.contentType)?.toLowerCase();
+
+  if (kind === 'document' || resourceType === 'document' || value.fromNavigation === true) {
+    return 'document';
+  }
+  if (contentType?.includes('text/x-component') || url.includes('_rsc=') || normalized.pathname.includes('/__flight__')) {
+    return 'rsc-flight';
+  }
+  if (normalized.pathname.includes('/_next/data/')) {
+    return 'next-data';
+  }
+  if (normalized.assetPath) {
+    return 'asset';
+  }
+  if (initiatorType === 'fetch' || initiatorType === 'xmlhttprequest' || kind === 'fetch' || kind === 'xmlhttprequest') {
+    return 'api-response';
+  }
+
+  return 'asset';
+}
+
 function normalizeAssetPathFromUrl(value: string): { assetPath: string | null; pathname: string } {
   let pathname = value;
   try {
@@ -174,10 +231,16 @@ function normalizeObservedAsset(value: unknown): NormalizedObservedOverrideAsset
   }
 
   const normalized = normalizeAssetPathFromUrl(url);
+  const ruleType = inferObservedRuleType(value, url, normalized);
   return {
     url,
     assetPath: normalized.assetPath,
     pathname: normalized.pathname,
+    ruleType,
+    requestMethod: normalizeOverrideRequestMethod(value.requestMethod),
+    resourceType: normalizeOptionalString(value.resourceType),
+    contentType: normalizeOptionalString(value.contentType),
+    statusCode: normalizeOptionalInteger(value.statusCode),
     kind: normalizeOptionalString(value.kind),
     initiatorType: normalizeOptionalString(value.initiatorType),
     rel: normalizeOptionalString(value.rel),
@@ -185,6 +248,8 @@ function normalizeObservedAsset(value: unknown): NormalizedObservedOverrideAsset
     integrity: normalizeOptionalString(value.integrity),
     fromDom: value.fromDom === true,
     fromPerformance: value.fromPerformance === true,
+    fromNavigation: value.fromNavigation === true,
+    fromFetch: value.fromFetch === true,
   };
 }
 
@@ -200,17 +265,24 @@ export function normalizeObservedOverrideAssets(values: unknown): NormalizedObse
       continue;
     }
 
-    const existing = byUrl.get(normalized.url);
+    const key = `${normalized.requestMethod}\0${normalized.url}`;
+    const existing = byUrl.get(key);
     if (existing) {
       existing.fromDom = existing.fromDom || normalized.fromDom;
       existing.fromPerformance = existing.fromPerformance || normalized.fromPerformance;
       existing.integrity = existing.integrity ?? normalized.integrity;
       existing.kind = existing.kind ?? normalized.kind;
       existing.initiatorType = existing.initiatorType ?? normalized.initiatorType;
+      existing.ruleType = existing.ruleType === 'asset' ? normalized.ruleType : existing.ruleType;
+      existing.resourceType = existing.resourceType ?? normalized.resourceType;
+      existing.contentType = existing.contentType ?? normalized.contentType;
+      existing.statusCode = existing.statusCode ?? normalized.statusCode;
+      existing.fromNavigation = existing.fromNavigation || normalized.fromNavigation;
+      existing.fromFetch = existing.fromFetch || normalized.fromFetch;
       continue;
     }
 
-    byUrl.set(normalized.url, normalized);
+    byUrl.set(key, normalized);
   }
 
   return Array.from(byUrl.values()).sort((first, second) => first.url.localeCompare(second.url));
@@ -545,9 +617,11 @@ export function createNextAssetIndex(projectRootInput: string, nextDirInput?: st
     const stat = statSync(localFilePath);
     const sourceMap = readSourceMapSources(localFilePath);
     const manifestReference = manifestReferences.get(assetPath);
+    const sourceMapSources = sourceMap.sources;
+    const manifestSources = Array.from(manifestReference?.sources ?? []);
     const sources = Array.from(new Set([
-      ...sourceMap.sources,
-      ...Array.from(manifestReference?.sources ?? []),
+      ...sourceMapSources,
+      ...manifestSources,
     ])).sort();
     return {
       assetPath,
@@ -557,6 +631,8 @@ export function createNextAssetIndex(projectRootInput: string, nextDirInput?: st
       sha256: hashFile(localFilePath),
       sourceMapPath: sourceMap.sourceMapPath,
       sourceCount: sources.length,
+      sourceMapSources: sourceMapSources.sort(),
+      manifestSources: manifestSources.sort(),
       sources,
       manifestRoutes: Array.from(manifestReference?.routes ?? []).sort(),
       manifestFiles: Array.from(manifestReference?.manifests ?? []).sort(),
