@@ -2477,6 +2477,56 @@ describe('mcp/server V1 query tools', () => {
 });
 
 describe('mcp/server V2 capture tools', () => {
+  function writeReadyAssetOverrideConfig(tempRoot: string): string {
+    const localAssetPath = join(tempRoot, 'app.local.js');
+    writeFileSync(localAssetPath, 'console.log("override");', 'utf8');
+    const configPath = join(tempRoot, 'override-poc.local.json');
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        enabled: true,
+        activeProfileId: 'asset-profile',
+        profiles: [{
+          profileId: 'asset-profile',
+          name: 'Asset profile',
+          enabled: true,
+          autoReload: true,
+          rules: [{
+            ruleId: 'asset-rule',
+            enabled: true,
+            ruleType: 'asset',
+            requestMethod: 'GET',
+            matchMode: 'exact',
+            targetAssetUrl: 'https://example.com/app.js',
+            localFilePath: localAssetPath,
+            contentType: 'application/javascript; charset=utf-8',
+          }],
+        }],
+      }, null, 2),
+      'utf8',
+    );
+    return configPath;
+  }
+
+  function seedReadyOverrideSession(db: Database.Database, sessionId = 'session-live'): void {
+    db.prepare(`
+      INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, tab_id, url_last)
+      VALUES (?, 1000, 1100, 0, 7, 'https://example.com/')
+    `).run(sessionId);
+    persistObservedOverrideAssets(db, {
+      sessionId,
+      tabId: 7,
+      pageUrl: 'https://example.com/',
+      assets: [{
+        url: 'https://example.com/app.js',
+        ruleType: 'asset',
+        requestMethod: 'GET',
+        kind: 'script',
+        fromPerformance: true,
+      }],
+    });
+  }
+
   it('routes override control tools through live capture commands', async () => {
     const captureCalls: Array<{ sessionId: string; command: string; payload: Record<string, unknown> }> = [];
     const tools = createToolRegistry(
@@ -2510,6 +2560,230 @@ describe('mcp/server V2 capture tools', () => {
     expect(status.configuredEnabled).toBe(true);
     expect(enabled.active).toBe(true);
     expect(disabled.active).toBe(false);
+  });
+
+  it('returns persisted override status diagnostics when live status times out', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-v2-status-timeout-'));
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+
+    try {
+      process.env.OVERRIDE_POC_CONFIG_PATH = writeReadyAssetOverrideConfig(tempRoot);
+      seedReadyOverrideSession(db);
+
+      const tools = createToolRegistry(
+        createV2ToolHandlers(
+          {
+            execute: async (_sessionId, command) => {
+              expect(command).toBe('CAPTURE_OVERRIDE_POC_GET_STATUS');
+              throw new Error('Capture command timed out after 3000ms');
+            },
+          },
+          () => db,
+          () => ({ connected: true, connectedAt: 1200, lastHeartbeatAt: 1300 }),
+        ),
+      );
+
+      const status = await routeToolCall(tools, 'get_override_status', { sessionId: 'session-live' });
+
+      expect(status.statusSource).toBe('persisted-audit');
+      expect(status.liveStatus).toMatchObject({
+        available: false,
+        code: 'OVERRIDE_LIVE_COMMAND_TIMEOUT',
+        command: 'CAPTURE_OVERRIDE_POC_GET_STATUS',
+        timeoutMs: 3000,
+      });
+      expect(status.latestRun).toBeNull();
+      expect(status.preflight).toMatchObject({ ready: true });
+      expect(status.nextActions).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'RECONNECT_OR_RETRY_OVERRIDE_STATUS' }),
+      ]));
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps live status timeout diagnostics when override config cannot be read', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-v2-status-missing-config-'));
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+
+    try {
+      process.env.OVERRIDE_POC_CONFIG_PATH = join(tempRoot, 'missing-override-poc.json');
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, tab_id, url_last)
+        VALUES ('session-live', 1000, 1100, 0, 7, 'https://example.com/')
+      `).run();
+
+      const tools = createToolRegistry(
+        createV2ToolHandlers(
+          {
+            execute: async (_sessionId, command) => {
+              expect(command).toBe('CAPTURE_OVERRIDE_POC_GET_STATUS');
+              throw new Error('Capture command timed out after 3000ms');
+            },
+          },
+          () => db,
+          () => ({ connected: true, connectedAt: 1200, lastHeartbeatAt: 1300 }),
+        ),
+      );
+
+      const status = await routeToolCall(tools, 'get_override_status', { sessionId: 'session-live' });
+
+      expect(status.statusSource).toBe('persisted-audit');
+      expect(status.liveStatus).toMatchObject({
+        code: 'OVERRIDE_LIVE_COMMAND_TIMEOUT',
+        command: 'CAPTURE_OVERRIDE_POC_GET_STATUS',
+      });
+      expect(status.profile).toBeNull();
+      expect(status.profileError).toContain('Unable to read override-poc config');
+      expect(status.preflight).toMatchObject({
+        ready: false,
+        issues: [expect.objectContaining({ code: 'OVERRIDE_CONFIG_UNAVAILABLE' })],
+      });
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a structured activation timeout when enable_overrides does not answer', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-v2-enable-timeout-'));
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+
+    try {
+      process.env.OVERRIDE_POC_CONFIG_PATH = writeReadyAssetOverrideConfig(tempRoot);
+      seedReadyOverrideSession(db);
+
+      const tools = createToolRegistry(
+        createV2ToolHandlers(
+          {
+            execute: async (_sessionId, command) => {
+              expect(command).toBe('CAPTURE_OVERRIDE_POC_ENABLE');
+              throw new Error('Capture command timed out after 8000ms');
+            },
+          },
+          () => db,
+          () => ({ connected: true, connectedAt: 1200, lastHeartbeatAt: 1300 }),
+        ),
+      );
+
+      await expect(routeToolCall(tools, 'enable_overrides', { sessionId: 'session-live', tabId: 7 }))
+        .rejects.toThrow('OVERRIDE_LIVE_COMMAND_TIMEOUT: CAPTURE_OVERRIDE_POC_ENABLE for session session-live timed out after 8000ms');
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('returns a concrete disable failure when disable_overrides times out', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-v2-disable-timeout-'));
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+
+    try {
+      const configPath = writeReadyAssetOverrideConfig(tempRoot);
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+      seedReadyOverrideSession(db);
+      db.prepare(`
+        INSERT INTO override_runs (
+          run_id, session_id, started_at, run_status, tab_id, selected_tab_id, target_asset_url, local_file_path,
+          resolved_local_file_path, content_type, auto_reload, config_path, file_exists, file_size_bytes,
+          matched_requests, fulfilled_requests, created_at, updated_at
+        ) VALUES (
+          'run-active', 'session-live', 1200, 'active', 7, 7, 'https://example.com/app.js', './app.local.js',
+          ?, 'application/javascript; charset=utf-8', 1, ?, 1, 24,
+          1, 1, 1200, 1300
+        )
+      `).run(join(tempRoot, 'app.local.js'), configPath);
+
+      const tools = createToolRegistry(
+        createV2ToolHandlers(
+          {
+            execute: async (_sessionId, command) => {
+              expect(command).toBe('CAPTURE_OVERRIDE_POC_DISABLE');
+              throw new Error('Capture command timed out after 5000ms');
+            },
+          },
+          () => db,
+          () => ({ connected: true, connectedAt: 1200, lastHeartbeatAt: 1300 }),
+        ),
+      );
+
+      const disabled = await routeToolCall(tools, 'disable_overrides', { sessionId: 'session-live' });
+
+      expect(disabled.disableAttempt).toMatchObject({
+        ok: false,
+        code: 'OVERRIDE_LIVE_COMMAND_TIMEOUT',
+        command: 'CAPTURE_OVERRIDE_POC_DISABLE',
+        timeoutMs: 5000,
+      });
+      expect(disabled.statusSource).toBe('persisted-audit');
+      expect(disabled.latestRun).toMatchObject({ runId: 'run-active', runStatus: 'active' });
+      expect(disabled.nextActions).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'RECONNECT_OR_RETRY_DISABLE' }),
+      ]));
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a structured asset observation timeout', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command) => {
+          expect(command).toBe('CAPTURE_OVERRIDE_OBSERVE_ASSETS');
+          throw new Error('Capture command timed out after 5000ms');
+        },
+      }),
+    );
+
+    await expect(routeToolCall(tools, 'observe_override_assets', { sessionId: 'session-live', tabId: 7 }))
+      .rejects.toThrow('OVERRIDE_LIVE_COMMAND_TIMEOUT: CAPTURE_OVERRIDE_OBSERVE_ASSETS for session session-live timed out after 5000ms');
+  });
+
+  it('reports a structured response capture timeout', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command) => {
+          expect(command).toBe('CAPTURE_OVERRIDE_RESPONSE_BODY');
+          throw new Error('Capture command timed out after 12000ms');
+        },
+      }),
+    );
+
+    await expect(routeToolCall(tools, 'capture_override_response_body', {
+      sessionId: 'session-live',
+      targetUrl: 'https://example.com/api/data',
+      timeoutMs: 10_000,
+    })).rejects.toThrow('OVERRIDE_LIVE_COMMAND_TIMEOUT: CAPTURE_OVERRIDE_RESPONSE_BODY for session session-live timed out after 12000ms');
   });
 
   it('auto-observes missing override assets before enabling through the live bridge', async () => {

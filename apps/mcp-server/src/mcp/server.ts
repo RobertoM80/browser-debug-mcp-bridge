@@ -1239,6 +1239,8 @@ const DEFAULT_NETWORK_POLL_TIMEOUT_MS = 15_000;
 const MAX_NETWORK_POLL_TIMEOUT_MS = 120_000;
 const DEFAULT_NETWORK_POLL_INTERVAL_MS = 250;
 const LIVE_SESSION_DISCONNECTED_CODE = 'LIVE_SESSION_DISCONNECTED';
+const OVERRIDE_LIVE_COMMAND_TIMEOUT_CODE = 'OVERRIDE_LIVE_COMMAND_TIMEOUT';
+const OVERRIDE_LIVE_COMMAND_FAILED_CODE = 'OVERRIDE_LIVE_COMMAND_FAILED';
 const STALE_LIVE_CONNECTION_GRACE_WINDOW_MS = 30 * 60 * 1000;
 const NOISE_SESSION_HOST_PATTERNS = [
   /(^|\.)adtrafficquality\.google$/i,
@@ -1465,24 +1467,26 @@ export interface CaptureClientResult {
   error?: string;
 }
 
+type CaptureCommandName =
+  | 'CAPTURE_DOM_SUBTREE'
+  | 'CAPTURE_DOM_DOCUMENT'
+  | 'CAPTURE_COMPUTED_STYLES'
+  | 'CAPTURE_LAYOUT_METRICS'
+  | 'CAPTURE_PAGE_STATE'
+  | 'CAPTURE_UI_SNAPSHOT'
+  | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+  | 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
+  | 'CAPTURE_OVERRIDE_RESPONSE_BODY'
+  | 'CAPTURE_OVERRIDE_POC_GET_STATUS'
+  | 'CAPTURE_OVERRIDE_POC_ENABLE'
+  | 'CAPTURE_OVERRIDE_POC_DISABLE'
+  | 'SET_VIEWPORT'
+  | 'EXECUTE_UI_ACTION';
+
 export interface CaptureCommandClient {
   execute(
     sessionId: string,
-    command:
-      | 'CAPTURE_DOM_SUBTREE'
-      | 'CAPTURE_DOM_DOCUMENT'
-      | 'CAPTURE_COMPUTED_STYLES'
-      | 'CAPTURE_LAYOUT_METRICS'
-      | 'CAPTURE_PAGE_STATE'
-      | 'CAPTURE_UI_SNAPSHOT'
-      | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
-      | 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
-      | 'CAPTURE_OVERRIDE_RESPONSE_BODY'
-      | 'CAPTURE_OVERRIDE_POC_GET_STATUS'
-      | 'CAPTURE_OVERRIDE_POC_ENABLE'
-      | 'CAPTURE_OVERRIDE_POC_DISABLE'
-      | 'SET_VIEWPORT'
-      | 'EXECUTE_UI_ACTION',
+    command: CaptureCommandName,
     payload: Record<string, unknown>,
     timeoutMs?: number,
   ): Promise<CaptureClientResult>;
@@ -4233,6 +4237,86 @@ function normalizeCaptureError(sessionId: string, error: unknown): Error {
   return fallback;
 }
 
+function isCaptureTimeoutMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes('timed out') || normalized.includes('timeout');
+}
+
+function isRecoverableOverrideLiveCommandError(error: unknown): boolean {
+  if (isLiveSessionDisconnectedError(error)) {
+    return true;
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  return isCaptureTimeoutMessage(message);
+}
+
+function extractTimeoutMsFromMessage(message: string, fallback: number): number {
+  const match = message.match(/(?:after|waiting)\s+(\d+)ms/i);
+  if (!match) {
+    return fallback;
+  }
+
+  const parsed = Number.parseInt(match[1] ?? '', 10);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function buildOverrideLiveCommandFailure(options: {
+  sessionId: string;
+  command: CaptureCommandName;
+  timeoutMs: number;
+  error: unknown;
+  getSessionConnectionState?: (sessionId: string) => SessionConnectionLookupResult | undefined;
+}): Record<string, unknown> {
+  const originalMessage = options.error instanceof Error ? options.error.message : String(options.error);
+  const timeout = extractTimeoutMsFromMessage(originalMessage, options.timeoutMs);
+  const timedOut = isCaptureTimeoutMessage(originalMessage);
+  const disconnected = isLiveSessionDisconnectedError(options.error);
+  const sessionState = options.getSessionConnectionState?.(options.sessionId);
+  const code = disconnected
+    ? LIVE_SESSION_DISCONNECTED_CODE
+    : timedOut
+      ? OVERRIDE_LIVE_COMMAND_TIMEOUT_CODE
+      : OVERRIDE_LIVE_COMMAND_FAILED_CODE;
+  const message = timedOut
+    ? `${options.command} for session ${options.sessionId} timed out after ${timeout}ms before the live extension returned an override command result.`
+    : disconnected
+      ? `${options.command} for session ${options.sessionId} could not reach a connected live extension target.`
+      : `${options.command} for session ${options.sessionId} failed before returning an override command result.`;
+
+  return {
+    ok: false,
+    available: false,
+    code,
+    command: options.command,
+    timeoutMs: timeout,
+    timedOut,
+    disconnected,
+    message,
+    originalMessage,
+    sessionConnected: sessionState?.connected,
+    disconnectedAt: sessionState?.disconnectedAt,
+    disconnectReason: sessionState?.disconnectReason,
+  };
+}
+
+function createOverrideLiveCommandError(options: {
+  sessionId: string;
+  command: CaptureCommandName;
+  timeoutMs: number;
+  error: unknown;
+  getSessionConnectionState?: (sessionId: string) => SessionConnectionLookupResult | undefined;
+}): Error {
+  const failure = buildOverrideLiveCommandFailure(options);
+  const code = String(failure.code ?? OVERRIDE_LIVE_COMMAND_FAILED_CODE);
+  const message = `${code}: ${options.command} for session ${options.sessionId} ${failure.timedOut === true
+    ? `timed out after ${String(failure.timeoutMs)}ms`
+    : `failed`}. ${String(failure.message ?? '')} Original error: ${String(failure.originalMessage ?? 'unknown')}`;
+  const error = new Error(message);
+  Object.assign(error, { code, details: failure });
+  return error;
+}
+
 function isLiveSessionDisconnectedError(error: unknown): error is LiveSessionDisconnectedError {
   return error instanceof LiveSessionDisconnectedError;
 }
@@ -4240,21 +4324,7 @@ function isLiveSessionDisconnectedError(error: unknown): error is LiveSessionDis
 async function executeLiveCapture(
   captureClient: CaptureCommandClient,
   sessionId: string,
-  command:
-    | 'CAPTURE_DOM_SUBTREE'
-    | 'CAPTURE_DOM_DOCUMENT'
-    | 'CAPTURE_COMPUTED_STYLES'
-    | 'CAPTURE_LAYOUT_METRICS'
-    | 'CAPTURE_PAGE_STATE'
-    | 'CAPTURE_UI_SNAPSHOT'
-    | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
-    | 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
-    | 'CAPTURE_OVERRIDE_RESPONSE_BODY'
-    | 'CAPTURE_OVERRIDE_POC_GET_STATUS'
-    | 'CAPTURE_OVERRIDE_POC_ENABLE'
-    | 'CAPTURE_OVERRIDE_POC_DISABLE'
-    | 'SET_VIEWPORT'
-    | 'EXECUTE_UI_ACTION',
+  command: CaptureCommandName,
   payload: Record<string, unknown>,
   timeoutMs: number,
 ): Promise<CaptureClientResult> {
@@ -4262,6 +4332,34 @@ async function executeLiveCapture(
     return await captureClient.execute(sessionId, command, payload, timeoutMs);
   } catch (error) {
     throw normalizeCaptureError(sessionId, error);
+  }
+}
+
+async function executeOverrideLiveCaptureWithDiagnostics(options: {
+  captureClient: CaptureCommandClient;
+  sessionId: string;
+  command: CaptureCommandName;
+  payload: Record<string, unknown>;
+  timeoutMs: number;
+  getSessionConnectionState?: (sessionId: string) => SessionConnectionLookupResult | undefined;
+}): Promise<{ capture: CaptureClientResult; payload: Record<string, unknown> }> {
+  try {
+    const capture = await executeLiveCapture(
+      options.captureClient,
+      options.sessionId,
+      options.command,
+      options.payload,
+      options.timeoutMs,
+    );
+    return { capture, payload: ensureCaptureSuccess(capture, options.sessionId) };
+  } catch (error) {
+    throw createOverrideLiveCommandError({
+      sessionId: options.sessionId,
+      command: options.command,
+      timeoutMs: options.timeoutMs,
+      error,
+      getSessionConnectionState: options.getSessionConnectionState,
+    });
   }
 }
 
@@ -4278,15 +4376,16 @@ async function refreshObservedAssetsForOverrideEnable(options: {
   db: Database;
   sessionId: string;
   tabId?: number;
+  getSessionConnectionState?: (sessionId: string) => SessionConnectionLookupResult | undefined;
 }): Promise<Record<string, unknown>> {
-  const capture = await executeLiveCapture(
-    options.captureClient,
-    options.sessionId,
-    'CAPTURE_OVERRIDE_OBSERVE_ASSETS',
-    { tabId: options.tabId, includePerformance: true },
-    5_000,
-  );
-  const payload = ensureCaptureSuccess(capture, options.sessionId);
+  const { payload } = await executeOverrideLiveCaptureWithDiagnostics({
+    captureClient: options.captureClient,
+    sessionId: options.sessionId,
+    command: 'CAPTURE_OVERRIDE_OBSERVE_ASSETS',
+    payload: { tabId: options.tabId, includePerformance: true },
+    timeoutMs: 5_000,
+    getSessionConnectionState: options.getSessionConnectionState,
+  });
   persistObservedOverrideAssets(options.db, {
     ...payload,
     sessionId: options.sessionId,
@@ -4297,6 +4396,63 @@ async function refreshObservedAssetsForOverrideEnable(options: {
     tabId: typeof payload.tabId === 'number' ? payload.tabId : options.tabId,
     pageUrl: typeof payload.pageUrl === 'string' ? payload.pageUrl : undefined,
     assetCount: Array.isArray(payload.assets) ? payload.assets.length : 0,
+  };
+}
+
+function buildPersistedOverrideStatus(options: {
+  db: Database;
+  sessionId: string;
+  profileId?: unknown;
+  getSessionConnectionState?: (sessionId: string) => SessionConnectionLookupResult | undefined;
+}): Record<string, unknown> {
+  let profile: Record<string, unknown> | null = null;
+  let profileError: string | undefined;
+  try {
+    profile = resolveOverrideProfileRecord(options.profileId);
+  } catch (error) {
+    profileError = error instanceof Error ? error.message : String(error);
+  }
+  const latestRun = listOverridePocRuns(options.db, options.sessionId, 1, 0).runs[0] ?? null;
+  const recentRequests = listOverridePocRequests(options.db, options.sessionId, 5, 0, latestRun?.runId).requests;
+  const recentPlans = listOverridePlanAudits(options.db, { sessionId: options.sessionId, limit: 5, offset: 0 }).plans;
+  let preflight: Record<string, unknown>;
+  if (profileError) {
+    preflight = {
+      ready: false,
+      profileId: null,
+      profile: null,
+      issues: [{
+        code: 'OVERRIDE_CONFIG_UNAVAILABLE',
+        severity: 'error',
+        source: 'profile',
+        message: profileError,
+      }],
+      checks: {
+        sessionFound: auditSessionExists(options.db, options.sessionId),
+        connected: options.getSessionConnectionState?.(options.sessionId)?.connected === true,
+      },
+      nextActions: [{
+        code: 'FIX_OVERRIDE_CONFIG_PATH',
+        message: 'Create a readable override-poc config or point OVERRIDE_POC_CONFIG_PATH at the intended config, then retry override status.',
+      }],
+    };
+  } else {
+    preflight = buildOverridePreflight({
+      db: options.db,
+      sessionId: options.sessionId,
+      profileId: options.profileId,
+      getSessionConnectionState: options.getSessionConnectionState,
+    });
+  }
+
+  return {
+    profile,
+    profileError,
+    latestRun,
+    recentRequests,
+    recentPlans,
+    preflight,
+    diagnosis: diagnoseOverridePoc(options.db, options.sessionId, latestRun?.runId),
   };
 }
 
@@ -6898,14 +7054,14 @@ export function createV2ToolHandlers(
       }
 
       const tabId = resolveOptionalTabId(input.tabId);
-      const capture = await executeLiveCapture(
+      const { capture, payload } = await executeOverrideLiveCaptureWithDiagnostics({
         captureClient,
         sessionId,
-        'CAPTURE_OVERRIDE_OBSERVE_ASSETS',
-        { tabId, includePerformance: input.includePerformance !== false },
-        5_000,
-      );
-      const payload = ensureCaptureSuccess(capture, sessionId);
+        command: 'CAPTURE_OVERRIDE_OBSERVE_ASSETS',
+        payload: { tabId, includePerformance: input.includePerformance !== false },
+        timeoutMs: 5_000,
+        getSessionConnectionState,
+      });
       const assetCount = Array.isArray(payload.assets) ? payload.assets.length : 0;
       const persisted = getDb
         ? persistObservedOverrideAssets(getDb(), { ...payload, sessionId, tabId: payload.tabId ?? tabId })
@@ -6944,11 +7100,11 @@ export function createV2ToolHandlers(
 
       const tabId = resolveOptionalTabId(input.tabId);
       const timeoutMs = resolveTimeoutMs(input.timeoutMs, 10_000, 60_000);
-      const capture = await executeLiveCapture(
+      const { capture, payload } = await executeOverrideLiveCaptureWithDiagnostics({
         captureClient,
         sessionId,
-        'CAPTURE_OVERRIDE_RESPONSE_BODY',
-        {
+        command: 'CAPTURE_OVERRIDE_RESPONSE_BODY',
+        payload: {
           targetUrl,
           tabId,
           captureMode: normalizeOptionalString(input.captureMode),
@@ -6961,9 +7117,9 @@ export function createV2ToolHandlers(
           maxBodyBytes: input.maxBodyBytes,
           includeBody: input.includeBody === true,
         },
-        timeoutMs + 2_000,
-      );
-      const payload = ensureCaptureSuccess(capture, sessionId);
+        timeoutMs: timeoutMs + 2_000,
+        getSessionConnectionState,
+      });
 
       return {
         ...createBaseResponse(sessionId),
@@ -6994,11 +7150,11 @@ export function createV2ToolHandlers(
         }
         const tabId = resolveOptionalTabId(input.tabId);
         const timeoutMs = resolveTimeoutMs(input.timeoutMs, 10_000, 60_000);
-        const capture = await executeLiveCapture(
+        const { payload } = await executeOverrideLiveCaptureWithDiagnostics({
           captureClient,
           sessionId,
-          'CAPTURE_OVERRIDE_RESPONSE_BODY',
-          {
+          command: 'CAPTURE_OVERRIDE_RESPONSE_BODY',
+          payload: {
             targetUrl,
             tabId,
             captureMode: normalizeOptionalString(input.captureMode),
@@ -7011,9 +7167,9 @@ export function createV2ToolHandlers(
             maxBodyBytes: input.maxBodyBytes,
             includeBody: true,
           },
-          timeoutMs + 2_000,
-        );
-        const payload = ensureCaptureSuccess(capture, sessionId);
+          timeoutMs: timeoutMs + 2_000,
+          getSessionConnectionState,
+        });
         if (payload.truncated === true) {
           throw new Error('Captured response body was truncated; increase maxBodyBytes before planning a patch.');
         }
@@ -7110,13 +7266,15 @@ export function createV2ToolHandlers(
       let observedFromPersisted: { sessionId: string; assetCount: number } | undefined;
       if (!Array.isArray(observedAssets) && sessionId) {
         const tabId = resolveOptionalTabId(input.tabId);
+        const command = 'CAPTURE_OVERRIDE_OBSERVE_ASSETS';
+        const timeoutMs = 5_000;
         try {
           const capture = await executeLiveCapture(
             captureClient,
             sessionId,
-            'CAPTURE_OVERRIDE_OBSERVE_ASSETS',
+            command,
             { tabId, includePerformance: true },
-            5_000,
+            timeoutMs,
           );
           observedFromLiveTab = ensureCaptureSuccess(capture, sessionId);
           observedAssets = observedFromLiveTab.assets;
@@ -7124,11 +7282,20 @@ export function createV2ToolHandlers(
             persistObservedOverrideAssets(getDb(), { ...observedFromLiveTab, sessionId, tabId: observedFromLiveTab.tabId ?? tabId });
           }
         } catch (error) {
-          if (!getDb || !isLiveSessionDisconnectedError(error)) {
+          if (getDb && isRecoverableOverrideLiveCommandError(error)) {
+            observedAssets = listObservedOverrideAssets(getDb(), { sessionId });
+            observedFromPersisted = { sessionId, assetCount: Array.isArray(observedAssets) ? observedAssets.length : 0 };
+          } else if (isRecoverableOverrideLiveCommandError(error)) {
+            throw createOverrideLiveCommandError({
+              sessionId,
+              command,
+              timeoutMs,
+              error,
+              getSessionConnectionState,
+            });
+          } else {
             throw error;
           }
-          observedAssets = listObservedOverrideAssets(getDb(), { sessionId });
-          observedFromPersisted = { sessionId, assetCount: Array.isArray(observedAssets) ? observedAssets.length : 0 };
         }
       }
 
@@ -7176,13 +7343,15 @@ export function createV2ToolHandlers(
       let observedFromPersisted: { sessionId: string; assetCount: number } | undefined;
       if (!Array.isArray(observedAssets) && sessionId) {
         const tabId = resolveOptionalTabId(input.tabId);
+        const command = 'CAPTURE_OVERRIDE_OBSERVE_ASSETS';
+        const timeoutMs = 5_000;
         try {
           const capture = await executeLiveCapture(
             captureClient,
             sessionId,
-            'CAPTURE_OVERRIDE_OBSERVE_ASSETS',
+            command,
             { tabId, includePerformance: true },
-            5_000,
+            timeoutMs,
           );
           observedFromLiveTab = ensureCaptureSuccess(capture, sessionId);
           observedAssets = observedFromLiveTab.assets;
@@ -7190,11 +7359,20 @@ export function createV2ToolHandlers(
             persistObservedOverrideAssets(getDb(), { ...observedFromLiveTab, sessionId, tabId: observedFromLiveTab.tabId ?? tabId });
           }
         } catch (error) {
-          if (!getDb || !isLiveSessionDisconnectedError(error)) {
+          if (getDb && isRecoverableOverrideLiveCommandError(error)) {
+            observedAssets = listObservedOverrideAssets(getDb(), { sessionId });
+            observedFromPersisted = { sessionId, assetCount: Array.isArray(observedAssets) ? observedAssets.length : 0 };
+          } else if (isRecoverableOverrideLiveCommandError(error)) {
+            throw createOverrideLiveCommandError({
+              sessionId,
+              command,
+              timeoutMs,
+              error,
+              getSessionConnectionState,
+            });
+          } else {
             throw error;
           }
-          observedAssets = listObservedOverrideAssets(getDb(), { sessionId });
-          observedFromPersisted = { sessionId, assetCount: Array.isArray(observedAssets) ? observedAssets.length : 0 };
         }
       }
 
@@ -7259,20 +7437,65 @@ export function createV2ToolHandlers(
         throw new Error('sessionId is required');
       }
 
-      const capture = await executeLiveCapture(
-        captureClient,
-        sessionId,
-        'CAPTURE_OVERRIDE_POC_GET_STATUS',
-        {},
-        3_000,
-      );
-      const payload = ensureCaptureSuccess(capture, sessionId);
+      const command = 'CAPTURE_OVERRIDE_POC_GET_STATUS';
+      const timeoutMs = 3_000;
+      let capture: CaptureClientResult;
+      let payload: Record<string, unknown>;
+      try {
+        capture = await executeLiveCapture(
+          captureClient,
+          sessionId,
+          command,
+          {},
+          timeoutMs,
+        );
+        payload = ensureCaptureSuccess(capture, sessionId);
+      } catch (error) {
+        if (!getDb || !isRecoverableOverrideLiveCommandError(error)) {
+          throw error;
+        }
+
+        const persisted = buildPersistedOverrideStatus({
+          db: getDb(),
+          sessionId,
+          profileId: input.profileId,
+          getSessionConnectionState,
+        });
+        const liveStatus = buildOverrideLiveCommandFailure({
+          sessionId,
+          command,
+          timeoutMs,
+          error,
+          getSessionConnectionState,
+        });
+
+        return {
+          ...createBaseResponse(sessionId),
+          limitsApplied: {
+            maxResults: 1,
+            truncated: false,
+          },
+          statusSource: 'persisted-audit',
+          liveStatus,
+          ...persisted,
+          nextActions: [
+            { code: 'RECONNECT_OR_RETRY_OVERRIDE_STATUS', message: 'Reconnect or rebind the top-level session, then retry get_override_status for live debugger state.' },
+            { code: 'DIAGNOSE_OVERRIDES', message: 'Run diagnose_overrides to inspect persisted run and readiness signals while live status is unavailable.' },
+          ],
+        };
+      }
 
       return {
         ...createBaseResponse(sessionId),
         limitsApplied: {
           maxResults: 1,
           truncated: capture.truncated ?? false,
+        },
+        statusSource: 'live',
+        liveStatus: {
+          available: true,
+          command,
+          timeoutMs,
         },
         preflight: getDb
           ? buildOverridePreflight({
@@ -7339,6 +7562,7 @@ export function createV2ToolHandlers(
             db: getDb(),
             sessionId,
             tabId,
+            getSessionConnectionState,
           });
           preflight = buildOverridePreflight({
             db: getDb(),
@@ -7362,14 +7586,28 @@ export function createV2ToolHandlers(
         }
       }
 
-      const capture = await executeLiveCapture(
-        captureClient,
-        sessionId,
-        'CAPTURE_OVERRIDE_POC_ENABLE',
-        { tabId },
-        8_000,
-      );
-      const payload = ensureCaptureSuccess(capture, sessionId);
+      const command = 'CAPTURE_OVERRIDE_POC_ENABLE';
+      const timeoutMs = 8_000;
+      let capture: CaptureClientResult;
+      let payload: Record<string, unknown>;
+      try {
+        capture = await executeLiveCapture(
+          captureClient,
+          sessionId,
+          command,
+          { tabId },
+          timeoutMs,
+        );
+        payload = ensureCaptureSuccess(capture, sessionId);
+      } catch (error) {
+        throw createOverrideLiveCommandError({
+          sessionId,
+          command,
+          timeoutMs,
+          error,
+          getSessionConnectionState,
+        });
+      }
 
       return {
         ...createBaseResponse(sessionId),
@@ -7390,20 +7628,71 @@ export function createV2ToolHandlers(
         throw new Error('sessionId is required');
       }
 
-      const capture = await executeLiveCapture(
-        captureClient,
-        sessionId,
-        'CAPTURE_OVERRIDE_POC_DISABLE',
-        {},
-        5_000,
-      );
-      const payload = ensureCaptureSuccess(capture, sessionId);
+      const command = 'CAPTURE_OVERRIDE_POC_DISABLE';
+      const timeoutMs = 5_000;
+      let capture: CaptureClientResult;
+      let payload: Record<string, unknown>;
+      try {
+        capture = await executeLiveCapture(
+          captureClient,
+          sessionId,
+          command,
+          {},
+          timeoutMs,
+        );
+        payload = ensureCaptureSuccess(capture, sessionId);
+      } catch (error) {
+        if (!getDb || !isRecoverableOverrideLiveCommandError(error)) {
+          throw createOverrideLiveCommandError({
+            sessionId,
+            command,
+            timeoutMs,
+            error,
+            getSessionConnectionState,
+          });
+        }
+
+        const persisted = buildPersistedOverrideStatus({
+          db: getDb(),
+          sessionId,
+          profileId: input.profileId,
+          getSessionConnectionState,
+        });
+        const disableAttempt = buildOverrideLiveCommandFailure({
+          sessionId,
+          command,
+          timeoutMs,
+          error,
+          getSessionConnectionState,
+        });
+
+        return {
+          ...createBaseResponse(sessionId),
+          limitsApplied: {
+            maxResults: 1,
+            truncated: false,
+          },
+          statusSource: 'persisted-audit',
+          disableAttempt,
+          ...persisted,
+          nextActions: [
+            { code: 'RECONNECT_OR_RETRY_DISABLE', message: 'Reconnect or rebind the top-level session, then retry disable_overrides to confirm debugger detachment.' },
+            { code: 'GET_OVERRIDE_STATUS', message: 'Run get_override_status after reconnecting to verify whether the override is still active.' },
+          ],
+        };
+      }
 
       return {
         ...createBaseResponse(sessionId),
         limitsApplied: {
           maxResults: 1,
           truncated: capture.truncated ?? false,
+        },
+        statusSource: 'live',
+        disableAttempt: {
+          ok: true,
+          command,
+          timeoutMs,
         },
         ...payload,
         nextActions: [{ code: 'VERIFY_DISABLED', message: 'Run get_override_status if you need to confirm the debugger override is inactive.' }],
