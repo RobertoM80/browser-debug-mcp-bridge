@@ -1735,6 +1735,409 @@ describe('mcp/server V1 query tools', () => {
     }
   });
 
+  it('blocks preflight when a live session has no connected extension state or observed assets', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-override-readiness-disconnected-'));
+    const db = createTestDb();
+
+    try {
+      const localAssetPath = join(tempRoot, 'app.local.js');
+      writeFileSync(localAssetPath, 'console.log("override");', 'utf8');
+      const configPath = join(tempRoot, 'override-poc.local.json');
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          enabled: true,
+          activeProfileId: 'asset-profile',
+          profiles: [{
+            profileId: 'asset-profile',
+            name: 'Asset profile',
+            enabled: true,
+            autoReload: true,
+            rules: [{
+              ruleId: 'asset-rule',
+              enabled: true,
+              ruleType: 'asset',
+              requestMethod: 'GET',
+              matchMode: 'exact',
+              targetAssetUrl: 'https://example.com/app.js',
+              localFilePath: localAssetPath,
+              contentType: 'application/javascript; charset=utf-8',
+            }],
+          }],
+        }, null, 2),
+        'utf8',
+      );
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, tab_id, url_last)
+        VALUES ('session-readiness', 1000, 1100, 0, 7, 'https://example.com/')
+      `).run();
+
+      const tools = createToolRegistry(
+        createV1ToolHandlers(
+          () => db,
+          () => undefined,
+        ),
+      );
+      const preflight = await routeToolCall(tools, 'preflight_overrides', { sessionId: 'session-readiness' });
+
+      expect(preflight.ready).toBe(false);
+      expect(preflight.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'LIVE_SESSION_DISCONNECTED', severity: 'error', source: 'connection' }),
+        expect.objectContaining({ code: 'NO_OBSERVED_ASSETS', severity: 'error', source: 'observed-assets' }),
+      ]));
+      expect(preflight.checks).toMatchObject({
+        connected: false,
+        captureReady: false,
+        observedAssetCount: 0,
+      });
+      expect((preflight.nextActions as Array<{ code?: string }>)[0]?.code).toBe('RECONNECT_SESSION');
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('blocks preflight when observed assets belong only to another tab', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-override-readiness-scope-'));
+    const db = createTestDb();
+
+    try {
+      const localAssetPath = join(tempRoot, 'app.local.js');
+      writeFileSync(localAssetPath, 'console.log("override");', 'utf8');
+      const configPath = join(tempRoot, 'override-poc.local.json');
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          enabled: true,
+          activeProfileId: 'asset-profile',
+          profiles: [{
+            profileId: 'asset-profile',
+            name: 'Asset profile',
+            enabled: true,
+            autoReload: true,
+            rules: [{
+              ruleId: 'asset-rule',
+              enabled: true,
+              ruleType: 'asset',
+              requestMethod: 'GET',
+              matchMode: 'exact',
+              targetAssetUrl: 'https://example.com/app.js',
+              localFilePath: localAssetPath,
+              contentType: 'application/javascript; charset=utf-8',
+            }],
+          }],
+        }, null, 2),
+        'utf8',
+      );
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, tab_id, url_last)
+        VALUES ('session-scope', 1000, 1100, 0, 7, 'https://example.com/')
+      `).run();
+      persistObservedOverrideAssets(db, {
+        sessionId: 'session-scope',
+        tabId: 99,
+        pageUrl: 'https://ads.example/frame.html',
+        assets: [{
+          url: 'https://example.com/app.js',
+          ruleType: 'asset',
+          requestMethod: 'GET',
+          kind: 'script',
+          fromPerformance: true,
+        }],
+      });
+
+      const tools = createToolRegistry(
+        createV1ToolHandlers(
+          () => db,
+          () => ({ connected: true, connectedAt: 1200, lastHeartbeatAt: 1300 }),
+        ),
+      );
+      const preflight = await routeToolCall(tools, 'preflight_overrides', { sessionId: 'session-scope' });
+
+      expect(preflight.ready).toBe(false);
+      expect(preflight.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'SESSION_SCOPE_DRIFT', severity: 'error', source: 'observed-assets' }),
+      ]));
+      expect(preflight.checks).toMatchObject({
+        connected: true,
+        topLevelScopeLikely: false,
+        observedAssetTabs: [99],
+      });
+      expect((preflight.nextActions as Array<{ code?: string }>)[0]?.code).toBe('FOCUS_BOUND_TAB');
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts a capture-ready generated profile when at least one enabled target was observed', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-override-readiness-generated-'));
+    const db = createTestDb();
+
+    try {
+      const observedLocalAssetPath = join(tempRoot, 'observed.local.js');
+      const deferredLocalAssetPath = join(tempRoot, 'deferred.local.js');
+      writeFileSync(observedLocalAssetPath, 'console.log("observed");', 'utf8');
+      writeFileSync(deferredLocalAssetPath, 'console.log("deferred");', 'utf8');
+      const configPath = join(tempRoot, 'override-poc.local.json');
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          enabled: true,
+          activeProfileId: 'generated-profile',
+          profiles: [{
+            profileId: 'generated-profile',
+            name: 'Generated asset profile',
+            enabled: true,
+            autoReload: true,
+            rules: [
+              {
+                ruleId: 'observed-rule',
+                enabled: true,
+                ruleType: 'asset',
+                requestMethod: 'GET',
+                matchMode: 'exact',
+                targetAssetUrl: 'https://example.com/_next/static/chunks/observed.js',
+                localFilePath: observedLocalAssetPath,
+                contentType: 'application/javascript; charset=utf-8',
+              },
+              {
+                ruleId: 'deferred-rule',
+                enabled: true,
+                ruleType: 'asset',
+                requestMethod: 'GET',
+                matchMode: 'exact',
+                targetAssetUrl: 'https://example.com/_next/static/chunks/deferred.js',
+                localFilePath: deferredLocalAssetPath,
+                contentType: 'application/javascript; charset=utf-8',
+              },
+            ],
+          }],
+        }, null, 2),
+        'utf8',
+      );
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, tab_id, url_last)
+        VALUES ('session-generated', 1000, 1100, 0, 7, 'https://example.com/')
+      `).run();
+      persistObservedOverrideAssets(db, {
+        sessionId: 'session-generated',
+        tabId: 7,
+        pageUrl: 'https://example.com/',
+        assets: [{
+          url: 'https://example.com/_next/static/chunks/observed.js',
+          ruleType: 'asset',
+          requestMethod: 'GET',
+          kind: 'script',
+          fromPerformance: true,
+        }],
+      });
+
+      const tools = createToolRegistry(
+        createV1ToolHandlers(
+          () => db,
+          () => ({ connected: true, connectedAt: 1200, lastHeartbeatAt: 1300 }),
+        ),
+      );
+      const preflight = await routeToolCall(tools, 'preflight_overrides', { sessionId: 'session-generated' });
+
+      expect(preflight.ready).toBe(true);
+      expect(preflight.issues).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'TARGET_ASSET_NOT_OBSERVED', severity: 'error' }),
+      ]));
+      expect(preflight.checks).toMatchObject({
+        captureReady: true,
+        targetAssetObserved: true,
+      });
+      expect(preflight.observedAssets).toMatchObject({
+        targetAssetObserved: true,
+        matchedTargetAssetCount: 1,
+        unobservedTargetAssetCount: 1,
+      });
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('treats prefix-match response rules as observed when a captured request starts with the target URL', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-override-readiness-prefix-'));
+    const db = createTestDb();
+
+    try {
+      const localAssetPath = join(tempRoot, 'products.rsc.txt');
+      writeFileSync(localAssetPath, '1:["$","h1",null,{"children":"Override"}]', 'utf8');
+      const configPath = join(tempRoot, 'override-poc.local.json');
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          enabled: true,
+          activeProfileId: 'rsc-profile',
+          profiles: [{
+            profileId: 'rsc-profile',
+            name: 'RSC profile',
+            enabled: true,
+            autoReload: true,
+            rules: [{
+              ruleId: 'rsc-rule',
+              enabled: true,
+              ruleType: 'rsc-flight',
+              requestMethod: 'GET',
+              matchMode: 'prefix',
+              allowExperimentalRscFlightFulfillment: true,
+              targetAssetUrl: 'https://example.com/products?_rsc=',
+              localFilePath: localAssetPath,
+              contentType: 'text/x-component; charset=utf-8',
+            }],
+          }],
+        }, null, 2),
+        'utf8',
+      );
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, tab_id, url_last)
+        VALUES ('session-prefix', 1000, 1100, 0, 7, 'https://example.com/products')
+      `).run();
+      persistObservedOverrideAssets(db, {
+        sessionId: 'session-prefix',
+        tabId: 7,
+        pageUrl: 'https://example.com/products',
+        assets: [{
+          url: 'https://example.com/products?_rsc=abc123',
+          ruleType: 'rsc-flight',
+          requestMethod: 'GET',
+          kind: 'fetch',
+          fromPerformance: true,
+        }],
+      });
+
+      const tools = createToolRegistry(
+        createV1ToolHandlers(
+          () => db,
+          () => ({ connected: true, connectedAt: 1200, lastHeartbeatAt: 1300 }),
+        ),
+      );
+      const preflight = await routeToolCall(tools, 'preflight_overrides', { sessionId: 'session-prefix' });
+
+      expect(preflight.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'UNSUPPORTED_RSC_FLIGHT_RULE', severity: 'error' }),
+      ]));
+      expect(preflight.issues).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'TARGET_ASSET_NOT_OBSERVED', severity: 'error' }),
+      ]));
+      expect(preflight.checks).toMatchObject({
+        targetAssetObserved: true,
+      });
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts planner-captured RSC rules when the live session is capture-ready before target navigation', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-override-readiness-rsc-captured-'));
+    const configPath = join(tempRoot, 'override-poc.local.json');
+    const db = createTestDb();
+
+    try {
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+      const tools = createToolRegistry(
+        createV1ToolHandlers(
+          () => db,
+          () => ({ connected: true, connectedAt: 1200, lastHeartbeatAt: 1300 }),
+        ),
+      );
+      await routeToolCall(tools, 'plan_override_response_patch', {
+        targetUrl: 'https://example.com/products?_rsc=',
+        matchMode: 'prefix',
+        captureMode: 'cdp-response',
+        contentType: 'text/x-component; charset=utf-8',
+        responseBodyText: '1:["$","h1",null,{"children":"Original debugging kits"}]',
+        requestHeaders: {
+          RSC: '1',
+        },
+        textPatches: [{ search: 'Original debugging kits', replacement: 'Override debugging kits', expectedCount: 1 }],
+        configPath,
+        writeConfig: true,
+        overwrite: true,
+        profileId: 'captured-rsc-profile',
+      });
+
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, tab_id, url_last)
+        VALUES ('session-rsc-ready', 1000, 1100, 0, 7, 'https://example.com/')
+      `).run();
+      persistObservedOverrideAssets(db, {
+        sessionId: 'session-rsc-ready',
+        tabId: 7,
+        pageUrl: 'https://example.com/',
+        assets: [{
+          url: 'https://example.com/',
+          ruleType: 'document',
+          requestMethod: 'GET',
+          kind: 'document',
+          fromNavigation: true,
+        }],
+      });
+
+      const preflight = await routeToolCall(tools, 'preflight_overrides', {
+        sessionId: 'session-rsc-ready',
+        profileId: 'captured-rsc-profile',
+      });
+
+      expect(preflight.ready).toBe(true);
+      expect(preflight.issues).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'TARGET_ASSET_NOT_OBSERVED', severity: 'error' }),
+      ]));
+      expect(preflight.checks).toMatchObject({
+        captureReady: true,
+        targetAssetObserved: false,
+        targetAssetReadinessSatisfied: true,
+        capturedTargetAssetCount: 1,
+      });
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it('plans structured JSON response patches through MCP', async () => {
     const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-json-response-patch-'));
     const configPath = join(tempRoot, 'override-poc.local.json');
@@ -2107,6 +2510,274 @@ describe('mcp/server V2 capture tools', () => {
     expect(status.configuredEnabled).toBe(true);
     expect(enabled.active).toBe(true);
     expect(disabled.active).toBe(false);
+  });
+
+  it('auto-observes missing override assets before enabling through the live bridge', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-v2-enable-auto-observe-'));
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const captureCalls: Array<{ sessionId: string; command: string; payload: Record<string, unknown> }> = [];
+
+    try {
+      const localAssetPath = join(tempRoot, 'app.local.js');
+      writeFileSync(localAssetPath, 'console.log("override");', 'utf8');
+      const configPath = join(tempRoot, 'override-poc.local.json');
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          enabled: true,
+          activeProfileId: 'asset-profile',
+          profiles: [{
+            profileId: 'asset-profile',
+            name: 'Asset profile',
+            enabled: true,
+            autoReload: true,
+            rules: [{
+              ruleId: 'asset-rule',
+              enabled: true,
+              ruleType: 'asset',
+              requestMethod: 'GET',
+              matchMode: 'exact',
+              targetAssetUrl: 'https://example.com/app.js',
+              localFilePath: localAssetPath,
+              contentType: 'application/javascript; charset=utf-8',
+            }],
+          }],
+        }, null, 2),
+        'utf8',
+      );
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, tab_id, url_last)
+        VALUES ('session-live', 1000, 1100, 0, 7, 'https://example.com/')
+      `).run();
+
+      const tools = createToolRegistry(
+        createV2ToolHandlers(
+          {
+            execute: async (sessionId, command, payload) => {
+              captureCalls.push({ sessionId, command, payload });
+              if (command === 'CAPTURE_OVERRIDE_OBSERVE_ASSETS') {
+                return {
+                  ok: true,
+                  payload: {
+                    sessionId,
+                    tabId: payload.tabId,
+                    pageUrl: 'https://example.com/',
+                    assets: [{
+                      url: 'https://example.com/app.js',
+                      ruleType: 'asset',
+                      requestMethod: 'GET',
+                      kind: 'script',
+                      fromPerformance: true,
+                    }],
+                  },
+                };
+              }
+              return {
+                ok: true,
+                payload: {
+                  active: true,
+                  configuredEnabled: true,
+                  tabId: payload.tabId,
+                  matchedRequests: 0,
+                  fulfilledRequests: 0,
+                },
+              };
+            },
+          },
+          () => db,
+          () => ({ connected: true, connectedAt: 1200, lastHeartbeatAt: 1300 }),
+        ),
+      );
+
+      const enabled = await routeToolCall(tools, 'enable_overrides', { sessionId: 'session-live', tabId: 7 });
+
+      expect(captureCalls.map((call) => call.command)).toEqual([
+        'CAPTURE_OVERRIDE_OBSERVE_ASSETS',
+        'CAPTURE_OVERRIDE_POC_ENABLE',
+      ]);
+      expect(enabled.active).toBe(true);
+      expect(enabled.observedBeforeEnable).toMatchObject({ assetCount: 1, tabId: 7 });
+      expect((enabled.preflight as { ready?: boolean }).ready).toBe(true);
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('enables planner-captured RSC rules after observing capture readiness on the selected tab', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-v2-enable-rsc-captured-'));
+    const configPath = join(tempRoot, 'override-poc.local.json');
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const captureCalls: Array<{ sessionId: string; command: string; payload: Record<string, unknown> }> = [];
+
+    try {
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+      const planningTools = createToolRegistry(createV1ToolHandlers(() => db));
+      await routeToolCall(planningTools, 'plan_override_response_patch', {
+        targetUrl: 'https://example.com/products?_rsc=',
+        matchMode: 'prefix',
+        captureMode: 'cdp-response',
+        contentType: 'text/x-component; charset=utf-8',
+        responseBodyText: '1:["$","h1",null,{"children":"Original debugging kits"}]',
+        requestHeaders: {
+          RSC: '1',
+        },
+        textPatches: [{ search: 'Original debugging kits', replacement: 'Override debugging kits', expectedCount: 1 }],
+        configPath,
+        writeConfig: true,
+        overwrite: true,
+        profileId: 'captured-rsc-profile',
+      });
+
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, tab_id, url_last)
+        VALUES ('session-live', 1000, 1100, 0, 7, 'https://example.com/')
+      `).run();
+
+      const tools = createToolRegistry(
+        createV2ToolHandlers(
+          {
+            execute: async (sessionId, command, payload) => {
+              captureCalls.push({ sessionId, command, payload });
+              if (command === 'CAPTURE_OVERRIDE_OBSERVE_ASSETS') {
+                return {
+                  ok: true,
+                  payload: {
+                    sessionId,
+                    tabId: payload.tabId,
+                    pageUrl: 'https://example.com/',
+                    assets: [{
+                      url: 'https://example.com/',
+                      ruleType: 'document',
+                      requestMethod: 'GET',
+                      kind: 'document',
+                      fromNavigation: true,
+                    }],
+                  },
+                };
+              }
+              return {
+                ok: true,
+                payload: {
+                  active: true,
+                  configuredEnabled: true,
+                  tabId: payload.tabId,
+                  matchedRequests: 0,
+                  fulfilledRequests: 0,
+                },
+              };
+            },
+          },
+          () => db,
+          () => ({ connected: true, connectedAt: 1200, lastHeartbeatAt: 1300 }),
+        ),
+      );
+
+      const enabled = await routeToolCall(tools, 'enable_overrides', { sessionId: 'session-live', tabId: 7 });
+
+      expect(captureCalls.map((call) => call.command)).toEqual([
+        'CAPTURE_OVERRIDE_OBSERVE_ASSETS',
+        'CAPTURE_OVERRIDE_POC_ENABLE',
+      ]);
+      expect(enabled.active).toBe(true);
+      expect(enabled.observedBeforeEnable).toMatchObject({ assetCount: 1, tabId: 7 });
+      expect(enabled.preflight).toMatchObject({
+        ready: true,
+        checks: {
+          targetAssetObserved: false,
+          targetAssetReadinessSatisfied: true,
+          capturedTargetAssetCount: 1,
+        },
+      });
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not enable overrides when readiness asset observation times out', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-v2-enable-observe-timeout-'));
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const captureCalls: Array<{ sessionId: string; command: string; payload: Record<string, unknown> }> = [];
+
+    try {
+      const localAssetPath = join(tempRoot, 'app.local.js');
+      writeFileSync(localAssetPath, 'console.log("override");', 'utf8');
+      const configPath = join(tempRoot, 'override-poc.local.json');
+      writeFileSync(
+        configPath,
+        JSON.stringify({
+          enabled: true,
+          activeProfileId: 'asset-profile',
+          profiles: [{
+            profileId: 'asset-profile',
+            name: 'Asset profile',
+            enabled: true,
+            autoReload: true,
+            rules: [{
+              ruleId: 'asset-rule',
+              enabled: true,
+              ruleType: 'asset',
+              requestMethod: 'GET',
+              matchMode: 'exact',
+              targetAssetUrl: 'https://example.com/app.js',
+              localFilePath: localAssetPath,
+              contentType: 'application/javascript; charset=utf-8',
+            }],
+          }],
+        }, null, 2),
+        'utf8',
+      );
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, tab_id, url_last)
+        VALUES ('session-live', 1000, 1100, 0, 7, 'https://example.com/')
+      `).run();
+
+      const tools = createToolRegistry(
+        createV2ToolHandlers(
+          {
+            execute: async (sessionId, command, payload) => {
+              captureCalls.push({ sessionId, command, payload });
+              throw new Error('Capture command timed out after 5000ms');
+            },
+          },
+          () => db,
+          () => ({ connected: true, connectedAt: 1200, lastHeartbeatAt: 1300 }),
+        ),
+      );
+
+      await expect(routeToolCall(tools, 'enable_overrides', { sessionId: 'session-live', tabId: 7 }))
+        .rejects.toThrow('observed asset refresh failed');
+      expect(captureCalls.map((call) => call.command)).toEqual(['CAPTURE_OVERRIDE_OBSERVE_ASSETS']);
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it('rejects server-action response body capture requests before hitting the live bridge', async () => {

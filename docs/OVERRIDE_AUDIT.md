@@ -254,6 +254,9 @@ What is now proven:
 21. production RSC dynamic-route overrides stay isolated to the captured route across history navigation while sibling routes remain original
 22. production RSC search-param overrides stay isolated to the captured query state while other query states remain original
 23. matching RSC prefetch and metadata-only variants pass through unchanged when they do not contain captured patch anchors
+24. preflight now treats missing live connection state, disconnected sessions, missing observed assets, no observed match for any enabled target, and observed assets recorded only for another tab as blocking readiness errors
+25. `enable_overrides` now retries observed-asset readiness once by running a bounded live observation pass when asset readiness is the only blocker, then rebuilds preflight before enabling
+26. preflight now matches exact and prefix target rules consistently with runtime fulfillment and allows generated multi-asset profiles when at least one enabled target was observed for the session
 
 What still remains:
 
@@ -580,6 +583,9 @@ Current progress on that response path:
 16. planner, capture, validation, and preflight now classify generic POST mutation replay attempts as `MUTATION_REPLAY_UNSUPPORTED`
 17. Playwright coverage now proves a real Next.js server action request is blocked before response planning with `SERVER_ACTION_UNSUPPORTED`
 18. Playwright coverage now proves a real generic POST mutation request is blocked before response planning with `MUTATION_REPLAY_UNSUPPORTED`
+19. preflight and MCP unit coverage now prove disconnected/no-connection sessions, missing observed assets, and wrong-tab observed assets block enablement with precise readiness codes
+20. MCP unit coverage now proves `enable_overrides` observes assets before enabling when asset readiness is the only blocker, and fails without enabling when that observation times out
+21. MCP unit coverage now proves prefix-match response rules count as observed and generated multi-target profiles are not blocked by unrelated unobserved chunks
 
 Future broadening work outside the current production contract:
 

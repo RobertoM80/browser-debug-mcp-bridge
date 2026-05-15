@@ -2167,8 +2167,14 @@ function canBypassPreflightForExperimentalRsc(
   profile: Record<string, unknown>,
   blockingCodes: string[],
 ): boolean {
+  const allowedExperimentalBlockers = new Set([
+    'UNSUPPORTED_RSC_FLIGHT_RULE',
+    'NO_OBSERVED_ASSETS',
+    'TARGET_ASSET_NOT_OBSERVED',
+  ]);
   return blockingCodes.length > 0
-    && blockingCodes.every((code) => code === 'UNSUPPORTED_RSC_FLIGHT_RULE')
+    && blockingCodes.includes('UNSUPPORTED_RSC_FLIGHT_RULE')
+    && blockingCodes.every((code) => allowedExperimentalBlockers.has(code))
     && hasEnabledExperimentalRscFlightRule(profile);
 }
 
@@ -2314,6 +2320,40 @@ function pushOverridePreflightIssue(
   issues.push(issue);
 }
 
+function getPreflightIssues(preflight: Record<string, unknown> | null): Array<Record<string, unknown>> {
+  return Array.isArray(preflight?.issues)
+    ? preflight.issues.filter((issue): issue is Record<string, unknown> => isRecord(issue))
+    : [];
+}
+
+function getBlockingPreflightCodes(preflight: Record<string, unknown> | null): string[] {
+  return getPreflightIssues(preflight)
+    .filter((issue) => issue.severity === 'error')
+    .map((issue) => String(issue.code ?? 'UNKNOWN'));
+}
+
+function hasPreflightIssue(preflight: Record<string, unknown> | null, codes: string[]): boolean {
+  const expected = new Set(codes);
+  return getPreflightIssues(preflight).some((issue) => expected.has(String(issue.code ?? '')));
+}
+
+function shouldRefreshObservedAssetsForEnable(preflight: Record<string, unknown> | null): boolean {
+  const assetReadinessCodes = new Set([
+    'NO_OBSERVED_ASSETS',
+    'TARGET_ASSET_NOT_OBSERVED',
+    'SESSION_SCOPE_DRIFT',
+  ]);
+  const blockingCodes = getBlockingPreflightCodes(preflight);
+  if (blockingCodes.length === 0 || !blockingCodes.every((code) => assetReadinessCodes.has(code))) {
+    return false;
+  }
+  return hasPreflightIssue(preflight, [
+    'NO_OBSERVED_ASSETS',
+    'TARGET_ASSET_NOT_OBSERVED',
+    'SESSION_SCOPE_DRIFT',
+  ]);
+}
+
 function buildOverridePreflight(options: {
   db: Database;
   sessionId: string;
@@ -2359,7 +2399,24 @@ function buildOverridePreflight(options: {
       .map((context) => [String(context.variantKey ?? JSON.stringify(context)), context]),
   ).values()];
   const sessionState = options.getSessionConnectionState?.(options.sessionId);
+  const hasLiveConnectionLookup = typeof options.getSessionConnectionState === 'function';
   const diagnosis = session ? diagnoseOverridePoc(options.db, options.sessionId, latestRun?.runId) : null;
+  const observedAssetTabs = [...new Set(
+    observedAssets
+      .map((asset) => asset.tabId)
+      .filter((tabId): tabId is number => typeof tabId === 'number' && Number.isFinite(tabId)),
+  )].sort((a, b) => a - b);
+  const observedAssetPageUrls = [...new Set(
+    observedAssets
+      .map((asset) => asset.pageUrl)
+      .filter((pageUrl): pageUrl is string => typeof pageUrl === 'string' && pageUrl.trim().length > 0),
+  )].slice(0, 5);
+  const sessionTabId = typeof session?.tab_id === 'number' ? session.tab_id : undefined;
+  const observedAssetsWithKnownTabs = observedAssets.filter((asset) => typeof asset.tabId === 'number');
+  const topLevelScopeLikely = sessionTabId === undefined
+    || observedAssets.length === 0
+    || observedAssetsWithKnownTabs.length === 0
+    || observedAssetsWithKnownTabs.some((asset) => asset.tabId === sessionTabId);
 
   for (const issue of buildOverrideProfileIssues(profile)) {
     pushOverridePreflightIssue(issues, { ...issue, source: 'profile' });
@@ -2390,12 +2447,16 @@ function buildOverridePreflight(options: {
         message: `Session ${options.sessionId} has ended and cannot enable overrides.`,
       });
     }
-    if (sessionState && sessionState.connected !== true) {
+    if (hasLiveConnectionLookup && (!sessionState || sessionState.connected !== true)) {
       pushOverridePreflightIssue(issues, {
         code: LIVE_SESSION_DISCONNECTED_CODE,
         severity: 'error',
         source: 'connection',
-        message: `Session ${options.sessionId} is not currently connected to the live extension bridge.`,
+        message: sessionState
+          ? `Session ${options.sessionId} is not currently connected to the live extension bridge. Last disconnect reason: ${sessionState.disconnectReason ?? 'unknown'}.`
+          : `Session ${options.sessionId} has no current live extension connection state.`,
+        disconnectedAt: sessionState?.disconnectedAt,
+        disconnectReason: sessionState?.disconnectReason,
       });
     }
   }
@@ -2403,47 +2464,112 @@ function buildOverridePreflight(options: {
   const enabledRules = Array.isArray(profile.rules)
     ? profile.rules.filter((rule): rule is Record<string, unknown> => isRecord(rule) && rule.enabled === true)
     : [];
+  const enabledRuleAssetReadiness = enabledRules
+    .map((rule) => {
+      const targetAssetUrl = normalizeOptionalString(rule.targetAssetUrl);
+      if (!targetAssetUrl) {
+        return null;
+      }
+      const requestMethod = normalizeOverrideRequestMethod(rule.requestMethod);
+      const matchMode = String(rule.matchMode ?? 'exact');
+      const matchingAssets = observedAssets.filter((asset) => {
+        const methodMatches = normalizeOverrideRequestMethod(asset.requestMethod) === requestMethod;
+        if (!methodMatches) {
+          return false;
+        }
+        return matchMode === 'prefix'
+          ? asset.url.startsWith(targetAssetUrl)
+          : asset.url === targetAssetUrl;
+      });
+
+      return {
+        ruleId: String(rule.ruleId ?? 'unknown'),
+        targetAssetUrl,
+        requestMethod,
+        matchMode,
+        captureProven: rule.ruleType === 'rsc-flight' && isRecordWithRscFlightMetadata(rule.rscFlight),
+        matchingAssets,
+      };
+    })
+    .filter((readiness): readiness is {
+      ruleId: string;
+      targetAssetUrl: string;
+      requestMethod: string;
+      matchMode: string;
+      captureProven: boolean;
+      matchingAssets: typeof observedAssets;
+    } => readiness !== null);
+  const matchedTargetAssetCount = enabledRuleAssetReadiness.filter((readiness) => readiness.matchingAssets.length > 0).length;
+  const capturedTargetAssetCount = enabledRuleAssetReadiness
+    .filter((readiness) => readiness.matchingAssets.length === 0 && readiness.captureProven)
+    .length;
+  const unobservedTargetAssetCount = enabledRuleAssetReadiness.length - matchedTargetAssetCount;
+  const unsatisfiedTargetAssetCount = enabledRuleAssetReadiness.length - matchedTargetAssetCount - capturedTargetAssetCount;
+  const targetAssetObserved = observedAssets.length > 0 && matchedTargetAssetCount > 0;
+  const targetAssetReadinessSatisfied = observedAssets.length > 0
+    && (enabledRuleAssetReadiness.length === 0 || matchedTargetAssetCount > 0 || capturedTargetAssetCount > 0);
   const anyServiceWorkerControlled = observedAssets.some((asset) => asset.serviceWorkerControlled);
   const cspMetaTags = [...new Set(observedAssets.flatMap((asset) => asset.cspMetaTags))];
 
   if (observedAssets.length === 0) {
     pushOverridePreflightIssue(issues, {
       code: 'NO_OBSERVED_ASSETS',
-      severity: 'warning',
+      severity: 'error',
       source: 'observed-assets',
-      message: 'No observed production assets are stored for this session yet.',
+      message: 'No observed production assets are stored for this session yet; the target route is not capture-ready for override enablement.',
+    });
+  } else if (!topLevelScopeLikely) {
+    pushOverridePreflightIssue(issues, {
+      code: 'SESSION_SCOPE_DRIFT',
+      severity: 'error',
+      source: 'observed-assets',
+      message: `Observed override assets were recorded only for tab(s) ${observedAssetTabs.join(', ')}, but the session top-level tab is ${sessionTabId}.`,
+      observedAssetTabs,
+      sessionTabId,
+      observedPageUrls: observedAssetPageUrls,
     });
   }
 
-  for (const rule of enabledRules) {
-    const ruleId = String(rule.ruleId ?? 'unknown');
-    const targetAssetUrl = normalizeOptionalString(rule.targetAssetUrl);
-    if (!targetAssetUrl) {
-      continue;
-    }
-    const requestMethod = normalizeOverrideRequestMethod(rule.requestMethod);
-    const matchingAssets = observedAssets.filter((asset) => {
-      return asset.url === targetAssetUrl
-        && normalizeOverrideRequestMethod(asset.requestMethod) === requestMethod;
+  if (observedAssets.length > 0 && enabledRuleAssetReadiness.length > 0 && matchedTargetAssetCount === 0 && capturedTargetAssetCount === 0) {
+    const sampleTargets = enabledRuleAssetReadiness.slice(0, 5).map((readiness) => ({
+      ruleId: readiness.ruleId,
+      requestMethod: readiness.requestMethod,
+      matchMode: readiness.matchMode,
+      targetAssetUrl: readiness.targetAssetUrl,
+    }));
+    pushOverridePreflightIssue(issues, {
+      code: 'TARGET_ASSET_NOT_OBSERVED',
+      severity: 'error',
+      source: 'observed-assets',
+      message: enabledRuleAssetReadiness.length === 1
+        ? `Rule ${enabledRuleAssetReadiness[0].ruleId} target asset was not observed for ${enabledRuleAssetReadiness[0].requestMethod} ${enabledRuleAssetReadiness[0].targetAssetUrl}.`
+        : `None of the ${enabledRuleAssetReadiness.length} enabled override targets were observed for this session.`,
+      checkedTargetAssetCount: enabledRuleAssetReadiness.length,
+      sampleTargets,
     });
+  }
 
-    if (observedAssets.length > 0 && matchingAssets.length === 0) {
+  for (const readiness of enabledRuleAssetReadiness) {
+    if (readiness.matchingAssets.length === 0) {
+      if (readiness.captureProven) {
+        continue;
+      }
       pushOverridePreflightIssue(issues, {
-        code: 'TARGET_ASSET_NOT_OBSERVED',
+        code: 'TARGET_ASSET_NOT_OBSERVED_FOR_RULE',
         severity: 'warning',
         source: 'observed-assets',
-        message: `Rule ${ruleId} target asset was not observed for ${requestMethod} ${targetAssetUrl}.`,
+        message: `Rule ${readiness.ruleId} target asset was not observed for ${readiness.requestMethod} ${readiness.targetAssetUrl}.`,
       });
       continue;
     }
 
-    for (const asset of matchingAssets) {
+    for (const asset of readiness.matchingAssets) {
       if (typeof asset.integrity === 'string' && asset.integrity.length > 0) {
         pushOverridePreflightIssue(issues, {
           code: 'TARGET_ASSET_SRI_PRESENT',
           severity: 'error',
           source: 'observed-assets',
-          message: `Rule ${ruleId} target asset ${asset.url} includes integrity="${asset.integrity}" and cannot be overridden safely.`,
+          message: `Rule ${readiness.ruleId} target asset ${asset.url} includes integrity="${asset.integrity}" and cannot be overridden safely.`,
         });
       }
     }
@@ -2469,7 +2595,11 @@ function buildOverridePreflight(options: {
 
   const ready = !issues.some((issue) => issue.severity === 'error');
   const nextActions = !ready
-    ? issues.some((issue) => issue.code === 'SERVER_ACTION_UNSUPPORTED')
+    ? issues.some((issue) => issue.code === 'SESSION_NOT_FOUND' || issue.code === 'SESSION_PAUSED' || issue.code === 'SESSION_ENDED' || issue.code === LIVE_SESSION_DISCONNECTED_CODE)
+      ? [{ code: 'RECONNECT_SESSION', message: 'Reconnect or resume the target session before enabling overrides.' }]
+      : issues.some((issue) => issue.code === 'SESSION_SCOPE_DRIFT')
+        ? [{ code: 'FOCUS_BOUND_TAB', message: 'Focus or reselect the bound top-level tab, then observe override assets again.' }]
+        : issues.some((issue) => issue.code === 'SERVER_ACTION_UNSUPPORTED')
       ? [{
           code: 'REPLAN_SERVER_ACTION_OVERRIDE',
           message: 'Server actions stay unsupported in production override mode; move the override to a GET document/data/API response.',
@@ -2483,9 +2613,11 @@ function buildOverridePreflight(options: {
           ? [{ code: 'REPLAN_GET_ONLY_OVERRIDE', message: 'Remove or regenerate non-GET rules before enabling overrides.' }]
           : issues.some((issue) => issue.code === 'TARGET_ASSET_SRI_PRESENT')
             ? [{ code: 'CHOOSE_ANOTHER_OVERRIDE_PATH', message: 'Choose a document/data response path or remove SRI on the production asset before enabling overrides.' }]
-            : issues.some((issue) => issue.code === 'SESSION_NOT_FOUND' || issue.code === 'SESSION_PAUSED' || issue.code === 'SESSION_ENDED' || issue.code === LIVE_SESSION_DISCONNECTED_CODE)
-              ? [{ code: 'RECONNECT_SESSION', message: 'Reconnect or resume the target session before enabling overrides.' }]
-              : buildOverrideProfileNextActions(profile, issues)
+            : issues.some((issue) => issue.code === 'NO_OBSERVED_ASSETS')
+              ? [{ code: 'OBSERVE_OVERRIDE_ASSETS', message: 'Observe the bound target route before enabling overrides.' }]
+              : issues.some((issue) => issue.code === 'TARGET_ASSET_NOT_OBSERVED')
+                ? [{ code: 'OBSERVE_TARGET_ROUTE', message: 'Load the route that requests the configured target and observe assets again.' }]
+                : buildOverrideProfileNextActions(profile, issues)
     : observedAssets.length === 0
       ? [{ code: 'OBSERVE_OVERRIDE_ASSETS', message: 'Run observe_override_assets on the target route before enabling overrides in production workflows.' }]
       : [{ code: 'ENABLE_OVERRIDES', message: 'Preflight checks passed; the selected profile can be enabled on the live session.' }];
@@ -2510,8 +2642,22 @@ function buildOverridePreflight(options: {
     checks: {
       sessionFound: session !== undefined,
       connected: sessionState?.connected === true,
+      captureReady: session !== undefined
+        && getSessionStatus(session) === 'active'
+        && (!hasLiveConnectionLookup || sessionState?.connected === true)
+        && observedAssets.length > 0
+        && topLevelScopeLikely
+        && !issues.some((issue) => issue.severity === 'error'),
+      topLevelScopeLikely,
+      observedAssetTabs,
+      observedAssetPageUrls,
       observedAssetCount: observedAssets.length,
-      targetAssetObserved: issues.every((issue) => issue.code !== 'TARGET_ASSET_NOT_OBSERVED'),
+      targetAssetObserved,
+      targetAssetReadinessSatisfied,
+      matchedTargetAssetCount,
+      capturedTargetAssetCount,
+      unobservedTargetAssetCount,
+      unsatisfiedTargetAssetCount,
       serviceWorkerControlled: anyServiceWorkerControlled,
       cspMetaTagCount: cspMetaTags.length,
       recentPlanCount: recentPlans.length,
@@ -2519,6 +2665,14 @@ function buildOverridePreflight(options: {
     },
     observedAssets: {
       count: observedAssets.length,
+      tabIds: observedAssetTabs,
+      pageUrls: observedAssetPageUrls,
+      targetAssetObserved,
+      targetAssetReadinessSatisfied,
+      matchedTargetAssetCount,
+      capturedTargetAssetCount,
+      unobservedTargetAssetCount,
+      unsatisfiedTargetAssetCount,
       serviceWorkerControlled: anyServiceWorkerControlled,
       cspMetaTags,
     },
@@ -4117,6 +4271,33 @@ function ensureCaptureSuccess(result: CaptureClientResult, sessionId: string): R
   }
 
   return result.payload ?? {};
+}
+
+async function refreshObservedAssetsForOverrideEnable(options: {
+  captureClient: CaptureCommandClient;
+  db: Database;
+  sessionId: string;
+  tabId?: number;
+}): Promise<Record<string, unknown>> {
+  const capture = await executeLiveCapture(
+    options.captureClient,
+    options.sessionId,
+    'CAPTURE_OVERRIDE_OBSERVE_ASSETS',
+    { tabId: options.tabId, includePerformance: true },
+    5_000,
+  );
+  const payload = ensureCaptureSuccess(capture, options.sessionId);
+  persistObservedOverrideAssets(options.db, {
+    ...payload,
+    sessionId: options.sessionId,
+    tabId: payload.tabId ?? options.tabId,
+  });
+
+  return {
+    tabId: typeof payload.tabId === 'number' ? payload.tabId : options.tabId,
+    pageUrl: typeof payload.pageUrl === 'string' ? payload.pageUrl : undefined,
+    assetCount: Array.isArray(payload.assets) ? payload.assets.length : 0,
+  };
 }
 
 function auditSessionExists(db: Database, sessionId: string): boolean {
@@ -7135,7 +7316,8 @@ export function createV2ToolHandlers(
       if (!sessionId) {
         throw new Error('sessionId is required');
       }
-      const preflight = getDb
+      const tabId = resolveOptionalTabId(input.tabId);
+      let preflight = getDb
         ? buildOverridePreflight({
             db: getDb(),
             sessionId,
@@ -7143,19 +7325,43 @@ export function createV2ToolHandlers(
             getSessionConnectionState,
           })
         : null;
-      if (preflight && preflight.ready !== true) {
-        const blockingCodes = Array.isArray(preflight.issues)
-          ? preflight.issues
-            .filter((issue): issue is Record<string, unknown> => isRecord(issue) && issue.severity === 'error')
-            .map((issue) => String(issue.code ?? 'UNKNOWN'))
-          : [];
-        const profile = isRecord(preflight.profile) ? preflight.profile : {};
-        if (!canBypassPreflightForExperimentalRsc(profile, blockingCodes)) {
-          throw new Error(`Override preflight failed: ${blockingCodes.join(', ') || 'UNKNOWN'}`);
+      let observedBeforeEnable: Record<string, unknown> | undefined;
+      let observedAssetRefreshError: string | undefined;
+
+      const initialBlockingCodes = getBlockingPreflightCodes(preflight);
+      const initialProfile = isRecord(preflight?.profile) ? preflight.profile : {};
+      const initialExperimentalBypass = canBypassPreflightForExperimentalRsc(initialProfile, initialBlockingCodes);
+
+      if (preflight && getDb && !initialExperimentalBypass && shouldRefreshObservedAssetsForEnable(preflight)) {
+        try {
+          observedBeforeEnable = await refreshObservedAssetsForOverrideEnable({
+            captureClient,
+            db: getDb(),
+            sessionId,
+            tabId,
+          });
+          preflight = buildOverridePreflight({
+            db: getDb(),
+            sessionId,
+            profileId: input.profileId,
+            getSessionConnectionState,
+          });
+        } catch (error) {
+          observedAssetRefreshError = error instanceof Error ? error.message : String(error);
         }
       }
 
-      const tabId = resolveOptionalTabId(input.tabId);
+      if (preflight && preflight.ready !== true) {
+        const blockingCodes = getBlockingPreflightCodes(preflight);
+        const profile = isRecord(preflight.profile) ? preflight.profile : {};
+        if (!canBypassPreflightForExperimentalRsc(profile, blockingCodes)) {
+          const refreshSuffix = observedAssetRefreshError
+            ? `; observed asset refresh failed: ${observedAssetRefreshError}`
+            : '';
+          throw new Error(`Override preflight failed: ${blockingCodes.join(', ') || 'UNKNOWN'}${refreshSuffix}`);
+        }
+      }
+
       const capture = await executeLiveCapture(
         captureClient,
         sessionId,
@@ -7172,6 +7378,7 @@ export function createV2ToolHandlers(
           truncated: capture.truncated ?? false,
         },
         preflight,
+        observedBeforeEnable,
         ...payload,
         nextActions: [{ code: 'RELOAD_OR_INTERACT', message: 'Reload or interact with the tab so configured asset requests occur under the active override.' }],
       };
