@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.11.1](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.11.0...browser-debug-mcp-bridge-v1.11.1) (2026-05-15)
+
+
+### Bug Fixes
+
+* add override timeout diagnostics ([5c42517](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/5c425178a0967aa65dd6ea1c462ae821d302d36f))
+* harden override capture readiness ([2e1d1f1](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/2e1d1f18de356759f5b929f0ec3617bfd77958bd))
+* support captured post rsc overrides ([79c5769](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/79c5769db090b71ddac957b5cec43255c7091290))
+
 ## [1.11.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.10.0...browser-debug-mcp-bridge-v1.11.0) (2026-05-11)
 
 
