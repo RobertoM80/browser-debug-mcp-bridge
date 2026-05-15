@@ -112,4 +112,29 @@ describe('override response capabilities', () => {
       expect.objectContaining({ code: 'SERVER_ACTION_UNSUPPORTED' }),
     ]));
   });
+
+  it('treats captured POST RSC flight responses without server-action headers as production-safe', () => {
+    const capability = classifyOverrideResponseRequestCapability({
+      requestMethod: 'POST',
+      ruleType: 'rsc-flight',
+      requestHeaders: {
+        rsc: '1',
+      },
+    });
+
+    expect(capability).toMatchObject({
+      requestMethod: 'POST',
+      classification: 'safe-rsc-flight-post',
+      productionSafe: true,
+      captureSafe: true,
+    });
+    expect(capability.issues).toEqual([]);
+    expect(() => assertOverrideResponseRequestProductionSafe({
+      requestMethod: 'POST',
+      ruleType: 'rsc-flight',
+      requestHeaders: {
+        rsc: '1',
+      },
+    })).not.toThrow();
+  });
 });

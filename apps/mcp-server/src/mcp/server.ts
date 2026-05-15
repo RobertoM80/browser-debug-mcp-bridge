@@ -770,6 +770,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       captureMode: { type: 'string', enum: ['extension-fetch', 'cdp-response'] },
       triggerReload: { type: 'boolean' },
       matchMode: { type: 'string', enum: ['exact', 'prefix'] },
+      ruleType: { type: 'string' },
       requestMethod: { type: 'string' },
       requestHeaders: { type: 'object' },
       timeoutMs: { type: 'number' },
@@ -1844,6 +1845,33 @@ function isRecordWithRscFlightMetadata(value: unknown): value is Record<string, 
     && value.patchKind !== undefined;
 }
 
+function normalizeRuleStringHeaders(value: unknown): Record<string, string> | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const headers: Record<string, string> = {};
+  for (const [name, rawValue] of Object.entries(value)) {
+    if (typeof rawValue !== 'string') {
+      continue;
+    }
+    const normalizedName = name.trim().toLowerCase();
+    const normalizedValue = rawValue.trim();
+    if (normalizedName.length > 0 && normalizedValue.length > 0) {
+      headers[normalizedName] = normalizedValue;
+    }
+  }
+  return Object.keys(headers).length > 0 ? headers : undefined;
+}
+
+function getRscFlightRuleRequestHeaders(rule: Record<string, unknown>): Record<string, string> | undefined {
+  return isRecord(rule.rscFlight) ? normalizeRuleStringHeaders(rule.rscFlight.requestHeaders) : undefined;
+}
+
+function getOverrideRuleRequestHeaders(rule: Record<string, unknown>): Record<string, string> | undefined {
+  return normalizeRuleStringHeaders(rule.requestHeaders) ?? getRscFlightRuleRequestHeaders(rule);
+}
+
 function buildRscFlightRuleIssues(rule: Record<string, unknown>): Array<Record<string, unknown>> {
   const ruleId = String(rule.ruleId ?? 'unknown');
   const issues: Array<Record<string, unknown>> = [];
@@ -1891,18 +1919,21 @@ function buildRscFlightRuleIssues(rule: Record<string, unknown>): Array<Record<s
     }
   }
 
-  if (rule.requestMethod !== 'GET') {
+  const requestMethod = normalizeOverrideRequestMethod(rule.requestMethod);
+  const requestHeaders = getRscFlightRuleRequestHeaders(rule);
+  const isCapturedPostRscFlight = requestMethod === 'POST' && requestHeaders?.rsc === '1';
+  if (requestMethod !== 'GET' && !isCapturedPostRscFlight) {
     issues.push({
       code: 'RSC_FLIGHT_METHOD_UNSUPPORTED',
       severity: 'error',
-      message: `Rule ${ruleId} RSC flight overrides only support GET requests.`,
+      message: `Rule ${ruleId} RSC flight overrides only support GET requests or captured POST RSC response-stage patches.`,
     });
   }
 
   const targetAssetUrl = typeof rule.targetAssetUrl === 'string' ? rule.targetAssetUrl : '';
   try {
     const parsed = new URL(targetAssetUrl);
-    if (!parsed.searchParams.has('_rsc')) {
+    if (requestMethod === 'GET' && !parsed.searchParams.has('_rsc')) {
       issues.push({
         code: 'RSC_FLIGHT_TARGET_INVALID',
         severity: 'error',
@@ -2035,7 +2066,7 @@ function buildOverrideProfileIssues(profile: Record<string, unknown>): Array<Rec
     issues.push(...classifyOverrideResponseRequestCapability({
       ruleId: rule.ruleId,
       requestMethod: rule.requestMethod,
-      requestHeaders: rule.requestHeaders,
+      requestHeaders: getOverrideRuleRequestHeaders(rule),
       ruleType: rule.ruleType,
     }).issues.map((issue) => ({ ...issue })));
 
@@ -6726,6 +6757,7 @@ export function createV2ToolHandlers(
       assertOverrideResponseRequestCaptureSafe({
         requestMethod: input.requestMethod,
         requestHeaders: input.requestHeaders,
+        ruleType: input.ruleType,
         subject: 'Response body capture request',
       });
 
@@ -6741,6 +6773,7 @@ export function createV2ToolHandlers(
           captureMode: normalizeOptionalString(input.captureMode),
           triggerReload: typeof input.triggerReload === 'boolean' ? input.triggerReload : undefined,
           matchMode: normalizeOptionalString(input.matchMode),
+          ruleType: normalizeOptionalString(input.ruleType),
           requestMethod: input.requestMethod,
           requestHeaders: isRecord(input.requestHeaders) ? input.requestHeaders : undefined,
           timeoutMs,
@@ -6790,6 +6823,7 @@ export function createV2ToolHandlers(
             captureMode: normalizeOptionalString(input.captureMode),
             triggerReload: typeof input.triggerReload === 'boolean' ? input.triggerReload : undefined,
             matchMode: normalizeOptionalString(input.matchMode),
+            ruleType: normalizeOptionalString(input.ruleType),
             requestMethod: input.requestMethod,
             requestHeaders: isRecord(input.requestHeaders) ? input.requestHeaders : undefined,
             timeoutMs,

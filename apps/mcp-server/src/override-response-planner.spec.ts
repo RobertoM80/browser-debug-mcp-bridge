@@ -231,6 +231,55 @@ describe('override response planner', () => {
     }
   });
 
+  it('writes captured POST RSC flight response-stage configs when no server-action header is present', () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'override-response-rsc-post-production-'));
+    const configPath = join(fixtureRoot, 'override-poc.local.json');
+
+    try {
+      const plan = planOverrideResponsePatch({
+        targetUrl: 'https://example.com/products',
+        requestMethod: 'POST',
+        ruleType: 'rsc-flight',
+        matchMode: 'exact',
+        captureMode: 'cdp-response',
+        contentType: 'text/x-component; charset=utf-8',
+        responseBodyText: '1:["$","h1",null,{"children":"Original server-rendered products"}]',
+        requestHeaders: {
+          rsc: '1',
+        },
+        textPatches: [{
+          search: 'Original server-rendered products',
+          replacement: 'Override server-rendered products',
+          expectedCount: 1,
+        }],
+        configPath,
+        writeConfig: true,
+        overwrite: false,
+        profileId: 'rsc-post-production',
+      });
+
+      expect(plan.blockers).toEqual([]);
+      expect(plan.configWritten).toBe(true);
+      expect(plan.rule).toMatchObject({
+        ruleType: 'rsc-flight',
+        requestMethod: 'POST',
+        matchMode: 'exact',
+        targetAssetUrl: 'https://example.com/products',
+        rscFlight: {
+          productionMode: 'structured-flight-v1',
+          source: 'cdp-response',
+          patchKind: 'string-value-text',
+          requestHeaders: {
+            rsc: '1',
+          },
+        },
+      });
+      expect(plan.localFilePath && readFileSync(plan.localFilePath, 'utf8')).toContain('Override server-rendered products');
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   it('rejects production RSC patches that do not target safe string payload values', () => {
     const base = {
       targetUrl: 'https://example.com/products?_rsc=',

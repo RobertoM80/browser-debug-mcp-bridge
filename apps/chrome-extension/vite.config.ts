@@ -1,9 +1,17 @@
 import { defineConfig } from 'vite';
 import { nxViteTsPaths } from '@nx/vite/plugins/nx-tsconfig-paths.plugin';
+import { readFileSync } from 'fs';
 import path from 'path';
+
+const rootPackageJsonPath = path.resolve(__dirname, '../../package.json');
+const rootPackageJson = JSON.parse(readFileSync(rootPackageJsonPath, 'utf8')) as { version?: string };
+const packageVersion = typeof rootPackageJson.version === 'string' ? rootPackageJson.version : 'unknown';
 
 export default defineConfig({
   root: __dirname,
+  define: {
+    __BDMCP_PACKAGE_VERSION__: JSON.stringify(packageVersion),
+  },
   build: {
     outDir: '../../dist/apps/chrome-extension',
     emptyOutDir: true,

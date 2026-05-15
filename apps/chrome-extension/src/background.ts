@@ -1155,8 +1155,14 @@ function normalizeOverrideResponseUrlMatchMode(value: unknown): OverrideResponse
   throw new Error('matchMode must be "exact" or "prefix"');
 }
 
-function normalizeOverrideResponseCaptureMethod(value: unknown): 'GET' | 'HEAD' {
+function normalizeOverrideResponseCaptureMethod(
+  value: unknown,
+  options: { allowPostRscFlight?: boolean } = {},
+): 'GET' | 'HEAD' | 'POST' {
   const method = typeof value === 'string' && value.trim().length > 0 ? value.trim().toUpperCase() : 'GET';
+  if (method === 'POST' && options.allowPostRscFlight === true) {
+    return 'POST';
+  }
   if (method !== 'GET' && method !== 'HEAD') {
     throw new Error('Response body capture only supports safe GET or HEAD requests.');
   }
@@ -1468,7 +1474,9 @@ async function captureOverrideResponseBodyWithCdp(options: {
   }
 
   const targetUrl = normalizeOverrideResponseCaptureUrl(payload.targetUrl ?? payload.targetAssetUrl);
-  const requestMethod = normalizeOverrideResponseCaptureMethod(payload.requestMethod);
+  const requestMethod = normalizeOverrideResponseCaptureMethod(payload.requestMethod, {
+    allowPostRscFlight: payload.ruleType === 'rsc-flight',
+  });
   const matchMode = normalizeOverrideResponseUrlMatchMode(payload.matchMode);
   const requestHeaders = normalizeOverrideResponseCaptureHeaders(payload.requestHeaders);
   if (requestHeaders) {

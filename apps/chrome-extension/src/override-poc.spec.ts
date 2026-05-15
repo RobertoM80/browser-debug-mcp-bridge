@@ -739,6 +739,137 @@ describe('OverridePocController', () => {
     expect(status.lastError).toBeFalsy();
   });
 
+  it('fulfills captured POST RSC response-stage requests without replaying the request', async () => {
+    const chromeMock = new ChromeOverrideMock();
+    const originalBody = '1:["$","h1",null,{"children":"Original server-rendered products"}]';
+    const patchedBody = '1:["$","h1",null,{"children":"Override server-rendered products"}]';
+    chromeMock.sendCommand.mockImplementation(async (_source, method) => {
+      if (method === 'Fetch.getResponseBody') {
+        return { body: originalBody, base64Encoded: false };
+      }
+      return {};
+    });
+    vi.stubGlobal('chrome', chromeMock.chrome);
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith('/overrides/poc/config')) {
+        return createJsonResponse({
+          ok: true,
+          enabled: true,
+          targetAssetUrl: 'https://example.com/products',
+          localFilePath: './products.rsc',
+          resolvedLocalFilePath: 'C:/repo/products.rsc',
+          contentType: 'text/x-component; charset=utf-8',
+          autoReload: false,
+          configPath: 'C:/repo/override-poc.local.json',
+          fileExists: true,
+          fileSizeBytes: Buffer.byteLength(patchedBody),
+          ruleCount: 1,
+          enabledRuleCount: 1,
+          rules: [{
+            ruleId: 'products-post-rsc',
+            enabled: true,
+            ruleType: 'rsc-flight',
+            requestMethod: 'POST',
+            matchMode: 'exact',
+            targetAssetUrl: 'https://example.com/products',
+            localFilePath: './products.rsc',
+            resolvedLocalFilePath: 'C:/repo/products.rsc',
+            contentType: 'text/x-component; charset=utf-8',
+            fileExists: true,
+            fileSizeBytes: Buffer.byteLength(patchedBody),
+            rscFlight: {
+              productionMode: 'structured-flight-v1',
+              source: 'cdp-response',
+              patchKind: 'string-value-text',
+              textPatches: [{
+                search: 'Original server-rendered products',
+                replacement: 'Override server-rendered products',
+                expectedCount: 1,
+              }],
+              originalSha256: sha256(originalBody),
+              patchedSha256: sha256(patchedBody),
+              originalBytes: Buffer.byteLength(originalBody),
+              patchedBytes: Buffer.byteLength(patchedBody),
+              contentType: 'text/x-component; charset=utf-8',
+              requestHeaders: {
+                rsc: '1',
+              },
+            },
+          }],
+        });
+      }
+      if (url.includes('/overrides/poc/asset?assetUrl=')) {
+        throw new Error('Response-stage RSC fulfillment must patch the live response body instead of fetching a static asset');
+      }
+      if (isAuditEndpoint(url)) {
+        return createJsonResponse({ ok: true });
+      }
+
+      throw new Error('Unexpected fetch: ' + url);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const controller = new OverridePocController('http://127.0.0.1:8065');
+    await controller.enableForTab({ sessionId: 'session-1', tabId: 17, selectedTabId: 17 });
+    chromeMock.sendCommand.mockClear();
+
+    chromeMock.emitDebuggerEvent(
+      { tabId: 17 },
+      'Fetch.requestPaused',
+      {
+        requestId: 'request-post-rsc',
+        request: {
+          method: 'POST',
+          url: 'https://example.com/products',
+          headers: {
+            RSC: '1',
+          },
+        },
+      },
+    );
+    await flushPromises();
+
+    expect(chromeMock.sendCommand).toHaveBeenCalledWith(
+      { tabId: 17 },
+      'Fetch.continueRequest',
+      { requestId: 'request-post-rsc' },
+    );
+
+    chromeMock.emitDebuggerEvent(
+      { tabId: 17 },
+      'Fetch.requestPaused',
+      {
+        requestId: 'request-post-rsc',
+        request: {
+          method: 'POST',
+          url: 'https://example.com/products',
+        },
+        responseStatusCode: 200,
+        responseHeaders: [{ name: 'content-type', value: 'text/x-component; charset=utf-8' }],
+      },
+    );
+    await flushPromises(8);
+
+    expect(chromeMock.sendCommand).toHaveBeenCalledWith(
+      { tabId: 17 },
+      'Fetch.getResponseBody',
+      { requestId: 'request-post-rsc' },
+    );
+    expect(chromeMock.sendCommand).toHaveBeenCalledWith(
+      { tabId: 17 },
+      'Fetch.fulfillRequest',
+      expect.objectContaining({
+        requestId: 'request-post-rsc',
+        body: Buffer.from(patchedBody).toString('base64'),
+      }),
+    );
+    const status = await controller.getStatus();
+    expect(status.matchedRequests).toBe(1);
+    expect(status.fulfilledRequests).toBe(1);
+    expect(status.lastError).toBeFalsy();
+  });
+
   it('continues production RSC requests when request context does not match or has extra Next context', async () => {
     const chromeMock = new ChromeOverrideMock();
     chromeMock.sendCommand.mockImplementation(async (_source, method) => {

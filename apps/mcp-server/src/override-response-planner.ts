@@ -481,14 +481,16 @@ function buildRscFlightMetadata(options: {
   const warnings = [RSC_FLIGHT_LIMITED_SUPPORT_WARNING];
   const source = normalizeRscCaptureSource(options.plannerOptions);
   const parsedTargetUrl = new URL(options.targetUrl);
+  const rscRequestHeaders = normalizeRscRequestHeaders(options.plannerOptions.requestHeaders);
+  const isCapturedPostRscFlight = options.requestMethod === 'POST' && rscRequestHeaders?.rsc === '1';
 
   if (!source) {
     blockers.push('RSC flight response config writing requires a body captured with captureMode "cdp-response" or "extension-fetch".');
   }
-  if (options.requestMethod !== 'GET') {
-    blockers.push('RSC flight response overrides only support GET requests.');
+  if (options.requestMethod !== 'GET' && !isCapturedPostRscFlight) {
+    blockers.push('RSC flight response overrides only support GET requests or captured POST RSC response-stage patches.');
   }
-  if (!parsedTargetUrl.searchParams.has('_rsc')) {
+  if (options.requestMethod === 'GET' && !parsedTargetUrl.searchParams.has('_rsc')) {
     blockers.push('RSC flight response targetUrl must include the Next.js _rsc search parameter.');
   }
   if (!options.contentType.toLowerCase().includes('text/x-component')) {
@@ -528,7 +530,7 @@ function buildRscFlightMetadata(options: {
       originalBytes: options.originalBytes,
       patchedBytes: options.patchedBytes,
       contentType: options.contentType,
-      requestHeaders: normalizeRscRequestHeaders(options.plannerOptions.requestHeaders),
+      requestHeaders: rscRequestHeaders,
     },
   };
 }

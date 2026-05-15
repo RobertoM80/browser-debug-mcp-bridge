@@ -1532,6 +1532,63 @@ describe('mcp/server V1 query tools', () => {
     }
   });
 
+  it('validates planner-generated captured POST RSC flight override profiles', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-override-rsc-post-validation-'));
+    const configPath = join(tempRoot, 'override-poc.local.json');
+    const db = createTestDb();
+
+    try {
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+      const tools = createToolRegistry(createV1ToolHandlers(() => db));
+      const plan = await routeToolCall(tools, 'plan_override_response_patch', {
+        targetUrl: 'https://example.com/products',
+        requestMethod: 'POST',
+        ruleType: 'rsc-flight',
+        matchMode: 'exact',
+        captureMode: 'cdp-response',
+        contentType: 'text/x-component; charset=utf-8',
+        responseBodyText: '1:["$","h1",null,{"children":"Original POST RSC proof"}]',
+        requestHeaders: {
+          rsc: '1',
+        },
+        textPatches: [{ search: 'Original POST RSC proof', replacement: 'Override POST RSC proof', expectedCount: 1 }],
+        configPath,
+        writeConfig: true,
+        overwrite: true,
+        profileId: 'rsc-post-production-profile',
+      });
+
+      expect(plan.configWritten).toBe(true);
+      expect(plan.rule).toMatchObject({
+        ruleType: 'rsc-flight',
+        requestMethod: 'POST',
+        targetAssetUrl: 'https://example.com/products',
+        rscFlight: {
+          productionMode: 'structured-flight-v1',
+          source: 'cdp-response',
+          patchKind: 'string-value-text',
+          requestHeaders: {
+            rsc: '1',
+          },
+        },
+      });
+
+      const validation = await routeToolCall(tools, 'validate_override_profile', { profileId: 'rsc-post-production-profile' });
+      expect(validation.valid).toBe(true);
+      expect(validation.issues).toEqual([]);
+      expect((validation.nextActions as Array<{ code?: string }>)[0]?.code).toBe('ENABLE_OVERRIDES');
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it('marks manual Next.js server action rules invalid with a dedicated blocker', async () => {
     const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
     const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-override-server-action-validation-'));
@@ -2052,7 +2109,7 @@ describe('mcp/server V2 capture tools', () => {
     expect(disabled.active).toBe(false);
   });
 
-  it('rejects non-GET response body capture requests before hitting the live bridge', async () => {
+  it('rejects server-action response body capture requests before hitting the live bridge', async () => {
     const captureCalls: Array<{ sessionId: string; command: string; payload: Record<string, unknown> }> = [];
     const tools = createToolRegistry(
       createV2ToolHandlers({
@@ -2073,6 +2130,47 @@ describe('mcp/server V2 capture tools', () => {
       },
     })).rejects.toThrow('SERVER_ACTION_UNSUPPORTED');
     expect(captureCalls).toEqual([]);
+  });
+
+  it('allows captured POST RSC response body capture requests without server-action headers', async () => {
+    const captureCalls: Array<{ sessionId: string; command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (sessionId, command, payload) => {
+          captureCalls.push({ sessionId, command, payload });
+          return {
+            ok: true,
+            payload: {
+              targetUrl: 'https://example.com/products',
+              requestMethod: 'POST',
+              ruleType: 'rsc-flight',
+              contentType: 'text/x-component; charset=utf-8',
+              bodyCaptured: true,
+            },
+          };
+        },
+      }),
+    );
+
+    await routeToolCall(tools, 'capture_override_response_body', {
+      sessionId: 'session-live',
+      targetUrl: 'https://example.com/products',
+      ruleType: 'rsc-flight',
+      requestMethod: 'POST',
+      requestHeaders: {
+        rsc: '1',
+      },
+    });
+
+    expect(captureCalls).toHaveLength(1);
+    expect(captureCalls[0]).toMatchObject({
+      sessionId: 'session-live',
+      command: 'CAPTURE_OVERRIDE_RESPONSE_BODY',
+      payload: {
+        targetUrl: 'https://example.com/products',
+        requestMethod: 'POST',
+      },
+    });
   });
 
   it('blocks enable_overrides when preflight finds production-safety errors', async () => {

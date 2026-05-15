@@ -17,7 +17,7 @@ export interface OverrideResponseRequestCapabilityOptions {
 export interface OverrideResponseRequestCapabilityResult {
   requestMethod: string;
   requestHeaders: Record<string, string>;
-  classification: 'safe-get' | 'safe-head' | 'server-action' | 'mutation-replay';
+  classification: 'safe-get' | 'safe-head' | 'safe-rsc-flight-post' | 'server-action' | 'mutation-replay';
   productionSafe: boolean;
   captureSafe: boolean;
   issues: OverrideCapabilityIssue[];
@@ -87,6 +87,17 @@ function isServerActionLikeRequest(options: {
   return false;
 }
 
+function isCapturedRscFlightPostResponsePatch(options: {
+  requestMethod: string;
+  requestHeaders: Record<string, string>;
+  ruleType?: unknown;
+}): boolean {
+  return options.requestMethod === 'POST'
+    && isRscRuleType(options.ruleType)
+    && options.requestHeaders.rsc === '1'
+    && typeof options.requestHeaders['next-action'] !== 'string';
+}
+
 export function classifyOverrideResponseRequestCapability(
   options: OverrideResponseRequestCapabilityOptions,
 ): OverrideResponseRequestCapabilityResult {
@@ -94,8 +105,13 @@ export function classifyOverrideResponseRequestCapability(
   const requestHeaders = normalizeRequestHeaders(options.requestHeaders);
   const subject = resolveSubject(options);
   const issues: OverrideCapabilityIssue[] = [];
+  const capturedRscFlightPost = isCapturedRscFlightPostResponsePatch({
+    requestMethod,
+    requestHeaders,
+    ruleType: options.ruleType,
+  });
 
-  if (requestMethod !== 'GET') {
+  if (requestMethod !== 'GET' && !capturedRscFlightPost) {
     issues.push({
       code: 'UNSAFE_REQUEST_METHOD',
       severity: 'error',
@@ -108,6 +124,17 @@ export function classifyOverrideResponseRequestCapability(
       requestMethod,
       requestHeaders,
       classification: 'safe-get',
+      productionSafe: true,
+      captureSafe: true,
+      issues,
+    };
+  }
+
+  if (capturedRscFlightPost) {
+    return {
+      requestMethod,
+      requestHeaders,
+      classification: 'safe-rsc-flight-post',
       productionSafe: true,
       captureSafe: true,
       issues,

@@ -10,6 +10,8 @@ type SessionState = {
   reconnectAttempts: number;
 };
 
+declare const __BDMCP_PACKAGE_VERSION__: string | undefined;
+
 type CaptureConfig = {
   safeMode: boolean;
   allowlist: string[];
@@ -59,6 +61,33 @@ const DEFAULT_POPUP_CAPTURE_CONFIG: CaptureConfig = {
     allowSensitiveFields: false,
   },
 };
+
+function getConfiguredPackageVersion(): string | null {
+  const version = typeof __BDMCP_PACKAGE_VERSION__ === 'string' ? __BDMCP_PACKAGE_VERSION__.trim() : '';
+  return version.length > 0 ? version : null;
+}
+
+function getManifestVersion(): string | null {
+  try {
+    if (typeof chrome === 'undefined' || typeof chrome.runtime?.getManifest !== 'function') {
+      return null;
+    }
+    const version = chrome.runtime.getManifest().version?.trim() ?? '';
+    return version.length > 0 ? version : null;
+  } catch {
+    return null;
+  }
+}
+
+function renderPackageVersion(): void {
+  const versionElement = document.getElementById('app-version');
+  if (!versionElement) {
+    return;
+  }
+  const version = getConfiguredPackageVersion() ?? getManifestVersion() ?? 'unknown';
+  versionElement.textContent = `v${version}`;
+  versionElement.title = `Package version ${version}`;
+}
 
 type SessionResponse =
   | { ok: true; state: SessionState; accepted?: boolean }
@@ -1589,6 +1618,8 @@ async function refreshRetention(): Promise<void> {
 }
 
 export function initializePopup(): void {
+  renderPackageVersion();
+
   const startButton = document.getElementById('start-session');
   const pauseButton = document.getElementById('pause-session');
   const resumeCurrentButton = document.getElementById('resume-session');

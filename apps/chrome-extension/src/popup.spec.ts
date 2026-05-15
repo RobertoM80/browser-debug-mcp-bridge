@@ -38,6 +38,7 @@ function createRetentionSettings() {
 
 function createDom(): void {
   document.body.innerHTML = `
+    <span id="app-version"></span>
     <div id="status"></div>
     <div id="session-id"></div>
     <div id="queue-size"></div>
@@ -203,6 +204,7 @@ describe('popup override target selection', () => {
     vi.stubGlobal('chrome', {
       runtime: {
         sendMessage,
+        getManifest: vi.fn(() => ({ version: '1.11.0' })),
         getURL: vi.fn(() => 'chrome-extension://extension/db-viewer.html'),
       },
       tabs: {
@@ -211,6 +213,8 @@ describe('popup override target selection', () => {
     });
 
     await loadPopupModule();
+
+    expect(document.getElementById('app-version')?.textContent).toBe('v1.11.0');
 
     const select = document.getElementById('override-poc-target-tab') as HTMLSelectElement | null;
     const selectedLabel = document.getElementById('override-poc-selected-tab-id');
@@ -303,6 +307,7 @@ describe('popup override target selection', () => {
     vi.stubGlobal('chrome', {
       runtime: {
         sendMessage,
+        getManifest: vi.fn(() => ({ version: '1.11.0' })),
         getURL: vi.fn(() => 'chrome-extension://extension/db-viewer.html'),
       },
       tabs: {
@@ -391,6 +396,7 @@ describe('popup override target selection', () => {
     vi.stubGlobal('chrome', {
       runtime: {
         sendMessage,
+        getManifest: vi.fn(() => ({ version: '1.11.0' })),
         getURL: vi.fn(() => 'chrome-extension://extension/db-viewer.html'),
       },
       tabs: {

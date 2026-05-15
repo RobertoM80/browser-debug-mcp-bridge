@@ -47,6 +47,7 @@ Override coverage in `apps/e2e-playwright/tests/full.override-poc.spec.ts`:
 11. temp Next.js source-overlay planning patches an observed chunk, writes config, enables through MCP, and verifies fixture sources are not mutated
 12. SRI-protected Next.js source override candidates are blocked before config writing
 13. override target selector remains locked while active through popup coverage
+14. POST `text/x-component` response-stage overrides are captured through CDP, planned as structured `rsc-flight` rules, validated, enabled, and fulfilled without replaying the POST request
 
 Command:
 

@@ -167,6 +167,7 @@ type NextSourceOverridePlan = {
 
 type OverrideResponsePatchPlan = {
   ruleType?: string;
+  requestMethod?: string;
   matchMode?: string;
   localFilePath?: string;
   configWritten?: boolean;
@@ -188,6 +189,7 @@ type OverrideResponsePatchPlan = {
   };
   rule?: {
     ruleType?: string;
+    requestMethod?: string;
     matchMode?: string;
     targetAssetUrl?: string;
     localFilePath?: string;
@@ -276,11 +278,34 @@ const TARGET_APP_DOCUMENT_HTML = `<!doctype html>
       <h1>Override Target</h1>
       <p id="mode">boot</p>
       <p id="extra-mode">boot-extra</p>
+      <button id="post-rsc-trigger" type="button">Load POST RSC proof</button>
+      <p id="post-rsc-result">post-rsc-idle</p>
     </main>
     <script src="/app.js"></script>
     <script src="/extra.js"></script>
+    <script>
+      document.getElementById('post-rsc-trigger')?.addEventListener('click', async () => {
+        const response = await fetch('/rsc-post', {
+          method: 'POST',
+          headers: { RSC: '1' },
+          cache: 'no-store',
+        });
+        const text = await response.text();
+        const result = document.getElementById('post-rsc-result');
+        if (!result) return;
+        if (text.includes('Override POST RSC proof')) {
+          result.textContent = 'Override POST RSC proof';
+        } else if (text.includes('Original POST RSC proof')) {
+          result.textContent = 'Original POST RSC proof';
+        } else {
+          result.textContent = text.slice(0, 80);
+        }
+      });
+    </script>
   </body>
 </html>`;
+
+const POST_RSC_RESPONSE_BODY = '1:["$","p",null,{"children":"Original POST RSC proof"}]';
 
 const NEXT_PAGE_OVERRIDE_SCENARIOS: NextPageOverrideScenario[] = [
   {
@@ -537,6 +562,24 @@ async function startTargetApp(): Promise<ManagedTargetApp> {
         'const extra = document.getElementById("extra-mode");',
         'if (extra) extra.textContent = "original-extra";',
       ].join('\n'));
+      return;
+    }
+
+    if (requestUrl.pathname === '/rsc-post') {
+      if (request.method !== 'POST') {
+        response.writeHead(405, {
+          'Allow': 'POST',
+          'Cache-Control': 'no-store, no-cache, must-revalidate',
+        });
+        response.end();
+        return;
+      }
+
+      response.writeHead(200, {
+        'Content-Type': 'text/x-component; charset=utf-8',
+        'Cache-Control': 'no-store, no-cache, must-revalidate',
+      });
+      response.end(POST_RSC_RESPONSE_BODY);
       return;
     }
 
@@ -2459,6 +2502,118 @@ test.describe('@full override POC e2e coverage', () => {
 
   test('captures, validates, and fulfills production Next.js RSC flight response overrides through CDP and MCP', async () => {
     await runNextRscFlightOverrideScenario();
+  });
+
+  test('captures, plans, and fulfills a POST text/x-component response-stage override through CDP and MCP', async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'bdmcp-post-rsc-response-'));
+    const configPath = join(fixtureRoot, 'override-poc.local.json');
+    let targetApp: ManagedTargetApp | undefined;
+    let mcp: MCPClientHandle | undefined;
+    let extension: ExtensionContextHandle | undefined;
+
+    try {
+      targetApp = await startTargetApp();
+      const mcpPort = await getFreePort();
+      mcp = await connectMcpClient(createTempDataDir('bdmcp-e2e-post-rsc-response-data-'), {
+        port: mcpPort,
+        env: {
+          OVERRIDE_POC_CONFIG_PATH: configPath,
+        },
+      });
+
+      extension = await launchExtensionContext();
+      await assertExtensionInstalled(extension.context, extension.extensionId);
+      await extension.setServerBaseUrl(`http://127.0.0.1:${mcpPort}`);
+
+      const targetPage = await extension.context.newPage();
+      await targetPage.goto(targetApp.baseUrl, { waitUntil: 'domcontentloaded' });
+      const popupPage = await openExtensionPage(extension.context, extension.extensionId, 'popup.html');
+      await saveAllowlist(popupPage);
+      const boundTabId = await startSessionFromTargetTab(popupPage, targetPage);
+      const sessionId = await getActiveSessionId(popupPage);
+      await expectMcpSeesLiveSession(mcp, sessionId);
+
+      const postRscUrl = `${targetApp.baseUrl}/rsc-post`;
+      const planPromise = callToolJson<OverrideResponsePatchPlan>(mcp.client, 'plan_override_response_patch', {
+        sessionId,
+        tabId: boundTabId,
+        targetUrl: postRscUrl,
+        requestMethod: 'POST',
+        ruleType: 'rsc-flight',
+        matchMode: 'exact',
+        captureMode: 'cdp-response',
+        timeoutMs: 15_000,
+        textPatches: [{
+          search: 'Original POST RSC proof',
+          replacement: 'Override POST RSC proof',
+          expectedCount: 1,
+        }],
+        configPath,
+        writeConfig: true,
+        overwrite: true,
+        profileId: 'post-rsc-response-e2e',
+        profileName: 'POST RSC response override e2e',
+      });
+      await waitForCaptureSetup();
+      await targetPage.click('#post-rsc-trigger');
+      await expect(targetPage.locator('#post-rsc-result')).toHaveText('Original POST RSC proof');
+
+      const plan = await planPromise;
+      expect(plan.ruleType).toBe('rsc-flight');
+      expect(plan.requestMethod).toBe('POST');
+      expect(plan.configWritten).toBe(true);
+      expect(plan.blockers).toEqual([]);
+      expect(plan.rule).toMatchObject({
+        ruleType: 'rsc-flight',
+        requestMethod: 'POST',
+        matchMode: 'exact',
+        targetAssetUrl: postRscUrl,
+        rscFlight: {
+          productionMode: 'structured-flight-v1',
+          source: 'cdp-response',
+          patchKind: 'string-value-text',
+        },
+      });
+
+      const validation = await callToolJson<{ valid: boolean; issues?: Array<{ code?: string; severity?: string }> }>(mcp.client, 'validate_override_profile', {
+        profileId: 'post-rsc-response-e2e',
+      });
+      expect(validation.valid).toBe(true);
+      expect(validation.issues).toEqual([]);
+
+      await enableOverrideForTabViaMcp(mcp, sessionId, targetPage, boundTabId);
+      await expect(targetPage.locator('#post-rsc-result')).toHaveText('post-rsc-idle');
+      await targetPage.click('#post-rsc-trigger');
+      await expect(targetPage.locator('#post-rsc-result')).toHaveText('Override POST RSC proof');
+
+      const status = await callToolJson<OverrideStatus>(mcp.client, 'get_override_status', { sessionId });
+      expect(status.active).toBe(true);
+      expect(status.matchedRequests).toBeGreaterThanOrEqual(1);
+      expect(status.fulfilledRequests).toBeGreaterThanOrEqual(1);
+      expect(status.lastError).toBeFalsy();
+      await expectMcpOverrideRequestLogForUrl(mcp, sessionId, '/rsc-post');
+
+      await callToolJson(mcp.client, 'disable_overrides', { sessionId });
+      const stopResponse = await sendRuntimeMessage<RuntimeResponse>(popupPage, { type: 'SESSION_STOP' });
+      expect(stopResponse.ok).toBe(true);
+    } finally {
+      try {
+        if (extension) {
+          await extension.close();
+        }
+      } finally {
+        try {
+          if (mcp) {
+            await mcp.close();
+          }
+        } finally {
+          if (targetApp) {
+            await targetApp.stop();
+          }
+          rmSync(fixtureRoot, { recursive: true, force: true });
+        }
+      }
+    }
   });
 
   test('keeps production RSC dynamic route overrides isolated across history navigation', async () => {

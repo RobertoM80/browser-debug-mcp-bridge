@@ -562,7 +562,7 @@ The current branch now has the typed observation foundation needed for productio
 
 Current progress on that response path:
 
-1. bounded live text response capture now exists for safe `GET`/`HEAD` requests through extension fetch or explicit CDP response-stage interception on a bound tab, with byte caps and sensitive caller-supplied header blocking where caller-supplied headers are accepted
+1. bounded live text response capture now exists for safe `GET`/`HEAD` requests through extension fetch or explicit CDP response-stage interception on a bound tab, and for planner-scoped POST RSC Flight response-stage captures through CDP, with byte caps and sensitive caller-supplied header blocking where caller-supplied headers are accepted
 2. response patch planning now exists for supplied or live-captured bodies, with content-type checks, byte caps, exact text match counts, parser-based document patches, JSON Pointer existing-value replacements, JSON validity checks, generated body files, and exact or prefix override config writing for supported response types
 3. planner-generated RSC flight rules validate patches against parsed Flight JSON string values and reject tagged records, React element type/key tokens, object keys, protocol/reference tokens, and content outside string payloads while allowing JSON-escaped replacements
 4. the runtime can fulfill generated document/API/data response files through the request-stage rule path, with request-method matching; planner-generated RSC flight rules use a response-stage path that applies structured string-value patches to the live Flight body with the same RSC safety validation
@@ -602,7 +602,7 @@ The RSC investigation against `apps/override-next-fixture` changed the risk pict
 7. the runtime passes through matching prefetch and metadata-only Flight variants when they do not contain the captured patch anchors
 8. ordinary matching RSC responses that miss expected anchors still continue the original response and record a structured failure
 
-That means RSC support is no longer only an investigation path. The supported production subset is intentionally narrow: captured `text/x-component` `GET` responses, `_rsc` URLs, planner-generated `structured-flight-v1` metadata, and exact text replacements that stay inside parsed Flight JSON string values. Tagged Flight records, React element type/key tokens, object keys, Flight protocol/reference tokens, and content outside string payloads are blocked; replacements that require JSON escaping are supported through JSON serialization.
+That means RSC support is no longer only an investigation path. The supported production subset is intentionally narrow: captured `text/x-component` `GET` responses with `_rsc` URLs, captured POST `text/x-component` response-stage patches with RSC request context and no `next-action` header, planner-generated `structured-flight-v1` metadata, and exact text replacements that stay inside parsed Flight JSON string values. Tagged Flight records, React element type/key tokens, object keys, Flight protocol/reference tokens, and content outside string payloads are blocked; replacements that require JSON escaping are supported through JSON serialization.
 
 Future RSC broadening outside the current production contract:
 
