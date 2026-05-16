@@ -6,20 +6,47 @@
   "targets": {
     "test": {
       "executor": "nx:run-commands",
+      "cache": false,
+      "parallelism": false,
+      "dependsOn": [
+        {
+          "projects": ["mcp-server", "chrome-extension", "override-next-fixture"],
+          "target": "build",
+          "params": "ignore"
+        }
+      ],
       "options": {
-        "command": "pnpm nx run-many -t build --projects mcp-server,chrome-extension,override-next-fixture && pnpm exec playwright test -c apps/e2e-playwright/playwright.config.ts"
+        "command": "pnpm exec playwright test -c apps/e2e-playwright/playwright.config.ts"
       }
     },
     "smoke": {
       "executor": "nx:run-commands",
+      "cache": false,
+      "parallelism": false,
+      "dependsOn": [
+        {
+          "projects": ["mcp-server", "chrome-extension"],
+          "target": "build",
+          "params": "ignore"
+        }
+      ],
       "options": {
-        "command": "pnpm nx run-many -t build --projects mcp-server,chrome-extension && pnpm exec playwright test -c apps/e2e-playwright/playwright.config.ts --grep @smoke"
+        "command": "pnpm exec playwright test -c apps/e2e-playwright/playwright.config.ts --grep @smoke"
       }
     },
     "full": {
       "executor": "nx:run-commands",
+      "cache": false,
+      "parallelism": false,
+      "dependsOn": [
+        {
+          "projects": ["mcp-server", "chrome-extension", "override-next-fixture"],
+          "target": "build",
+          "params": "ignore"
+        }
+      ],
       "options": {
-        "command": "pnpm nx run-many -t build --projects mcp-server,chrome-extension,override-next-fixture && pnpm exec playwright test -c apps/e2e-playwright/playwright.config.ts --grep @full"
+        "command": "pnpm exec playwright test -c apps/e2e-playwright/playwright.config.ts --grep @full"
       }
     }
   },
