@@ -160,7 +160,7 @@ Implemented behavior:
 1. persists durable `override_runs` rows keyed by session and run id
 2. persists durable `override_requests` rows for matched target requests
 3. persists durable `override_plan_audits` rows for generated response and Next source override rules, including hashes, patch summaries, optional previews, warnings, blockers, generated file paths, and rollback metadata
-4. records structured failure codes such as `CONFIG_DISABLED`, `LOCAL_FILE_MISSING`, `DEBUGGER_ATTACH_FAILED`, `NETWORK_ENABLE_FAILED`, `FETCH_ENABLE_FAILED`, `CACHE_DISABLE_FAILED`, `SERVICE_WORKER_BYPASS_FAILED`, `BROWSER_CACHE_CLEAR_FAILED`, `TAB_RELOAD_FAILED`, `OVERRIDE_ASSET_FETCH_FAILED`, `RESPONSE_BODY_READ_FAILED`, `FULFILL_FAILED`, `RSC_PATCH_UNSUPPORTED`, `RSC_CONTENT_TYPE_MISMATCH`, `RSC_FLIGHT_UNSUPPORTED_RECORD`, `RSC_FLIGHT_STRUCTURAL_DRIFT`, `RSC_PATCH_ANCHOR_MISMATCH`, `RSC_PATCH_UNSAFE`, and `DEBUGGER_DETACHED`
+4. records structured failure codes such as `LOCAL_FILE_MISSING`, `DEBUGGER_ATTACH_FAILED`, `NETWORK_ENABLE_FAILED`, `FETCH_ENABLE_FAILED`, `CACHE_DISABLE_FAILED`, `SERVICE_WORKER_BYPASS_FAILED`, `BROWSER_CACHE_CLEAR_FAILED`, `TAB_RELOAD_FAILED`, `OVERRIDE_ASSET_FETCH_FAILED`, `RESPONSE_BODY_READ_FAILED`, `FULFILL_FAILED`, `RSC_PATCH_UNSUPPORTED`, `RSC_CONTENT_TYPE_MISMATCH`, `RSC_FLIGHT_UNSUPPORTED_RECORD`, `RSC_FLIGHT_STRUCTURAL_DRIFT`, `RSC_PATCH_ANCHOR_MISMATCH`, `RSC_PATCH_UNSAFE`, and `DEBUGGER_DETACHED`
 5. exposes list endpoints for runs, requests, and generated plans
 6. exposes a diagnosis endpoint that summarizes likely blockers and next actions
 
@@ -175,7 +175,7 @@ What is currently proven:
 
 ## Findings
 
-### Resolved on current branch: safe checked-in config and user-local override config support
+### Resolved on current branch: checked-in placeholder and user-local override config support
 
 File:
 
@@ -183,13 +183,13 @@ File:
 
 Current state:
 
-1. `override-poc.config.json` is now a disabled placeholder
+1. `override-poc.config.json` is now a placeholder with runtime enable/disable owned by the extension and MCP tools
 2. live local values can move to ignored `override-poc.local.json`
 3. `OVERRIDE_POC_CONFIG_PATH` can point at an explicit custom file
 
 Why this is better:
 
-1. fresh clones start from a safe default
+1. fresh clones start without machine-local paths in the tracked file
 2. local machine paths no longer need to live in the tracked file
 3. operators can keep machine-local setup without patching the committed config
 
@@ -349,7 +349,7 @@ Current state:
 1. `create_override_profile` can generate reviewable profile JSON
 2. `nextjs` scans `.next` manifests and `.next/static`
 3. `static` scans any local asset directory and works for framework-neutral builds
-4. generated configs are disabled by default unless explicitly requested
+4. generated configs are usable by default, with runtime activation still controlled by the extension or MCP tools
 5. writing `override-poc.local.json` is explicit with `writeConfig=true`
 
 Architecture guardrail:

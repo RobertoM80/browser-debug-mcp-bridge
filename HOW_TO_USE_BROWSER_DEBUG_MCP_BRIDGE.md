@@ -263,7 +263,7 @@ Expected result:
 
 This is available only in local clone mode.
 
-1. Leave the checked-in `override-poc.config.json` as the safe placeholder.
+1. Leave the checked-in `override-poc.config.json` as the placeholder.
 2. Generate or create `override-poc.local.json` in the repo root, or set `OVERRIDE_POC_CONFIG_PATH` to a custom JSON file.
 3. For MCP generation, call `observe_override_assets` on the live session, then `list_observed_override_assets` to inspect persisted observations, `map_next_override_assets` for Next.js source/chunk confidence and bounded drift checks, `plan_next_source_override` for temp source-edit planning, or `create_override_profile` for direct profile generation.
 4. Set `activeProfileId` and one or more exact `profiles[].rules[]` mappings from production asset URL to local built file path.
@@ -278,7 +278,7 @@ pnpm nx build chrome-extension
 2. Start or resume the target session.
 3. Open the popup `Override POC` section.
 4. Choose the bound target tab.
-5. Click **Enable POC**.
+5. Click **Enable POC**. Click **Disable** when you want to detach the debugger and stop fulfilling overrides.
 
 The same connected session can be operated through MCP with `list_override_profiles`, `create_override_profile`, `validate_override_profile`, `observe_override_assets`, `list_observed_override_assets`, `map_next_override_assets`, `plan_next_source_override`, `enable_overrides`, `disable_overrides`, `get_override_status`, `get_override_request_log`, and `diagnose_overrides`.
 

@@ -802,10 +802,10 @@ export function diagnoseOverridePoc(
     issues.push({
       code: 'CONFIG_DISABLED',
       severity: 'error',
-      message: 'The override config is disabled, so no replacement can occur.',
+      message: 'This older run was blocked by a root override config disable flag.',
       suggestedActions: [
-        'Set `enabled` to `true` in the selected override config file.',
-        'Refresh override status before enabling again.',
+        'Refresh override status with the current extension build.',
+        'Enable or disable runtime overrides from the extension popup or MCP tools.',
       ],
     });
   }

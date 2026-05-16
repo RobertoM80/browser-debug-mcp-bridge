@@ -84,6 +84,28 @@ describe('override-poc config', () => {
     expect(summary.fileSizeBytes).toBeGreaterThan(0);
   });
 
+  it('does not use the deprecated root enabled flag as a runtime gate', () => {
+    const fixture = createConfigFixture();
+    writeFileSync(
+      fixture.configPath,
+      JSON.stringify({
+        enabled: false,
+        targetAssetUrl: fixture.assetUrl,
+        localFilePath: '.next/static/chunks/app/page-local.js',
+        contentType: 'application/javascript; charset=utf-8',
+        autoReload: true,
+      }),
+      'utf8',
+    );
+
+    const summary = getOverridePocConfigSummary(fixture.configPath);
+    const response = getOverridePocAssetResponse(fixture.assetUrl, fixture.configPath);
+
+    expect(summary.configEnabled).toBe(false);
+    expect(summary.enabled).toBe(true);
+    expect(response.buffer.toString('utf8')).toBe(fixture.assetBody);
+  });
+
   it('returns the configured asset bytes for an exact URL match', () => {
     const fixture = createConfigFixture();
     const response = getOverridePocAssetResponse(fixture.assetUrl, fixture.configPath);
@@ -357,7 +379,7 @@ describe('override-poc config', () => {
     expect(generated.nextDir).toBe(join(fixtureRoot, '.next'));
     expect(generated.ruleCount).toBe(3);
     expect(generated.missingManifestAssetCount).toBe(1);
-    expect(generated.config.enabled).toBe(false);
+    expect(generated.config.enabled).toBe(true);
     expect(generated.rules.map((rule) => rule.targetAssetUrl)).toContain('https://cdn.example.com/_next/static/chunks/main.js');
     expect(generated.rules.map((rule) => rule.localFilePath)).toContain('.next/static/chunks/main.js');
     expect(generated.rules.find((rule) => rule.localFilePath.endsWith('app.css'))?.contentType).toBe('text/css; charset=utf-8');

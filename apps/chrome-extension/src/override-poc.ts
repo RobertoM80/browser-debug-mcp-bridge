@@ -674,19 +674,6 @@ export class OverridePocController {
     const startedAt = Date.now();
     const { sessionId, tabId, selectedTabId } = options;
     const config = await this.fetchConfig();
-    if (!config.enabled) {
-      const failure = new OverridePocControllerError('CONFIG_DISABLED', `Override POC is disabled in ${config.configPath}`);
-      await this.persistTerminalRun({
-        runId,
-        sessionId,
-        startedAt,
-        tabId,
-        selectedTabId,
-        config,
-        failure,
-      });
-      throw failure;
-    }
     if (!config.fileExists) {
       const failure = new OverridePocControllerError('LOCAL_FILE_MISSING', `Configured local file does not exist: ${config.resolvedLocalFilePath}`);
       await this.persistTerminalRun({

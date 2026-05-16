@@ -418,7 +418,6 @@ function createGenerationNextActions(
   adapter: OverrideProfileAdapterId,
   ruleCount: number,
   suggestedConfigPath: string,
-  enabled: boolean,
 ): OverrideProfileNextAction[] {
   if (ruleCount === 0) {
     return [{
@@ -442,13 +441,6 @@ function createGenerationNextActions(
     },
   ];
 
-  if (!enabled) {
-    actions.push({
-      code: 'ENABLE_CONFIG_AFTER_REVIEW',
-      message: 'The generated root config is disabled by default; set enabled=true after reviewing the mappings.',
-    });
-  }
-
   actions.push({
     code: 'ENABLE_OVERRIDES',
     message: 'Enable overrides on a connected session only after validation succeeds.',
@@ -469,7 +461,7 @@ export function createOverrideProfileConfig(options: OverrideProfileGenerationOp
   const configDir = dirname(suggestedConfigPath);
   const profileId = normalizeOptionalText(options.profileId, defaults.profileId);
   const profileName = normalizeOptionalText(options.profileName, defaults.profileName);
-  const configEnabled = options.enabled ?? false;
+  const configEnabled = options.enabled ?? true;
   const profileEnabled = options.profileEnabled ?? true;
   const autoReload = options.autoReload ?? true;
   const includeManifestFiles = options.includeManifestFiles ?? true;
@@ -530,7 +522,7 @@ export function createOverrideProfileConfig(options: OverrideProfileGenerationOp
     missingManifestAssetCount: discovery.missingManifestAssetCount,
     ruleCount: rules.length,
     warnings,
-    nextActions: createGenerationNextActions(adapter, rules.length, suggestedConfigPath, configEnabled),
+    nextActions: createGenerationNextActions(adapter, rules.length, suggestedConfigPath),
     config,
     profile,
     rules,

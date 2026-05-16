@@ -274,7 +274,7 @@ function parseProfile(raw: unknown, index: number, rootAutoReload: boolean): Ove
 }
 
 function parseLegacyConfig(raw: Record<string, unknown>): OverridePocConfig {
-  const enabled = requireBoolean(raw.enabled, 'enabled');
+  const enabled = optionalBoolean(raw.enabled, true, 'enabled');
   const autoReload = requireBoolean(raw.autoReload, 'autoReload');
   const rule: OverridePocRuleConfig = {
     ruleId: optionalString(raw.ruleId, 'default'),
@@ -313,7 +313,7 @@ export function parseOverridePocConfig(raw: unknown): OverridePocConfig {
     return parseLegacyConfig(raw);
   }
 
-  const enabled = requireBoolean(raw.enabled, 'enabled');
+  const enabled = optionalBoolean(raw.enabled, true, 'enabled');
   const rootAutoReload = optionalBoolean(raw.autoReload, true, 'autoReload');
   const profiles = raw.profiles.map((profile, index) => parseProfile(profile, index, rootAutoReload));
   if (profiles.length === 0) {
@@ -434,7 +434,7 @@ export function getOverridePocConfigSummary(configPath?: string): OverridePocCon
     throw new Error(`override-poc active profile "${activeProfile.profileId}" must define at least one rule`);
   }
 
-  const enabled = config.enabled && activeProfile.enabled && enabledRules.length > 0;
+  const enabled = activeProfile.enabled && enabledRules.length > 0;
   const fileExists = enabledRules.length > 0 && enabledRules.every((rule) => rule.fileExists);
 
   return {
@@ -468,7 +468,7 @@ export function getOverridePocAssetResponse(
 ): OverridePocAssetResponse {
   const summary = getOverridePocConfigSummary(configPath);
   if (!summary.enabled) {
-    throw new Error(`Override POC is disabled in ${summary.configPath}`);
+    throw new Error(`Active override profile has no enabled rules in ${summary.configPath}`);
   }
 
   const normalizedRequestMethod = normalizeOverrideRequestMethod(requestMethod);

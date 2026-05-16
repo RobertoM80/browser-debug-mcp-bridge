@@ -354,7 +354,7 @@ Generate a generic static-assets profile:
 }
 ```
 
-Generated configs are disabled by default. Review exact production URLs before enabling.
+Generated configs are usable by default. Review exact production URLs before enabling overrides from the extension popup or MCP tools.
 
 To make the runtime load your config, set `OVERRIDE_POC_CONFIG_PATH` in your MCP server environment to the generated config file path, then restart the MCP server.
 

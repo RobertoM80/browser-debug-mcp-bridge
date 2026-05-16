@@ -1208,9 +1208,6 @@ function renderOverridePocStatus(status: OverridePocStatus): void {
     const issue = status.diagnosis.issues.find((entry) => entry.severity === 'error');
     message = issue ? `${issue.code}: ${issue.message}` : 'Override blocker reported.';
     tone = 'error';
-  } else if (!status.configuredEnabled) {
-    message = 'Disabled in override-poc.config.json.';
-    tone = 'warning';
   } else if (status.fileExists === false) {
     message = 'Configured local file was not found on disk.';
     tone = 'warning';
@@ -1225,7 +1222,7 @@ function renderOverridePocStatus(status: OverridePocStatus): void {
   renderOverridePocPlanLog(status);
 
   if (enableButton) {
-    enableButton.disabled = status.active || !status.configuredEnabled || status.fileExists === false;
+    enableButton.disabled = status.active || status.fileExists === false;
   }
   if (disableButton) {
     disableButton.disabled = !status.active;

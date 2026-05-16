@@ -1,10 +1,10 @@
 {
-  "enabled": false,
+  "enabled": true,
   "activeProfileId": "placeholder",
   "profiles": [
     {
       "profileId": "placeholder",
-      "name": "Disabled placeholder override profile",
+      "name": "Placeholder override profile",
       "enabled": true,
       "autoReload": true,
       "rules": [

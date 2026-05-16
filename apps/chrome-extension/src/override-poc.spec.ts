@@ -128,6 +128,43 @@ describe('OverridePocController', () => {
     expect(status.targetAssetUrl).toContain('page-prod.js');
   });
 
+  it('lets the extension runtime enable overrides even when a legacy config flag is false', async () => {
+    const chromeMock = new ChromeOverrideMock();
+    vi.stubGlobal('chrome', chromeMock.chrome);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.endsWith('/overrides/poc/config')) {
+          return createJsonResponse({
+            ok: true,
+            enabled: false,
+            targetAssetUrl: 'https://example.com/app.js',
+            localFilePath: './app.js',
+            resolvedLocalFilePath: 'C:/repo/app.js',
+            contentType: 'application/javascript; charset=utf-8',
+            autoReload: false,
+            configPath: 'C:/repo/override-poc.local.json',
+            fileExists: true,
+            fileSizeBytes: 12,
+          });
+        }
+        if (isAuditEndpoint(url)) {
+          return createJsonResponse({ ok: true });
+        }
+
+        throw new Error('Unexpected fetch: ' + url);
+      }),
+    );
+
+    const controller = new OverridePocController('http://127.0.0.1:8065');
+    const status = await controller.enableForTab({ sessionId: 'session-1', tabId: 17 });
+
+    expect(chromeMock.attach).toHaveBeenCalledWith({ tabId: 17 }, '1.3');
+    expect(status.active).toBe(true);
+    expect(status.configuredEnabled).toBe(false);
+  });
+
   it('records precise setup failures and restores debugger toggles', async () => {
     const chromeMock = new ChromeOverrideMock();
     chromeMock.sendCommand.mockImplementation(async (_source, method, params) => {

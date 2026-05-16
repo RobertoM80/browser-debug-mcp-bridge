@@ -1811,7 +1811,7 @@ function buildOverrideProfileRecords(): Record<string, unknown>[] {
     active: profile.profileId === summary.activeProfileId,
     configEnabled: summary.configEnabled,
     enabled: profile.enabled,
-    effectiveEnabled: summary.configEnabled && profile.enabled && profile.enabledRuleCount > 0,
+    effectiveEnabled: profile.enabled && profile.enabledRuleCount > 0,
     autoReload: profile.autoReload,
     configPath: summary.configPath,
     fileExists: profile.fileExists,
@@ -2022,14 +2022,6 @@ function buildOverrideProfileIssues(profile: Record<string, unknown>): Array<Rec
     ? profile.rules.filter((rule): rule is Record<string, unknown> => isRecord(rule))
     : [];
 
-  if (profile.configEnabled !== true) {
-    issues.push({
-      code: 'CONFIG_DISABLED',
-      severity: 'warning',
-      message: 'The override config is disabled and cannot replace requests until enabled.',
-    });
-  }
-
   if (profile.enabled !== true) {
     issues.push({
       code: 'PROFILE_DISABLED',
@@ -2133,13 +2125,6 @@ function buildOverrideProfileNextActions(
     return [{
       code: 'REPLAN_RSC_RESPONSE_OVERRIDE',
       message: 'Regenerate the RSC rule with plan_override_response_patch from a captured text/x-component response body.',
-    }];
-  }
-
-  if (profile.configEnabled !== true) {
-    return [{
-      code: 'ENABLE_CONFIG',
-      message: 'Set the root override config enabled=true after reviewing the profile.',
     }];
   }
 

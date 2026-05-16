@@ -13,18 +13,18 @@ It is intentionally narrow. The goal is to prove that the bridge can intercept a
 
 ## Config File
 
-Keep the checked-in `override-poc.config.json` as the disabled placeholder.
+Keep the checked-in `override-poc.config.json` as a placeholder. It is valid by default, but points at example URLs and files, so it will not fulfill anything until you add real rules.
 
 Create `override-poc.local.json` in the repo root for real local values. If needed, you can also point the server at a different file with `OVERRIDE_POC_CONFIG_PATH`.
 
 ```json
 {
-  "enabled": false,
+  "enabled": true,
   "activeProfileId": "placeholder",
   "profiles": [
     {
       "profileId": "placeholder",
-      "name": "Disabled placeholder override profile",
+      "name": "Placeholder override profile",
       "enabled": true,
       "autoReload": true,
       "rules": [
@@ -44,7 +44,7 @@ Notes:
 
 1. Each rule `targetAssetUrl` must be the exact production URL requested by the browser, unless the rule explicitly uses `matchMode: "prefix"` for unstable response URLs.
 2. Each rule `localFilePath` can be relative to the config file directory or an absolute path.
-3. `enabled` should stay `false` in the checked-in placeholder config.
+3. Root `enabled` is kept for backward compatibility, but the extension popup or MCP `enable_overrides`/`disable_overrides` controls the runtime state.
 4. `override-poc.local.json` is ignored by git and is preferred automatically when present.
 5. Legacy single-rule configs with top-level `targetAssetUrl` and `localFilePath` still work.
 
@@ -89,7 +89,7 @@ Example MCP arguments for framework-neutral builds:
 }
 ```
 
-The generated root config is disabled by default. Review the `targetAssetUrl` values against real production network requests before setting `enabled` to `true`.
+Generated configs are usable by default. Review the `targetAssetUrl` values against real production network requests before enabling overrides from the extension popup or MCP tools.
 
 ## How To Run It
 
