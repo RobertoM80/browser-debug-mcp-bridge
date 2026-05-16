@@ -110,6 +110,20 @@ const LiveUIActionTargetSchema = z.object({
   tabId: z.number().int().min(0).optional(),
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
+  testId: z.string().min(1).optional(),
+  scope: z.enum(['buttons', 'inputs', 'modals', 'focused']).optional(),
+  textContains: z.string().min(1).optional(),
+  labelContains: z.string().min(1).optional(),
+  titleContains: z.string().min(1).optional(),
+  tagName: z.string().min(1).optional(),
+  type: z.string().min(1).optional(),
+  visible: z.boolean().optional(),
+  disabled: z.boolean().optional(),
+  selected: z.boolean().optional(),
+  pressed: z.boolean().optional(),
+  expanded: z.boolean().optional(),
+  readOnly: z.boolean().optional(),
+  requiredField: z.boolean().optional(),
 });
 
 const LiveUIActionBaseSchema = z.object({
@@ -211,6 +225,7 @@ const UIWorkflowActionTargetSchema = z.object({
   titleContains: z.string().min(1).optional(),
   tagName: z.string().min(1).optional(),
   type: z.string().min(1).optional(),
+  visible: z.boolean().optional(),
   disabled: z.boolean().optional(),
   selected: z.boolean().optional(),
   pressed: z.boolean().optional(),
@@ -630,6 +645,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       titleContains: { type: 'string' },
       urlContains: { type: 'string' },
       language: { type: 'string' },
+      visible: { type: 'boolean' },
       disabled: { type: 'boolean' },
       selected: { type: 'boolean' },
       pressed: { type: 'boolean' },
@@ -657,6 +673,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       titleContains: { type: 'string' },
       urlContains: { type: 'string' },
       language: { type: 'string' },
+      visible: { type: 'boolean' },
       disabled: { type: 'boolean' },
       selected: { type: 'boolean' },
       pressed: { type: 'boolean' },
@@ -1016,6 +1033,20 @@ const TOOL_SCHEMAS: Record<string, object> = {
           tabId: { type: 'number' },
           frameId: { type: 'number' },
           url: { type: 'string' },
+          testId: { type: 'string' },
+          scope: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused'] },
+          textContains: { type: 'string' },
+          labelContains: { type: 'string' },
+          titleContains: { type: 'string' },
+          tagName: { type: 'string' },
+          type: { type: 'string' },
+          visible: { type: 'boolean' },
+          disabled: { type: 'boolean' },
+          selected: { type: 'boolean' },
+          pressed: { type: 'boolean' },
+          expanded: { type: 'boolean' },
+          readOnly: { type: 'boolean' },
+          requiredField: { type: 'boolean' },
         },
       },
       input: { type: 'object' },
@@ -1046,6 +1077,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
           titleContains: { type: 'string' },
           urlContains: { type: 'string' },
           language: { type: 'string' },
+          visible: { type: 'boolean' },
           disabled: { type: 'boolean' },
           selected: { type: 'boolean' },
           pressed: { type: 'boolean' },
@@ -1100,6 +1132,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
                 titleContains: { type: 'string' },
                 tagName: { type: 'string' },
                 type: { type: 'string' },
+                visible: { type: 'boolean' },
                 disabled: { type: 'boolean' },
                 selected: { type: 'boolean' },
                 pressed: { type: 'boolean' },
@@ -1141,6 +1174,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
                 titleContains: { type: 'string' },
                 urlContains: { type: 'string' },
                 language: { type: 'string' },
+                visible: { type: 'boolean' },
                 disabled: { type: 'boolean' },
                 selected: { type: 'boolean' },
                 pressed: { type: 'boolean' },
@@ -3377,6 +3411,7 @@ interface PageStateMatcher {
   requiredField?: boolean;
   tagName?: string;
   type?: string;
+  visible?: boolean;
   countExactly?: number;
   countAtLeast?: number;
 }
@@ -3507,6 +3542,7 @@ function resolvePageStateMatcher(input: ToolInput): PageStateMatcher {
     requiredField: resolveOptionalMatcherBoolean(input.requiredField),
     tagName: resolveOptionalMatcherString(input.tagName)?.toLowerCase(),
     type: resolveOptionalMatcherString(input.type)?.toLowerCase(),
+    visible: resolveOptionalMatcherBoolean(input.visible),
     countExactly: resolveOptionalMatcherCount(input.countExactly, 'countExactly'),
     countAtLeast: resolveOptionalMatcherCount(input.countAtLeast, 'countAtLeast'),
   };
@@ -3567,6 +3603,7 @@ function matchesPageStateItem(item: Record<string, unknown>, matcher: PageStateM
     && equalsNormalized(item.language, matcher.language)
     && equalsNormalized(item.tagName, matcher.tagName)
     && equalsNormalized(item.type, matcher.type)
+    && equalsOptionalBoolean(item.visible, matcher.visible)
     && equalsOptionalBoolean(item.disabled, matcher.disabled)
     && equalsOptionalBoolean(item.selected, matcher.selected)
     && equalsOptionalBoolean(item.pressed, matcher.pressed)
@@ -3858,6 +3895,8 @@ function describeWorkflowTargetCandidate(item: Record<string, unknown>): Record<
     text: candidateTextForWorkflowTarget(item) || undefined,
     testId: typeof item.testId === 'string' ? item.testId : undefined,
     selector: typeof item.selector === 'string' ? item.selector : undefined,
+    frameId: typeof item.frameId === 'number' ? item.frameId : undefined,
+    frameUrl: typeof item.frameUrl === 'string' ? item.frameUrl : undefined,
     tagName: typeof item.tagName === 'string' ? item.tagName : undefined,
     type: typeof item.type === 'string' ? item.type : undefined,
     disabled: typeof item.disabled === 'boolean' ? item.disabled : undefined,
@@ -3892,6 +3931,7 @@ function matchesWorkflowActionTarget(
     && includesNormalized(item.title, target.titleContains)
     && equalsNormalized(item.tagName, target.tagName)
     && equalsNormalized(item.type, target.type)
+    && equalsOptionalBoolean(item.visible, target.visible)
     && equalsOptionalBoolean(item.disabled, target.disabled)
     && equalsOptionalBoolean(item.selected, target.selected)
     && equalsOptionalBoolean(item.pressed, target.pressed)
@@ -3913,6 +3953,7 @@ function summarizeWorkflowTargetMatcher(target: UIWorkflowActionTarget): Record<
     titleContains: target.titleContains,
     tagName: target.tagName,
     type: target.type,
+    visible: target.visible,
     disabled: target.disabled,
     selected: target.selected,
     pressed: target.pressed,
@@ -3920,6 +3961,29 @@ function summarizeWorkflowTargetMatcher(target: UIWorkflowActionTarget): Record<
     readOnly: target.readOnly,
     requiredField: target.requiredField,
   };
+}
+
+function hasSemanticActionTargetMatcher(target: LiveUIActionRequest['target']): boolean {
+  return Boolean(
+    target
+    && !target.selector
+    && !target.elementRef
+    && (
+      target.testId
+      || target.textContains
+      || target.labelContains
+      || target.titleContains
+      || target.tagName
+      || target.type
+      || target.visible !== undefined
+      || target.disabled !== undefined
+      || target.selected !== undefined
+      || target.pressed !== undefined
+      || target.expanded !== undefined
+      || target.readOnly !== undefined
+      || target.requiredField !== undefined
+    ),
+  );
 }
 
 async function resolveWorkflowActionTarget(
@@ -3996,22 +4060,22 @@ async function resolveWorkflowActionTarget(
   }
 
   const candidate = candidates[0];
-    return {
-      target: {
-        elementRef: typeof candidate.elementRef === 'string' ? candidate.elementRef : undefined,
+  return {
+    target: {
+      elementRef: typeof candidate.elementRef === 'string' ? candidate.elementRef : undefined,
       selector: typeof candidate.selector === 'string' ? candidate.selector : undefined,
       tabId: target.tabId,
-      frameId: target.frameId,
+      frameId: target.frameId ?? (typeof candidate.frameId === 'number' ? candidate.frameId : undefined),
       url: target.url,
     },
-      resolution: {
-        strategy: typeof candidate.elementRef === 'string' ? 'semantic_elementRef' : 'semantic_selector',
-        matcher: summarizeWorkflowTargetMatcher(target),
-        matchedCandidateCount: candidates.length,
-        matched: describeWorkflowTargetCandidate(candidate),
-      },
-      pageCapture: capture,
-    };
+    resolution: {
+      strategy: typeof candidate.elementRef === 'string' ? 'semantic_elementRef' : 'semantic_selector',
+      matcher: summarizeWorkflowTargetMatcher(target),
+      matchedCandidateCount: candidates.length,
+      matched: describeWorkflowTargetCandidate(candidate),
+    },
+    pageCapture: capture,
+  };
 }
 
 function createWorkflowStepId(step: UIWorkflowStep, index: number): string {
@@ -8389,7 +8453,59 @@ export function createV2ToolHandlers(
       delete actionInput.sessionId;
       delete actionInput.captureOnFailure;
 
-      const request = LiveUIActionRequestSchema.parse(actionInput);
+      let request = LiveUIActionRequestSchema.parse(actionInput);
+      let targetResolution: Record<string, unknown> | undefined;
+      try {
+        if (hasSemanticActionTargetMatcher(request.target)) {
+          const resolvedTarget = await resolveWorkflowActionTarget(
+            sessionId,
+            request.target as UIWorkflowActionTarget,
+            capturePageState,
+          );
+          targetResolution = resolvedTarget.resolution;
+          request = LiveUIActionRequestSchema.parse({
+            ...request,
+            target: resolvedTarget.target,
+          });
+        }
+      } catch (error) {
+        if (error instanceof WorkflowTargetResolutionError) {
+          const traceId = request.traceId ?? `uiaction-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+          return {
+            ...createBaseResponse(sessionId),
+            limitsApplied: {
+              maxResults: 1,
+              truncated: false,
+            },
+            action: request.action,
+            status: 'rejected',
+            traceId,
+            startedAt: Date.now(),
+            finishedAt: Date.now(),
+            durationMs: 0,
+            target: {
+              matched: false,
+            },
+            tabContext: {
+              frameId: 0,
+            },
+            failureDetails: {
+              code: error.code,
+              message: error.message,
+            },
+            targetResolution: {
+              ...error.details,
+              strategy: 'semantic_failed',
+            },
+            supportedScopes: {
+              executionScope: 'top-document-v1',
+              topDocumentOnly: false,
+              opensNewBrowserSession: false,
+            },
+          };
+        }
+        throw error;
+      }
       const failureCaptureOptions = resolveFailureEvidenceCaptureOptions(input);
       const capture = await executeLiveCapture(
         captureClient,
@@ -8445,6 +8561,7 @@ export function createV2ToolHandlers(
             : undefined,
         actionResult,
         target,
+        targetResolution,
         tabContext: {
           tabId: typeof target.tabId === 'number' ? target.tabId : undefined,
           frameId: typeof target.frameId === 'number' ? target.frameId : 0,
@@ -8455,7 +8572,7 @@ export function createV2ToolHandlers(
         postActionState,
         supportedScopes: {
           executionScope: actionResult.executionScope,
-          topDocumentOnly: true,
+          topDocumentOnly: false,
           opensNewBrowserSession: false,
         },
       };

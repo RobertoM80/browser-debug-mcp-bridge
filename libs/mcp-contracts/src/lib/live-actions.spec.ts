@@ -48,6 +48,22 @@ describe('live-actions', () => {
     expect(parsed.target.matched).toBe(false);
   });
 
+  it('parses semantic live UI action targets', () => {
+    const parsed = LiveUIActionRequestSchema.parse({
+      action: 'click',
+      target: {
+        scope: 'buttons',
+        textContains: 'Confirm',
+        tagName: 'button',
+        pressed: false,
+      },
+    });
+
+    expect(parsed.target?.scope).toBe('buttons');
+    expect(parsed.target?.textContains).toBe('Confirm');
+    expect(parsed.target?.pressed).toBe(false);
+  });
+
   it('creates readable trace ids', () => {
     expect(createLiveUIActionTraceId()).toMatch(/^uiaction-\d+-[a-z0-9]+$/);
   });

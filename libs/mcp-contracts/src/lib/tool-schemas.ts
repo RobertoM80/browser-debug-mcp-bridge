@@ -391,6 +391,7 @@ const ExecuteUIActionWaitForPageStateSchema = z.object({
   titleContains: z.string().optional().describe('Optional modal title substring matcher'),
   urlContains: z.string().optional().describe('Optional page URL substring matcher'),
   language: z.string().optional().describe('Optional exact page language matcher'),
+  visible: z.boolean().optional().describe('Optional visible-state matcher'),
   disabled: z.boolean().optional().describe('Optional disabled-state matcher'),
   selected: z.boolean().optional().describe('Optional selected-state matcher'),
   pressed: z.boolean().optional().describe('Optional pressed-state matcher'),

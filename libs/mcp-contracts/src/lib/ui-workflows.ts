@@ -18,6 +18,7 @@ export const UIWorkflowActionTargetSchema = z.object({
   titleContains: z.string().min(1).optional(),
   tagName: z.string().min(1).optional(),
   type: z.string().min(1).optional(),
+  visible: z.boolean().optional(),
   disabled: z.boolean().optional(),
   selected: z.boolean().optional(),
   pressed: z.boolean().optional(),

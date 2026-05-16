@@ -4,7 +4,7 @@ Live automation reuses the existing MCP -> server -> WebSocket -> extension sess
 
 ## `execute_ui_action`
 
-Executes one action at a time in the currently bound top document for a connected session.
+Executes one action at a time in the currently bound tab for a connected session. `click`, `input`, `press_key`, `focus`, `blur`, `scroll`, and `submit` use the CDP-backed native automation backend (`cdp-native-v2`) for the top document and same-origin iframe targets. `reload` uses the extension tab API.
 
 ```json
 {
@@ -27,7 +27,7 @@ Executes one action at a time in the currently bound top document for a connecte
 }
 ```
 
-You can target by `elementRef` instead of `selector` when the ref came from `get_interactive_elements` or `get_page_state`.
+You can target by `elementRef` instead of `selector` when the ref came from `get_interactive_elements` or `get_page_state`. Frame-scoped refs carry their frame id, so callers do not need to look up Chrome frame ids separately for same-origin iframe actions.
 
 ```json
 {
@@ -42,7 +42,23 @@ You can target by `elementRef` instead of `selector` when the ref came from `get
 }
 ```
 
-### Supported V1 actions
+You can also use semantic matchers directly. The server resolves them against compact page state, including same-origin iframe refs.
+
+```json
+{
+  "name": "execute_ui_action",
+  "arguments": {
+    "sessionId": "sess_123",
+    "action": "click",
+    "target": {
+      "scope": "buttons",
+      "textContains": "Confirm"
+    }
+  }
+}
+```
+
+### Supported actions
 
 - `click`
 - `input`
@@ -56,14 +72,20 @@ You can target by `elementRef` instead of `selector` when the ref came from `get
 ### Response shape highlights
 
 - `actionResult`: raw extension execution result with `action`, `status`, `traceId`, timestamps, target summary, and failure reason
+- `actionResult.result.backend`: execution backend, currently `cdp-native-v2` for native click/input/key/focus/blur/scroll/submit actions
 - `tabContext`: resolved `tabId`, `frameId`, and URL used for execution
 - `postActionEvidence`: optional snapshot capture result when `captureOnFailure.enabled` is set and the action fails or is rejected
 - `postActionState`: optional structured wait result when `waitForPageState` is provided and the action succeeds
-- `supportedScopes`: explicit V1 guarantees (`topDocumentOnly`, `opensNewBrowserSession: false`)
+- `supportedScopes`: current execution guarantees (`topDocumentOnly: false`, `opensNewBrowserSession: false`)
 
 ### Operational limits
 
-- V1 supports only the top document in the currently bound tab; iframe targets return an unsupported error
+- Native automation supports the top document and same-origin iframe targets in the currently bound tab
+- `get_page_state` and `get_interactive_elements` merge same-origin frame buttons/inputs/modals and return frame-aware refs with `frameId`/`frameUrl`
+- Native pointer actions in cross-origin or inaccessible frames return `unsupported_cross_origin_frame` when top-document coordinate translation is not possible
+- Invalid or stale frame ids return `target_frame_not_found`
+- Native actions inspect target actionability before dispatch and return structured failures for hidden, disabled, readonly input, non-editable input, unstable, outside-viewport, pointer-events none, and hit-target mismatch cases
+- Page-state assertions and waits can match `visible: true` or `visible: false` on structured buttons, inputs, modals, and focused refs
 - Only one action should be driven at a time per session
 - Live automation still respects extension allowlist, pause/disconnect state, and sensitive-field opt-in policy
 

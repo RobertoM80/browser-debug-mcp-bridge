@@ -17,6 +17,20 @@ export const LiveUIActionTargetSchema = z.object({
   tabId: z.number().int().min(0).optional(),
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
+  testId: z.string().min(1).optional(),
+  scope: z.enum(['buttons', 'inputs', 'modals', 'focused']).optional(),
+  textContains: z.string().min(1).optional(),
+  labelContains: z.string().min(1).optional(),
+  titleContains: z.string().min(1).optional(),
+  tagName: z.string().min(1).optional(),
+  type: z.string().min(1).optional(),
+  visible: z.boolean().optional(),
+  disabled: z.boolean().optional(),
+  selected: z.boolean().optional(),
+  pressed: z.boolean().optional(),
+  expanded: z.boolean().optional(),
+  readOnly: z.boolean().optional(),
+  requiredField: z.boolean().optional(),
 });
 
 const LiveUIActionBaseSchema = z.object({

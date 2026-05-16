@@ -31,6 +31,15 @@ import {
 } from './snapshot-capture';
 import { OverridePocController, type OverridePocStatus } from './override-poc';
 import { redactSnapshotRecord } from '../../../libs/redaction/src';
+import {
+  executeNativeBlurAction,
+  executeNativeClickAction,
+  executeNativeFocusAction,
+  executeNativeInputAction,
+  executeNativePressKeyAction,
+  executeNativeScrollAction,
+  executeNativeSubmitAction,
+} from './automation-native';
 
 type RuntimeRequest =
   | { type: 'SESSION_GET_STATE' }
@@ -2068,6 +2077,7 @@ async function sendCaptureCommandToTab(
   command: CaptureCommandType,
   payload: Record<string, unknown>,
   allowRetry: boolean = true,
+  frameId?: number,
 ): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
   const attempt = async (): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> => {
     return new Promise((resolve, reject) => {
@@ -2078,6 +2088,7 @@ async function sendCaptureCommandToTab(
           command,
           payload,
         },
+        typeof frameId === 'number' ? { frameId } : undefined,
         (response?: CaptureTabResponse) => {
           const runtimeError = chrome.runtime.lastError;
           if (runtimeError) {
@@ -2118,6 +2129,275 @@ async function sendCaptureCommandToTab(
 
     return attempt();
   }
+}
+
+interface FrameCaptureMetadata {
+  frameId: number;
+  url?: string;
+  title?: string;
+  parentAccessible?: boolean;
+  parentUrl?: string;
+  topAccessible?: boolean;
+  sameOriginWithTop?: boolean;
+}
+
+function asRecordArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is Record<string, unknown> => {
+        return Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry);
+      })
+    : [];
+}
+
+function resolveFrameMetadataUrl(frame: FrameCaptureMetadata | undefined, fallback?: unknown): string | undefined {
+  if (typeof frame?.url === 'string' && frame.url.length > 0) {
+    return frame.url;
+  }
+  return typeof fallback === 'string' && fallback.length > 0 ? fallback : undefined;
+}
+
+function decodeElementRefPayload(elementRef: unknown): Record<string, unknown> | undefined {
+  if (typeof elementRef !== 'string' || !elementRef.startsWith('ref:')) {
+    return undefined;
+  }
+
+  try {
+    const decoded = JSON.parse(atob(elementRef.slice(4))) as unknown;
+    return decoded && typeof decoded === 'object' && !Array.isArray(decoded)
+      ? decoded as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveAutomationTargetSelector(target: LiveUIActionRequest['target']): string | undefined {
+  if (typeof target?.selector === 'string' && target.selector.length > 0) {
+    return target.selector;
+  }
+
+  const decoded = decodeElementRefPayload(target?.elementRef);
+  return typeof decoded?.selector === 'string' && decoded.selector.length > 0 ? decoded.selector : undefined;
+}
+
+function augmentElementRef(elementRef: unknown, frame: FrameCaptureMetadata): string | undefined {
+  if (typeof elementRef !== 'string' || !elementRef.startsWith('ref:')) {
+    return typeof elementRef === 'string' ? elementRef : undefined;
+  }
+
+  try {
+    const decoded = decodeElementRefPayload(elementRef);
+    if (!decoded) {
+      return elementRef;
+    }
+    return `ref:${btoa(JSON.stringify({
+      ...decoded,
+      frameId: frame.frameId,
+      frameUrl: frame.url,
+    }))}`;
+  } catch {
+    return elementRef;
+  }
+}
+
+function enrichFrameScopedItem(item: Record<string, unknown>, frame: FrameCaptureMetadata): Record<string, unknown> {
+  return {
+    ...item,
+    frameId: frame.frameId,
+    frameUrl: frame.url,
+    elementRef: augmentElementRef(item.elementRef, frame),
+  };
+}
+
+async function listTabFrames(tabId: number): Promise<FrameCaptureMetadata[]> {
+  const results = await chrome.scripting.executeScript({
+    target: {
+      tabId,
+      allFrames: true,
+    },
+    func: () => {
+      let parentAccessible = false;
+      let parentUrl: string | undefined;
+      let topAccessible = false;
+      let sameOriginWithTop = false;
+
+      try {
+        parentUrl = window.parent.location.href;
+        parentAccessible = true;
+      } catch {
+        parentAccessible = false;
+      }
+
+      try {
+        if (window.top) {
+          sameOriginWithTop = window.location.origin === window.top.location.origin;
+          topAccessible = true;
+        }
+      } catch {
+        topAccessible = false;
+      }
+
+      return {
+        url: window.location.href,
+        title: document.title,
+        parentAccessible,
+        parentUrl,
+        topAccessible,
+        sameOriginWithTop,
+      };
+    },
+  });
+
+  return results
+    .filter((entry) => typeof entry.frameId === 'number' && Boolean(entry.result))
+    .map((entry) => ({
+      frameId: entry.frameId ?? 0,
+      url: entry.result?.url,
+      title: entry.result?.title,
+      parentAccessible: entry.result?.parentAccessible,
+      parentUrl: entry.result?.parentUrl,
+      topAccessible: entry.result?.topAccessible,
+      sameOriginWithTop: entry.result?.sameOriginWithTop,
+    }))
+    .sort((a, b) => a.frameId - b.frameId);
+}
+
+function mergeFramePageStates(
+  captures: Array<{ frame: FrameCaptureMetadata; payload: Record<string, unknown>; truncated?: boolean }>,
+  maxItems: number,
+): { payload: Record<string, unknown>; truncated: boolean } {
+  const topCapture = captures.find((entry) => entry.frame.frameId === 0) ?? captures[0];
+  const topPayload = topCapture?.payload ?? {};
+  const buttons: Array<Record<string, unknown>> = [];
+  const inputs: Array<Record<string, unknown>> = [];
+  const modals: Array<Record<string, unknown>> = [];
+  const frames: Array<Record<string, unknown>> = [];
+  let totalButtons = 0;
+  let totalInputs = 0;
+  let totalModals = 0;
+  let truncated = captures.some((entry) => entry.truncated === true);
+  let focused: Record<string, unknown> | undefined;
+
+  for (const capture of captures) {
+    const frame = capture.frame;
+    const payload = capture.payload;
+    const frameButtons = asRecordArray(payload.buttons).map((item) => enrichFrameScopedItem(item, frame));
+    const frameInputs = asRecordArray(payload.inputs).map((item) => enrichFrameScopedItem(item, frame));
+    const frameModals = asRecordArray(payload.modals).map((item) => enrichFrameScopedItem(item, frame));
+    totalButtons += typeof (payload.summary as { buttons?: unknown } | undefined)?.buttons === 'number'
+      ? (payload.summary as { buttons: number }).buttons
+      : frameButtons.length;
+    totalInputs += typeof (payload.summary as { inputs?: unknown } | undefined)?.inputs === 'number'
+      ? (payload.summary as { inputs: number }).inputs
+      : frameInputs.length;
+    totalModals += typeof (payload.summary as { modals?: unknown } | undefined)?.modals === 'number'
+      ? (payload.summary as { modals: number }).modals
+      : frameModals.length;
+
+    buttons.push(...frameButtons);
+    inputs.push(...frameInputs);
+    modals.push(...frameModals);
+
+    const frameFocused = payload.focused && typeof payload.focused === 'object' && !Array.isArray(payload.focused)
+      ? enrichFrameScopedItem(payload.focused as Record<string, unknown>, frame)
+      : undefined;
+    if (!focused && frameFocused?.elementRef) {
+      focused = frameFocused;
+    }
+
+    frames.push({
+      frameId: frame.frameId,
+      url: frame.url,
+      title: frame.title,
+      parentUrl: frame.parentUrl,
+      parentAccessible: frame.parentAccessible,
+      topAccessible: frame.topAccessible,
+      sameOriginWithTop: frame.sameOriginWithTop,
+      summary: payload.summary,
+      viewport: payload.viewport,
+      truncation: payload.truncation,
+    });
+  }
+
+  const slicedButtons = buttons.slice(0, maxItems);
+  const slicedInputs = inputs.slice(0, maxItems);
+  const slicedModals = modals.slice(0, maxItems);
+  truncated = truncated
+    || slicedButtons.length < buttons.length
+    || slicedInputs.length < inputs.length
+    || slicedModals.length < modals.length;
+
+  return {
+    truncated,
+    payload: {
+      ...topPayload,
+      focused,
+      frames,
+      summary: {
+        buttons: totalButtons,
+        inputs: totalInputs,
+        modals: totalModals,
+        frames: captures.length,
+      },
+      buttons: Array.isArray(topPayload.buttons) ? slicedButtons : undefined,
+      inputs: Array.isArray(topPayload.inputs) ? slicedInputs : undefined,
+      modals: Array.isArray(topPayload.modals) ? slicedModals : undefined,
+      truncation: {
+        ...(topPayload.truncation && typeof topPayload.truncation === 'object' ? topPayload.truncation : {}),
+        buttons: slicedButtons.length < buttons.length,
+        inputs: slicedInputs.length < inputs.length,
+        modals: slicedModals.length < modals.length,
+        frames: false,
+      },
+    },
+  };
+}
+
+async function capturePageStateAcrossFrames(
+  tabId: number,
+  payload: Record<string, unknown>,
+): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  const frames = await listTabFrames(tabId);
+  const maxItems = typeof payload.maxItems === 'number' && Number.isFinite(payload.maxItems)
+    ? Math.max(1, Math.floor(payload.maxItems))
+    : 40;
+  const captures: Array<{ frame: FrameCaptureMetadata; payload: Record<string, unknown>; truncated?: boolean }> = [];
+
+  if (frames.some((frame) => frame.frameId !== 0)) {
+    await injectContentScriptFallback(tabId).catch(() => false);
+  }
+
+  for (const frame of frames) {
+    try {
+      const captured = await sendCaptureCommandToTab(tabId, 'CAPTURE_PAGE_STATE', payload, true, frame.frameId);
+      captures.push({
+        frame,
+        payload: captured.payload,
+        truncated: captured.truncated,
+      });
+    } catch {
+      captures.push({
+        frame,
+        payload: {
+          url: resolveFrameMetadataUrl(frame),
+          title: frame.title,
+          summary: {
+            buttons: 0,
+            inputs: 0,
+            modals: 0,
+          },
+          frameCaptureError: true,
+        },
+        truncated: false,
+      });
+    }
+  }
+
+  if (captures.length === 0) {
+    return sendCaptureCommandToTab(tabId, 'CAPTURE_PAGE_STATE', payload);
+  }
+
+  return mergeFramePageStates(captures, maxItems);
 }
 
 function buildCaptureConfigUpdatePayload(sessionId?: string): CaptureConfigUpdatePayload {
@@ -2231,7 +2511,10 @@ async function executeCaptureCommand(
     }
 
     if (!captureConfig.automation.allowSensitiveFields
-      && requiresSensitiveAutomationOptIn({ selector: request.target?.selector, action: request.action })) {
+      && requiresSensitiveAutomationOptIn({
+        selector: resolveAutomationTargetSelector(request.target),
+        action: request.action,
+      })) {
       queueAutomationEvent('automation_requested', request, { startedAt });
       const rejectedResult = buildRejectedLiveActionResult(
         request,
@@ -2337,7 +2620,7 @@ async function executeCaptureCommand(
       target: {
         ...request.target,
         tabId: resolvedTab.id,
-        frameId: request.target?.frameId ?? 0,
+        frameId: request.target?.frameId,
         url: resolvedTab.url ?? request.target?.url,
       },
     };
@@ -2441,6 +2724,81 @@ async function executeCaptureCommand(
         startedAt,
         tab: resolvedTab,
       });
+      if (
+        requestWithResolvedTarget.action === 'click'
+        || requestWithResolvedTarget.action === 'input'
+        || requestWithResolvedTarget.action === 'press_key'
+        || requestWithResolvedTarget.action === 'focus'
+        || requestWithResolvedTarget.action === 'blur'
+        || requestWithResolvedTarget.action === 'scroll'
+        || requestWithResolvedTarget.action === 'submit'
+      ) {
+        let nativeResult: LiveUIActionResult;
+        if (requestWithResolvedTarget.action === 'click') {
+          nativeResult = await executeNativeClickAction({
+            request: requestWithResolvedTarget,
+            tab: resolvedTab,
+            startedAt,
+            traceId: String(actionPayload.traceId),
+          });
+        } else if (requestWithResolvedTarget.action === 'input') {
+          nativeResult = await executeNativeInputAction({
+            request: requestWithResolvedTarget,
+            tab: resolvedTab,
+            startedAt,
+            traceId: String(actionPayload.traceId),
+          });
+        } else if (requestWithResolvedTarget.action === 'press_key') {
+          nativeResult = await executeNativePressKeyAction({
+            request: requestWithResolvedTarget,
+            tab: resolvedTab,
+            startedAt,
+            traceId: String(actionPayload.traceId),
+          });
+        } else if (requestWithResolvedTarget.action === 'focus') {
+          nativeResult = await executeNativeFocusAction({
+            request: requestWithResolvedTarget,
+            tab: resolvedTab,
+            startedAt,
+            traceId: String(actionPayload.traceId),
+          });
+        } else if (requestWithResolvedTarget.action === 'blur') {
+          nativeResult = await executeNativeBlurAction({
+            request: requestWithResolvedTarget,
+            tab: resolvedTab,
+            startedAt,
+            traceId: String(actionPayload.traceId),
+          });
+        } else if (requestWithResolvedTarget.action === 'scroll') {
+          nativeResult = await executeNativeScrollAction({
+            request: requestWithResolvedTarget,
+            tab: resolvedTab,
+            startedAt,
+            traceId: String(actionPayload.traceId),
+          });
+        } else {
+          nativeResult = await executeNativeSubmitAction({
+            request: requestWithResolvedTarget,
+            tab: resolvedTab,
+            startedAt,
+            traceId: String(actionPayload.traceId),
+          });
+        }
+        queueAutomationEvent(
+          nativeResult.status === 'succeeded' ? 'automation_succeeded' : 'automation_failed',
+          requestWithResolvedTarget,
+          {
+            startedAt,
+            result: nativeResult,
+            tab: resolvedTab,
+          },
+        );
+        return {
+          payload: nativeResult as unknown as Record<string, unknown>,
+          truncated: false,
+        };
+      }
+
       const actionResult = await sendCaptureCommandToTab(resolvedTab.id, 'EXECUTE_UI_ACTION', actionPayload);
       const liveResult = withLiveActionTabContext(actionResult.payload, request, resolvedTab) as LiveUIActionResult;
       queueAutomationEvent(
@@ -2678,6 +3036,10 @@ async function executeCaptureCommand(
       },
       truncated: metrics.truncated,
     };
+  }
+
+  if (command === 'CAPTURE_PAGE_STATE') {
+    return capturePageStateAcrossFrames(tabId, payload);
   }
 
   if (command === 'CAPTURE_UI_SNAPSHOT') {

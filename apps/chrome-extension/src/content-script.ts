@@ -474,6 +474,21 @@ function isElementDisabled(target: Element): boolean {
   return ariaDisabled === 'true';
 }
 
+function isElementVisibleForSummary(target: Element): boolean {
+  if (!(target instanceof HTMLElement) && !(target instanceof SVGElement)) {
+    return false;
+  }
+
+  const rect = target.getBoundingClientRect();
+  const style = getComputedStyle(target);
+  return rect.width > 0
+    && rect.height > 0
+    && style.display !== 'none'
+    && style.visibility !== 'hidden'
+    && Number(style.opacity || '1') > 0
+    && target.getAttribute('aria-hidden') !== 'true';
+}
+
 function resolveInputLabel(target: Element, maxTextLength: number): string | undefined {
   if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement) {
     const labels = target.labels ? Array.from(target.labels) : [];
@@ -541,6 +556,7 @@ function summarizeButtonElement(target: Element, maxTextLength: number): Record<
       type: target instanceof HTMLInputElement ? resolveFieldType(target) : undefined,
     }),
     disabled: isElementDisabled(target),
+    visible: isElementVisibleForSummary(target),
     pressed: getAriaBoolean(target, 'aria-pressed'),
     selected: getAriaBoolean(target, 'aria-selected'),
     expanded: getAriaBoolean(target, 'aria-expanded'),
@@ -574,6 +590,7 @@ function summarizeInputElement(target: Element, maxTextLength: number): Record<s
         ? truncatePreview(target.placeholder, maxTextLength)
         : undefined,
     disabled: isElementDisabled(target),
+    visible: isElementVisibleForSummary(target),
     readOnly:
       target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
         ? target.readOnly
@@ -604,6 +621,7 @@ function summarizeModalElement(target: Element, maxTextLength: number): Record<s
       tagName: target.tagName.toLowerCase(),
     }),
     role: truncatePreview(target.getAttribute('role'), 32),
+    visible: isElementVisibleForSummary(target),
     buttonCount: target.querySelectorAll('button, [role="button"]').length,
     fieldCount,
     primaryAction: truncatePreview(firstButton?.textContent, maxTextLength),

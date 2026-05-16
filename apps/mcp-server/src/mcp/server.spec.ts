@@ -5030,7 +5030,7 @@ describe('mcp/server V2 capture tools', () => {
     });
     expect(response.supportedScopes).toEqual({
       executionScope: 'top-document-v1',
-      topDocumentOnly: true,
+      topDocumentOnly: false,
       opensNewBrowserSession: false,
     });
   });
@@ -5088,6 +5088,95 @@ describe('mcp/server V2 capture tools', () => {
       },
     });
     expect(response.status).toBe('succeeded');
+  });
+
+  it('resolves semantic execute_ui_action targets through page-state refs', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          if (command === 'CAPTURE_PAGE_STATE') {
+            return {
+              ok: true,
+              payload: {
+                buttons: [
+                  {
+                    text: 'Confirm dialog',
+                    selector: '#confirm-dialog',
+                    elementRef: 'ref:confirm-dialog',
+                    frameId: 12,
+                    frameUrl: 'http://localhost:3000/frame',
+                    tagName: 'button',
+                  },
+                ],
+                summary: {
+                  buttons: 1,
+                  inputs: 0,
+                  modals: 0,
+                  frames: 2,
+                },
+              },
+              truncated: false,
+            };
+          }
+
+          return {
+            ok: true,
+            payload: {
+              action: 'click',
+              traceId: 'trace-live-semantic-1',
+              status: 'succeeded',
+              executionScope: 'top-document-v1',
+              startedAt: 1700000000000,
+              finishedAt: 1700000000020,
+              target: {
+                matched: true,
+                selector: '#confirm-dialog',
+                resolvedSelector: '#confirm-dialog',
+                tagName: 'button',
+                tabId: 9,
+                frameId: 12,
+                url: 'http://localhost:3000/frame',
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'execute_ui_action', {
+      sessionId: 'session-v2',
+      action: 'click',
+      target: {
+        scope: 'buttons',
+        textContains: 'Confirm dialog',
+        tabId: 9,
+      },
+    });
+
+    expect(captureCalls.map((call) => call.command)).toEqual(['CAPTURE_PAGE_STATE', 'EXECUTE_UI_ACTION']);
+    expect(captureCalls[1]).toMatchObject({
+      command: 'EXECUTE_UI_ACTION',
+      payload: {
+        action: 'click',
+        target: {
+          elementRef: 'ref:confirm-dialog',
+          selector: '#confirm-dialog',
+          frameId: 12,
+          tabId: 9,
+        },
+      },
+    });
+    expect(response.status).toBe('succeeded');
+    expect(response.targetResolution).toMatchObject({
+      strategy: 'semantic_elementRef',
+      matched: {
+        selector: '#confirm-dialog',
+        frameId: 12,
+      },
+    });
   });
 
   it('captures snapshot evidence when a live ui action fails', async () => {

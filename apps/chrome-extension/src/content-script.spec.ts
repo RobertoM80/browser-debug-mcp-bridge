@@ -362,6 +362,7 @@ describe('content-script capture', () => {
       selector: '#primary-cta',
       pressed: true,
     });
+    expect(typeof (output.result.buttons as Array<Record<string, unknown>>)[0]?.visible).toBe('boolean');
     expect(typeof (output.result.buttons as Array<Record<string, unknown>>)[0]?.elementRef).toBe('string');
     expect((output.result.inputs as Array<Record<string, unknown>>)[0]).toMatchObject({
       label: 'Name',
@@ -369,6 +370,7 @@ describe('content-script capture', () => {
       type: 'text',
       valueLength: 'Roberto Mirabella'.length,
     });
+    expect(typeof (output.result.inputs as Array<Record<string, unknown>>)[0]?.visible).toBe('boolean');
     expect(typeof (output.result.inputs as Array<Record<string, unknown>>)[0]?.elementRef).toBe('string');
     expect((output.result.modals as Array<Record<string, unknown>>)[0]).toMatchObject({
       title: 'Monday',

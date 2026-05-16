@@ -133,6 +133,15 @@ interface SessionManagerOptions {
   handleCaptureCommand?: CaptureCommandHandler;
 }
 
+const REDACTION_PRESERVED_CORRELATION_KEYS = new Set([
+  'traceId',
+  'requestId',
+  'eventId',
+  'runId',
+  'stepId',
+  'sessionId',
+]);
+
 const WS_CONNECTING = 0;
 const WS_OPEN = 1;
 const HEARTBEAT_INTERVAL_MS = 15000;
@@ -635,7 +644,41 @@ export class SessionManager {
 
   private redactOutboundMessage(message: OutboundMessage): OutboundMessage {
     const { result } = this.redactionEngine.redactObject(message as unknown as Record<string, unknown>);
+    this.restorePreservedCorrelationFields(message, result);
     return result as unknown as OutboundMessage;
+  }
+
+  private restorePreservedCorrelationFields(source: unknown, redacted: unknown): void {
+    if (!source || !redacted || typeof source !== 'object' || typeof redacted !== 'object') {
+      return;
+    }
+
+    if (Array.isArray(source) || Array.isArray(redacted)) {
+      if (!Array.isArray(source) || !Array.isArray(redacted)) {
+        return;
+      }
+
+      const length = Math.min(source.length, redacted.length);
+      for (let index = 0; index < length; index += 1) {
+        this.restorePreservedCorrelationFields(source[index], redacted[index]);
+      }
+      return;
+    }
+
+    const sourceRecord = source as Record<string, unknown>;
+    const redactedRecord = redacted as Record<string, unknown>;
+    for (const [key, value] of Object.entries(sourceRecord)) {
+      if (!(key in redactedRecord)) {
+        continue;
+      }
+
+      if (REDACTION_PRESERVED_CORRELATION_KEYS.has(key) && typeof value === 'string') {
+        redactedRecord[key] = value;
+        continue;
+      }
+
+      this.restorePreservedCorrelationFields(value, redactedRecord[key]);
+    }
   }
 
   private flushBuffer(): void {
