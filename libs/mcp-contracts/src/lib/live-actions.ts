@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const LiveUIActionSchema = z.enum([
   'click',
+  'hover',
   'input',
   'focus',
   'blur',
@@ -18,12 +19,18 @@ export const LiveUIActionTargetSchema = z.object({
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
   testId: z.string().min(1).optional(),
-  scope: z.enum(['buttons', 'inputs', 'modals', 'focused']).optional(),
+  scope: z.enum(['buttons', 'links', 'inputs', 'modals', 'focused']).optional(),
   textContains: z.string().min(1).optional(),
   labelContains: z.string().min(1).optional(),
   titleContains: z.string().min(1).optional(),
+  role: z.string().min(1).optional(),
+  name: z.string().min(1).optional(),
+  placeholder: z.string().min(1).optional(),
+  altText: z.string().min(1).optional(),
   tagName: z.string().min(1).optional(),
   type: z.string().min(1).optional(),
+  exact: z.boolean().optional(),
+  nth: z.number().int().min(0).optional(),
   visible: z.boolean().optional(),
   disabled: z.boolean().optional(),
   selected: z.boolean().optional(),
@@ -45,6 +52,10 @@ export const LiveUIActionRequestSchema = z.discriminatedUnion('action', [
       button: z.enum(['left', 'middle', 'right']).optional(),
       clickCount: z.number().int().min(1).max(3).optional(),
     }).optional(),
+  }),
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('hover'),
+    input: z.object({}).optional(),
   }),
   LiveUIActionBaseSchema.extend({
     action: z.literal('input'),

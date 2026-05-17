@@ -324,10 +324,10 @@ Returns compact live refs for interactive elements so automation can reuse `elem
 
 Response highlights:
 
-- `refs`: compact live element entries with `kind`, `elementRef`, selector/testId metadata, and visible text or labels
+- `refs`: compact live element entries with `kind`, `elementRef`, selector/testId metadata, role/name metadata, and visible text or labels
 - `refs[].frameId` and `refs[].frameUrl`: present for refs discovered inside child frames; pass the returned `elementRef` back to `execute_ui_action` to keep frame targeting intact
 - `page`: current URL/title/language/viewport
-- `pageSummary`: current button/input/modal/frame counts
+- `pageSummary`: current button/link/input/modal/frame counts
 
 ### set_viewport
 
@@ -478,6 +478,25 @@ You can also use compact semantic target matchers. The server resolves these thr
 }
 ```
 
+Semantic targets support `scope: "buttons" | "links" | "inputs" | "modals" | "focused"`, text/label/title matching, role/name/placeholder/alt matching, `exact: true`, and `nth` for deliberate disambiguation:
+
+```json
+{
+  "name": "execute_ui_action",
+  "arguments": {
+    "sessionId": "sess_123",
+    "action": "hover",
+    "target": {
+      "scope": "links",
+      "role": "link",
+      "name": "Docs",
+      "exact": true,
+      "nth": 1
+    }
+  }
+}
+```
+
 Combined action + wait example:
 
 ```json
@@ -504,7 +523,7 @@ Important limits and safeguards:
 - Invalid or stale frame ids return `target_frame_not_found`
 - `actionResult.result.backend` identifies the execution backend (`cdp-native-v2` for migrated native actions)
 - Native actions perform target inspection/actionability checks before dispatch, including visibility, disabled state, readonly/editable state for input, stable layout, pointer-events, viewport intersection, and hit-target mismatch diagnostics
-- Page-state assertions and waits support `visible: true/false` for buttons, inputs, modals, and focused refs
+- Page-state assertions and waits support `visible: true/false`, `role`, `name`, `placeholder`, `altText`, and `exact` for structured refs where available
 - `Allow live automation` must be enabled in the extension popup before any action can run
 - Sensitive selectors and input-like actions require the second `Allow sensitive field automation` opt-in
 - The extension shows a red in-page automation indicator while armed/executing and exposes an emergency stop in both the page overlay and popup
@@ -561,8 +580,8 @@ Runs a small generic UI workflow locally in the bridge using sequential action, 
   - supported step kinds: `action`, `waitFor`, `assert`
   - action targets can use:
       - direct handles: `elementRef`, `selector`
-      - semantic matchers: `testId`, `scope`, `textContains`, `labelContains`, `titleContains`
-      - optional refinements: `tagName`, `type`, `disabled`, `selected`, `pressed`, `expanded`, `readOnly`, `requiredField`
+      - semantic matchers: `testId`, `scope`, `textContains`, `labelContains`, `titleContains`, `role`, `name`, `placeholder`, `altText`
+      - optional refinements: `exact`, `nth`, `tagName`, `type`, `disabled`, `selected`, `pressed`, `expanded`, `readOnly`, `requiredField`
   - the workflow stops on first failure by default and marks remaining steps as `skipped`
   - each step can set `onFailure.strategy` to `stop`, `continue`, or `retry_once`
   - each step can set `onFailure.capture` to collect a failure snapshot using the same snapshot options as `execute_ui_action.captureOnFailure`

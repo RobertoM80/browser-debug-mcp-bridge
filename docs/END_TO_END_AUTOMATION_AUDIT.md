@@ -2,7 +2,7 @@
 
 Date: 2026-05-11
 Deep audit update: 2026-05-16
-Implementation update: 2026-05-16
+Implementation update: 2026-05-17
 
 ## Executive Summary
 
@@ -10,7 +10,7 @@ The project has a real-browser live automation feature, but the current implemen
 
 Playwright-like reliability requires browser-level input synthesis, element actionability checks, frame-aware targeting, deterministic waits, and e2e coverage proving actions against real pages. The current feature has useful scaffolding around sessions, safety, history, and workflow orchestration, but the action engine is still closer to "dispatch events into the DOM" than "perform the user action the browser would perform."
 
-The 2026-05-16 deep audit added a full-path Playwright spec at `apps/e2e-playwright/tests/full.live-automation.spec.ts`. It proves MCP -> extension -> bound tab execution for top-document click, input, key press, focus, blur, scroll, submit, same-origin iframe click/input, `run_ui_steps`, `get_interactive_elements`, native actionability rejections, stale frame diagnostics, and automation-history trace lookup. The first implementation slice now routes `click`, `input`, `press_key`, `focus`, `blur`, `scroll`, and `submit` through a CDP-backed native backend (`cdp-native-v2`) in `apps/chrome-extension/src/automation-native.ts`. Same-origin frame discovery is implemented in `get_page_state` and `get_interactive_elements`. Cross-origin frame policy, richer locators, broader waits, and complete actionability parity remain open.
+The deep audit added a full-path Playwright spec at `apps/e2e-playwright/tests/full.live-automation.spec.ts`. It proves MCP -> extension -> bound tab execution for top-document click, hover, input, key press, focus, blur, scroll, submit, same-origin iframe click/input, `run_ui_steps`, `get_interactive_elements`, native actionability rejections, stale frame diagnostics, and automation-history trace lookup. The implementation now routes `click`, `hover`, `input`, `press_key`, `focus`, `blur`, `scroll`, and `submit` through a CDP-backed native backend (`cdp-native-v2`) in `apps/chrome-extension/src/automation-native.ts`. Same-origin frame discovery is implemented in `get_page_state` and `get_interactive_elements`. Cross-origin frame policy, richer waits, nested frame stability, and complete actionability parity remain open.
 
 ## Current Capability Map
 
@@ -36,18 +36,19 @@ The 2026-05-16 deep audit added a full-path Playwright spec at `apps/e2e-playwri
 - Automation trace IDs are preserved through extension outbound redaction, so tool responses and history queries can correlate the same run.
 - Documentation describes the current V1 limits clearly: top document and same-origin iframe targets, one action at a time, no new browser runtime.
 - `get_page_state` and `get_interactive_elements` discover same-origin frame content and return frame-aware refs with `frameId` and `frameUrl`.
+- Compact semantic targeting now supports role/name, placeholder/alt metadata where captured, exact text matching, and `nth` disambiguation for direct actions and workflows.
 
 ### Not Good Enough
 
-- Click, input, keyboard, focus, blur, scroll, and submit actions now have a CDP-backed native backend for top-document and same-origin iframe targets.
+- Click, hover, input, keyboard, focus, blur, scroll, and submit actions now have a CDP-backed native backend for top-document and same-origin iframe targets.
 - The native actionability model now covers visibility, disabled state, readonly/editable input policy, pointer-events, viewport intersection, stable layout, and hit-target mismatch diagnostics, but still needs parity coverage for offscreen scroll semantics, detached targets, overlay edge cases, and retry-on-detach.
 - Same-origin iframe click/input is now covered end to end. Cross-origin or inaccessible iframe pointer actions remain diagnostic because the native click driver must translate frame-local coordinates into top-document CDP coordinates.
-- Targeting supports CSS selectors, frame-aware element refs, and compact semantic matching, but not coordinates, roles, accessible names, chained locators, nth/first/last, shadow DOM, or strict/non-strict semantics comparable to modern browser test tools.
+- Targeting supports CSS selectors, frame-aware element refs, and compact semantic matching including role/name/exact/nth, but not coordinates, chained locators, first/last aliases, shadow DOM, frame-locator composition, or strict/non-strict semantics comparable to modern browser test tools.
 - Waits understand compact page-state summaries, including visible/hidden structured refs. They cannot wait for network idle, navigation lifecycle, URL exact/regex, response predicates, arbitrary element attached/detached, animation stability, or console/request side effects as first-class workflow steps.
 - The e2e suite now has a full-path proof for native top-document actions, same-origin iframe click/input, and common actionability rejections, but does not yet cover Playwright/Cypress parity cases such as cross-origin frame policy, locator semantics, richer waits, and deeper actionability edges.
 - The remaining compatibility actions and missing actionability/frame/locator/wait features still prevent full Playwright/Cypress parity.
 
-Deep audit update: the full-path action proof now asserts `cdp-native-v2` for click, input, key press, focus, blur, scroll, submit, and same-origin iframe click/input using frame refs returned by `get_interactive_elements`. It also asserts direct semantic action targeting, visible/hidden page-state assertions, readonly input rejection, disabled, hidden, pointer-events none, covered target, stale frame, workflow, and automation-history trace lookup behavior. The remaining coverage gap is deeper actionability edge cases, cross-origin/sandboxed frame policy, nested frame stability, full locator parity, and richer waits.
+Deep audit update: the full-path action proof now asserts `cdp-native-v2` for click, hover, input, key press, focus, blur, scroll, submit, and same-origin iframe click/input using frame refs returned by `get_interactive_elements`. It also asserts direct semantic action targeting, role/name/nth link targeting, visible/hidden page-state assertions, readonly input rejection, disabled, hidden, pointer-events none, covered target, stale frame, workflow, and automation-history trace lookup behavior. The remaining coverage gap is deeper actionability edge cases, cross-origin/sandboxed frame policy, nested frame stability, complete locator parity, and richer waits.
 
 ## Root Cause
 
@@ -104,11 +105,8 @@ Current targets are `selector`, frame-aware `elementRef`, or semantic resolution
 
 Missing:
 
-- role/name locators
-- label locators with accessible-name semantics
-- text locators with strictness
-- nth/first/last
 - chained locators
+- first/last aliases
 - shadow DOM traversal strategy
 - frame locators
 - coordinate targets
@@ -254,8 +252,8 @@ This phase should happen before the big refactor so regressions are visible.
 
 #### Phase 5: Locator and Wait Upgrade
 
-- Add role/name/text/testId target schema.
-- Add strict target resolution by default for semantic locators.
+- Add full locator semantics beyond the compact role/name/exact/nth baseline.
+- Add strict target resolution modes for semantic locators.
 - Add workflow wait kinds for selector, URL, request/response, console, and navigation.
 - Add better failure suggestions based on actual actionability failures.
 
@@ -282,8 +280,9 @@ Status update:
 
 - Items 1, 2, 4, and 5 now have baseline implementation and e2e coverage for top-document and same-origin iframe actions.
 - Item 3 has a first actionability baseline for native targets, including disabled, hidden, pointer-events none, and covered-target diagnostics.
+- Item 7 has a compact role/name/exact/nth baseline, but not full locator parity.
 - Item 8 has baseline full-path history persistence and trace lookup.
-- Items 6, 7, cross-origin/sandboxed frame policy, nested frame stability, and the richer diagnostics portion of 8 remain open and are the evidence-backed refactor scope.
+- Item 6, cross-origin/sandboxed frame policy, nested frame stability, full locator parity, and the richer diagnostics portion of 8 remain open and are the evidence-backed refactor scope.
 
 ## Additional Tests To Add
 
@@ -293,7 +292,7 @@ The new full-path spec should be expanded after the native-input refactor starts
 2. Native input: type/fill/clear, selection replacement, masked input, controlled React-style input, contenteditable, Enter/Tab behavior.
 3. Keyboard: shortcuts, modifiers, Tab focus movement, Enter submit, non-character keys.
 4. Frames: nested same-origin frames, cross-origin iframe diagnostics, sandboxed iframe diagnostics, and frame ref stability.
-5. Locators: role/name, label, text, test id, strict ambiguity, nth/first/last, shadow DOM policy.
+5. Locators: chained locators, first/last aliases, shadow DOM policy, frame locators, strict/non-strict modes, and richer ambiguity diagnostics beyond the compact role/name/nth baseline.
 6. Waits: URL, navigation, selector visible/hidden/attached/detached, request/response, console, network idle or bounded quiet window.
 7. Diagnostics/history: richer run details after real MCP-triggered actions, including failure evidence linkage, actionability metadata, and CDP failure metadata.
 8. Safety: automation disabled, sensitive-field opt-in, unbound tab, disallowed URL, emergency stop during a long action.

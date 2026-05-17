@@ -35,6 +35,7 @@ import {
   executeNativeBlurAction,
   executeNativeClickAction,
   executeNativeFocusAction,
+  executeNativeHoverAction,
   executeNativeInputAction,
   executeNativePressKeyAction,
   executeNativeScrollAction,
@@ -2269,10 +2270,12 @@ function mergeFramePageStates(
   const topCapture = captures.find((entry) => entry.frame.frameId === 0) ?? captures[0];
   const topPayload = topCapture?.payload ?? {};
   const buttons: Array<Record<string, unknown>> = [];
+  const links: Array<Record<string, unknown>> = [];
   const inputs: Array<Record<string, unknown>> = [];
   const modals: Array<Record<string, unknown>> = [];
   const frames: Array<Record<string, unknown>> = [];
   let totalButtons = 0;
+  let totalLinks = 0;
   let totalInputs = 0;
   let totalModals = 0;
   let truncated = captures.some((entry) => entry.truncated === true);
@@ -2282,11 +2285,15 @@ function mergeFramePageStates(
     const frame = capture.frame;
     const payload = capture.payload;
     const frameButtons = asRecordArray(payload.buttons).map((item) => enrichFrameScopedItem(item, frame));
+    const frameLinks = asRecordArray(payload.links).map((item) => enrichFrameScopedItem(item, frame));
     const frameInputs = asRecordArray(payload.inputs).map((item) => enrichFrameScopedItem(item, frame));
     const frameModals = asRecordArray(payload.modals).map((item) => enrichFrameScopedItem(item, frame));
     totalButtons += typeof (payload.summary as { buttons?: unknown } | undefined)?.buttons === 'number'
       ? (payload.summary as { buttons: number }).buttons
       : frameButtons.length;
+    totalLinks += typeof (payload.summary as { links?: unknown } | undefined)?.links === 'number'
+      ? (payload.summary as { links: number }).links
+      : frameLinks.length;
     totalInputs += typeof (payload.summary as { inputs?: unknown } | undefined)?.inputs === 'number'
       ? (payload.summary as { inputs: number }).inputs
       : frameInputs.length;
@@ -2295,6 +2302,7 @@ function mergeFramePageStates(
       : frameModals.length;
 
     buttons.push(...frameButtons);
+    links.push(...frameLinks);
     inputs.push(...frameInputs);
     modals.push(...frameModals);
 
@@ -2320,10 +2328,12 @@ function mergeFramePageStates(
   }
 
   const slicedButtons = buttons.slice(0, maxItems);
+  const slicedLinks = links.slice(0, maxItems);
   const slicedInputs = inputs.slice(0, maxItems);
   const slicedModals = modals.slice(0, maxItems);
   truncated = truncated
     || slicedButtons.length < buttons.length
+    || slicedLinks.length < links.length
     || slicedInputs.length < inputs.length
     || slicedModals.length < modals.length;
 
@@ -2335,16 +2345,19 @@ function mergeFramePageStates(
       frames,
       summary: {
         buttons: totalButtons,
+        links: totalLinks,
         inputs: totalInputs,
         modals: totalModals,
         frames: captures.length,
       },
       buttons: Array.isArray(topPayload.buttons) ? slicedButtons : undefined,
+      links: Array.isArray(topPayload.links) ? slicedLinks : undefined,
       inputs: Array.isArray(topPayload.inputs) ? slicedInputs : undefined,
       modals: Array.isArray(topPayload.modals) ? slicedModals : undefined,
       truncation: {
         ...(topPayload.truncation && typeof topPayload.truncation === 'object' ? topPayload.truncation : {}),
         buttons: slicedButtons.length < buttons.length,
+        links: slicedLinks.length < links.length,
         inputs: slicedInputs.length < inputs.length,
         modals: slicedModals.length < modals.length,
         frames: false,
@@ -2726,6 +2739,7 @@ async function executeCaptureCommand(
       });
       if (
         requestWithResolvedTarget.action === 'click'
+        || requestWithResolvedTarget.action === 'hover'
         || requestWithResolvedTarget.action === 'input'
         || requestWithResolvedTarget.action === 'press_key'
         || requestWithResolvedTarget.action === 'focus'
@@ -2736,6 +2750,13 @@ async function executeCaptureCommand(
         let nativeResult: LiveUIActionResult;
         if (requestWithResolvedTarget.action === 'click') {
           nativeResult = await executeNativeClickAction({
+            request: requestWithResolvedTarget,
+            tab: resolvedTab,
+            startedAt,
+            traceId: String(actionPayload.traceId),
+          });
+        } else if (requestWithResolvedTarget.action === 'hover') {
+          nativeResult = await executeNativeHoverAction({
             request: requestWithResolvedTarget,
             tab: resolvedTab,
             startedAt,

@@ -4,7 +4,7 @@ Live automation reuses the existing MCP -> server -> WebSocket -> extension sess
 
 ## `execute_ui_action`
 
-Executes one action at a time in the currently bound tab for a connected session. `click`, `input`, `press_key`, `focus`, `blur`, `scroll`, and `submit` use the CDP-backed native automation backend (`cdp-native-v2`) for the top document and same-origin iframe targets. `reload` uses the extension tab API.
+Executes one action at a time in the currently bound tab for a connected session. `click`, `hover`, `input`, `press_key`, `focus`, `blur`, `scroll`, and `submit` use the CDP-backed native automation backend (`cdp-native-v2`) for the top document and same-origin iframe targets. `reload` uses the extension tab API.
 
 ```json
 {
@@ -58,6 +58,25 @@ You can also use semantic matchers directly. The server resolves them against co
 }
 ```
 
+Semantic targets support `scope: "buttons" | "links" | "inputs" | "modals" | "focused"`, text/label/title matching, role/name/placeholder/alt matching, `exact: true`, and `nth` for deliberate disambiguation.
+
+```json
+{
+  "name": "execute_ui_action",
+  "arguments": {
+    "sessionId": "sess_123",
+    "action": "hover",
+    "target": {
+      "scope": "links",
+      "role": "link",
+      "name": "Docs",
+      "exact": true,
+      "nth": 1
+    }
+  }
+}
+```
+
 ### Supported actions
 
 - `click`
@@ -81,7 +100,7 @@ You can also use semantic matchers directly. The server resolves them against co
 ### Operational limits
 
 - Native automation supports the top document and same-origin iframe targets in the currently bound tab
-- `get_page_state` and `get_interactive_elements` merge same-origin frame buttons/inputs/modals and return frame-aware refs with `frameId`/`frameUrl`
+- `get_page_state` and `get_interactive_elements` merge same-origin frame buttons/links/inputs/modals and return frame-aware refs with `frameId`/`frameUrl`
 - Native pointer actions in cross-origin or inaccessible frames return `unsupported_cross_origin_frame` when top-document coordinate translation is not possible
 - Invalid or stale frame ids return `target_frame_not_found`
 - Native actions inspect target actionability before dispatch and return structured failures for hidden, disabled, readonly input, non-editable input, unstable, outside-viewport, pointer-events none, and hit-target mismatch cases
@@ -169,7 +188,7 @@ Response highlights:
 
 Recommended use:
 
-- after `execute_ui_action` when the expected result is a visible button/input/modal state change
+- after `execute_ui_action` when the expected result is a visible button/link/input/modal state change
 - before falling back to `capture_ui_snapshot` or raw DOM queries
 
 ## `run_ui_steps`
@@ -227,7 +246,8 @@ Milestone 4 scope:
   - `scope + textContains`
   - `scope + labelContains`
   - `scope + titleContains`
-  - optional refinements: `tagName`, `type`, `disabled`, `selected`, `pressed`, `expanded`, `readOnly`, `requiredField`
+  - `scope + role/name`
+  - optional refinements: `exact`, `nth`, `placeholder`, `altText`, `tagName`, `type`, `disabled`, `selected`, `pressed`, `expanded`, `readOnly`, `requiredField`
 - stop on first failure by default
 - optional per-step `onFailure.strategy`: `stop`, `continue`, `retry_once`
 - optional per-step `onFailure.capture`: collect failure evidence using UI snapshot settings

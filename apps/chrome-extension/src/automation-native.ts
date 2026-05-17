@@ -50,6 +50,13 @@ interface NativeClickExecutionOptions {
   traceId: string;
 }
 
+interface NativeHoverExecutionOptions {
+  request: Extract<LiveUIActionRequest, { action: 'hover' }>;
+  tab: chrome.tabs.Tab & { id: number };
+  startedAt: number;
+  traceId: string;
+}
+
 interface NativeInputExecutionOptions {
   request: Extract<LiveUIActionRequest, { action: 'input' }>;
   tab: chrome.tabs.Tab & { id: number };
@@ -179,7 +186,7 @@ function buildFailedResult(
 }
 
 function buildSucceededResult(
-  request: Extract<LiveUIActionRequest, { action: 'click' | 'input' | 'press_key' | 'focus' | 'blur' | 'scroll' | 'submit' }>,
+  request: Extract<LiveUIActionRequest, { action: 'click' | 'hover' | 'input' | 'press_key' | 'focus' | 'blur' | 'scroll' | 'submit' }>,
   tab: chrome.tabs.Tab & { id: number },
   startedAt: number,
   traceId: string,
@@ -529,6 +536,26 @@ async function dispatchNativeClick(
         clickCount: index,
       });
     }
+  } finally {
+    if (attached) {
+      await chrome.debugger.detach(source).catch(() => undefined);
+    }
+  }
+}
+
+async function dispatchNativeMouseMove(tabId: number, point: { x: number; y: number }): Promise<void> {
+  const source: chrome.debugger.Debuggee = { tabId };
+  let attached = false;
+  try {
+    await chrome.debugger.attach(source, '1.3');
+    attached = true;
+    await sendDebuggerCommand(source, 'Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: point.x,
+      y: point.y,
+      button: 'none',
+      buttons: 0,
+    });
   } finally {
     if (attached) {
       await chrome.debugger.detach(source).catch(() => undefined);
@@ -901,6 +928,65 @@ export async function executeNativeClickAction(options: NativeClickExecutionOpti
       traceId,
       'native_click_dispatch_failed',
       error instanceof Error ? error.message : 'Native click dispatch failed.',
+    );
+  }
+}
+
+export async function executeNativeHoverAction(options: NativeHoverExecutionOptions): Promise<LiveUIActionResult> {
+  const { request, tab, startedAt, traceId } = options;
+  const target = await inspectActionableTargetForRequest(request, tab, startedAt, traceId);
+  if (!target.ok) {
+    return target.result;
+  }
+
+  let hoverPoint = target.snapshot.topCenter ?? target.snapshot.center;
+  let pointCoordinateSpace = target.snapshot.frameId === 0 ? 'top-document' : 'frame-local';
+  if (target.snapshot.frameId !== 0 && target.snapshot.center) {
+    const frameOffset = await resolveSameOriginFrameOffset(tab.id, target.selector, target.snapshot.url);
+    if (!frameOffset) {
+      return buildRejectedResult(
+        request,
+        tab,
+        startedAt,
+        traceId,
+        'unsupported_cross_origin_frame',
+        'The target frame could not be mapped to top-document coordinates. Cross-origin or inaccessible frames are not supported for native pointer actions yet.',
+        target.snapshot,
+      );
+    }
+    hoverPoint = {
+      x: target.snapshot.center.x + frameOffset.x,
+      y: target.snapshot.center.y + frameOffset.y,
+    };
+    pointCoordinateSpace = 'translated-frame';
+  }
+
+  if (!hoverPoint) {
+    return buildRejectedResult(
+      request,
+      tab,
+      startedAt,
+      traceId,
+      'target_hover_point_unavailable',
+      'No native hover point could be computed for the target.',
+      target.snapshot,
+    );
+  }
+
+  try {
+    await dispatchNativeMouseMove(tab.id, hoverPoint);
+    return buildSucceededResult(request, tab, startedAt, traceId, target.snapshot, {
+      point: hoverPoint,
+      pointCoordinateSpace,
+    });
+  } catch (error) {
+    return buildFailedResult(
+      request,
+      tab,
+      startedAt,
+      traceId,
+      'native_hover_dispatch_failed',
+      error instanceof Error ? error.message : 'Native hover dispatch failed.',
     );
   }
 }

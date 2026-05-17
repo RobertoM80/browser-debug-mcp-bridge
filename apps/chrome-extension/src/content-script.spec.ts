@@ -333,10 +333,11 @@ describe('content-script capture', () => {
     expect(output.result.truncation).toMatchObject({ dom: false });
   });
 
-  it('captures compact structured page state for buttons, inputs, and modals', () => {
+  it('captures compact structured page state for buttons, links, inputs, and modals', () => {
     document.body.innerHTML = [
       '<main>',
       '  <button id="primary-cta" aria-pressed="true">Build targets</button>',
+      '  <a id="docs-link" href="/docs" aria-label="Open docs">Docs</a>',
       '  <label for="name-field">Name</label>',
       '  <input id="name-field" type="text" placeholder="Roberto" value="Roberto Mirabella" />',
       '  <div role="dialog" aria-label="Day plan" data-testid="modal-surface">',
@@ -354,6 +355,7 @@ describe('content-script capture', () => {
     expect(output.truncated).toBe(false);
     expect(output.result.summary).toMatchObject({
       buttons: 2,
+      links: 1,
       inputs: 1,
       modals: 1,
     });
@@ -361,13 +363,23 @@ describe('content-script capture', () => {
       text: 'Build targets',
       selector: '#primary-cta',
       pressed: true,
+      role: 'button',
+      name: 'Build targets',
     });
     expect(typeof (output.result.buttons as Array<Record<string, unknown>>)[0]?.visible).toBe('boolean');
     expect(typeof (output.result.buttons as Array<Record<string, unknown>>)[0]?.elementRef).toBe('string');
+    expect((output.result.links as Array<Record<string, unknown>>)[0]).toMatchObject({
+      text: 'Docs',
+      name: 'Open docs',
+      selector: '#docs-link',
+      role: 'link',
+    });
     expect((output.result.inputs as Array<Record<string, unknown>>)[0]).toMatchObject({
       label: 'Name',
+      name: 'Name',
       selector: '#name-field',
       type: 'text',
+      placeholder: 'Roberto',
       valueLength: 'Roberto Mirabella'.length,
     });
     expect(typeof (output.result.inputs as Array<Record<string, unknown>>)[0]?.visible).toBe('boolean');

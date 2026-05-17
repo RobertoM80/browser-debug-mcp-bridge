@@ -5179,6 +5179,116 @@ describe('mcp/server V2 capture tools', () => {
     });
   });
 
+  it('resolves semantic hover targets by role name and nth link candidate', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          if (command === 'CAPTURE_PAGE_STATE') {
+            return {
+              ok: true,
+              payload: {
+                links: [
+                  {
+                    text: 'Docs',
+                    name: 'Docs',
+                    role: 'link',
+                    selector: '#docs-a',
+                    elementRef: 'ref:docs-a',
+                    frameId: 0,
+                  },
+                  {
+                    text: 'Docs',
+                    name: 'Docs',
+                    role: 'link',
+                    selector: '#docs-b',
+                    elementRef: 'ref:docs-b',
+                    frameId: 0,
+                  },
+                ],
+                summary: {
+                  buttons: 0,
+                  links: 2,
+                  inputs: 0,
+                  modals: 0,
+                },
+              },
+              truncated: false,
+            };
+          }
+
+          return {
+            ok: true,
+            payload: {
+              action: 'hover',
+              traceId: 'trace-live-hover-1',
+              status: 'succeeded',
+              executionScope: 'top-document-v1',
+              startedAt: 1700000000000,
+              finishedAt: 1700000000020,
+              target: {
+                matched: true,
+                selector: '#docs-b',
+                resolvedSelector: '#docs-b',
+                tagName: 'a',
+                tabId: 9,
+                frameId: 0,
+                url: 'http://localhost:3000',
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'execute_ui_action', {
+      sessionId: 'session-v2',
+      action: 'hover',
+      target: {
+        scope: 'links',
+        role: 'link',
+        name: 'Docs',
+        exact: true,
+        nth: 1,
+        tabId: 9,
+      },
+    });
+
+    expect(captureCalls[0]).toMatchObject({
+      command: 'CAPTURE_PAGE_STATE',
+      payload: {
+        includeButtons: false,
+        includeLinks: true,
+        includeInputs: false,
+        includeModals: false,
+      },
+    });
+    expect(captureCalls[1]).toMatchObject({
+      command: 'EXECUTE_UI_ACTION',
+      payload: {
+        action: 'hover',
+        target: {
+          elementRef: 'ref:docs-b',
+          selector: '#docs-b',
+          tabId: 9,
+        },
+      },
+    });
+    expect(response.status).toBe('succeeded');
+    expect(response.targetResolution).toMatchObject({
+      strategy: 'semantic_elementRef',
+      matchedCandidateCount: 2,
+      selectedIndex: 1,
+      matched: {
+        selector: '#docs-b',
+        role: 'link',
+        name: 'Docs',
+      },
+    });
+  });
+
   it('captures snapshot evidence when a live ui action fails', async () => {
     const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
     const tools = createToolRegistry(

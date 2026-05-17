@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const UIWorkflowModeSchema = z.enum(['safe', 'fast']);
 export const UIWorkflowFailureStrategySchema = z.enum(['stop', 'continue', 'retry_once']);
 
-export const UIWorkflowActionTargetScopeSchema = z.enum(['buttons', 'inputs', 'modals', 'focused']);
+export const UIWorkflowActionTargetScopeSchema = z.enum(['buttons', 'links', 'inputs', 'modals', 'focused']);
 
 export const UIWorkflowActionTargetSchema = z.object({
   selector: z.string().min(1).optional(),
@@ -16,8 +16,14 @@ export const UIWorkflowActionTargetSchema = z.object({
   textContains: z.string().min(1).optional(),
   labelContains: z.string().min(1).optional(),
   titleContains: z.string().min(1).optional(),
+  role: z.string().min(1).optional(),
+  name: z.string().min(1).optional(),
+  placeholder: z.string().min(1).optional(),
+  altText: z.string().min(1).optional(),
   tagName: z.string().min(1).optional(),
   type: z.string().min(1).optional(),
+  exact: z.boolean().optional(),
+  nth: z.number().int().min(0).optional(),
   visible: z.boolean().optional(),
   disabled: z.boolean().optional(),
   selected: z.boolean().optional(),
@@ -33,10 +39,14 @@ export const UIWorkflowActionTargetSchema = z.object({
     && !value.textContains
     && !value.labelContains
     && !value.titleContains
+    && !value.role
+    && !value.name
+    && !value.placeholder
+    && !value.altText
   ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'target requires selector, elementRef, testId, textContains, labelContains, or titleContains',
+      message: 'target requires selector, elementRef, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText',
       path: ['target'],
     });
   }
@@ -79,6 +89,10 @@ export const UIWorkflowActionStepSchema = z.discriminatedUnion('action', [
       button: z.enum(['left', 'middle', 'right']).optional(),
       clickCount: z.number().int().min(1).max(3).optional(),
     }).optional(),
+  }),
+  UIWorkflowActionBaseSchema.extend({
+    action: z.literal('hover'),
+    input: z.object({}).optional(),
   }),
   UIWorkflowActionBaseSchema.extend({
     action: z.literal('input'),
@@ -125,12 +139,17 @@ export const UIWorkflowActionStepSchema = z.discriminatedUnion('action', [
 ]);
 
 export const UIWorkflowPageStateMatcherSchema = z.object({
-  scope: z.enum(['buttons', 'inputs', 'modals', 'focused', 'page']),
+  scope: z.enum(['buttons', 'links', 'inputs', 'modals', 'focused', 'page']),
   selector: z.string().optional(),
   testId: z.string().optional(),
   textContains: z.string().optional(),
   labelContains: z.string().optional(),
   titleContains: z.string().optional(),
+  role: z.string().optional(),
+  name: z.string().optional(),
+  placeholder: z.string().optional(),
+  altText: z.string().optional(),
+  exact: z.boolean().optional(),
   urlContains: z.string().optional(),
   language: z.string().optional(),
   disabled: z.boolean().optional(),

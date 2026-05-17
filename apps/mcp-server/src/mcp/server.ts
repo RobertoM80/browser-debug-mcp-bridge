@@ -111,12 +111,18 @@ const LiveUIActionTargetSchema = z.object({
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
   testId: z.string().min(1).optional(),
-  scope: z.enum(['buttons', 'inputs', 'modals', 'focused']).optional(),
+  scope: z.enum(['buttons', 'links', 'inputs', 'modals', 'focused']).optional(),
   textContains: z.string().min(1).optional(),
   labelContains: z.string().min(1).optional(),
   titleContains: z.string().min(1).optional(),
+  role: z.string().min(1).optional(),
+  name: z.string().min(1).optional(),
+  placeholder: z.string().min(1).optional(),
+  altText: z.string().min(1).optional(),
   tagName: z.string().min(1).optional(),
   type: z.string().min(1).optional(),
+  exact: z.boolean().optional(),
+  nth: z.number().int().min(0).optional(),
   visible: z.boolean().optional(),
   disabled: z.boolean().optional(),
   selected: z.boolean().optional(),
@@ -138,6 +144,10 @@ const LiveUIActionRequestSchema = z.discriminatedUnion('action', [
       button: z.enum(['left', 'middle', 'right']).optional(),
       clickCount: z.number().int().min(1).max(3).optional(),
     }).optional(),
+  }),
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('hover'),
+    input: z.object({}).optional(),
   }),
   LiveUIActionBaseSchema.extend({
     action: z.literal('input'),
@@ -210,7 +220,7 @@ type LiveUIActionResult = {
 
 const UIWorkflowModeSchema = z.enum(['safe', 'fast']);
 const UIWorkflowFailureStrategySchema = z.enum(['stop', 'continue', 'retry_once']);
-const UIWorkflowActionTargetScopeSchema = z.enum(['buttons', 'inputs', 'modals', 'focused']);
+const UIWorkflowActionTargetScopeSchema = z.enum(['buttons', 'links', 'inputs', 'modals', 'focused']);
 
 const UIWorkflowActionTargetSchema = z.object({
   selector: z.string().min(1).optional(),
@@ -223,8 +233,14 @@ const UIWorkflowActionTargetSchema = z.object({
   textContains: z.string().min(1).optional(),
   labelContains: z.string().min(1).optional(),
   titleContains: z.string().min(1).optional(),
+  role: z.string().min(1).optional(),
+  name: z.string().min(1).optional(),
+  placeholder: z.string().min(1).optional(),
+  altText: z.string().min(1).optional(),
   tagName: z.string().min(1).optional(),
   type: z.string().min(1).optional(),
+  exact: z.boolean().optional(),
+  nth: z.number().int().min(0).optional(),
   visible: z.boolean().optional(),
   disabled: z.boolean().optional(),
   selected: z.boolean().optional(),
@@ -240,10 +256,14 @@ const UIWorkflowActionTargetSchema = z.object({
     && !value.textContains
     && !value.labelContains
     && !value.titleContains
+    && !value.role
+    && !value.name
+    && !value.placeholder
+    && !value.altText
   ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'target requires selector, elementRef, testId, textContains, labelContains, or titleContains',
+      message: 'target requires selector, elementRef, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText',
       path: ['target'],
     });
   }
@@ -286,6 +306,10 @@ const UIWorkflowActionStepSchema = z.discriminatedUnion('action', [
       button: z.enum(['left', 'middle', 'right']).optional(),
       clickCount: z.number().int().min(1).max(3).optional(),
     }).optional(),
+  }),
+  UIWorkflowActionBaseSchema.extend({
+    action: z.literal('hover'),
+    input: z.object({}).optional(),
   }),
   UIWorkflowActionBaseSchema.extend({
     action: z.literal('input'),
@@ -332,14 +356,20 @@ const UIWorkflowActionStepSchema = z.discriminatedUnion('action', [
 ]);
 
 const UIWorkflowPageStateMatcherSchema = z.object({
-  scope: z.enum(['buttons', 'inputs', 'modals', 'focused', 'page']),
+  scope: z.enum(['buttons', 'links', 'inputs', 'modals', 'focused', 'page']),
   selector: z.string().optional(),
   testId: z.string().optional(),
   textContains: z.string().optional(),
   labelContains: z.string().optional(),
   titleContains: z.string().optional(),
+  role: z.string().optional(),
+  name: z.string().optional(),
+  placeholder: z.string().optional(),
+  altText: z.string().optional(),
+  exact: z.boolean().optional(),
   urlContains: z.string().optional(),
   language: z.string().optional(),
+  visible: z.boolean().optional(),
   disabled: z.boolean().optional(),
   selected: z.boolean().optional(),
   pressed: z.boolean().optional(),
@@ -606,6 +636,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       maxItems: { type: 'number' },
       maxTextLength: { type: 'number' },
       includeButtons: { type: 'boolean' },
+      includeLinks: { type: 'boolean' },
       includeInputs: { type: 'boolean' },
       includeModals: { type: 'boolean' },
     },
@@ -617,7 +648,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       sessionId: { type: 'string' },
       kinds: {
         type: 'array',
-        items: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused'] },
+        items: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused'] },
       },
       maxItems: { type: 'number' },
       maxTextLength: { type: 'number' },
@@ -637,12 +668,17 @@ const TOOL_SCHEMAS: Record<string, object> = {
     required: ['sessionId', 'scope'],
     properties: {
       sessionId: { type: 'string' },
-      scope: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused', 'page'] },
+      scope: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused', 'page'] },
       selector: { type: 'string' },
       testId: { type: 'string' },
       textContains: { type: 'string' },
       labelContains: { type: 'string' },
       titleContains: { type: 'string' },
+      role: { type: 'string' },
+      name: { type: 'string' },
+      placeholder: { type: 'string' },
+      altText: { type: 'string' },
+      exact: { type: 'boolean' },
       urlContains: { type: 'string' },
       language: { type: 'string' },
       visible: { type: 'boolean' },
@@ -665,12 +701,17 @@ const TOOL_SCHEMAS: Record<string, object> = {
     required: ['sessionId', 'scope'],
     properties: {
       sessionId: { type: 'string' },
-      scope: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused', 'page'] },
+      scope: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused', 'page'] },
       selector: { type: 'string' },
       testId: { type: 'string' },
       textContains: { type: 'string' },
       labelContains: { type: 'string' },
       titleContains: { type: 'string' },
+      role: { type: 'string' },
+      name: { type: 'string' },
+      placeholder: { type: 'string' },
+      altText: { type: 'string' },
+      exact: { type: 'boolean' },
       urlContains: { type: 'string' },
       language: { type: 'string' },
       visible: { type: 'boolean' },
@@ -1000,7 +1041,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       status: { type: 'string', enum: ['requested', 'started', 'succeeded', 'failed', 'rejected', 'stopped'] },
-      action: { type: 'string', enum: ['click', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload'] },
+      action: { type: 'string', enum: ['click', 'hover', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload'] },
       traceId: { type: 'string' },
       limit: { type: 'number' },
       offset: { type: 'number' },
@@ -1023,7 +1064,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     required: ['sessionId', 'action'],
     properties: {
       sessionId: { type: 'string' },
-      action: { type: 'string', enum: ['click', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload'] },
+      action: { type: 'string', enum: ['click', 'hover', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload'] },
       traceId: { type: 'string' },
       target: {
         type: 'object',
@@ -1034,10 +1075,16 @@ const TOOL_SCHEMAS: Record<string, object> = {
           frameId: { type: 'number' },
           url: { type: 'string' },
           testId: { type: 'string' },
-          scope: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused'] },
+          scope: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused'] },
           textContains: { type: 'string' },
           labelContains: { type: 'string' },
           titleContains: { type: 'string' },
+          role: { type: 'string' },
+          name: { type: 'string' },
+          placeholder: { type: 'string' },
+          altText: { type: 'string' },
+          exact: { type: 'boolean' },
+          nth: { type: 'number' },
           tagName: { type: 'string' },
           type: { type: 'string' },
           visible: { type: 'boolean' },
@@ -1069,12 +1116,17 @@ const TOOL_SCHEMAS: Record<string, object> = {
         type: 'object',
         required: ['scope'],
         properties: {
-          scope: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused', 'page'] },
+          scope: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused', 'page'] },
           selector: { type: 'string' },
           testId: { type: 'string' },
           textContains: { type: 'string' },
           labelContains: { type: 'string' },
           titleContains: { type: 'string' },
+          role: { type: 'string' },
+          name: { type: 'string' },
+          placeholder: { type: 'string' },
+          altText: { type: 'string' },
+          exact: { type: 'boolean' },
           urlContains: { type: 'string' },
           language: { type: 'string' },
           visible: { type: 'boolean' },
@@ -1126,10 +1178,16 @@ const TOOL_SCHEMAS: Record<string, object> = {
                 frameId: { type: 'number' },
                 url: { type: 'string' },
                 testId: { type: 'string' },
-                scope: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused'] },
+                scope: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused'] },
                 textContains: { type: 'string' },
                 labelContains: { type: 'string' },
                 titleContains: { type: 'string' },
+                role: { type: 'string' },
+                name: { type: 'string' },
+                placeholder: { type: 'string' },
+                altText: { type: 'string' },
+                exact: { type: 'boolean' },
+                nth: { type: 'number' },
                 tagName: { type: 'string' },
                 type: { type: 'string' },
                 visible: { type: 'boolean' },
@@ -1166,12 +1224,17 @@ const TOOL_SCHEMAS: Record<string, object> = {
             matcher: {
               type: 'object',
               properties: {
-                scope: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused', 'page'] },
+                scope: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused', 'page'] },
                 selector: { type: 'string' },
                 testId: { type: 'string' },
                 textContains: { type: 'string' },
                 labelContains: { type: 'string' },
                 titleContains: { type: 'string' },
+                role: { type: 'string' },
+                name: { type: 'string' },
+                placeholder: { type: 'string' },
+                altText: { type: 'string' },
+                exact: { type: 'boolean' },
                 urlContains: { type: 'string' },
                 language: { type: 'string' },
                 visible: { type: 'boolean' },
@@ -1218,7 +1281,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_computed_styles: 'Read computed CSS styles for an element',
   get_layout_metrics: 'Read viewport and element layout metrics',
   get_page_state: 'Read a compact structured page model for forms, buttons, modals, and viewport state',
-  get_interactive_elements: 'Read compact live element references for buttons, inputs, modals, and focused elements',
+  get_interactive_elements: 'Read compact live element references for buttons, links, inputs, modals, and focused elements',
   get_live_session_health: 'Read live transport health and session binding details for one session',
   set_viewport: 'Resize the live browser window for a session and return the resulting viewport metrics',
   assert_page_state: 'Assert compact page-state conditions without pulling raw DOM payloads',
@@ -3392,7 +3455,7 @@ function resolveViewportDimension(value: unknown, axis: 'width' | 'height'): num
   return floored;
 }
 
-type PageStateScope = 'buttons' | 'inputs' | 'modals' | 'focused' | 'page';
+type PageStateScope = 'buttons' | 'links' | 'inputs' | 'modals' | 'focused' | 'page';
 
 interface PageStateMatcher {
   scope: PageStateScope;
@@ -3401,6 +3464,11 @@ interface PageStateMatcher {
   textContains?: string;
   labelContains?: string;
   titleContains?: string;
+  role?: string;
+  name?: string;
+  placeholder?: string;
+  altText?: string;
+  exact?: boolean;
   urlContains?: string;
   language?: string;
   disabled?: boolean;
@@ -3517,11 +3585,11 @@ function resolveOptionalMatcherCount(value: unknown, field: 'countExactly' | 'co
 }
 
 function resolvePageStateScope(value: unknown): PageStateScope {
-  if (value === 'buttons' || value === 'inputs' || value === 'modals' || value === 'focused' || value === 'page') {
+  if (value === 'buttons' || value === 'links' || value === 'inputs' || value === 'modals' || value === 'focused' || value === 'page') {
     return value;
   }
 
-  throw new Error('scope must be one of buttons, inputs, modals, focused, or page');
+  throw new Error('scope must be one of buttons, links, inputs, modals, focused, or page');
 }
 
 function resolvePageStateMatcher(input: ToolInput): PageStateMatcher {
@@ -3532,6 +3600,11 @@ function resolvePageStateMatcher(input: ToolInput): PageStateMatcher {
     textContains: resolveOptionalMatcherString(input.textContains),
     labelContains: resolveOptionalMatcherString(input.labelContains),
     titleContains: resolveOptionalMatcherString(input.titleContains),
+    role: resolveOptionalMatcherString(input.role)?.toLowerCase(),
+    name: resolveOptionalMatcherString(input.name),
+    placeholder: resolveOptionalMatcherString(input.placeholder),
+    altText: resolveOptionalMatcherString(input.altText),
+    exact: resolveOptionalMatcherBoolean(input.exact),
     urlContains: resolveOptionalMatcherString(input.urlContains),
     language: resolveOptionalMatcherString(input.language),
     disabled: resolveOptionalMatcherBoolean(input.disabled),
@@ -3562,6 +3635,21 @@ function includesNormalized(value: unknown, needle: string | undefined): boolean
   return typeof value === 'string' && value.toLowerCase().includes(needle.toLowerCase());
 }
 
+function matchesTextValue(value: unknown, expected: string | undefined, exact: boolean | undefined): boolean {
+  if (!expected) {
+    return true;
+  }
+  if (typeof value !== 'string') {
+    return false;
+  }
+
+  const normalizedValue = value.trim().toLowerCase();
+  const normalizedExpected = expected.trim().toLowerCase();
+  return exact === true
+    ? normalizedValue === normalizedExpected
+    : normalizedValue.includes(normalizedExpected);
+}
+
 function equalsNormalized(value: unknown, expected: string | undefined): boolean {
   if (!expected) {
     return true;
@@ -3579,7 +3667,7 @@ function equalsOptionalBoolean(value: unknown, expected: boolean | undefined): b
 }
 
 function pickPageStateScopeItems(payload: Record<string, unknown>, scope: PageStateScope): Record<string, unknown>[] {
-  if (scope === 'buttons' || scope === 'inputs' || scope === 'modals') {
+  if (scope === 'buttons' || scope === 'links' || scope === 'inputs' || scope === 'modals') {
     const value = payload[scope];
     return asRecordArray(value);
   }
@@ -3596,9 +3684,13 @@ function matchesPageStateItem(item: Record<string, unknown>, matcher: PageStateM
   return (
     includesNormalized(item.selector, matcher.selector)
     && equalsNormalized(item.testId, matcher.testId)
-    && includesNormalized(item.text, matcher.textContains)
-    && includesNormalized(item.label, matcher.labelContains)
-    && includesNormalized(item.title, matcher.titleContains)
+    && matchesTextValue(item.text, matcher.textContains, matcher.exact)
+    && matchesTextValue(item.label, matcher.labelContains, matcher.exact)
+    && matchesTextValue(item.title, matcher.titleContains, matcher.exact)
+    && equalsNormalized(item.role, matcher.role)
+    && matchesTextValue(item.name, matcher.name, matcher.exact)
+    && matchesTextValue(item.placeholder, matcher.placeholder, matcher.exact)
+    && matchesTextValue(item.altText, matcher.altText, matcher.exact)
     && includesNormalized(item.url, matcher.urlContains)
     && equalsNormalized(item.language, matcher.language)
     && equalsNormalized(item.tagName, matcher.tagName)
@@ -3692,7 +3784,7 @@ function createPageChangeSummary(
   const currentSummary = current.summary;
   const summaryDelta: Record<string, { previous?: number; current?: number }> = {};
 
-  for (const key of ['buttons', 'inputs', 'modals']) {
+  for (const key of ['buttons', 'links', 'inputs', 'modals']) {
     const previousValue = typeof previousSummary?.[key] === 'number' ? previousSummary[key] as number : undefined;
     const currentValue = typeof currentSummary?.[key] === 'number' ? currentSummary[key] as number : undefined;
     if (previousValue !== currentValue && currentValue !== undefined) {
@@ -3722,22 +3814,24 @@ function createPageChangeSummary(
   };
 }
 
-function resolveInteractiveKinds(value: unknown): Array<'buttons' | 'inputs' | 'modals' | 'focused'> {
+type InteractiveElementKind = 'buttons' | 'links' | 'inputs' | 'modals' | 'focused';
+
+function resolveInteractiveKinds(value: unknown): InteractiveElementKind[] {
   if (!Array.isArray(value) || value.length === 0) {
-    return ['buttons', 'inputs', 'modals', 'focused'];
+    return ['buttons', 'links', 'inputs', 'modals', 'focused'];
   }
 
-  const allowed = new Set(['buttons', 'inputs', 'modals', 'focused']);
+  const allowed = new Set(['buttons', 'links', 'inputs', 'modals', 'focused']);
   const kinds = value
     .filter((entry): entry is string => typeof entry === 'string' && allowed.has(entry))
-    .map((entry) => entry as 'buttons' | 'inputs' | 'modals' | 'focused');
+    .map((entry) => entry as InteractiveElementKind);
 
-  return kinds.length > 0 ? Array.from(new Set(kinds)) : ['buttons', 'inputs', 'modals', 'focused'];
+  return kinds.length > 0 ? Array.from(new Set(kinds)) : ['buttons', 'links', 'inputs', 'modals', 'focused'];
 }
 
 function collectInteractiveElementRefs(
   payload: Record<string, unknown>,
-  kinds: Array<'buttons' | 'inputs' | 'modals' | 'focused'>,
+  kinds: InteractiveElementKind[],
   maxItems: number,
 ): Array<Record<string, unknown>> {
   const refs: Array<Record<string, unknown>> = [];
@@ -3884,7 +3978,7 @@ async function waitForPageStateCondition(
 }
 
 function candidateTextForWorkflowTarget(item: Record<string, unknown>): string {
-  return [item.text, item.label, item.title]
+  return [item.text, item.label, item.title, item.name, item.placeholder, item.altText]
     .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
     .join(' ')
     .trim();
@@ -3897,8 +3991,12 @@ function describeWorkflowTargetCandidate(item: Record<string, unknown>): Record<
     selector: typeof item.selector === 'string' ? item.selector : undefined,
     frameId: typeof item.frameId === 'number' ? item.frameId : undefined,
     frameUrl: typeof item.frameUrl === 'string' ? item.frameUrl : undefined,
+    role: typeof item.role === 'string' ? item.role : undefined,
+    name: typeof item.name === 'string' ? item.name : undefined,
     tagName: typeof item.tagName === 'string' ? item.tagName : undefined,
     type: typeof item.type === 'string' ? item.type : undefined,
+    placeholder: typeof item.placeholder === 'string' ? item.placeholder : undefined,
+    altText: typeof item.altText === 'string' ? item.altText : undefined,
     disabled: typeof item.disabled === 'boolean' ? item.disabled : undefined,
     selected: typeof item.selected === 'boolean' ? item.selected : undefined,
   };
@@ -3914,6 +4012,7 @@ function pickWorkflowTargetItems(
 
   return [
     ...pickPageStateScopeItems(payload, 'buttons'),
+    ...pickPageStateScopeItems(payload, 'links'),
     ...pickPageStateScopeItems(payload, 'inputs'),
     ...pickPageStateScopeItems(payload, 'modals'),
     ...pickPageStateScopeItems(payload, 'focused'),
@@ -3926,9 +4025,13 @@ function matchesWorkflowActionTarget(
 ): boolean {
   return (
     equalsNormalized(item.testId, target.testId)
-    && includesNormalized(item.text, target.textContains)
-    && includesNormalized(item.label, target.labelContains)
-    && includesNormalized(item.title, target.titleContains)
+    && matchesTextValue(item.text, target.textContains, target.exact)
+    && matchesTextValue(item.label, target.labelContains, target.exact)
+    && matchesTextValue(item.title, target.titleContains, target.exact)
+    && equalsNormalized(item.role, target.role?.toLowerCase())
+    && matchesTextValue(item.name, target.name, target.exact)
+    && matchesTextValue(item.placeholder, target.placeholder, target.exact)
+    && matchesTextValue(item.altText, target.altText, target.exact)
     && equalsNormalized(item.tagName, target.tagName)
     && equalsNormalized(item.type, target.type)
     && equalsOptionalBoolean(item.visible, target.visible)
@@ -3951,8 +4054,14 @@ function summarizeWorkflowTargetMatcher(target: UIWorkflowActionTarget): Record<
     textContains: target.textContains,
     labelContains: target.labelContains,
     titleContains: target.titleContains,
+    role: target.role,
+    name: target.name,
+    placeholder: target.placeholder,
+    altText: target.altText,
     tagName: target.tagName,
     type: target.type,
+    exact: target.exact,
+    nth: target.nth,
     visible: target.visible,
     disabled: target.disabled,
     selected: target.selected,
@@ -3973,6 +4082,10 @@ function hasSemanticActionTargetMatcher(target: LiveUIActionRequest['target']): 
       || target.textContains
       || target.labelContains
       || target.titleContains
+      || target.role
+      || target.name
+      || target.placeholder
+      || target.altText
       || target.tagName
       || target.type
       || target.visible !== undefined
@@ -4025,6 +4138,7 @@ async function resolveWorkflowActionTarget(
 
   const capture = existingCapture ?? await capturePageState(sessionId, {
     includeButtons: target.scope ? target.scope === 'buttons' : true,
+    includeLinks: target.scope ? target.scope === 'links' : true,
     includeInputs: target.scope ? target.scope === 'inputs' : true,
     includeModals: target.scope ? target.scope === 'modals' : true,
     maxItems: 100,
@@ -4032,14 +4146,17 @@ async function resolveWorkflowActionTarget(
   });
   const candidates = pickWorkflowTargetItems(capture.payload, target.scope)
     .filter((item) => matchesWorkflowActionTarget(item, target));
+  const nthCandidate = typeof target.nth === 'number' ? candidates[target.nth] : undefined;
+  const resolvedCandidates = typeof target.nth === 'number' && nthCandidate ? [nthCandidate] : candidates;
 
-  if (candidates.length === 0) {
+  if (candidates.length === 0 || (typeof target.nth === 'number' && !nthCandidate)) {
     throw new WorkflowTargetResolutionError(
       'workflow_target_not_found',
       'No interactive element matched the workflow target.',
       {
         matcher: summarizeWorkflowTargetMatcher(target),
         searchedScope: target.scope ?? 'all-interactive',
+        matchedCandidateCount: candidates.length,
         sampledCandidates: pickWorkflowTargetItems(capture.payload, target.scope)
           .slice(0, 5)
           .map((item) => describeWorkflowTargetCandidate(item)),
@@ -4047,19 +4164,20 @@ async function resolveWorkflowActionTarget(
     );
   }
 
-  if (candidates.length > 1) {
+  if (resolvedCandidates.length > 1) {
     throw new WorkflowTargetResolutionError(
       'workflow_target_ambiguous',
-      `Workflow target matched ${candidates.length} elements; refine the matcher.`,
+      `Workflow target matched ${resolvedCandidates.length} elements; refine the matcher or provide nth.`,
       {
         matcher: summarizeWorkflowTargetMatcher(target),
-        matchedCandidateCount: candidates.length,
-        sampledCandidates: candidates.slice(0, 5).map((item) => describeWorkflowTargetCandidate(item)),
+        matchedCandidateCount: resolvedCandidates.length,
+        totalMatchedCandidateCount: candidates.length,
+        sampledCandidates: resolvedCandidates.slice(0, 5).map((item) => describeWorkflowTargetCandidate(item)),
       },
     );
   }
 
-  const candidate = candidates[0];
+  const candidate = resolvedCandidates[0];
   return {
     target: {
       elementRef: typeof candidate.elementRef === 'string' ? candidate.elementRef : undefined,
@@ -4072,6 +4190,7 @@ async function resolveWorkflowActionTarget(
       strategy: typeof candidate.elementRef === 'string' ? 'semantic_elementRef' : 'semantic_selector',
       matcher: summarizeWorkflowTargetMatcher(target),
       matchedCandidateCount: candidates.length,
+      selectedIndex: target.nth ?? 0,
       matched: describeWorkflowTargetCandidate(candidate),
     },
     pageCapture: capture,
@@ -4094,6 +4213,7 @@ async function captureWorkflowPageState(
   const maxTextLength = mode === 'fast' ? 60 : 80;
   return capturePageState(sessionId, {
     includeButtons: true,
+    includeLinks: true,
     includeInputs: true,
     includeModals: true,
     maxItems,
@@ -7070,6 +7190,7 @@ export function createV2ToolHandlers(
     const maxItems = resolveStructuredMaxItems(input.maxItems, 40);
     const maxTextLength = resolveStructuredTextLength(input.maxTextLength, 80);
     const includeButtons = input.includeButtons !== false;
+    const includeLinks = input.includeLinks !== false;
     const includeInputs = input.includeInputs !== false;
     const includeModals = input.includeModals !== false;
     const capture = await executeLiveCapture(
@@ -7080,6 +7201,7 @@ export function createV2ToolHandlers(
         maxItems,
         maxTextLength,
         includeButtons,
+        includeLinks,
         includeInputs,
         includeModals,
       },
@@ -7912,6 +8034,7 @@ export function createV2ToolHandlers(
       const normalizedInput: ToolInput = {
         ...input,
         includeButtons: kinds.includes('buttons'),
+        includeLinks: kinds.includes('links'),
         includeInputs: kinds.includes('inputs'),
         includeModals: kinds.includes('modals'),
       };

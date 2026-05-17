@@ -4,6 +4,7 @@ import {
   executeNativeBlurAction,
   executeNativeClickAction,
   executeNativeFocusAction,
+  executeNativeHoverAction,
   executeNativeInputAction,
   executeNativePressKeyAction,
   executeNativeScrollAction,
@@ -184,6 +185,46 @@ describe('native automation backend', () => {
         type: 'mousePressed',
         x: 142,
         y: 224,
+      }),
+    );
+  });
+
+  it('dispatches native CDP mouse move events for hover actions', async () => {
+    const chromeMock = installChromeMock();
+    const request: Extract<LiveUIActionRequest, { action: 'hover' }> = {
+      action: 'hover',
+      traceId: 'trace-hover-native',
+      target: {
+        selector: '#save',
+        tabId: 7,
+      },
+    };
+
+    const result = await executeNativeHoverAction({
+      request,
+      tab: {
+        id: 7,
+        url: 'https://example.com/settings',
+      } as chrome.tabs.Tab & { id: number },
+      startedAt: 1000,
+      traceId: 'trace-hover-native',
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(result.result).toMatchObject({
+      backend: nativeAutomationBackend,
+      point: {
+        x: 42,
+        y: 24,
+      },
+    });
+    expect(chromeMock.sendCommand).toHaveBeenCalledWith(
+      { tabId: 7 },
+      'Input.dispatchMouseEvent',
+      expect.objectContaining({
+        type: 'mouseMoved',
+        x: 42,
+        y: 24,
       }),
     );
   });

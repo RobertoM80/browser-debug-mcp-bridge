@@ -129,7 +129,7 @@ describe('ui-workflows', () => {
           target: {},
         },
       ],
-    })).toThrow('target requires selector, elementRef, testId, textContains, labelContains, or titleContains');
+    })).toThrow('target requires selector, elementRef, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText');
   });
 
   it('creates readable workflow trace ids', () => {

@@ -65,6 +65,7 @@ type LiveActionResponse = {
     topDocumentOnly?: boolean;
     opensNewBrowserSession?: boolean;
   };
+  targetResolution?: Record<string, unknown>;
 };
 
 type WorkflowResponse = {
@@ -201,6 +202,9 @@ async function installAutomationFixture(page: Page): Promise<void> {
           </div>
           <output id="scroll-output"></output>
           <button id="open-dialog" data-testid="open-dialog">Open dialog</button>
+          <a id="docs-primary" href="#docs-primary" aria-label="Docs">Docs</a>
+          <a id="docs-secondary" href="#docs-secondary" aria-label="Docs">Docs</a>
+          <output id="hover-output"></output>
           <section id="dialog" role="dialog" aria-modal="true" hidden>
             <h2>Automation dialog</h2>
             <button id="confirm-dialog" data-testid="confirm-dialog">Confirm dialog</button>
@@ -237,6 +241,9 @@ async function installAutomationFixture(page: Page): Promise<void> {
           });
           document.querySelector('#open-dialog').addEventListener('click', () => {
             document.querySelector('#dialog').hidden = false;
+          });
+          document.querySelector('#docs-secondary').addEventListener('mouseenter', () => {
+            document.querySelector('#hover-output').textContent = 'hovered docs';
           });
           document.querySelector('#confirm-dialog').addEventListener('click', () => {
             document.querySelector('#dialog-result').textContent = 'confirmed';
@@ -296,18 +303,20 @@ test.describe('@full live automation through MCP and extension session', () => {
         'get_interactive_elements',
         {
           sessionId,
-          kinds: ['buttons', 'inputs'],
+          kinds: ['buttons', 'links', 'inputs'],
           maxItems: 40,
         },
       );
       const hasFrameButtonRef = refs.refs.some((ref) => ref.selector === '#inside-frame' && typeof ref.frameId === 'number');
       const hasFrameInputRef = refs.refs.some((ref) => ref.selector === '#frame-input' && typeof ref.frameId === 'number');
-      return hasFrameButtonRef && hasFrameInputRef;
+      const hasDocsLink = refs.refs.some((ref) => ref.selector === '#docs-secondary' && ref.kind === 'links');
+      return hasFrameButtonRef && hasFrameInputRef && hasDocsLink;
     }, { timeout: 10_000 }).toBe(true);
     if (!refs) {
       throw new Error('expected interactive element refs');
     }
     expect(refs.refs.some((ref) => ref.selector === '#increment')).toBe(true);
+    expect(refs.refs.some((ref) => ref.selector === '#docs-primary' && ref.role === 'link')).toBe(true);
     expect(refs.refs.some((ref) => ref.selector === '#displayName')).toBe(true);
     expect(refs.pageSummary?.frames).toBeGreaterThanOrEqual(2);
     const frameButtonRef = refs.refs.find((ref) => ref.selector === '#inside-frame' && typeof ref.frameId === 'number');
@@ -354,6 +363,26 @@ test.describe('@full live automation through MCP and extension session', () => {
     expect(input.actionResult?.result?.backend).toBe('cdp-native-v2');
     expect(input.actionResult?.result?.valueLength).toBe('Ada Lovelace'.length);
     await expect(targetPage.locator('#name-output')).toHaveText('Ada Lovelace');
+
+    const semanticHover = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'hover',
+      target: {
+        scope: 'links',
+        role: 'link',
+        name: 'Docs',
+        exact: true,
+        nth: 1,
+        tabId,
+      },
+    });
+    expect(semanticHover.status).toBe('succeeded');
+    expect(semanticHover.actionResult?.result?.backend).toBe('cdp-native-v2');
+    expect(semanticHover.targetResolution).toMatchObject({
+      matchedCandidateCount: 2,
+      selectedIndex: 1,
+    });
+    await expect(targetPage.locator('#hover-output')).toHaveText('hovered docs');
 
     const key = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
@@ -506,6 +535,16 @@ test.describe('@full live automation through MCP and extension session', () => {
       visible: true,
     });
     expect(visibleAssertion.matched).toBe(true);
+
+    const linkAssertion = await callToolJson<{ matched: boolean; matchCount: number }>(mcp.client, 'assert_page_state', {
+      sessionId,
+      scope: 'links',
+      role: 'link',
+      name: 'Docs',
+      exact: true,
+      countExactly: 2,
+    });
+    expect(linkAssertion.matched).toBe(true);
 
     const hiddenAssertion = await callToolJson<{ matched: boolean; matchCount: number }>(mcp.client, 'assert_page_state', {
       sessionId,

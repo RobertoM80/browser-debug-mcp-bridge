@@ -50,18 +50,20 @@ describe('live-actions', () => {
 
   it('parses semantic live UI action targets', () => {
     const parsed = LiveUIActionRequestSchema.parse({
-      action: 'click',
+      action: 'hover',
       target: {
-        scope: 'buttons',
-        textContains: 'Confirm',
-        tagName: 'button',
-        pressed: false,
+        scope: 'links',
+        role: 'link',
+        name: 'Docs',
+        exact: true,
+        nth: 1,
       },
     });
 
-    expect(parsed.target?.scope).toBe('buttons');
-    expect(parsed.target?.textContains).toBe('Confirm');
-    expect(parsed.target?.pressed).toBe(false);
+    expect(parsed.action).toBe('hover');
+    expect(parsed.target?.scope).toBe('links');
+    expect(parsed.target?.name).toBe('Docs');
+    expect(parsed.target?.nth).toBe(1);
   });
 
   it('creates readable trace ids', () => {
