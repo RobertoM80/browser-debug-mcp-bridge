@@ -94,6 +94,8 @@ Quick secondary option:
 }
 ```
 
+Keep `-y` in `npx` configs. Without it, npm can wait for an interactive install confirmation that MCP hosts such as VS Code Copilot cannot answer, so the server appears to start but no tools are registered.
+
 ## First Debug Session
 
 1. Start your MCP client so it launches the bridge.

@@ -92,6 +92,8 @@ Secondary quick option:
 1. command: `npx`
 2. args: `["-y", "browser-debug-mcp-bridge"]`
 
+Keep `-y` in `npx` MCP host configs. Without it, npm can wait for interactive install confirmation; VS Code Copilot and other MCP hosts cannot answer that prompt, so no tools are registered.
+
 ### 1B) Local clone mode
 
 ```bash
@@ -362,9 +364,10 @@ If MCP client shows no tools:
 
 1. Wrong repo path in MCP config.
 2. Wrong MCP command/args for selected mode.
-3. MCP process failed to start.
-4. Another process already uses port `8065`.
-5. A previous `node scripts/mcp-start.cjs --standalone` session still owns the bridge lock. Stop it with `node scripts/mcp-start.cjs --stop` or restart the MCP host after the launcher replaces it.
+3. `npx` config is missing `-y`, causing npm to wait for install confirmation the MCP host cannot answer.
+4. MCP process failed to start.
+5. Another process already uses port `8065`.
+6. A previous `node scripts/mcp-start.cjs --standalone` session still owns the bridge lock. Stop it with `node scripts/mcp-start.cjs --stop` or restart the MCP host after the launcher replaces it.
 
 ## Distribution modes summary
 
