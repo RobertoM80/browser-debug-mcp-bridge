@@ -2136,10 +2136,26 @@ interface FrameCaptureMetadata {
   frameId: number;
   url?: string;
   title?: string;
+  origin?: string;
+  isOpaqueOrigin?: boolean;
   parentAccessible?: boolean;
   parentUrl?: string;
   topAccessible?: boolean;
   sameOriginWithTop?: boolean;
+  sandboxFlags?: string[];
+  automationSupport?: 'native' | 'diagnostic-only';
+  automationUnsupportedReason?: string;
+}
+
+interface FrameElementMetadata {
+  index: number;
+  src?: string;
+  resolvedUrl?: string;
+  title?: string;
+  name?: string;
+  id?: string;
+  sandboxFlags?: string[];
+  hasSrcdoc?: boolean;
 }
 
 function asRecordArray(value: unknown): Array<Record<string, unknown>> {
@@ -2155,6 +2171,40 @@ function resolveFrameMetadataUrl(frame: FrameCaptureMetadata | undefined, fallba
     return frame.url;
   }
   return typeof fallback === 'string' && fallback.length > 0 ? fallback : undefined;
+}
+
+function resolveFrameAutomationPolicy(frame: FrameCaptureMetadata): Pick<FrameCaptureMetadata, 'automationSupport' | 'automationUnsupportedReason'> {
+  if (frame.frameId === 0) {
+    return {
+      automationSupport: 'native',
+    };
+  }
+
+  const sandboxWithoutSameOrigin = frame.sandboxFlags !== undefined && !frame.sandboxFlags.includes('allow-same-origin');
+  if (frame.isOpaqueOrigin === true || sandboxWithoutSameOrigin) {
+    return {
+      automationSupport: 'diagnostic-only',
+      automationUnsupportedReason: 'sandboxed_opaque_origin',
+    };
+  }
+
+  if (frame.sameOriginWithTop === false || frame.topAccessible === false) {
+    return {
+      automationSupport: 'diagnostic-only',
+      automationUnsupportedReason: 'cross_origin_with_top',
+    };
+  }
+
+  return {
+    automationSupport: 'native',
+  };
+}
+
+function withFrameAutomationPolicy(frame: FrameCaptureMetadata): FrameCaptureMetadata {
+  return {
+    ...frame,
+    ...resolveFrameAutomationPolicy(frame),
+  };
 }
 
 function decodeElementRefPayload(elementRef: unknown): Record<string, unknown> | undefined {
@@ -2195,6 +2245,10 @@ function augmentElementRef(elementRef: unknown, frame: FrameCaptureMetadata): st
       ...decoded,
       frameId: frame.frameId,
       frameUrl: frame.url,
+      frameTitle: frame.title,
+      frameSameOriginWithTop: frame.sameOriginWithTop,
+      frameAutomationSupport: frame.automationSupport,
+      frameAutomationUnsupportedReason: frame.automationUnsupportedReason,
     }))}`;
   } catch {
     return elementRef;
@@ -2208,61 +2262,163 @@ function enrichFrameScopedItem(item: Record<string, unknown>, frame: FrameCaptur
     frameUrl: frame.url,
     frameTitle: frame.title,
     frameSameOriginWithTop: frame.sameOriginWithTop,
+    frameAutomationSupport: frame.automationSupport,
+    frameAutomationUnsupportedReason: frame.automationUnsupportedReason,
     elementRef: augmentElementRef(item.elementRef, frame),
   };
 }
 
-async function listTabFrames(tabId: number): Promise<FrameCaptureMetadata[]> {
+async function listTopFrameElements(tabId: number): Promise<FrameElementMetadata[]> {
   const results = await chrome.scripting.executeScript({
     target: {
       tabId,
-      allFrames: true,
     },
     func: () => {
-      let parentAccessible = false;
-      let parentUrl: string | undefined;
-      let topAccessible = false;
-      let sameOriginWithTop = false;
+      return Array.from(document.querySelectorAll('iframe, frame')).map((element, index) => {
+        const frameElement = element as HTMLIFrameElement;
+        const sandbox = frameElement instanceof HTMLIFrameElement ? frameElement.getAttribute('sandbox') : null;
+        const sandboxFlags = sandbox === null
+          ? undefined
+          : sandbox
+            .split(/\s+/)
+            .map((flag) => flag.trim())
+            .filter((flag) => flag.length > 0);
 
-      try {
-        parentUrl = window.parent.location.href;
-        parentAccessible = true;
-      } catch {
-        parentAccessible = false;
-      }
-
-      try {
-        if (window.top) {
-          sameOriginWithTop = window.location.origin === window.top.location.origin;
-          topAccessible = true;
-        }
-      } catch {
-        topAccessible = false;
-      }
-
-      return {
-        url: window.location.href,
-        title: document.title,
-        parentAccessible,
-        parentUrl,
-        topAccessible,
-        sameOriginWithTop,
-      };
+        return {
+          index,
+          src: frameElement.getAttribute('src') ?? undefined,
+          resolvedUrl: frameElement.src || undefined,
+          title: frameElement.getAttribute('title') ?? undefined,
+          name: frameElement.getAttribute('name') ?? undefined,
+          id: frameElement.id || undefined,
+          sandboxFlags,
+          hasSrcdoc: frameElement instanceof HTMLIFrameElement && frameElement.getAttribute('srcdoc') !== null,
+        };
+      });
     },
   });
 
-  return results
+  const firstResult = results[0]?.result;
+  return Array.isArray(firstResult)
+    ? firstResult
+      .filter((entry) => Boolean(entry) && typeof entry === 'object' && typeof (entry as FrameElementMetadata).index === 'number')
+      .map((entry) => entry as FrameElementMetadata)
+    : [];
+}
+
+function mergeFrameElementMetadata(
+  frames: FrameCaptureMetadata[],
+  elements: FrameElementMetadata[],
+): FrameCaptureMetadata[] {
+  if (elements.length === 0) {
+    return frames.map(withFrameAutomationPolicy);
+  }
+
+  const childFrames = frames.filter((frame) => frame.frameId !== 0);
+  const srcdocFrames = childFrames.filter((frame) => frame.url === 'about:srcdoc');
+
+  return frames.map((frame) => {
+    if (frame.frameId === 0 || frame.sandboxFlags !== undefined) {
+      return withFrameAutomationPolicy(frame);
+    }
+
+    const exactUrlMatch = elements.find((element) => {
+      return Boolean(element.resolvedUrl && frame.url && element.resolvedUrl === frame.url);
+    });
+    const srcdocMatch = frame.url === 'about:srcdoc' && srcdocFrames.length === elements.filter((element) => element.hasSrcdoc).length
+      ? elements.filter((element) => element.hasSrcdoc)[srcdocFrames.findIndex((entry) => entry.frameId === frame.frameId)]
+      : undefined;
+    const matchedElement = exactUrlMatch ?? srcdocMatch;
+    if (!matchedElement) {
+      return withFrameAutomationPolicy(frame);
+    }
+
+    return withFrameAutomationPolicy({
+      ...frame,
+      sandboxFlags: matchedElement.sandboxFlags,
+      title: frame.title || matchedElement.title,
+    });
+  });
+}
+
+async function listTabFrames(tabId: number): Promise<FrameCaptureMetadata[]> {
+  const [results, frameElements] = await Promise.all([
+    chrome.scripting.executeScript({
+      target: {
+        tabId,
+        allFrames: true,
+      },
+      func: () => {
+        let parentAccessible = false;
+        let parentUrl: string | undefined;
+        let topAccessible = false;
+        let sameOriginWithTop = false;
+        let sandboxFlags: string[] | undefined;
+
+        try {
+          parentUrl = window.parent.location.href;
+          parentAccessible = true;
+        } catch {
+          parentAccessible = false;
+        }
+
+        try {
+          if (window.top) {
+            sameOriginWithTop = window.location.origin === window.top.location.origin;
+            topAccessible = true;
+          }
+        } catch {
+          topAccessible = false;
+        }
+
+        try {
+          const frameElement = window.frameElement;
+          if (frameElement instanceof HTMLIFrameElement) {
+            const sandbox = frameElement.getAttribute('sandbox');
+            sandboxFlags = sandbox === null
+              ? undefined
+              : sandbox
+                .split(/\s+/)
+                .map((flag) => flag.trim())
+                .filter((flag) => flag.length > 0);
+          }
+        } catch {
+          sandboxFlags = undefined;
+        }
+
+        return {
+          url: window.location.href,
+          title: document.title,
+          origin: window.location.origin,
+          isOpaqueOrigin: window.location.origin === 'null',
+          parentAccessible,
+          parentUrl,
+          topAccessible,
+          sameOriginWithTop,
+          sandboxFlags,
+        };
+      },
+    }),
+    listTopFrameElements(tabId).catch(() => []),
+  ]);
+
+  const frames = results
     .filter((entry) => typeof entry.frameId === 'number' && Boolean(entry.result))
     .map((entry) => ({
       frameId: entry.frameId ?? 0,
       url: entry.result?.url,
       title: entry.result?.title,
+      origin: entry.result?.origin,
+      isOpaqueOrigin: entry.result?.isOpaqueOrigin,
       parentAccessible: entry.result?.parentAccessible,
       parentUrl: entry.result?.parentUrl,
       topAccessible: entry.result?.topAccessible,
       sameOriginWithTop: entry.result?.sameOriginWithTop,
+      sandboxFlags: entry.result?.sandboxFlags,
     }))
     .sort((a, b) => a.frameId - b.frameId);
+
+  return mergeFrameElementMetadata(frames, frameElements);
 }
 
 function mergeFramePageStates(
@@ -2319,10 +2475,17 @@ function mergeFramePageStates(
       frameId: frame.frameId,
       url: frame.url,
       title: frame.title,
+      origin: frame.origin,
+      isOpaqueOrigin: frame.isOpaqueOrigin,
       parentUrl: frame.parentUrl,
       parentAccessible: frame.parentAccessible,
       topAccessible: frame.topAccessible,
       sameOriginWithTop: frame.sameOriginWithTop,
+      sandboxFlags: frame.sandboxFlags,
+      automationSupport: frame.automationSupport,
+      automationUnsupportedReason: frame.automationUnsupportedReason,
+      frameCaptureError: payload.frameCaptureError,
+      frameCaptureErrorCode: payload.frameCaptureErrorCode,
       summary: payload.summary,
       viewport: payload.viewport,
       truncation: payload.truncation,
@@ -2368,6 +2531,23 @@ function mergeFramePageStates(
   };
 }
 
+function classifyFrameCaptureError(frame: FrameCaptureMetadata, error: unknown): string {
+  if (frame.automationUnsupportedReason === 'sandboxed_opaque_origin') {
+    return 'sandboxed_frame_inaccessible';
+  }
+
+  if (frame.automationUnsupportedReason === 'cross_origin_with_top') {
+    return 'cross_origin_frame_inaccessible';
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  if (/receiving end|message port|content script/i.test(message)) {
+    return 'content_script_unavailable';
+  }
+
+  return 'frame_capture_failed';
+}
+
 async function capturePageStateAcrossFrames(
   tabId: number,
   payload: Record<string, unknown>,
@@ -2390,7 +2570,7 @@ async function capturePageStateAcrossFrames(
         payload: captured.payload,
         truncated: captured.truncated,
       });
-    } catch {
+    } catch (error) {
       captures.push({
         frame,
         payload: {
@@ -2403,6 +2583,7 @@ async function capturePageStateAcrossFrames(
             modals: 0,
           },
           frameCaptureError: true,
+          frameCaptureErrorCode: classifyFrameCaptureError(frame, error),
         },
         truncated: false,
       });

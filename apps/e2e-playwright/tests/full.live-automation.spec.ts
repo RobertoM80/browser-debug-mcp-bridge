@@ -518,6 +518,25 @@ test.describe('@full live automation through MCP and extension session', () => {
     expect(semanticFrameClick.target?.frameId).toBe(childFrameId);
     await expect(targetPage.frameLocator('#child-frame').locator('#frame-count')).toHaveText('2');
 
+    const recoveredStaleFrameClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        elementRef: frameButtonRef?.elementRef,
+        frameId: 999_998,
+        tabId,
+      },
+    });
+    expect(recoveredStaleFrameClick.status).toBe('succeeded');
+    expect(recoveredStaleFrameClick.actionResult?.result?.backend).toBe('cdp-native-v2');
+    expect(recoveredStaleFrameClick.target?.frameId).toBe(childFrameId);
+    expect(recoveredStaleFrameClick.actionResult?.result?.actionability).toMatchObject({
+      frameRefreshed: true,
+      previousFrameId: 999_998,
+      frameCoordinateResolved: true,
+    });
+    await expect(targetPage.frameLocator('#child-frame').locator('#frame-count')).toHaveText('3');
+
     const frameInput = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
       action: 'input',

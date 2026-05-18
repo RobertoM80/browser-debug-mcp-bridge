@@ -75,6 +75,10 @@ function installChromeMock(snapshot: unknown = targetSnapshot): {
   };
 }
 
+function encodeElementRef(payload: Record<string, unknown>): string {
+  return `ref:${btoa(JSON.stringify(payload))}`;
+}
+
 describe('native automation backend', () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
@@ -169,6 +173,9 @@ describe('native automation backend', () => {
         y: 224,
       },
       pointCoordinateSpace: 'translated-frame',
+      actionability: {
+        frameCoordinateResolved: true,
+      },
     });
     expect(chromeMock.executeScript).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -314,6 +321,168 @@ describe('native automation backend', () => {
         type: 'mousePressed',
       }),
     );
+  });
+
+  it('recovers stale frame refs by resolving the selector against frame metadata', async () => {
+    const attach = vi.fn(async () => undefined);
+    const detach = vi.fn(async () => undefined);
+    const sendCommand = vi.fn(async () => ({}));
+    const executeScript = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('No frame with id 99'))
+      .mockResolvedValueOnce([
+        {
+          frameId: 0,
+          result: {
+            matched: false,
+            url: 'https://example.com/settings',
+            title: 'Settings',
+          },
+        },
+        {
+          frameId: 4,
+          result: {
+            matched: true,
+            url: 'https://example.com/frame',
+            title: 'Frame',
+          },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          result: {
+            ...targetSnapshot,
+            frameId: 4,
+            url: 'https://example.com/frame',
+          },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          result: {
+            x: 100,
+            y: 200,
+          },
+        },
+      ]);
+
+    vi.stubGlobal('chrome', {
+      scripting: {
+        executeScript,
+      },
+      debugger: {
+        attach,
+        detach,
+        sendCommand,
+      },
+    });
+
+    const request: Extract<LiveUIActionRequest, { action: 'click' }> = {
+      action: 'click',
+      traceId: 'trace-click-stale-frame-ref',
+      target: {
+        elementRef: encodeElementRef({
+          selector: '#save',
+          frameId: 99,
+          frameUrl: 'https://example.com/frame',
+          frameTitle: 'Frame',
+        }),
+        tabId: 7,
+      },
+    };
+
+    const result = await executeNativeClickAction({
+      request,
+      tab: {
+        id: 7,
+        url: 'https://example.com/settings',
+      } as chrome.tabs.Tab & { id: number },
+      startedAt: 1000,
+      traceId: 'trace-click-stale-frame-ref',
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(result.target.frameId).toBe(4);
+    expect(result.result).toMatchObject({
+      backend: nativeAutomationBackend,
+      point: {
+        x: 142,
+        y: 224,
+      },
+      actionability: {
+        frameRefreshed: true,
+        previousFrameId: 99,
+        frameCoordinateResolved: true,
+      },
+    });
+    expect(executeScript).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        target: {
+          tabId: 7,
+          allFrames: true,
+        },
+      }),
+    );
+  });
+
+  it('returns explicit frame policy when native pointer coordinates cannot be mapped', async () => {
+    const chromeMock = installChromeMock([
+      {
+        ...targetSnapshot,
+        frameId: 4,
+        url: 'https://third.example/frame',
+        framePolicy: {
+          frameId: 4,
+          url: 'https://third.example/frame',
+          origin: 'https://third.example',
+          topAccessible: false,
+          sameOriginWithTop: false,
+          isOpaqueOrigin: false,
+          pointerActionsSupported: false,
+          unsupportedReason: 'cross_origin_with_top',
+        },
+        actionability: {
+          ...targetSnapshot.actionability,
+          frameCoordinateResolved: false,
+        },
+      },
+      null,
+    ]);
+    const request: Extract<LiveUIActionRequest, { action: 'click' }> = {
+      action: 'click',
+      traceId: 'trace-click-cross-origin-frame',
+      target: {
+        selector: '#save',
+        tabId: 7,
+        frameId: 4,
+      },
+    };
+
+    const result = await executeNativeClickAction({
+      request,
+      tab: {
+        id: 7,
+        url: 'https://example.com/settings',
+      } as chrome.tabs.Tab & { id: number },
+      startedAt: 1000,
+      traceId: 'trace-click-cross-origin-frame',
+    });
+
+    expect(result.status).toBe('rejected');
+    expect(result.failureReason?.code).toBe('unsupported_cross_origin_frame');
+    expect(result.result).toMatchObject({
+      backend: nativeAutomationBackend,
+      framePolicy: {
+        pointerActionsSupported: false,
+        unsupportedReason: 'cross_origin_with_top',
+      },
+      actionability: {
+        frameCoordinateResolved: false,
+      },
+    });
+    expect(chromeMock.attach).not.toHaveBeenCalled();
+    expect(chromeMock.sendCommand).not.toHaveBeenCalled();
   });
 
   it('uses native text insertion for input actions', async () => {

@@ -27,7 +27,7 @@ Executes one action at a time in the currently bound tab for a connected session
 }
 ```
 
-You can target by `elementRef` instead of `selector` when the ref came from `get_interactive_elements` or `get_page_state`. Frame-scoped refs carry their frame id, so callers do not need to look up Chrome frame ids separately for same-origin iframe actions. Open shadow-root refs use `host >> target` selectors, for example `#shadow-host >> #shadow-action`.
+You can target by `elementRef` instead of `selector` when the ref came from `get_interactive_elements` or `get_page_state`. Frame-scoped refs carry their frame id plus frame URL/title metadata, so callers do not need to look up Chrome frame ids separately for same-origin iframe actions. If the stored frame id is stale but the encoded frame URL/title and selector still resolve uniquely, the native backend refreshes the frame id before acting. Open shadow-root refs use `host >> target` selectors, for example `#shadow-host >> #shadow-action`.
 
 ```json
 {
@@ -93,6 +93,8 @@ Semantic targets support `scope: "buttons" | "links" | "inputs" | "modals" | "fo
 
 - `actionResult`: raw extension execution result with `action`, `status`, `traceId`, timestamps, target summary, and failure reason
 - `actionResult.result.backend`: execution backend, currently `cdp-native-v2` for native click/hover/input/key/focus/blur/scroll/submit actions
+- `actionResult.result.framePolicy`: frame URL/origin/sandbox/same-origin metadata when the native backend inspected a frame target
+- `actionResult.result.actionability`: actionability and frame-coordinate diagnostics, including `frameCoordinateResolved` and stale-ref recovery markers when applicable
 - `tabContext`: resolved `tabId`, `frameId`, and URL used for execution
 - `postActionEvidence`: optional snapshot capture result when `captureOnFailure.enabled` is set and the action fails or is rejected
 - `postActionState`: optional structured wait result when `waitForPageState` is provided and the action succeeds
@@ -101,11 +103,11 @@ Semantic targets support `scope: "buttons" | "links" | "inputs" | "modals" | "fo
 ### Operational limits
 
 - Native automation supports the top document and same-origin iframe targets in the currently bound tab
-- `get_page_state` and `get_interactive_elements` merge frame buttons/links/inputs/modals and return frame-aware refs with `frameId`/`frameUrl`/`frameTitle`
+- `get_page_state` and `get_interactive_elements` merge frame buttons/links/inputs/modals and return frame-aware refs with `frameId`/`frameUrl`/`frameTitle` plus frame automation policy metadata
 - Open shadow roots are traversed for page-state discovery and native actions. Closed shadow roots are not inspectable.
 - Nested same-origin iframe actions are covered when page-state returns a frame-aware `elementRef`
-- Native pointer actions in cross-origin or inaccessible frames return `unsupported_cross_origin_frame` when top-document coordinate translation is not possible
-- Invalid or stale frame ids return `target_frame_not_found`
+- Native pointer actions in cross-origin, sandboxed opaque-origin, or inaccessible frames return `unsupported_cross_origin_frame` when top-document coordinate translation is not possible
+- Stale frame ids on frame-aware refs are re-resolved by encoded frame URL/title plus selector when possible. Invalid frame ids without enough metadata, or unresolved frame refs, return `target_frame_not_found`.
 - Native actions inspect target actionability before dispatch and return structured failures for hidden, disabled, readonly input, non-editable input, unstable, outside-viewport, pointer-events none, and hit-target mismatch cases
 - Page-state assertions and waits can match `visible: true` or `visible: false`, role/name fields, and frame URL/title filters on structured buttons, links, inputs, modals, and focused refs
 - Only one action should be driven at a time per session
