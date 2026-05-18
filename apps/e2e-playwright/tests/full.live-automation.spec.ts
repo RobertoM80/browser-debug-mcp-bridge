@@ -415,6 +415,7 @@ test.describe('@full live automation through MCP and extension session', () => {
     expect(locatorClick.status).toBe('succeeded');
     expect(locatorClick.actionResult?.result?.backend).toBe('cdp-native-v2');
     expect(locatorClick.targetResolution).toMatchObject({
+      strategy: 'native_locator',
       matcher: {
         locator: {
           scope: 'buttons',

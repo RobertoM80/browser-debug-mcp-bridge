@@ -12,6 +12,7 @@ import {
   routeToolCall,
   type ToolHandler,
 } from './server.js';
+import { createToolLoopGuard } from './tool-loop-guard.js';
 import { persistObservedOverrideAssets } from '../override-observed-assets.js';
 
 describe('mcp/server foundation', () => {
@@ -53,6 +54,126 @@ describe('mcp/server foundation', () => {
     expect(response.sessionId).toBe('s-1');
     expect(response.limitsApplied.maxResults).toBe(25);
     expect(response.redactionSummary.redactedFields).toBe(1);
+  });
+
+  it('warns and then blocks repeated same failing tool attempts before side effects', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    let callCount = 0;
+    const failingEnable: ToolHandler = async (input) => {
+      callCount += 1;
+      return {
+        sessionId: typeof input.sessionId === 'string' ? input.sessionId : undefined,
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        redactionSummary: {
+          totalFields: 0,
+          redactedFields: 0,
+          rulesApplied: [],
+        },
+        preflight: {
+          ready: false,
+          issues: [{ code: 'CONFIG_DISABLED', severity: 'error' }],
+        },
+        nextActions: [{ code: 'ENABLE_CONFIG', message: 'Enable config first.' }],
+      };
+    };
+    const tools = createToolRegistry({ enable_overrides: failingEnable });
+    const loopGuard = createToolLoopGuard({ getDb: () => db });
+    const input = { sessionId: 'loop-session', tabId: 7 };
+
+    const first = await routeToolCall(tools, 'enable_overrides', input, { loopGuard });
+    const second = await routeToolCall(tools, 'enable_overrides', input, { loopGuard });
+    const third = await routeToolCall(tools, 'enable_overrides', input, { loopGuard });
+    const fourth = await routeToolCall(tools, 'enable_overrides', input, { loopGuard });
+
+    expect(callCount).toBe(3);
+    expect(first.loopGuard).toBeUndefined();
+    expect((second.loopGuard as { status?: string } | undefined)?.status).toBe('warning');
+    expect((third.loopGuard as { status?: string } | undefined)?.status).toBe('blocked_next_attempt');
+    expect(fourth.blocked).toBe(true);
+    expect((fourth.loopGuard as { status?: string; rootCauseCode?: string })).toMatchObject({
+      status: 'blocked',
+      rootCauseCode: 'CONFIG_DISABLED',
+    });
+
+    const invocationCount = db.prepare('SELECT COUNT(*) AS count FROM mcp_tool_invocations').get() as { count: number };
+    const incident = db.prepare('SELECT * FROM mcp_loop_incidents WHERE status = ?').get('open') as {
+      root_cause_code: string;
+      severity: string;
+    };
+    expect(invocationCount.count).toBe(4);
+    expect(incident).toMatchObject({ root_cause_code: 'CONFIG_DISABLED', severity: 'blocked' });
+    db.close();
+  });
+
+  it('does not block when repeated tool attempts change input state', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    let callCount = 0;
+    const failingEnable: ToolHandler = async (input) => {
+      callCount += 1;
+      return {
+        sessionId: typeof input.sessionId === 'string' ? input.sessionId : undefined,
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        redactionSummary: {
+          totalFields: 0,
+          redactedFields: 0,
+          rulesApplied: [],
+        },
+        ready: false,
+        issues: [{ code: 'TARGET_ASSET_NOT_OBSERVED', severity: 'error' }],
+      };
+    };
+    const tools = createToolRegistry({ enable_overrides: failingEnable });
+    const loopGuard = createToolLoopGuard({ getDb: () => db });
+
+    await routeToolCall(tools, 'enable_overrides', { sessionId: 'loop-session', tabId: 1 }, { loopGuard });
+    await routeToolCall(tools, 'enable_overrides', { sessionId: 'loop-session', tabId: 2 }, { loopGuard });
+    await routeToolCall(tools, 'enable_overrides', { sessionId: 'loop-session', tabId: 3 }, { loopGuard });
+    await routeToolCall(tools, 'enable_overrides', { sessionId: 'loop-session', tabId: 4 }, { loopGuard });
+
+    expect(callCount).toBe(4);
+    db.close();
+  });
+
+  it('can disable loop guarding for controlled diagnostics', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    let callCount = 0;
+    const failingEnable: ToolHandler = async (input) => {
+      callCount += 1;
+      return {
+        sessionId: typeof input.sessionId === 'string' ? input.sessionId : undefined,
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        redactionSummary: {
+          totalFields: 0,
+          redactedFields: 0,
+          rulesApplied: [],
+        },
+        ready: false,
+        issues: [{ code: 'TARGET_ASSET_NOT_OBSERVED', severity: 'error' }],
+      };
+    };
+    const tools = createToolRegistry({ enable_overrides: failingEnable });
+    const loopGuard = createToolLoopGuard({ getDb: () => db, enabled: false });
+
+    for (let index = 0; index < 5; index += 1) {
+      await routeToolCall(tools, 'enable_overrides', { sessionId: 'loop-session', tabId: 1 }, { loopGuard });
+    }
+
+    const invocationCount = db.prepare('SELECT COUNT(*) AS count FROM mcp_tool_invocations').get() as { count: number };
+    expect(callCount).toBe(5);
+    expect(invocationCount.count).toBe(0);
+    db.close();
   });
 
   it('returns default response contract for unimplemented tools', async () => {
@@ -3593,6 +3714,10 @@ describe('mcp/server V2 capture tools', () => {
 
       const tools = createToolRegistry(createV1ToolHandlers(() => db));
       const listed = await routeToolCall(tools, 'list_observed_override_assets', { sessionId: 'session-persisted' });
+      const fullListed = await routeToolCall(tools, 'list_observed_override_assets', {
+        sessionId: 'session-persisted',
+        responseProfile: 'full',
+      });
       const mapped = await routeToolCall(tools, 'map_next_override_assets', {
         sessionId: 'session-persisted',
         projectRoot: fixtureRoot,
@@ -3600,6 +3725,10 @@ describe('mcp/server V2 capture tools', () => {
       });
 
       expect((listed.assets as unknown[])).toHaveLength(1);
+      expect(listed.responseProfile).toBe('compact');
+      expect((listed.assets as Array<Record<string, unknown>>)[0]?.sessionId).toBeUndefined();
+      expect(fullListed.responseProfile).toBe('full');
+      expect((fullListed.assets as Array<Record<string, unknown>>)[0]).toMatchObject({ sessionId: 'session-persisted' });
       expect(mapped.observedFromPersisted).toMatchObject({ sessionId: 'session-persisted', assetCount: 1 });
       expect((mapped.candidates as Array<{ confidence: string; matchedSourcePaths: string[] }>)[0]).toMatchObject({
         confidence: 'high',
@@ -5289,49 +5418,12 @@ describe('mcp/server V2 capture tools', () => {
     });
   });
 
-  it('resolves chained locator execute_ui_action targets through page-state refs', async () => {
+  it('passes chained locator execute_ui_action targets to native extension resolution', async () => {
     const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
     const tools = createToolRegistry(
       createV2ToolHandlers({
         execute: async (_sessionId, command, payload) => {
           captureCalls.push({ command, payload });
-          if (command === 'CAPTURE_PAGE_STATE') {
-            return {
-              ok: true,
-              payload: {
-                buttons: [
-                  {
-                    text: 'Save changes',
-                    name: 'Save changes',
-                    role: 'button',
-                    selector: '#save-top',
-                    elementRef: 'ref:save-top',
-                    frameId: 0,
-                    frameTitle: 'Top',
-                  },
-                  {
-                    text: 'Save changes',
-                    name: 'Save changes',
-                    role: 'button',
-                    selector: '#save-account',
-                    elementRef: 'ref:save-account',
-                    frameId: 22,
-                    frameUrl: 'http://localhost:3000/account-frame',
-                    frameTitle: 'Account iframe',
-                  },
-                ],
-                summary: {
-                  buttons: 2,
-                  links: 0,
-                  inputs: 0,
-                  modals: 0,
-                  frames: 2,
-                },
-              },
-              truncated: false,
-            };
-          }
-
           return {
             ok: true,
             payload: {
@@ -5349,6 +5441,18 @@ describe('mcp/server V2 capture tools', () => {
                 tabId: 9,
                 frameId: 22,
                 url: 'http://localhost:3000/account-frame',
+              },
+              result: {
+                backend: 'cdp-native-v2',
+                locatorResolution: {
+                  strategy: 'native_locator',
+                  matchedCandidateCount: 1,
+                  selectionStrategy: 'strict-single',
+                  matched: {
+                    selector: '#save-account',
+                    frameTitle: 'Account iframe',
+                  },
+                },
               },
             },
             truncated: false,
@@ -5386,39 +5490,26 @@ describe('mcp/server V2 capture tools', () => {
       },
     });
 
+    expect(captureCalls).toHaveLength(1);
     expect(captureCalls[0]).toMatchObject({
-      command: 'CAPTURE_PAGE_STATE',
-      payload: {
-        includeButtons: true,
-        includeLinks: false,
-        includeInputs: false,
-        includeModals: false,
-      },
-    });
-    expect(captureCalls[1]).toMatchObject({
       command: 'EXECUTE_UI_ACTION',
       payload: {
         action: 'click',
         target: {
-          elementRef: 'ref:save-account',
-          selector: '#save-account',
-          frameId: 22,
           tabId: 9,
+          locator: {
+            scope: 'buttons',
+            frame: {
+              titleContains: 'Account',
+            },
+          },
         },
       },
     });
     expect(response.status).toBe('succeeded');
     expect(response.targetResolution).toMatchObject({
-      strategy: 'semantic_elementRef',
+      strategy: 'native_locator',
       matchedCandidateCount: 1,
-      matcher: {
-        locator: {
-          scope: 'buttons',
-          frame: {
-            titleContains: 'Account',
-          },
-        },
-      },
       matched: {
         selector: '#save-account',
         frameTitle: 'Account iframe',

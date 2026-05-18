@@ -77,7 +77,7 @@ Semantic targets support `scope: "buttons" | "links" | "inputs" | "modals" | "fo
 }
 ```
 
-For explicit locator-style targeting, use `target.locator`. The locator is resolved against compact page-state refs and supports chained structured steps, regex text/name matching, and frame filters.
+For explicit locator-style targeting, use `target.locator`. Direct live actions and workflow action steps pass locator targets to the extension's native DOM resolver, which evaluates the current document, open shadow roots, and accessible frames before CDP actionability checks. The MCP server still keeps compact page-state semantic matching for non-locator targets.
 
 ```json
 {
@@ -132,10 +132,18 @@ Locator step kinds are `css`, `role`, `text`, `label`, `testId`, `placeholder`, 
 - `actionResult.result.backend`: execution backend, currently `cdp-native-v2` for native click/hover/input/key/focus/blur/scroll/submit actions
 - `actionResult.result.framePolicy`: frame URL/origin/sandbox/same-origin metadata when the native backend inspected a frame target
 - `actionResult.result.actionability`: actionability and frame-coordinate diagnostics, including `frameCoordinateResolved` and stale-ref recovery markers when applicable
+- `actionResult.result.locatorResolution`: native locator diagnostics for `target.locator`, including strategy, matched candidate count, selected index, and sampled candidates on not-found or ambiguous failures
 - `tabContext`: resolved `tabId`, `frameId`, and URL used for execution
 - `postActionEvidence`: optional snapshot capture result when `captureOnFailure.enabled` is set and the action fails or is rejected
 - `postActionState`: optional structured wait result when `waitForPageState` is provided and the action succeeds
 - `supportedScopes`: current execution guarantees (`topDocumentOnly: false`, `opensNewBrowserSession: false`)
+- `loopGuard`: optional warning/block metadata when repeated unchanged live-action failures are detected
+
+### Agent loop protection
+
+The MCP server records live automation attempts and blocks repeated unchanged failures before another browser action is sent to the extension. For example, repeated `execute_ui_action` calls against the same hidden, disabled, stale-frame, or not-found target will first return `loopGuard.status: "warning"`, then `blocked_next_attempt`, and then a blocked MCP response until the target input or page/session state changes.
+
+When this happens, do not retry the same action. Inspect page state, refresh refs, change the selector/locator, reconnect the session, or capture failure evidence before attempting the action again.
 
 ### Operational limits
 
@@ -145,7 +153,7 @@ Locator step kinds are `css`, `role`, `text`, `label`, `testId`, `placeholder`, 
 - Nested same-origin iframe actions are covered when page-state returns a frame-aware `elementRef`
 - Native pointer actions in cross-origin, sandboxed opaque-origin, or inaccessible frames return `unsupported_cross_origin_frame` when top-document coordinate translation is not possible
 - Stale frame ids on frame-aware refs are re-resolved by encoded frame URL/title plus selector when possible. Invalid frame ids without enough metadata, or unresolved frame refs, return `target_frame_not_found`.
-- `target.locator` is a compact page-state locator baseline. It supports chained structured filters and regex matching over captured refs, but it is not yet a full DOM locator engine for ancestor/descendant relationships, closed shadow DOM, coordinate targeting, or arbitrary selector state.
+- `target.locator` now has native DOM resolution for direct/workflow actions and compact page-state semantics for server-side diagnostics. It supports chained structured filters and regex matching, but it is not yet a full Playwright/Cypress locator engine for ancestor/descendant relationships, closed shadow DOM, coordinate targeting, or arbitrary selector state.
 - Native actions inspect target actionability before dispatch and return structured failures for hidden, disabled, readonly input, non-editable input, unstable, outside-viewport, pointer-events none, and hit-target mismatch cases
 - Page-state assertions and waits can match `visible: true` or `visible: false`, role/name fields, and frame URL/title filters on structured buttons, links, inputs, modals, and focused refs
 - Only one action should be driven at a time per session

@@ -1,4 +1,4 @@
-import type { LiveUIActionRequest, LiveUIActionResult } from '../../../libs/mcp-contracts/src';
+import type { LiveUIActionLocator, LiveUIActionRequest, LiveUIActionResult, LiveUIActionTarget } from '../../../libs/mcp-contracts/src';
 
 const NATIVE_AUTOMATION_BACKEND = 'cdp-native-v2';
 
@@ -60,6 +60,7 @@ interface NativeClickTargetSnapshot {
     attempts?: number;
     retryable?: boolean;
   };
+  locatorResolution?: Record<string, unknown>;
 }
 
 interface NativeClickExecutionOptions {
@@ -156,8 +157,8 @@ function resolveActionFrameContext(request: LiveUIActionRequest): ActionFrameCon
     frameId: request.target?.frameId ?? decoded?.frameId ?? 0,
     frameUrl: decoded?.frameUrl,
     frameTitle: decoded?.frameTitle,
-    frameUrlContains: request.target?.frameUrlContains,
-    frameTitleContains: request.target?.frameTitleContains,
+    frameUrlContains: request.target?.locator?.frame?.urlContains ?? request.target?.frameUrlContains,
+    frameTitleContains: request.target?.locator?.frame?.titleContains ?? request.target?.frameTitleContains,
   };
 }
 
@@ -168,7 +169,7 @@ function buildNativeActionTarget(
 ): LiveUIActionResult['target'] {
   return {
     matched: snapshot?.matched === true,
-    selector: request.target?.selector,
+    selector: request.target?.selector ?? snapshot?.selector,
     resolvedSelector: snapshot?.resolvedSelector,
     tagName: snapshot?.tagName,
     textPreview: snapshot?.textPreview,
@@ -186,6 +187,7 @@ function buildRejectedResult(
   code: string,
   message: string,
   snapshot?: NativeClickTargetSnapshot,
+  resultOverrides: Record<string, unknown> = {},
 ): LiveUIActionResult {
   return {
     action: request.action,
@@ -203,6 +205,8 @@ function buildRejectedResult(
       backend: NATIVE_AUTOMATION_BACKEND,
       actionability: snapshot?.actionability,
       framePolicy: snapshot?.framePolicy,
+      locatorResolution: snapshot?.locatorResolution,
+      ...resultOverrides,
     },
   };
 }
@@ -253,6 +257,7 @@ function buildSucceededResult(
       backend: NATIVE_AUTOMATION_BACKEND,
       actionability: snapshot.actionability,
       framePolicy: snapshot.framePolicy,
+      locatorResolution: snapshot.locatorResolution,
       point: snapshot.center,
       ...result,
     },
@@ -644,6 +649,40 @@ type FrameResolutionResult =
   | { status: 'not_found'; candidates: FrameResolutionCandidate[] }
   | { status: 'ambiguous'; candidates: FrameResolutionCandidate[] };
 
+interface NativeLocatorCandidate {
+  selector: string;
+  frameId: number;
+  url?: string;
+  title?: string;
+  text?: string;
+  role?: string;
+  name?: string;
+  testId?: string;
+  tagName?: string;
+  type?: string;
+  visible?: boolean;
+  disabled?: boolean;
+}
+
+interface NativeLocatorFrameResult {
+  url?: string;
+  title?: string;
+  candidates: Array<Omit<NativeLocatorCandidate, 'frameId' | 'url' | 'title'>>;
+}
+
+type NativeLocatorSelectionStrategy = 'strict-single' | 'nth' | 'first' | 'last' | 'first-non-strict';
+
+type NativeLocatorResolutionResult =
+  | {
+    status: 'found';
+    candidate: NativeLocatorCandidate;
+    resolution: Record<string, unknown>;
+  }
+  | {
+    status: 'not_found' | 'ambiguous';
+    resolution: Record<string, unknown>;
+  };
+
 async function resolveFrameIdForTarget(
   tabId: number,
   selector: string,
@@ -717,6 +756,605 @@ async function resolveFrameIdForTarget(
     : { status: 'ambiguous', candidates };
 }
 
+function describeNativeLocatorCandidate(candidate: NativeLocatorCandidate): Record<string, unknown> {
+  return {
+    selector: candidate.selector,
+    frameId: candidate.frameId,
+    frameUrl: candidate.url,
+    frameTitle: candidate.title,
+    text: candidate.text,
+    role: candidate.role,
+    name: candidate.name,
+    testId: candidate.testId,
+    tagName: candidate.tagName,
+    type: candidate.type,
+    visible: candidate.visible,
+    disabled: candidate.disabled,
+  };
+}
+
+function selectNativeLocatorCandidate(
+  candidates: NativeLocatorCandidate[],
+  target: LiveUIActionTarget,
+): {
+  candidate?: NativeLocatorCandidate;
+  selectedCandidates: NativeLocatorCandidate[];
+  selectedIndex?: number;
+  selectionStrategy: NativeLocatorSelectionStrategy;
+  outOfRange: boolean;
+} {
+  if (typeof target.nth === 'number') {
+    return {
+      candidate: candidates[target.nth],
+      selectedCandidates: candidates[target.nth] ? [candidates[target.nth] as NativeLocatorCandidate] : [],
+      selectedIndex: target.nth,
+      selectionStrategy: 'nth',
+      outOfRange: candidates[target.nth] === undefined,
+    };
+  }
+
+  if (target.last === true) {
+    const selectedIndex = candidates.length - 1;
+    return {
+      candidate: selectedIndex >= 0 ? candidates[selectedIndex] : undefined,
+      selectedCandidates: selectedIndex >= 0 ? [candidates[selectedIndex] as NativeLocatorCandidate] : [],
+      selectedIndex,
+      selectionStrategy: 'last',
+      outOfRange: selectedIndex < 0,
+    };
+  }
+
+  if (target.first === true || target.strict === false) {
+    return {
+      candidate: candidates[0],
+      selectedCandidates: candidates[0] ? [candidates[0] as NativeLocatorCandidate] : [],
+      selectedIndex: 0,
+      selectionStrategy: target.strict === false && target.first !== true ? 'first-non-strict' : 'first',
+      outOfRange: candidates[0] === undefined,
+    };
+  }
+
+  return {
+    candidate: candidates.length === 1 ? candidates[0] : undefined,
+    selectedCandidates: candidates,
+    selectedIndex: candidates.length === 1 ? 0 : undefined,
+    selectionStrategy: 'strict-single',
+    outOfRange: false,
+  };
+}
+
+function matchesOptionalFrameText(value: string | undefined, contains: string | undefined): boolean {
+  const normalizedValue = normalizeSearchValue(value);
+  const normalizedContains = normalizeSearchValue(contains);
+  return !normalizedContains || Boolean(normalizedValue?.includes(normalizedContains));
+}
+
+async function resolveNativeLocatorTarget(
+  tabId: number,
+  target: LiveUIActionTarget,
+): Promise<NativeLocatorResolutionResult | undefined> {
+  const locator = target.locator;
+  if (!locator) {
+    return undefined;
+  }
+
+  let frameResults: chrome.scripting.InjectionResult<NativeLocatorFrameResult>[];
+  try {
+    frameResults = await chrome.scripting.executeScript({
+      target: {
+        tabId,
+        allFrames: true,
+      },
+      func: (rawLocator, rawTarget) => {
+        const locatorValue = rawLocator as LiveUIActionLocator;
+        const targetValue = rawTarget as LiveUIActionTarget;
+        const shadowSeparator = ' >> ';
+
+        const cssEscapeFallback = (value: string): string => {
+          const cssApi = (globalThis as { CSS?: { escape?: (input: string) => string } }).CSS;
+          if (cssApi?.escape) {
+            return cssApi.escape(value);
+          }
+          return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+        };
+
+        const truncatePreview = (value: string | null | undefined, maxLength = 120): string | undefined => {
+          if (typeof value !== 'string') {
+            return undefined;
+          }
+          const normalized = value.replace(/\s+/g, ' ').trim();
+          return normalized ? normalized.slice(0, maxLength) : undefined;
+        };
+
+        const getRootForElement = (element: Element): Document | ShadowRoot => {
+          const root = element.getRootNode();
+          return root instanceof ShadowRoot ? root : element.ownerDocument;
+        };
+
+        const localSelector = (element: Element): string => {
+          if (element.id) {
+            return `#${cssEscapeFallback(element.id)}`;
+          }
+          const testId = element.getAttribute('data-testid');
+          if (testId) {
+            return `[data-testid="${cssEscapeFallback(testId)}"]`;
+          }
+
+          const parent = element.parentElement;
+          const tagName = element.tagName.toLowerCase();
+          if (!parent) {
+            return tagName;
+          }
+
+          const sameTagSiblings = Array.from(parent.children).filter((child) => child.tagName === element.tagName);
+          if (sameTagSiblings.length <= 1) {
+            return tagName;
+          }
+
+          return `${tagName}:nth-of-type(${sameTagSiblings.indexOf(element) + 1})`;
+        };
+
+        const elementSelectorPath = (element: Element): string => {
+          const root = element.getRootNode();
+          const parts: string[] = [];
+          let current: Element | null = element;
+          while (current) {
+            const part = localSelector(current);
+            parts.unshift(part);
+            if (part.startsWith('#') || part.startsWith('[data-testid=')) {
+              break;
+            }
+            current = current.parentElement;
+          }
+          const localPath = parts.join(' > ');
+          if (root instanceof ShadowRoot) {
+            return `${elementSelectorPath(root.host)}${shadowSeparator}${localPath}`;
+          }
+          return localPath;
+        };
+
+        const queryElement = (root: Document | ShadowRoot, query: string): Element | null => {
+          const parts = query
+            .split(shadowSeparator)
+            .map((part) => part.trim())
+            .filter((part) => part.length > 0);
+          if (parts.length === 0) {
+            return null;
+          }
+
+          let currentRoot: Document | ShadowRoot = root;
+          let currentElement: Element | null = null;
+          for (const [index, part] of parts.entries()) {
+            currentElement = currentRoot.querySelector(part);
+            if (!currentElement) {
+              return null;
+            }
+            if (index < parts.length - 1) {
+              const shadowRoot = currentElement.shadowRoot;
+              if (!shadowRoot) {
+                return null;
+              }
+              currentRoot = shadowRoot;
+            }
+          }
+          return currentElement;
+        };
+
+        const queryAllElements = (root: Document | ShadowRoot, query: string): Element[] => {
+          if (query.includes(shadowSeparator)) {
+            const matched = queryElement(root, query);
+            return matched ? [matched] : [];
+          }
+          return Array.from(root.querySelectorAll(query));
+        };
+
+        const collectAllElements = (root: Document | ShadowRoot): Element[] => {
+          const elements: Element[] = [];
+          const visit = (currentRoot: Document | ShadowRoot): void => {
+            for (const element of Array.from(currentRoot.querySelectorAll('*'))) {
+              elements.push(element);
+              if (element.shadowRoot) {
+                visit(element.shadowRoot);
+              }
+            }
+          };
+          visit(root);
+          return elements;
+        };
+
+        const normalize = (value: string | undefined): string | undefined => {
+          const normalized = value?.trim().toLowerCase();
+          return normalized && normalized.length > 0 ? normalized : undefined;
+        };
+
+        const matchesText = (value: unknown, expected: string | undefined, exact: boolean | undefined): boolean => {
+          if (!expected) {
+            return true;
+          }
+          if (typeof value !== 'string') {
+            return false;
+          }
+          const normalizedValue = normalize(value);
+          const normalizedExpected = normalize(expected);
+          return exact === true
+            ? normalizedValue === normalizedExpected
+            : Boolean(normalizedValue?.includes(normalizedExpected ?? ''));
+        };
+
+        const matchesLocatorMatcher = (
+          value: unknown,
+          matcher: LiveUIActionLocator['steps'][number]['value'],
+          exact: boolean | undefined,
+        ): boolean => {
+          if (matcher === undefined) {
+            return true;
+          }
+          if (typeof value !== 'string') {
+            return false;
+          }
+          if (typeof matcher === 'string') {
+            return matchesText(value, matcher, exact);
+          }
+          try {
+            return new RegExp(matcher.pattern, matcher.flags).test(value);
+          } catch {
+            return false;
+          }
+        };
+
+        const resolveInputLabel = (element: Element): string | undefined => {
+          if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+            const labels = element.labels ? Array.from(element.labels) : [];
+            for (const label of labels) {
+              const text = truncatePreview(label.textContent);
+              if (text) {
+                return text;
+              }
+            }
+
+            if (element.id) {
+              const explicit = getRootForElement(element).querySelector(`label[for="${cssEscapeFallback(element.id)}"]`);
+              const text = truncatePreview(explicit?.textContent);
+              if (text) {
+                return text;
+              }
+            }
+          }
+
+          const ariaLabel = truncatePreview(element.getAttribute('aria-label'));
+          if (ariaLabel) {
+            return ariaLabel;
+          }
+
+          if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+            return truncatePreview(element.placeholder);
+          }
+
+          return undefined;
+        };
+
+        const getNativeRole = (element: Element): string | undefined => {
+          const explicitRole = truncatePreview(element.getAttribute('role'), 32);
+          if (explicitRole) {
+            return explicitRole.toLowerCase();
+          }
+          const tagName = element.tagName.toLowerCase();
+          if (tagName === 'button') {
+            return 'button';
+          }
+          if ((tagName === 'a' || tagName === 'area') && element.hasAttribute('href')) {
+            return 'link';
+          }
+          if (tagName === 'textarea') {
+            return 'textbox';
+          }
+          if (tagName === 'select') {
+            return 'combobox';
+          }
+          if (element instanceof HTMLInputElement) {
+            if (element.type === 'button' || element.type === 'submit' || element.type === 'reset') {
+              return 'button';
+            }
+            if (element.type === 'checkbox' || element.type === 'radio') {
+              return element.type;
+            }
+            if (element.type === 'range') {
+              return 'slider';
+            }
+            return 'textbox';
+          }
+          if (tagName === 'img') {
+            return 'img';
+          }
+          if (element.getAttribute('aria-modal') === 'true') {
+            return 'dialog';
+          }
+          return undefined;
+        };
+
+        const getAltText = (element: Element): string | undefined => {
+          if (element instanceof HTMLImageElement || element instanceof HTMLAreaElement || element instanceof HTMLInputElement) {
+            return truncatePreview(element.getAttribute('alt'));
+          }
+          return undefined;
+        };
+
+        const resolveAriaLabelledBy = (element: Element): string | undefined => {
+          const labelledBy = element.getAttribute('aria-labelledby');
+          if (!labelledBy) {
+            return undefined;
+          }
+          const root = getRootForElement(element);
+          const parts = labelledBy
+            .split(/\s+/)
+            .map((id) => root.getElementById(id))
+            .filter((label): label is HTMLElement => Boolean(label))
+            .map((label) => truncatePreview(label.textContent))
+            .filter((value): value is string => Boolean(value));
+          return truncatePreview(parts.join(' '));
+        };
+
+        const accessibleName = (element: Element): string | undefined => {
+          const ariaLabel = truncatePreview(element.getAttribute('aria-label'));
+          if (ariaLabel) {
+            return ariaLabel;
+          }
+          const labelledBy = resolveAriaLabelledBy(element);
+          if (labelledBy) {
+            return labelledBy;
+          }
+          const altText = getAltText(element);
+          if (altText) {
+            return altText;
+          }
+          const label = resolveInputLabel(element);
+          if (label) {
+            return label;
+          }
+          if (element instanceof HTMLInputElement && ['button', 'submit', 'reset'].includes(element.type)) {
+            const valueName = truncatePreview(element.value || element.getAttribute('value'));
+            if (valueName) {
+              return valueName;
+            }
+          }
+          return truncatePreview(element.textContent) ?? truncatePreview(element.getAttribute('title'));
+        };
+
+        const isVisible = (element: Element): boolean => {
+          if (!(element instanceof HTMLElement) && !(element instanceof SVGElement)) {
+            return false;
+          }
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 0
+            && rect.height > 0
+            && style.display !== 'none'
+            && style.visibility !== 'hidden'
+            && Number(style.opacity || '1') > 0
+            && element.getAttribute('aria-hidden') !== 'true';
+        };
+
+        const isDisabled = (element: Element): boolean => {
+          if (element instanceof HTMLButtonElement || element instanceof HTMLInputElement || element instanceof HTMLSelectElement || element instanceof HTMLTextAreaElement) {
+            return element.disabled;
+          }
+          return element.getAttribute('aria-disabled') === 'true';
+        };
+
+        const elementText = (element: Element): string | undefined => {
+          if (element instanceof HTMLInputElement && ['button', 'submit', 'reset'].includes(element.type)) {
+            return truncatePreview(element.value || element.getAttribute('value'));
+          }
+          return truncatePreview(element.textContent);
+        };
+
+        const roleValue = (step: LiveUIActionLocator['steps'][number]): string | undefined => {
+          if (typeof step.role === 'string') {
+            return step.role;
+          }
+          return typeof step.value === 'string' ? step.value : undefined;
+        };
+
+        const scopeMatches = (element: Element, scope: LiveUIActionLocator['scope']): boolean => {
+          if (!scope) {
+            return true;
+          }
+          if (scope === 'focused') {
+            let active: Element | null = document.activeElement;
+            while (active?.shadowRoot?.activeElement) {
+              active = active.shadowRoot.activeElement;
+            }
+            return active === element;
+          }
+          const role = getNativeRole(element);
+          if (scope === 'buttons') {
+            return role === 'button' || element instanceof HTMLButtonElement;
+          }
+          if (scope === 'links') {
+            return role === 'link';
+          }
+          if (scope === 'inputs') {
+            return element instanceof HTMLInputElement
+              || element instanceof HTMLTextAreaElement
+              || element instanceof HTMLSelectElement
+              || (element instanceof HTMLElement && element.isContentEditable);
+          }
+          return role === 'dialog'
+            || element.getAttribute('aria-modal') === 'true'
+            || element instanceof HTMLDialogElement;
+        };
+
+        let candidates: Element[] | undefined;
+        const allScopedElements = (): Element[] => collectAllElements(document)
+          .filter((element) => scopeMatches(element, locatorValue.scope));
+
+        for (const step of locatorValue.steps) {
+          if (step.kind === 'css') {
+            const matcher = step.value;
+            if (typeof matcher === 'string') {
+              const cssMatches = candidates
+                ? candidates.filter((element) => {
+                  try {
+                    return matcher.includes(shadowSeparator)
+                      ? elementSelectorPath(element) === matcher
+                      : element.matches(matcher);
+                  } catch {
+                    return elementSelectorPath(element) === matcher;
+                  }
+                })
+                : queryAllElements(document, matcher);
+              candidates = cssMatches.filter((element) => scopeMatches(element, locatorValue.scope));
+            } else {
+              const source = candidates ?? allScopedElements();
+              candidates = source.filter((element) => matchesLocatorMatcher(elementSelectorPath(element), matcher, step.exact ?? true));
+            }
+            continue;
+          }
+
+          const source = candidates ?? allScopedElements();
+          if (step.kind === 'role') {
+            const expectedRole = roleValue(step)?.toLowerCase();
+            candidates = source.filter((element) => {
+              return (!expectedRole || getNativeRole(element) === expectedRole)
+                && matchesLocatorMatcher(accessibleName(element), step.name, step.exact);
+            });
+          } else if (step.kind === 'text') {
+            candidates = source.filter((element) => matchesLocatorMatcher(elementText(element), step.value, step.exact));
+          } else if (step.kind === 'label') {
+            candidates = source.filter((element) => matchesLocatorMatcher(resolveInputLabel(element), step.value, step.exact));
+          } else if (step.kind === 'testId') {
+            candidates = source.filter((element) => matchesLocatorMatcher(element.getAttribute('data-testid') ?? undefined, step.value, step.exact ?? true));
+          } else if (step.kind === 'placeholder') {
+            candidates = source.filter((element) => {
+              const placeholder = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+                ? element.placeholder
+                : undefined;
+              return matchesLocatorMatcher(placeholder, step.value, step.exact);
+            });
+          } else {
+            candidates = source.filter((element) => matchesLocatorMatcher(getAltText(element), step.value, step.exact));
+          }
+        }
+
+        candidates = (candidates ?? allScopedElements()).filter((element) => {
+          const role = getNativeRole(element);
+          return matchesText(element.getAttribute('data-testid') ?? undefined, targetValue.testId, targetValue.exact)
+            && matchesText(elementText(element), targetValue.textContains, targetValue.exact)
+            && matchesText(resolveInputLabel(element), targetValue.labelContains, targetValue.exact)
+            && matchesText(element.getAttribute('title') ?? undefined, targetValue.titleContains, targetValue.exact)
+            && (!targetValue.role || role === targetValue.role.toLowerCase())
+            && matchesText(accessibleName(element), targetValue.name, targetValue.exact)
+            && matchesText(
+              element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement ? element.placeholder : undefined,
+              targetValue.placeholder,
+              targetValue.exact,
+            )
+            && matchesText(getAltText(element), targetValue.altText, targetValue.exact)
+            && (!targetValue.tagName || element.tagName.toLowerCase() === targetValue.tagName.toLowerCase())
+            && (!targetValue.type || !(element instanceof HTMLInputElement) || element.type.toLowerCase() === targetValue.type.toLowerCase())
+            && (targetValue.visible === undefined || isVisible(element) === targetValue.visible)
+            && (targetValue.disabled === undefined || isDisabled(element) === targetValue.disabled);
+        });
+
+        return {
+          url: window.location.href,
+          title: document.title,
+          candidates: candidates.slice(0, 200).map((element) => ({
+            selector: elementSelectorPath(element),
+            text: elementText(element),
+            role: getNativeRole(element),
+            name: accessibleName(element),
+            testId: element.getAttribute('data-testid') ?? undefined,
+            tagName: element.tagName.toLowerCase(),
+            type: element instanceof HTMLInputElement ? element.type : undefined,
+            visible: isVisible(element),
+            disabled: isDisabled(element),
+          })),
+        };
+      },
+      args: [locator, target],
+    });
+  } catch {
+    return {
+      status: 'not_found',
+      resolution: {
+        strategy: 'native_locator',
+        matcher: {
+          locator,
+        },
+        matchedCandidateCount: 0,
+        searchedFrames: 0,
+        error: 'locator_execution_failed',
+      },
+    };
+  }
+
+  const candidates = frameResults
+    .flatMap((entry) => {
+      const result = entry.result;
+      if (!result) {
+        return [];
+      }
+      const frameId = entry.frameId ?? 0;
+      return result.candidates
+        .filter(() => target.frameId === undefined || target.frameId === frameId)
+        .filter(() => matchesOptionalFrameText(result.url, locator.frame?.urlContains ?? target.frameUrlContains))
+        .filter(() => matchesOptionalFrameText(result.title, locator.frame?.titleContains ?? target.frameTitleContains))
+        .map((candidate) => ({
+          ...candidate,
+          frameId,
+          url: result.url,
+          title: result.title,
+        }));
+    });
+  const selection = selectNativeLocatorCandidate(candidates, target);
+  const baseResolution = {
+    strategy: 'native_locator',
+    matcher: {
+      locator,
+      frameUrlContains: target.frameUrlContains,
+      frameTitleContains: target.frameTitleContains,
+      nth: target.nth,
+      first: target.first,
+      last: target.last,
+      strict: target.strict,
+    },
+    searchedFrames: frameResults.length,
+    matchedCandidateCount: candidates.length,
+    selectionStrategy: selection.selectionStrategy,
+    selectedIndex: selection.selectedIndex,
+  };
+
+  if (candidates.length === 0 || selection.outOfRange) {
+    return {
+      status: 'not_found',
+      resolution: {
+        ...baseResolution,
+        sampledCandidates: candidates.slice(0, 5).map(describeNativeLocatorCandidate),
+      },
+    };
+  }
+
+  if (!selection.candidate || selection.selectedCandidates.length > 1) {
+    return {
+      status: 'ambiguous',
+      resolution: {
+        ...baseResolution,
+        sampledCandidates: selection.selectedCandidates.slice(0, 5).map(describeNativeLocatorCandidate),
+      },
+    };
+  }
+
+  return {
+    status: 'found',
+    candidate: selection.candidate,
+    resolution: {
+      ...baseResolution,
+      matched: describeNativeLocatorCandidate(selection.candidate),
+    },
+  };
+}
+
 function annotateFrameRefresh(
   snapshot: NativeClickTargetSnapshot,
   previousFrameId: number | undefined,
@@ -761,15 +1399,64 @@ async function inspectActionableTargetForRequest(
   startedAt: number,
   traceId: string,
 ): Promise<{ ok: true; selector: string; snapshot: NativeClickTargetSnapshot } | { ok: false; result: LiveUIActionResult }> {
-  const selector = resolveActionSelector(request);
+  let selector = resolveActionSelector(request);
+  let locatorResolution: Record<string, unknown> | undefined;
+  let locatorFrameId: number | undefined;
+  if (!selector && request.target?.locator) {
+    const resolvedLocator = await resolveNativeLocatorTarget(tab.id, request.target);
+    if (resolvedLocator?.status === 'found') {
+      selector = resolvedLocator.candidate.selector;
+      locatorFrameId = resolvedLocator.candidate.frameId;
+      locatorResolution = resolvedLocator.resolution;
+    } else if (resolvedLocator?.status === 'ambiguous') {
+      return {
+        ok: false,
+        result: buildRejectedResult(
+          request,
+          tab,
+          startedAt,
+          traceId,
+          'target_locator_ambiguous',
+          'Native locator matched multiple elements; refine the locator or provide nth, first, last, or strict:false.',
+          undefined,
+          {
+            locatorResolution: resolvedLocator.resolution,
+          },
+        ),
+      };
+    } else {
+      return {
+        ok: false,
+        result: buildRejectedResult(
+          request,
+          tab,
+          startedAt,
+          traceId,
+          'target_locator_not_found',
+          'No element matched the native locator target.',
+          undefined,
+          {
+            locatorResolution: resolvedLocator?.resolution ?? {
+              strategy: 'native_locator',
+              matcher: {
+                locator: request.target.locator,
+              },
+              matchedCandidateCount: 0,
+            },
+          },
+        ),
+      };
+    }
+  }
+
   if (!selector) {
     return { ok: false, result: rejectMissingSelector(request, tab, startedAt, traceId) };
   }
 
   const frameContext = resolveActionFrameContext(request);
-  let frameId = frameContext.frameId;
+  let frameId = locatorFrameId ?? frameContext.frameId;
   let previousFrameId: number | undefined;
-  if (frameId === 0 && hasFrameLocatorContext(frameContext)) {
+  if (locatorFrameId === undefined && frameId === 0 && hasFrameLocatorContext(frameContext)) {
     try {
       const resolvedFrame = await resolveFrameIdForTarget(tab.id, selector, frameContext);
       if (resolvedFrame.status === 'found') {
@@ -812,6 +1499,8 @@ async function inspectActionableTargetForRequest(
       snapshot = {
         ...snapshot,
         frameId: snapshot.frameId ?? frameId,
+        selector,
+        locatorResolution,
         actionability: {
           ...snapshot.actionability,
           attempts: attempt,
@@ -834,6 +1523,11 @@ async function inspectActionableTargetForRequest(
         frameId = resolvedFrame.candidate.frameId;
         try {
           snapshot = await inspectClickableTarget(tab.id, frameId, selector);
+          snapshot = {
+            ...snapshot,
+            selector,
+            locatorResolution,
+          };
         } catch (retryError) {
           const retryMessage = retryError instanceof Error ? retryError.message : message;
           return {
@@ -923,6 +1617,11 @@ async function inspectActionableTargetForRequest(
     };
   }
   snapshot = annotateFrameRefresh(snapshot, previousFrameId);
+  snapshot = {
+    ...snapshot,
+    selector,
+    locatorResolution,
+  };
 
   const failureCode = snapshot.actionability.failureCode;
   if (failureCode) {

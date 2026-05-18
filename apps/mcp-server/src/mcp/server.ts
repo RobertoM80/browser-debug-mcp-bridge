@@ -10,6 +10,7 @@ import {
   WorkflowTargetResolutionError,
   hasSemanticActionTargetMatcher,
   resolveWorkflowActionTarget,
+  summarizeWorkflowTargetMatcher,
   type PageStateCaptureResult,
   type UIWorkflowActionTarget,
 } from './target-resolution.js';
@@ -37,6 +38,7 @@ import { mapNextOverrideAssetsWithDrift } from '../next-asset-mapper.js';
 import { planNextSourceOverride, type NextSourceOverridePlanResult, type PlannedNextOverrideRule } from '../next-source-override-planner.js';
 import { listObservedOverrideAssets, persistObservedOverrideAssets } from '../override-observed-assets.js';
 import { planOverrideResponsePatch, type OverrideResponsePatchPlanResult } from '../override-response-planner.js';
+import { createToolLoopGuard, type ToolLoopGuard } from './tool-loop-guard.js';
 
 type ToolInput = Record<string, unknown>;
 
@@ -85,6 +87,7 @@ export interface MCPServerOptions {
   captureClient?: CaptureCommandClient;
   logger?: MCPLogger;
   getSessionConnectionState?: (sessionId: string) => SessionConnectionLookupResult | undefined;
+  loopGuard?: ToolLoopGuard | false;
 }
 
 export interface MCPLogger {
@@ -899,7 +902,9 @@ const TOOL_SCHEMAS: Record<string, object> = {
   },
   list_override_profiles: {
     type: 'object',
-    properties: {},
+    properties: {
+      responseProfile: { type: 'string', enum: ['compact', 'full'] },
+    },
   },
   create_override_profile: {
     type: 'object',
@@ -923,12 +928,15 @@ const TOOL_SCHEMAS: Record<string, object> = {
       maxRules: { type: 'number' },
       writeConfig: { type: 'boolean' },
       overwrite: { type: 'boolean' },
+      responseProfile: { type: 'string', enum: ['compact', 'full'] },
+      includeConfigJson: { type: 'boolean' },
     },
   },
   validate_override_profile: {
     type: 'object',
     properties: {
       profileId: { type: 'string' },
+      responseProfile: { type: 'string', enum: ['compact', 'full'] },
     },
   },
   preflight_overrides: {
@@ -974,6 +982,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       sessionId: { type: 'string' },
       limit: { type: 'number' },
       sinceTimestamp: { type: 'number' },
+      responseProfile: { type: 'string', enum: ['compact', 'full'] },
     },
   },
   map_next_override_assets: {
@@ -2075,6 +2084,77 @@ function resolveOverrideProfileRecord(value: unknown): Record<string, unknown> {
   }
 
   return profile;
+}
+
+function resolveOverrideResponseProfile(value: unknown): 'compact' | 'full' {
+  return value === 'full' ? 'full' : 'compact';
+}
+
+function compactOverrideRule(rule: unknown): Record<string, unknown> {
+  if (!isRecord(rule)) {
+    return {};
+  }
+  return {
+    ruleId: rule.ruleId,
+    enabled: rule.enabled,
+    ruleType: rule.ruleType,
+    requestMethod: rule.requestMethod,
+    matchMode: rule.matchMode,
+    targetAssetUrl: rule.targetAssetUrl,
+    localFilePath: rule.localFilePath,
+    contentType: rule.contentType,
+    fileExists: rule.fileExists,
+    integrity: rule.integrity,
+  };
+}
+
+function compactOverrideProfile(profile: Record<string, unknown>, ruleLimit = 10): Record<string, unknown> {
+  const rules = Array.isArray(profile.rules) ? profile.rules : [];
+  return {
+    profileId: profile.profileId,
+    name: profile.name,
+    active: profile.active,
+    configEnabled: profile.configEnabled,
+    enabled: profile.enabled,
+    effectiveEnabled: profile.effectiveEnabled,
+    autoReload: profile.autoReload,
+    configPath: profile.configPath,
+    fileExists: profile.fileExists,
+    ruleCount: profile.ruleCount,
+    enabledRuleCount: profile.enabledRuleCount,
+    rules: rules.slice(0, ruleLimit).map(compactOverrideRule),
+    rulesOmitted: Math.max(0, rules.length - ruleLimit),
+  };
+}
+
+function serializeOverrideProfile(profile: Record<string, unknown>, responseProfile: 'compact' | 'full'): Record<string, unknown> {
+  return responseProfile === 'full' ? profile : compactOverrideProfile(profile);
+}
+
+function compactObservedOverrideAsset(asset: unknown): Record<string, unknown> {
+  if (!isRecord(asset)) {
+    return {};
+  }
+  return {
+    observedAssetId: asset.observedAssetId,
+    lastSeenAt: asset.lastSeenAt,
+    tabId: asset.tabId,
+    url: asset.url,
+    ruleType: asset.ruleType,
+    requestMethod: asset.requestMethod,
+    resourceType: asset.resourceType,
+    contentType: asset.contentType,
+    statusCode: asset.statusCode,
+    pathname: asset.pathname,
+    assetPath: asset.assetPath,
+    kind: asset.kind,
+    integrity: asset.integrity,
+    fromDom: asset.fromDom,
+    fromPerformance: asset.fromPerformance,
+    fromNavigation: asset.fromNavigation,
+    fromFetch: asset.fromFetch,
+    serviceWorkerControlled: asset.serviceWorkerControlled,
+  };
 }
 
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
@@ -5135,8 +5215,9 @@ export function createV1ToolHandlers(
       };
     },
 
-    list_override_profiles: async () => {
+    list_override_profiles: async (input) => {
       const profiles = buildOverrideProfileRecords();
+      const responseProfile = resolveOverrideResponseProfile(input.responseProfile);
 
       return {
         ...createBaseResponse(),
@@ -5144,7 +5225,8 @@ export function createV1ToolHandlers(
           maxResults: profiles.length,
           truncated: false,
         },
-        profiles,
+        responseProfile,
+        profiles: profiles.map((profile) => serializeOverrideProfile(profile, responseProfile)),
         nextActions: profiles.length > 0
           ? [{ code: 'VALIDATE_PROFILE', message: 'Run validate_override_profile before enabling overrides.' }]
           : [{ code: 'CREATE_PROFILE', message: 'Run create_override_profile to generate a candidate profile.' }],
@@ -5186,6 +5268,8 @@ export function createV1ToolHandlers(
 
       const writeConfig = normalizeOptionalBooleanInput(input.writeConfig, 'writeConfig') ?? false;
       const overwrite = normalizeOptionalBooleanInput(input.overwrite, 'overwrite') ?? false;
+      const responseProfile = resolveOverrideResponseProfile(input.responseProfile);
+      const includeConfigJson = input.includeConfigJson === true || responseProfile === 'full';
       const write: Record<string, unknown> = {
         written: false,
         path: generated.suggestedConfigPath,
@@ -5234,15 +5318,24 @@ export function createV1ToolHandlers(
         warnings: generated.warnings,
         nextActions,
         write,
-        profile: generated.profile,
-        config: generated.config,
-        configJson: generated.configJson,
+        responseProfile,
+        profile: responseProfile === 'full' ? generated.profile : compactOverrideProfile(generated.profile as unknown as Record<string, unknown>),
+        config: responseProfile === 'full'
+          ? generated.config
+          : {
+              enabled: generated.config.enabled,
+              activeProfileId: generated.config.activeProfileId,
+              profileCount: generated.config.profiles.length,
+            },
+        configJson: includeConfigJson ? generated.configJson : undefined,
+        configJsonOmitted: !includeConfigJson,
       };
     },
 
     validate_override_profile: async (input) => {
       const profile = resolveOverrideProfileRecord(input.profileId);
       const issues = buildOverrideProfileIssues(profile);
+      const responseProfile = resolveOverrideResponseProfile(input.responseProfile);
 
       return {
         ...createBaseResponse(),
@@ -5250,7 +5343,8 @@ export function createV1ToolHandlers(
         valid: !issues.some((issue) => issue.severity === 'error'),
         issues,
         nextActions: buildOverrideProfileNextActions(profile, issues),
-        profile,
+        responseProfile,
+        profile: serializeOverrideProfile(profile, responseProfile),
       };
     },
 
@@ -5282,9 +5376,10 @@ export function createV1ToolHandlers(
 
       const assets = listObservedOverrideAssets(getDb(), {
         sessionId,
-        limit: typeof input.limit === 'number' ? input.limit : undefined,
+        limit: typeof input.limit === 'number' ? input.limit : 50,
         sinceTimestamp: typeof input.sinceTimestamp === 'number' ? input.sinceTimestamp : undefined,
       });
+      const responseProfile = resolveOverrideResponseProfile(input.responseProfile);
 
       return {
         ...createBaseResponse(sessionId),
@@ -5292,7 +5387,8 @@ export function createV1ToolHandlers(
           maxResults: assets.length,
           truncated: false,
         },
-        assets,
+        responseProfile,
+        assets: responseProfile === 'full' ? assets : assets.map(compactObservedOverrideAsset),
       };
     },
 
@@ -8078,12 +8174,21 @@ export function createV2ToolHandlers(
 
           try {
             if (step.kind === 'action') {
-              const resolvedTarget = await resolveWorkflowActionTarget(
-                request.sessionId,
-                step.target,
-                workflowCapturePageState,
-                request.mode === 'fast' ? lastPageCapture : undefined,
-              );
+              const resolvedTarget = step.target?.locator
+                ? {
+                    target: step.target,
+                    resolution: {
+                      strategy: 'native_locator_pending',
+                      matcher: summarizeWorkflowTargetMatcher(step.target),
+                    },
+                    pageCapture: undefined,
+                  }
+                : await resolveWorkflowActionTarget(
+                  request.sessionId,
+                  step.target,
+                  workflowCapturePageState,
+                  request.mode === 'fast' ? lastPageCapture : undefined,
+                );
               const liveRequest = LiveUIActionRequestSchema.parse({
                 action: step.action,
                 target: resolvedTarget.target,
@@ -8100,6 +8205,13 @@ export function createV2ToolHandlers(
               const payload = ensureCaptureSuccess(capture, request.sessionId);
               const actionResult = payload as LiveUIActionResult & Record<string, unknown>;
               const failed = actionResult.status === 'failed' || actionResult.status === 'rejected';
+              const actionResultPayload = typeof actionResult.result === 'object' && actionResult.result !== null
+                ? actionResult.result as Record<string, unknown>
+                : undefined;
+              const nativeLocatorResolution =
+                typeof actionResultPayload?.locatorResolution === 'object' && actionResultPayload.locatorResolution !== null
+                  ? actionResultPayload.locatorResolution as Record<string, unknown>
+                  : undefined;
               let currentCapture = resolvedTarget.pageCapture ?? lastPageCapture;
               if (!failed && request.mode === 'fast') {
                 await sleep(75);
@@ -8119,7 +8231,7 @@ export function createV2ToolHandlers(
                 action: step.action,
                 traceId: actionResult.traceId,
                 target: {
-                  resolution: resolvedTarget.resolution,
+                  resolution: nativeLocatorResolution ?? resolvedTarget.resolution,
                   actionTarget:
                     typeof actionResult.target === 'object' && actionResult.target !== null
                       ? actionResult.target as Record<string, unknown>
@@ -8495,7 +8607,12 @@ export function createV2ToolHandlers(
       let request = LiveUIActionRequestSchema.parse(actionInput);
       let targetResolution: Record<string, unknown> | undefined;
       try {
-        if (hasSemanticActionTargetMatcher(request.target)) {
+        if (request.target?.locator) {
+          targetResolution = {
+            strategy: 'native_locator_pending',
+            matcher: summarizeWorkflowTargetMatcher(request.target as UIWorkflowActionTarget),
+          };
+        } else if (hasSemanticActionTargetMatcher(request.target)) {
           const resolvedTarget = await resolveWorkflowActionTarget(
             sessionId,
             request.target as UIWorkflowActionTarget,
@@ -8579,6 +8696,16 @@ export function createV2ToolHandlers(
       const target = typeof actionResult.target === 'object' && actionResult.target !== null
         ? actionResult.target as Record<string, unknown>
         : {};
+      const actionResultRecord = actionResult as Record<string, unknown>;
+      const nativeResult = typeof actionResultRecord.result === 'object' && actionResultRecord.result !== null
+        ? actionResultRecord.result as Record<string, unknown>
+        : undefined;
+      const nativeLocatorResolution = typeof nativeResult?.locatorResolution === 'object' && nativeResult.locatorResolution !== null
+        ? nativeResult.locatorResolution as Record<string, unknown>
+        : undefined;
+      if (nativeLocatorResolution) {
+        targetResolution = nativeLocatorResolution;
+      }
 
       return {
         ...createBaseResponse(sessionId),
@@ -8676,14 +8803,39 @@ export async function routeToolCall(
   tools: RegisteredTool[],
   toolName: string,
   input: unknown,
+  options: { loopGuard?: ToolLoopGuard } = {},
 ): Promise<ToolResponse> {
   const tool = tools.find((candidate) => candidate.name === toolName);
   if (!tool) {
     throw new Error(`Unknown tool: ${toolName}`);
   }
 
-  const response = await tool.handler(isRecord(input) ? input : {});
-  return attachResponseBytes(response);
+  const normalizedInput = isRecord(input) ? input : {};
+  const guardCall = options.loopGuard?.prepareCall(toolName, normalizedInput);
+  const beforeCall = guardCall ? await options.loopGuard?.beforeCall(guardCall) : undefined;
+  if (beforeCall?.blocked) {
+    return attachResponseBytes(beforeCall.response as ToolResponse);
+  }
+
+  const startedAt = Date.now();
+  try {
+    const response = await tool.handler(normalizedInput);
+    const guarded = guardCall
+      ? await options.loopGuard?.afterCall(guardCall, {
+          response,
+          durationMs: Date.now() - startedAt,
+        })
+      : undefined;
+    return attachResponseBytes((guarded?.response ?? response) as ToolResponse);
+  } catch (error) {
+    if (guardCall) {
+      await options.loopGuard?.afterCall(guardCall, {
+        error,
+        durationMs: Date.now() - startedAt,
+      });
+    }
+    throw error;
+  }
 }
 
 export function createMCPServer(
@@ -8699,6 +8851,20 @@ export function createMCPServer(
     ...v2Handlers,
     ...overrides,
   });
+  const loopGuard = options.loopGuard === false
+    ? undefined
+    : options.loopGuard ?? createToolLoopGuard({
+        getDb: () => getConnection().db,
+        onEvent: (event) => {
+          logger.info(
+            {
+              component: 'mcp',
+              ...event,
+            },
+            `[MCPServer][MCP] ${event.event}`,
+          );
+        },
+      });
   const server = new Server(
     {
       name: 'browser-debug-mcp-bridge',
@@ -8732,7 +8898,7 @@ export function createMCPServer(
     );
 
     try {
-      const response = await routeToolCall(tools, toolName, request.params.arguments);
+      const response = await routeToolCall(tools, toolName, request.params.arguments, { loopGuard });
       logger.info(
         {
           component: 'mcp',

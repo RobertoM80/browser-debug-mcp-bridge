@@ -6,11 +6,40 @@ All tool responses include:
 - `limitsApplied`
 - `redactionSummary`
 - `responseBytes` (serialized byte size estimate for observability)
+- optional `loopGuard` when repeated unchanged failures are detected or blocked
 
 High-volume query tools also support:
 
 - `maxResponseBytes` input (soft byte budget, default `32768`)
 - pagination metadata with `hasMore` and `nextOffset`
+
+## Agent loop protection
+
+The MCP server records recent tool attempts in `mcp_tool_invocations` and opens `mcp_loop_incidents` when an agent repeats the same failing call without changing the underlying state. High-risk live tools such as override enable/capture/planning and live automation warn on the second unchanged failure and block before the next repeated side-effecting attempt after the threshold is reached.
+
+Blocked responses are normal MCP tool responses, not transport failures:
+
+```json
+{
+  "blocked": true,
+  "tool": "enable_overrides",
+  "loopGuard": {
+    "status": "blocked",
+    "reason": "repeated_same_failure",
+    "scope": "tool-input",
+    "rootCauseCode": "TARGET_ASSET_NOT_OBSERVED",
+    "requiredStateChange": ["target route is loaded or interacted with", "observed asset inventory changes"]
+  },
+  "nextActions": [
+    {
+      "code": "CHANGE_STATE_BEFORE_RETRY",
+      "message": "Blocked repeated enable_overrides attempts with unchanged TARGET_ASSET_NOT_OBSERVED result before spending another tool call."
+    }
+  ]
+}
+```
+
+When `loopGuard.status` is `warning` or `blocked_next_attempt`, stop retrying the same tool/input and change real state first: reconnect the live session, load the route, observe assets, edit the override config, or change the target/session. The guard can be disabled only for controlled diagnostics with `MCP_LOOP_GUARD=0`.
 
 ## Session scope and URL filtering
 
@@ -500,7 +529,7 @@ Semantic targets support `scope: "buttons" | "links" | "inputs" | "modals" | "fo
 }
 ```
 
-For more explicit locator-style targeting, use `target.locator`. The locator is resolved against compact page-state refs and supports chained structured steps, regex text/name matching, and frame filters:
+For more explicit locator-style targeting, use `target.locator`. Direct live actions and workflow action steps pass locator targets to the extension's native DOM resolver, which evaluates the current document, open shadow roots, and accessible frames before CDP actionability checks. The MCP server still keeps compact page-state semantic matching for non-locator targets.
 
 ```json
 {
@@ -550,7 +579,7 @@ Important limits and safeguards:
 - Nested same-origin iframe actions are covered when page-state returns a frame-aware `elementRef`
 - Native pointer actions in cross-origin, sandboxed opaque-origin, or inaccessible frames return `unsupported_cross_origin_frame` when top-document coordinate translation is not possible. The response includes `actionResult.result.framePolicy` and `actionability.frameCoordinateResolved`.
 - Stale frame ids on frame-aware refs are re-resolved by encoded frame URL/title plus selector when possible. Invalid frame ids without enough metadata, or unresolved frame refs, return `target_frame_not_found`.
-- `target.locator` is a compact page-state locator baseline. It supports chained structured filters and regex matching over captured refs, but it is not yet a full DOM locator engine for ancestor/descendant relationships, closed shadow DOM, coordinate targeting, or arbitrary selector state.
+- `target.locator` now has native DOM resolution for direct/workflow actions and compact page-state semantics for server-side diagnostics. It supports chained structured filters and regex matching, but it is not yet a full Playwright/Cypress locator engine for ancestor/descendant relationships, closed shadow DOM, coordinate targeting, or arbitrary selector state.
 - `actionResult.result.backend` identifies the execution backend (`cdp-native-v2` for migrated native actions)
 - Native actions perform target inspection/actionability checks before dispatch, including visibility, disabled state, readonly/editable state for input, stable layout, pointer-events, viewport intersection, and hit-target mismatch diagnostics
 - Page-state assertions and waits support `visible: true/false`, `role`, `name`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`, and `exact` for structured refs where available
@@ -717,6 +746,8 @@ Available tools:
 
 `create_override_profile` generates reviewable config JSON from local build assets. Current adapters are `nextjs` for `.next` output and `static` for framework-neutral asset directories such as `dist/assets`.
 
+Override profile and observed-asset listing tools default to compact responses to avoid large agent context loops. Use `responseProfile: "full"` only when the caller needs every rule or persisted asset field. `create_override_profile` also omits the generated `configJson` by default in compact mode; pass `includeConfigJson: true` or `responseProfile: "full"` when the raw JSON is needed.
+
 The override runtime is framework-agnostic. Adapters currently generate `targetAssetUrl` to `localFilePath` rules with exact matching by default and prefix matching for unstable response URLs when explicitly requested; validation, serving, interception, audit, and diagnosis use the same path for every framework.
 
 `preflight_overrides` is the production-safety gate before `enable_overrides`. It combines profile validation, live-session readiness, observed asset constraints, recent plan/variant context, and persisted diagnosis signals into a single readiness result. Missing live connection state, disconnected sessions, missing observed assets, no observed match for any enabled target, and observed assets recorded only for a different tab are blocking readiness errors. Exact and prefix profile rules use the same matching semantics as the runtime. Generated multi-asset profiles are considered capture-ready when at least one enabled target was observed for the selected session; unobserved enabled targets are reported as warnings and counts rather than blocking the route under test. The response includes `checks.captureReady`, `checks.topLevelScopeLikely`, `checks.observedAssetTabs`, `checks.matchedTargetAssetCount`, `checks.unobservedTargetAssetCount`, and `observedAssets.targetAssetObserved` so callers can distinguish profile problems from session/capture readiness problems.
@@ -729,7 +760,7 @@ The production contract is GET-first for response overrides, with one narrow POS
 
 `observe_override_assets` uses the live extension connection to inspect the selected tab's document, script/style/link DOM nodes, Next.js URL hints such as `/_next/static`, `/_next/data`, and `_rsc=`, and fetch/XHR performance entries, then persists them per session with request metadata. Observed entries include `ruleType` values of `asset`, `document`, `rsc-flight`, `next-data`, or `api-response`, plus request method, resource type, content type, status, and navigation/fetch hints when available.
 
-`list_observed_override_assets` returns the persisted entries. `map_next_override_assets` currently maps observed `asset` entries under `/_next/static/...` back to the local `.next` build, source maps when available, route manifests, and optional fetched production bytes. `plan_next_source_override` applies source edits in a temp Next.js overlay build, prefers safe literal patching of observed static chunks to preserve runtime/module identity, distinguishes direct source-map ownership from client-reference manifest membership, cleans expired `tmp/bn` overlays, and can write an override config.
+`list_observed_override_assets` returns persisted entries with a default limit of 50 and compact rows by default. `map_next_override_assets` currently maps observed `asset` entries under `/_next/static/...` back to the local `.next` build, source maps when available, route manifests, and optional fetched production bytes. `plan_next_source_override` applies source edits in a temp Next.js overlay build, prefers safe literal patching of observed static chunks to preserve runtime/module identity, distinguishes direct source-map ownership from client-reference manifest membership, cleans expired `tmp/bn` overlays, and can write an override config.
 
 Document, RSC flight, Next data, and API response observations are persisted as production-readiness foundations. The runtime fulfills configured request URLs for supported response types. Planner-generated `rsc-flight` rules are supported for captured `text/x-component` `GET` responses with structured Flight string-value patches and `_rsc` target URLs, and for captured POST `text/x-component` response-stage patches with RSC request context and no `next-action` header.
 

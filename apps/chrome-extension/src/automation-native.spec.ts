@@ -133,6 +133,199 @@ describe('native automation backend', () => {
     expect(chromeMock.detach).toHaveBeenCalledWith({ tabId: 7 });
   });
 
+  it('resolves locator targets in the native page context before dispatch', async () => {
+    const attach = vi.fn(async () => undefined);
+    const detach = vi.fn(async () => undefined);
+    const sendCommand = vi.fn(async () => ({}));
+    const executeScript = vi
+      .fn()
+      .mockResolvedValueOnce([
+        {
+          frameId: 0,
+          result: {
+            url: 'https://example.com/settings',
+            title: 'Settings',
+            candidates: [
+              {
+                selector: '#save',
+                text: 'Save',
+                role: 'button',
+                name: 'Save',
+                tagName: 'button',
+                visible: true,
+                disabled: false,
+              },
+            ],
+          },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          result: targetSnapshot,
+        },
+      ]);
+
+    vi.stubGlobal('chrome', {
+      scripting: {
+        executeScript,
+      },
+      debugger: {
+        attach,
+        detach,
+        sendCommand,
+      },
+    });
+
+    const request: Extract<LiveUIActionRequest, { action: 'click' }> = {
+      action: 'click',
+      traceId: 'trace-click-native-locator',
+      target: {
+        tabId: 7,
+        locator: {
+          scope: 'buttons',
+          steps: [
+            {
+              kind: 'role',
+              role: 'button',
+              name: 'Save',
+              exact: true,
+            },
+          ],
+        },
+      },
+    };
+
+    const result = await executeNativeClickAction({
+      request,
+      tab: {
+        id: 7,
+        url: 'https://example.com/settings',
+      } as chrome.tabs.Tab & { id: number },
+      startedAt: 1000,
+      traceId: 'trace-click-native-locator',
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(result.target).toMatchObject({
+      selector: '#save',
+      frameId: 0,
+    });
+    expect(result.result).toMatchObject({
+      backend: nativeAutomationBackend,
+      locatorResolution: {
+        strategy: 'native_locator',
+        matchedCandidateCount: 1,
+        matched: {
+          selector: '#save',
+          frameId: 0,
+        },
+      },
+    });
+    expect(executeScript).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        target: {
+          tabId: 7,
+          allFrames: true,
+        },
+      }),
+    );
+    expect(sendCommand).toHaveBeenCalledWith(
+      { tabId: 7 },
+      'Input.dispatchMouseEvent',
+      expect.objectContaining({
+        type: 'mousePressed',
+        x: 42,
+        y: 24,
+      }),
+    );
+  });
+
+  it('rejects ambiguous native locator targets before dispatch', async () => {
+    const attach = vi.fn(async () => undefined);
+    const detach = vi.fn(async () => undefined);
+    const sendCommand = vi.fn(async () => ({}));
+    const executeScript = vi.fn(async () => [
+      {
+        frameId: 0,
+        result: {
+          url: 'https://example.com/settings',
+          title: 'Settings',
+          candidates: [
+            {
+              selector: '#save-a',
+              text: 'Save',
+              role: 'button',
+              name: 'Save',
+            },
+            {
+              selector: '#save-b',
+              text: 'Save',
+              role: 'button',
+              name: 'Save',
+            },
+          ],
+        },
+      },
+    ]);
+
+    vi.stubGlobal('chrome', {
+      scripting: {
+        executeScript,
+      },
+      debugger: {
+        attach,
+        detach,
+        sendCommand,
+      },
+    });
+
+    const request: Extract<LiveUIActionRequest, { action: 'click' }> = {
+      action: 'click',
+      traceId: 'trace-click-native-locator-ambiguous',
+      target: {
+        tabId: 7,
+        locator: {
+          scope: 'buttons',
+          steps: [
+            {
+              kind: 'role',
+              role: 'button',
+              name: 'Save',
+              exact: true,
+            },
+          ],
+        },
+      },
+    };
+
+    const result = await executeNativeClickAction({
+      request,
+      tab: {
+        id: 7,
+        url: 'https://example.com/settings',
+      } as chrome.tabs.Tab & { id: number },
+      startedAt: 1000,
+      traceId: 'trace-click-native-locator-ambiguous',
+    });
+
+    expect(result.status).toBe('rejected');
+    expect(result.failureReason?.code).toBe('target_locator_ambiguous');
+    expect(result.result).toMatchObject({
+      backend: nativeAutomationBackend,
+      locatorResolution: {
+        strategy: 'native_locator',
+        matchedCandidateCount: 2,
+        sampledCandidates: [
+          { selector: '#save-a' },
+          { selector: '#save-b' },
+        ],
+      },
+    });
+    expect(attach).not.toHaveBeenCalled();
+    expect(sendCommand).not.toHaveBeenCalled();
+  });
+
   it('translates same-origin frame click coordinates before CDP dispatch', async () => {
     const chromeMock = installChromeMock([
       {

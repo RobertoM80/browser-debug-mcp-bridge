@@ -378,6 +378,8 @@ describe('Database Migrations', () => {
       expect(tableNames).toContain('override_requests');
       expect(tableNames).toContain('override_plan_audits');
       expect(tableNames).toContain('override_observed_assets');
+      expect(tableNames).toContain('mcp_tool_invocations');
+      expect(tableNames).toContain('mcp_loop_incidents');
       expect(tableNames).toContain('schema_version');
     });
 
@@ -396,6 +398,16 @@ describe('Database Migrations', () => {
       const indexNames = indexes.map((index) => index.name);
       expect(indexNames).toContain('idx_sessions_paused_at');
       expect(indexNames).toContain('idx_sessions_last_seen_at');
+    });
+
+    it('should include MCP loop guard tables and indexes after all migrations', () => {
+      initializeDatabase(db);
+      const invocationIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='mcp_tool_invocations'").all() as { name: string }[];
+      const incidentIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='mcp_loop_incidents'").all() as { name: string }[];
+      expect(invocationIndexes.map((index) => index.name)).toContain('idx_mcp_tool_invocations_tool_input_time');
+      expect(invocationIndexes.map((index) => index.name)).toContain('idx_mcp_tool_invocations_family_root_time');
+      expect(incidentIndexes.map((index) => index.name)).toContain('idx_mcp_loop_incidents_open_fingerprint');
+      expect(incidentIndexes.map((index) => index.name)).toContain('idx_mcp_loop_incidents_session_family');
     });
 
     it('should backfill automation tables from existing lifecycle events during migration', () => {
