@@ -40,6 +40,8 @@ interface NativeClickTargetSnapshot {
     failureMessage?: string;
     hitTargetTagName?: string;
     hitTargetSelector?: string;
+    attempts?: number;
+    retryable?: boolean;
   };
 }
 
@@ -248,7 +250,8 @@ async function inspectClickableTarget(tabId: number, frameId: number, selector: 
         return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
       };
 
-      const getElementSelector = (element: Element): string => {
+      const shadowSeparator = ' >> ';
+      const getLocalElementSelector = (element: Element): string => {
         if (element.id) {
           return `#${cssEscapeFallback(element.id)}`;
         }
@@ -258,10 +261,58 @@ async function inspectClickableTarget(tabId: number, frameId: number, selector: 
         }
         return element.tagName.toLowerCase();
       };
+      const getElementSelector = (element: Element): string => {
+        const localSelector = getLocalElementSelector(element);
+        const root = element.getRootNode();
+        if (root instanceof ShadowRoot) {
+          return `${getElementSelector(root.host)}${shadowSeparator}${localSelector}`;
+        }
+        return localSelector;
+      };
+      const queryElement = (root: Document | ShadowRoot, query: string): Element | null => {
+        const parts = query
+          .split(shadowSeparator)
+          .map((part) => part.trim())
+          .filter((part) => part.length > 0);
+        if (parts.length === 0) {
+          return null;
+        }
+
+        let currentRoot: Document | ShadowRoot = root;
+        let currentElement: Element | null = null;
+        for (const [index, part] of parts.entries()) {
+          currentElement = currentRoot.querySelector(part);
+          if (!currentElement) {
+            return null;
+          }
+          if (index < parts.length - 1) {
+            const shadowRoot = currentElement.shadowRoot;
+            if (!shadowRoot) {
+              return null;
+            }
+            currentRoot = shadowRoot;
+          }
+        }
+        return currentElement;
+      };
 
       const textPreview = (element: Element): string | undefined => {
         const text = (element.textContent ?? '').replace(/\s+/g, ' ').trim();
         return text.length > 120 ? `${text.slice(0, 117)}...` : text || undefined;
+      };
+      const isShadowHostForTarget = (candidate: Element | null, element: Element): boolean => {
+        if (!candidate) {
+          return false;
+        }
+
+        let root = element.getRootNode();
+        while (root instanceof ShadowRoot) {
+          if (candidate === root.host || candidate.contains(root.host)) {
+            return true;
+          }
+          root = root.host.getRootNode();
+        }
+        return false;
       };
 
       const makeFailure = (
@@ -292,7 +343,7 @@ async function inspectClickableTarget(tabId: number, frameId: number, selector: 
         },
       });
 
-      const target = document.querySelector(selectorValue);
+      const target = queryElement(document, selectorValue);
       if (!target) {
         return makeFailure('target_not_found', 'No matching element was found for the native click target.', null);
       }
@@ -341,7 +392,9 @@ async function inspectClickableTarget(tabId: number, frameId: number, selector: 
         && center.y <= window.innerHeight;
       const receivesPointerEvents = style.pointerEvents !== 'none';
       const hitTarget = inViewport ? document.elementFromPoint(center.x, center.y) : null;
-      const hitTargetMatches = hitTarget === target || Boolean(hitTarget && target.contains(hitTarget));
+      const hitTargetMatches = hitTarget === target
+        || Boolean(hitTarget && target.contains(hitTarget))
+        || isShadowHostForTarget(hitTarget, target);
 
       const baseSnapshot: NativeClickTargetSnapshot = {
         matched: true,
@@ -436,6 +489,19 @@ function rejectMissingSelector(
   );
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function isRetryableActionabilityFailure(code: string | undefined): boolean {
+  return code === 'target_not_found'
+    || code === 'target_not_stable'
+    || code === 'target_outside_viewport'
+    || code === 'hit_target_mismatch';
+}
+
 async function inspectActionableTargetForRequest(
   request: LiveUIActionRequest,
   tab: chrome.tabs.Tab & { id: number },
@@ -448,13 +514,26 @@ async function inspectActionableTargetForRequest(
   }
 
   const frameId = resolveActionFrameId(request);
-  let snapshot: NativeClickTargetSnapshot;
+  let snapshot: NativeClickTargetSnapshot | undefined;
   try {
-    snapshot = await inspectClickableTarget(tab.id, frameId, selector);
-    snapshot = {
-      ...snapshot,
-      frameId: snapshot.frameId ?? frameId,
-    };
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      snapshot = await inspectClickableTarget(tab.id, frameId, selector);
+      snapshot = {
+        ...snapshot,
+        frameId: snapshot.frameId ?? frameId,
+        actionability: {
+          ...snapshot.actionability,
+          attempts: attempt,
+          retryable: isRetryableActionabilityFailure(snapshot.actionability.failureCode),
+        },
+      };
+
+      if (!isRetryableActionabilityFailure(snapshot.actionability.failureCode) || attempt === maxAttempts) {
+        break;
+      }
+      await sleep(75);
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Native target inspection failed.';
     const looksLikeMissingFrame = /frame/i.test(message) && /not|no|cannot|missing|found/i.test(message);
@@ -477,6 +556,20 @@ async function inspectActionableTargetForRequest(
             'native_target_inspection_failed',
             message,
           ),
+    };
+  }
+
+  if (!snapshot) {
+    return {
+      ok: false,
+      result: buildFailedResult(
+        request,
+        tab,
+        startedAt,
+        traceId,
+        'native_target_inspection_failed',
+        'Native target inspection returned no snapshot.',
+      ),
     };
   }
 
@@ -574,6 +667,33 @@ async function resolveSameOriginFrameOffset(
     (rawSelector, rawFrameUrl) => {
       const selectorValue = String(rawSelector);
       const frameUrlValue = typeof rawFrameUrl === 'string' && rawFrameUrl.length > 0 ? rawFrameUrl : undefined;
+      const shadowSeparator = ' >> ';
+      const queryElement = (root: Document | ShadowRoot, query: string): Element | null => {
+        const parts = query
+          .split(shadowSeparator)
+          .map((part) => part.trim())
+          .filter((part) => part.length > 0);
+        if (parts.length === 0) {
+          return null;
+        }
+
+        let currentRoot: Document | ShadowRoot = root;
+        let currentElement: Element | null = null;
+        for (const [index, part] of parts.entries()) {
+          currentElement = currentRoot.querySelector(part);
+          if (!currentElement) {
+            return null;
+          }
+          if (index < parts.length - 1) {
+            const shadowRoot = currentElement.shadowRoot;
+            if (!shadowRoot) {
+              return null;
+            }
+            currentRoot = shadowRoot;
+          }
+        }
+        return currentElement;
+      };
 
       const findFrameOffset = (
         rootWindow: Window,
@@ -593,7 +713,7 @@ async function resolveSameOriginFrameOffset(
             const nextX = accumulatedX + frameRect.left;
             const nextY = accumulatedY + frameRect.top;
             const urlMatches = !frameUrlValue || childWindow.location.href === frameUrlValue;
-            if (urlMatches && childDocument.querySelector(selectorValue)) {
+            if (urlMatches && queryElement(childDocument, selectorValue)) {
               return {
                 x: nextX,
                 y: nextY,
@@ -632,7 +752,34 @@ async function runElementCommand(
       const selectorValue = String(rawSelector);
       const commandValue = String(rawCommand);
       const inputValue = rawInput && typeof rawInput === 'object' ? rawInput as Record<string, unknown> : {};
-      const target = document.querySelector(selectorValue);
+      const shadowSeparator = ' >> ';
+      const queryElement = (root: Document | ShadowRoot, query: string): Element | null => {
+        const parts = query
+          .split(shadowSeparator)
+          .map((part) => part.trim())
+          .filter((part) => part.length > 0);
+        if (parts.length === 0) {
+          return null;
+        }
+
+        let currentRoot: Document | ShadowRoot = root;
+        let currentElement: Element | null = null;
+        for (const [index, part] of parts.entries()) {
+          currentElement = currentRoot.querySelector(part);
+          if (!currentElement) {
+            return null;
+          }
+          if (index < parts.length - 1) {
+            const shadowRoot = currentElement.shadowRoot;
+            if (!shadowRoot) {
+              return null;
+            }
+            currentRoot = shadowRoot;
+          }
+        }
+        return currentElement;
+      };
+      const target = queryElement(document, selectorValue);
       if (!target) {
         throw new Error('Native action target disappeared before execution.');
       }
@@ -706,7 +853,34 @@ async function focusAndSelectEditableTarget(tabId: number, frameId: number, sele
     frameId,
     (rawSelector) => {
       const selectorValue = String(rawSelector);
-      const target = document.querySelector(selectorValue);
+      const shadowSeparator = ' >> ';
+      const queryElement = (root: Document | ShadowRoot, query: string): Element | null => {
+        const parts = query
+          .split(shadowSeparator)
+          .map((part) => part.trim())
+          .filter((part) => part.length > 0);
+        if (parts.length === 0) {
+          return null;
+        }
+
+        let currentRoot: Document | ShadowRoot = root;
+        let currentElement: Element | null = null;
+        for (const [index, part] of parts.entries()) {
+          currentElement = currentRoot.querySelector(part);
+          if (!currentElement) {
+            return null;
+          }
+          if (index < parts.length - 1) {
+            const shadowRoot = currentElement.shadowRoot;
+            if (!shadowRoot) {
+              return null;
+            }
+            currentRoot = shadowRoot;
+          }
+        }
+        return currentElement;
+      };
+      const target = queryElement(document, selectorValue);
       if (!target) {
         throw new Error('Native input target disappeared before focus.');
       }
@@ -753,7 +927,34 @@ async function getEditableValueLength(tabId: number, frameId: number, selector: 
     frameId,
     (rawSelector) => {
       const selectorValue = String(rawSelector);
-      const target = document.querySelector(selectorValue);
+      const shadowSeparator = ' >> ';
+      const queryElement = (root: Document | ShadowRoot, query: string): Element | null => {
+        const parts = query
+          .split(shadowSeparator)
+          .map((part) => part.trim())
+          .filter((part) => part.length > 0);
+        if (parts.length === 0) {
+          return null;
+        }
+
+        let currentRoot: Document | ShadowRoot = root;
+        let currentElement: Element | null = null;
+        for (const [index, part] of parts.entries()) {
+          currentElement = currentRoot.querySelector(part);
+          if (!currentElement) {
+            return null;
+          }
+          if (index < parts.length - 1) {
+            const shadowRoot = currentElement.shadowRoot;
+            if (!shadowRoot) {
+              return null;
+            }
+            currentRoot = shadowRoot;
+          }
+        }
+        return currentElement;
+      };
+      const target = queryElement(document, selectorValue);
       if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
         return target.value.length;
       }

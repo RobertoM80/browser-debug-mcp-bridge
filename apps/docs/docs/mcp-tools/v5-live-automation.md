@@ -4,7 +4,7 @@ Live automation reuses the existing MCP -> server -> WebSocket -> extension sess
 
 ## `execute_ui_action`
 
-Executes one action at a time in the currently bound tab for a connected session. `click`, `hover`, `input`, `press_key`, `focus`, `blur`, `scroll`, and `submit` use the CDP-backed native automation backend (`cdp-native-v2`) for the top document and same-origin iframe targets. `reload` uses the extension tab API.
+Executes one action at a time in the currently bound tab for a connected session. `click`, `hover`, `input`, `press_key`, `focus`, `blur`, `scroll`, and `submit` use the CDP-backed native automation backend (`cdp-native-v2`) for the top document, open shadow roots, and same-origin iframe targets. `reload` uses the extension tab API.
 
 ```json
 {
@@ -27,7 +27,7 @@ Executes one action at a time in the currently bound tab for a connected session
 }
 ```
 
-You can target by `elementRef` instead of `selector` when the ref came from `get_interactive_elements` or `get_page_state`. Frame-scoped refs carry their frame id, so callers do not need to look up Chrome frame ids separately for same-origin iframe actions.
+You can target by `elementRef` instead of `selector` when the ref came from `get_interactive_elements` or `get_page_state`. Frame-scoped refs carry their frame id, so callers do not need to look up Chrome frame ids separately for same-origin iframe actions. Open shadow-root refs use `host >> target` selectors, for example `#shadow-host >> #shadow-action`.
 
 ```json
 {
@@ -42,7 +42,7 @@ You can target by `elementRef` instead of `selector` when the ref came from `get
 }
 ```
 
-You can also use semantic matchers directly. The server resolves them against compact page state, including same-origin iframe refs.
+You can also use semantic matchers directly. The server resolves them against compact page state, including same-origin iframe refs and open shadow-root refs.
 
 ```json
 {
@@ -58,7 +58,7 @@ You can also use semantic matchers directly. The server resolves them against co
 }
 ```
 
-Semantic targets support `scope: "buttons" | "links" | "inputs" | "modals" | "focused"`, text/label/title matching, role/name/placeholder/alt matching, `exact: true`, and `nth` for deliberate disambiguation.
+Semantic targets support `scope: "buttons" | "links" | "inputs" | "modals" | "focused"`, text/label/title matching, role/name/placeholder/alt matching, frame filters (`frameUrlContains`, `frameTitleContains`), `exact: true`, and deliberate disambiguation with `nth`, `first`, `last`, or `strict: false`.
 
 ```json
 {
@@ -71,7 +71,7 @@ Semantic targets support `scope: "buttons" | "links" | "inputs" | "modals" | "fo
       "role": "link",
       "name": "Docs",
       "exact": true,
-      "nth": 1
+      "last": true
     }
   }
 }
@@ -80,6 +80,7 @@ Semantic targets support `scope: "buttons" | "links" | "inputs" | "modals" | "fo
 ### Supported actions
 
 - `click`
+- `hover`
 - `input`
 - `focus`
 - `blur`
@@ -91,7 +92,7 @@ Semantic targets support `scope: "buttons" | "links" | "inputs" | "modals" | "fo
 ### Response shape highlights
 
 - `actionResult`: raw extension execution result with `action`, `status`, `traceId`, timestamps, target summary, and failure reason
-- `actionResult.result.backend`: execution backend, currently `cdp-native-v2` for native click/input/key/focus/blur/scroll/submit actions
+- `actionResult.result.backend`: execution backend, currently `cdp-native-v2` for native click/hover/input/key/focus/blur/scroll/submit actions
 - `tabContext`: resolved `tabId`, `frameId`, and URL used for execution
 - `postActionEvidence`: optional snapshot capture result when `captureOnFailure.enabled` is set and the action fails or is rejected
 - `postActionState`: optional structured wait result when `waitForPageState` is provided and the action succeeds
@@ -100,11 +101,13 @@ Semantic targets support `scope: "buttons" | "links" | "inputs" | "modals" | "fo
 ### Operational limits
 
 - Native automation supports the top document and same-origin iframe targets in the currently bound tab
-- `get_page_state` and `get_interactive_elements` merge same-origin frame buttons/links/inputs/modals and return frame-aware refs with `frameId`/`frameUrl`
+- `get_page_state` and `get_interactive_elements` merge frame buttons/links/inputs/modals and return frame-aware refs with `frameId`/`frameUrl`/`frameTitle`
+- Open shadow roots are traversed for page-state discovery and native actions. Closed shadow roots are not inspectable.
+- Nested same-origin iframe actions are covered when page-state returns a frame-aware `elementRef`
 - Native pointer actions in cross-origin or inaccessible frames return `unsupported_cross_origin_frame` when top-document coordinate translation is not possible
 - Invalid or stale frame ids return `target_frame_not_found`
 - Native actions inspect target actionability before dispatch and return structured failures for hidden, disabled, readonly input, non-editable input, unstable, outside-viewport, pointer-events none, and hit-target mismatch cases
-- Page-state assertions and waits can match `visible: true` or `visible: false` on structured buttons, inputs, modals, and focused refs
+- Page-state assertions and waits can match `visible: true` or `visible: false`, role/name fields, and frame URL/title filters on structured buttons, links, inputs, modals, and focused refs
 - Only one action should be driven at a time per session
 - Live automation still respects extension allowlist, pause/disconnect state, and sensitive-field opt-in policy
 
@@ -247,7 +250,7 @@ Milestone 4 scope:
   - `scope + labelContains`
   - `scope + titleContains`
   - `scope + role/name`
-  - optional refinements: `exact`, `nth`, `placeholder`, `altText`, `tagName`, `type`, `disabled`, `selected`, `pressed`, `expanded`, `readOnly`, `requiredField`
+  - optional refinements: `exact`, `nth`, `first`, `last`, `strict`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`, `tagName`, `type`, `disabled`, `selected`, `pressed`, `expanded`, `readOnly`, `requiredField`
 - stop on first failure by default
 - optional per-step `onFailure.strategy`: `stop`, `continue`, `retry_once`
 - optional per-step `onFailure.capture`: collect failure evidence using UI snapshot settings

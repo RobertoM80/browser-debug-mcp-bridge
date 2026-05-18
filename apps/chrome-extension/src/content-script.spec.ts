@@ -392,6 +392,52 @@ describe('content-script capture', () => {
     expect(typeof (output.result.modals as Array<Record<string, unknown>>)[0]?.elementRef).toBe('string');
   });
 
+  it('captures and executes actions against open shadow DOM elements', () => {
+    document.body.innerHTML = '<main><div id="shadow-host"></div><output id="shadow-output"></output></main>';
+    const host = document.getElementById('shadow-host');
+    const shadow = host?.attachShadow({ mode: 'open' });
+    expect(shadow).toBeTruthy();
+    shadow!.innerHTML = [
+      '<button id="shadow-action" aria-label="Shadow action">Run shadow</button>',
+      '<label for="shadow-input">Shadow name</label>',
+      '<input id="shadow-input" />',
+    ].join('');
+
+    const shadowButton = shadow!.getElementById('shadow-action') as HTMLButtonElement | null;
+    shadowButton?.addEventListener('click', () => {
+      document.getElementById('shadow-output')!.textContent = 'clicked';
+    });
+
+    const pageState = executeCaptureCommand(window, 'CAPTURE_PAGE_STATE', {
+      maxItems: 10,
+      maxTextLength: 40,
+    });
+    const buttons = pageState.result.buttons as Array<Record<string, unknown>>;
+    const inputs = pageState.result.inputs as Array<Record<string, unknown>>;
+    expect(buttons[0]).toMatchObject({
+      selector: '#shadow-host >> #shadow-action',
+      name: 'Shadow action',
+      role: 'button',
+    });
+    expect(inputs[0]).toMatchObject({
+      selector: '#shadow-host >> #shadow-input',
+      label: 'Shadow name',
+    });
+
+    const clickResult = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'click',
+      target: {
+        selector: '#shadow-host >> #shadow-action',
+      },
+    });
+
+    expect(clickResult.result).toMatchObject({
+      action: 'click',
+      status: 'succeeded',
+    });
+    expect(document.getElementById('shadow-output')?.textContent).toBe('clicked');
+  });
+
   it('can omit DOM and styles in UI snapshot capture payload', () => {
     document.body.innerHTML = '<main><button id="buy-now">Buy</button></main>';
 

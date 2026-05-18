@@ -18,6 +18,8 @@ export const LiveUIActionTargetSchema = z.object({
   tabId: z.number().int().min(0).optional(),
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
+  frameUrlContains: z.string().min(1).optional(),
+  frameTitleContains: z.string().min(1).optional(),
   testId: z.string().min(1).optional(),
   scope: z.enum(['buttons', 'links', 'inputs', 'modals', 'focused']).optional(),
   textContains: z.string().min(1).optional(),
@@ -31,6 +33,9 @@ export const LiveUIActionTargetSchema = z.object({
   type: z.string().min(1).optional(),
   exact: z.boolean().optional(),
   nth: z.number().int().min(0).optional(),
+  first: z.boolean().optional(),
+  last: z.boolean().optional(),
+  strict: z.boolean().optional(),
   visible: z.boolean().optional(),
   disabled: z.boolean().optional(),
   selected: z.boolean().optional(),
@@ -38,6 +43,15 @@ export const LiveUIActionTargetSchema = z.object({
   expanded: z.boolean().optional(),
   readOnly: z.boolean().optional(),
   requiredField: z.boolean().optional(),
+}).superRefine((value, ctx) => {
+  const positionFields = [value.nth !== undefined, value.first === true, value.last === true].filter(Boolean).length;
+  if (positionFields > 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'target can use only one of nth, first, or last',
+      path: ['target'],
+    });
+  }
 });
 
 const LiveUIActionBaseSchema = z.object({

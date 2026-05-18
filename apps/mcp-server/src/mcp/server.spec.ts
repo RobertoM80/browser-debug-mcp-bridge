@@ -5289,6 +5289,107 @@ describe('mcp/server V2 capture tools', () => {
     });
   });
 
+  it('resolves semantic targets with first/last/strict and frame metadata filters', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          if (command === 'CAPTURE_PAGE_STATE') {
+            return {
+              ok: true,
+              payload: {
+                buttons: [
+                  {
+                    text: 'Continue',
+                    selector: '#top-continue',
+                    elementRef: 'ref:top-continue',
+                    frameId: 0,
+                    frameUrl: 'http://localhost:3000/top',
+                    frameTitle: 'Top',
+                  },
+                  {
+                    text: 'Continue',
+                    selector: '#frame-continue',
+                    elementRef: 'ref:frame-continue',
+                    frameId: 15,
+                    frameUrl: 'http://localhost:3000/account-frame',
+                    frameTitle: 'Account iframe',
+                  },
+                ],
+                summary: {
+                  buttons: 2,
+                  links: 0,
+                  inputs: 0,
+                  modals: 0,
+                  frames: 2,
+                },
+              },
+              truncated: false,
+            };
+          }
+
+          return {
+            ok: true,
+            payload: {
+              action: 'click',
+              traceId: 'trace-live-frame-filter',
+              status: 'succeeded',
+              executionScope: 'top-document-v1',
+              startedAt: 1700000000000,
+              finishedAt: 1700000000020,
+              target: {
+                matched: true,
+                selector: '#frame-continue',
+                resolvedSelector: '#frame-continue',
+                tagName: 'button',
+                tabId: 9,
+                frameId: 15,
+                url: 'http://localhost:3000/account-frame',
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'execute_ui_action', {
+      sessionId: 'session-v2',
+      action: 'click',
+      target: {
+        scope: 'buttons',
+        textContains: 'Continue',
+        frameTitleContains: 'Account',
+        first: true,
+        strict: false,
+        tabId: 9,
+      },
+    });
+
+    expect(captureCalls[1]).toMatchObject({
+      command: 'EXECUTE_UI_ACTION',
+      payload: {
+        target: {
+          elementRef: 'ref:frame-continue',
+          selector: '#frame-continue',
+          frameId: 15,
+          tabId: 9,
+        },
+      },
+    });
+    expect(response.status).toBe('succeeded');
+    expect(response.targetResolution).toMatchObject({
+      matchedCandidateCount: 1,
+      selectedIndex: 0,
+      selectionStrategy: 'first',
+      matched: {
+        frameTitle: 'Account iframe',
+        frameId: 15,
+      },
+    });
+  });
+
   it('captures snapshot evidence when a live ui action fails', async () => {
     const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
     const tools = createToolRegistry(

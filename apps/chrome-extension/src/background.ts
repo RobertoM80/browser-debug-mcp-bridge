@@ -2206,6 +2206,8 @@ function enrichFrameScopedItem(item: Record<string, unknown>, frame: FrameCaptur
     ...item,
     frameId: frame.frameId,
     frameUrl: frame.url,
+    frameTitle: frame.title,
+    frameSameOriginWithTop: frame.sameOriginWithTop,
     elementRef: augmentElementRef(item.elementRef, frame),
   };
 }
@@ -2396,6 +2398,7 @@ async function capturePageStateAcrossFrames(
           title: frame.title,
           summary: {
             buttons: 0,
+            links: 0,
             inputs: 0,
             modals: 0,
           },

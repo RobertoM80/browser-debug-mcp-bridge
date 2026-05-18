@@ -11,6 +11,8 @@ export const UIWorkflowActionTargetSchema = z.object({
   tabId: z.number().int().min(0).optional(),
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
+  frameUrlContains: z.string().min(1).optional(),
+  frameTitleContains: z.string().min(1).optional(),
   testId: z.string().min(1).optional(),
   scope: UIWorkflowActionTargetScopeSchema.optional(),
   textContains: z.string().min(1).optional(),
@@ -24,6 +26,9 @@ export const UIWorkflowActionTargetSchema = z.object({
   type: z.string().min(1).optional(),
   exact: z.boolean().optional(),
   nth: z.number().int().min(0).optional(),
+  first: z.boolean().optional(),
+  last: z.boolean().optional(),
+  strict: z.boolean().optional(),
   visible: z.boolean().optional(),
   disabled: z.boolean().optional(),
   selected: z.boolean().optional(),
@@ -35,6 +40,7 @@ export const UIWorkflowActionTargetSchema = z.object({
   if (
     !value.selector
     && !value.elementRef
+    && !value.scope
     && !value.testId
     && !value.textContains
     && !value.labelContains
@@ -46,7 +52,15 @@ export const UIWorkflowActionTargetSchema = z.object({
   ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'target requires selector, elementRef, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText',
+      message: 'target requires selector, elementRef, scope, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText',
+      path: ['target'],
+    });
+  }
+  const positionFields = [value.nth !== undefined, value.first === true, value.last === true].filter(Boolean).length;
+  if (positionFields > 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'target can use only one of nth, first, or last',
       path: ['target'],
     });
   }
@@ -150,6 +164,8 @@ export const UIWorkflowPageStateMatcherSchema = z.object({
   placeholder: z.string().optional(),
   altText: z.string().optional(),
   exact: z.boolean().optional(),
+  frameUrlContains: z.string().optional(),
+  frameTitleContains: z.string().optional(),
   urlContains: z.string().optional(),
   language: z.string().optional(),
   disabled: z.boolean().optional(),

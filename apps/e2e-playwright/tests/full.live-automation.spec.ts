@@ -164,6 +164,7 @@ async function installAutomationFixture(page: Page): Promise<void> {
           #frame-wrap { margin-top: 16px; }
           #scroll-box { border: 1px solid #555; height: 80px; overflow: auto; width: 240px; }
           #scroll-content { height: 240px; }
+          #shadow-host { display: block; margin-top: 12px; }
           #covered-wrapper { display: inline-block; position: relative; }
           #covered-action { margin: 0; }
           #cover-layer {
@@ -205,6 +206,8 @@ async function installAutomationFixture(page: Page): Promise<void> {
           <a id="docs-primary" href="#docs-primary" aria-label="Docs">Docs</a>
           <a id="docs-secondary" href="#docs-secondary" aria-label="Docs">Docs</a>
           <output id="hover-output"></output>
+          <div id="shadow-host"></div>
+          <output id="shadow-output"></output>
           <section id="dialog" role="dialog" aria-modal="true" hidden>
             <h2>Automation dialog</h2>
             <button id="confirm-dialog" data-testid="confirm-dialog">Confirm dialog</button>
@@ -230,6 +233,7 @@ async function installAutomationFixture(page: Page): Promise<void> {
               </body>
             </html>
           "></iframe>
+          <iframe id="outer-frame"></iframe>
         </main>
         <script>
           document.querySelector('#increment').addEventListener('click', () => {
@@ -255,6 +259,33 @@ async function installAutomationFixture(page: Page): Promise<void> {
           document.querySelector('#scroll-box').addEventListener('scroll', (event) => {
             document.querySelector('#scroll-output').textContent = String(event.target.scrollTop);
           });
+          const shadowRoot = document.querySelector('#shadow-host').attachShadow({ mode: 'open' });
+          shadowRoot.innerHTML = '<button id="shadow-action" aria-label="Shadow action">Run shadow</button>';
+          shadowRoot.querySelector('#shadow-action').addEventListener('click', () => {
+            document.querySelector('#shadow-output').textContent = 'shadow clicked';
+          });
+          document.querySelector('#outer-frame').srcdoc = [
+            '<!doctype html>',
+            '<html>',
+            '<body>',
+            '<iframe id="inner-frame" srcdoc="',
+            '&lt;!doctype html&gt;',
+            '&lt;html&gt;',
+            '&lt;body&gt;',
+            '&lt;button id=\\'nested-frame-action\\' data-testid=\\'nested-frame-action\\'&gt;Nested frame action&lt;/button&gt;',
+            '&lt;output id=\\'nested-count\\'&gt;0&lt;/output&gt;',
+            '&lt;script&gt;',
+            'document.querySelector(\\'#nested-frame-action\\').addEventListener(\\'click\\', () =&gt; {',
+            'const count = document.querySelector(\\'#nested-count\\');',
+            'count.textContent = String(Number(count.textContent || \\'0\\') + 1);',
+            '});',
+            '&lt;/script&gt;',
+            '&lt;/body&gt;',
+            '&lt;/html&gt;',
+            '"></iframe>',
+            '</body>',
+            '</html>',
+          ].join('');
         </script>
       </body>
     </html>
@@ -310,7 +341,9 @@ test.describe('@full live automation through MCP and extension session', () => {
       const hasFrameButtonRef = refs.refs.some((ref) => ref.selector === '#inside-frame' && typeof ref.frameId === 'number');
       const hasFrameInputRef = refs.refs.some((ref) => ref.selector === '#frame-input' && typeof ref.frameId === 'number');
       const hasDocsLink = refs.refs.some((ref) => ref.selector === '#docs-secondary' && ref.kind === 'links');
-      return hasFrameButtonRef && hasFrameInputRef && hasDocsLink;
+      const hasShadowButtonRef = refs.refs.some((ref) => ref.selector === '#shadow-host >> #shadow-action' && ref.kind === 'buttons');
+      const hasNestedFrameButtonRef = refs.refs.some((ref) => ref.selector === '#nested-frame-action' && typeof ref.frameId === 'number');
+      return hasFrameButtonRef && hasFrameInputRef && hasDocsLink && hasShadowButtonRef && hasNestedFrameButtonRef;
     }, { timeout: 10_000 }).toBe(true);
     if (!refs) {
       throw new Error('expected interactive element refs');
@@ -321,8 +354,10 @@ test.describe('@full live automation through MCP and extension session', () => {
     expect(refs.pageSummary?.frames).toBeGreaterThanOrEqual(2);
     const frameButtonRef = refs.refs.find((ref) => ref.selector === '#inside-frame' && typeof ref.frameId === 'number');
     const frameInputRef = refs.refs.find((ref) => ref.selector === '#frame-input' && typeof ref.frameId === 'number');
+    const nestedFrameButtonRef = refs.refs.find((ref) => ref.selector === '#nested-frame-action' && typeof ref.frameId === 'number');
     expect(frameButtonRef?.elementRef).toEqual(expect.any(String));
     expect(frameInputRef?.elementRef).toEqual(expect.any(String));
+    expect(nestedFrameButtonRef?.elementRef).toEqual(expect.any(String));
 
     const click = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
@@ -384,9 +419,34 @@ test.describe('@full live automation through MCP and extension session', () => {
     });
     await expect(targetPage.locator('#hover-output')).toHaveText('hovered docs');
 
+    const shadowClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        scope: 'buttons',
+        name: 'Shadow action',
+        exact: true,
+        first: true,
+        tabId,
+      },
+    });
+    expect(shadowClick.status).toBe('succeeded');
+    expect(shadowClick.actionResult?.result?.backend).toBe('cdp-native-v2');
+    expect(shadowClick.targetResolution).toMatchObject({
+      selectionStrategy: 'first',
+      matched: {
+        selector: '#shadow-host >> #shadow-action',
+      },
+    });
+    await expect(targetPage.locator('#shadow-output')).toHaveText('shadow clicked');
+
     const key = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
       action: 'press_key',
+      target: {
+        selector: '#displayName',
+        tabId,
+      },
       input: { key: '!' },
     });
     expect(key.status).toBe('succeeded');
@@ -473,6 +533,19 @@ test.describe('@full live automation through MCP and extension session', () => {
     expect(frameInput.actionResult?.result?.backend).toBe('cdp-native-v2');
     expect(frameInput.target?.frameId).toBe(childFrameId);
     await expect(targetPage.frameLocator('#child-frame').locator('#frame-input-output')).toHaveText('Frame Ada');
+
+    const nestedFrameClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        elementRef: nestedFrameButtonRef?.elementRef,
+        tabId,
+      },
+    });
+    expect(nestedFrameClick.status).toBe('succeeded');
+    expect(nestedFrameClick.actionResult?.result?.backend).toBe('cdp-native-v2');
+    expect(nestedFrameClick.target?.frameId).toBe(nestedFrameButtonRef?.frameId);
+    await expect(targetPage.frameLocator('#outer-frame').frameLocator('#inner-frame').locator('#nested-count')).toHaveText('1');
 
     const semanticFrameInput = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,

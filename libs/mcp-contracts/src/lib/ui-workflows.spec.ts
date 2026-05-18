@@ -100,8 +100,10 @@ describe('ui-workflows', () => {
           target: {
             scope: 'inputs',
             labelContains: 'Email',
+            frameTitleContains: 'Account iframe',
             tagName: 'input',
             type: 'text',
+            first: true,
             readOnly: false,
           },
           input: {
@@ -115,8 +117,27 @@ describe('ui-workflows', () => {
     expect(step.kind).toBe('action');
     if (step.kind === 'action') {
       expect(step.target?.labelContains).toBe('Email');
+      expect(step.target?.frameTitleContains).toBe('Account iframe');
+      expect(step.target?.first).toBe(true);
       expect(step.target?.tagName).toBe('input');
     }
+  });
+
+  it('rejects conflicting action target position helpers', () => {
+    expect(() => RunUIStepsSchema.parse({
+      sessionId: 'sess_123',
+      steps: [
+        {
+          kind: 'action',
+          action: 'click',
+          target: {
+            scope: 'buttons',
+            first: true,
+            last: true,
+          },
+        },
+      ],
+    })).toThrow('target can use only one of nth, first, or last');
   });
 
   it('requires a usable action target matcher', () => {
@@ -129,7 +150,7 @@ describe('ui-workflows', () => {
           target: {},
         },
       ],
-    })).toThrow('target requires selector, elementRef, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText');
+    })).toThrow('target requires selector, elementRef, scope, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText');
   });
 
   it('creates readable workflow trace ids', () => {

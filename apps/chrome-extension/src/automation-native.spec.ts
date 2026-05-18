@@ -270,6 +270,52 @@ describe('native automation backend', () => {
     expect(chromeMock.sendCommand).not.toHaveBeenCalled();
   });
 
+  it('retries transient actionability failures before dispatch', async () => {
+    const chromeMock = installChromeMock([
+      {
+        ...targetSnapshot,
+        actionability: {
+          ...targetSnapshot.actionability,
+          stable: false,
+          failureCode: 'target_not_stable',
+          failureMessage: 'The native click target layout did not stabilize before the action.',
+        },
+      },
+      targetSnapshot,
+    ]);
+    const request: Extract<LiveUIActionRequest, { action: 'click' }> = {
+      action: 'click',
+      traceId: 'trace-click-retry',
+      target: {
+        selector: '#save',
+        tabId: 7,
+      },
+    };
+
+    const result = await executeNativeClickAction({
+      request,
+      tab: {
+        id: 7,
+        url: 'https://example.com/settings',
+      } as chrome.tabs.Tab & { id: number },
+      startedAt: 1000,
+      traceId: 'trace-click-retry',
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(result.result?.actionability).toMatchObject({
+      attempts: 2,
+    });
+    expect(chromeMock.executeScript).toHaveBeenCalledTimes(2);
+    expect(chromeMock.sendCommand).toHaveBeenCalledWith(
+      { tabId: 7 },
+      'Input.dispatchMouseEvent',
+      expect.objectContaining({
+        type: 'mousePressed',
+      }),
+    );
+  });
+
   it('uses native text insertion for input actions', async () => {
     const chromeMock = installChromeMock([
       targetSnapshot,

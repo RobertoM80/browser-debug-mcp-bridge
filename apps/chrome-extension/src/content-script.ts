@@ -401,7 +401,9 @@ function cssEscape(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
 }
 
-function getClickSelector(target: Element): string | null {
+const SHADOW_SELECTOR_SEPARATOR = ' >> ';
+
+function getLocalElementSelector(target: Element): string | null {
   if (target.id) {
     return `#${cssEscape(target.id)}`;
   }
@@ -421,7 +423,51 @@ function getClickSelector(target: Element): string | null {
 }
 
 function getElementSelector(target: Element): string {
-  return getClickSelector(target) ?? target.tagName.toLowerCase();
+  const localSelector = getLocalElementSelector(target) ?? target.tagName.toLowerCase();
+  const root = target.getRootNode();
+  if (root instanceof ShadowRoot) {
+    return `${getElementSelector(root.host)}${SHADOW_SELECTOR_SEPARATOR}${localSelector}`;
+  }
+
+  return localSelector;
+}
+
+function getClickSelector(target: Element): string | null {
+  return getElementSelector(target);
+}
+
+function queryElementInRoot(root: Document | ShadowRoot, selector: string): Element | null {
+  const parts = selector
+    .split(SHADOW_SELECTOR_SEPARATOR)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+
+  if (parts.length === 0) {
+    return null;
+  }
+
+  let currentRoot: Document | ShadowRoot = root;
+  let currentElement: Element | null = null;
+  for (const [index, part] of parts.entries()) {
+    currentElement = currentRoot.querySelector(part);
+    if (!currentElement) {
+      return null;
+    }
+    if (index < parts.length - 1) {
+      const shadowRoot = currentElement.shadowRoot;
+      if (!shadowRoot) {
+        return null;
+      }
+      currentRoot = shadowRoot;
+    }
+  }
+
+  return currentElement;
+}
+
+function getRootForElement(target: Element): Document | ShadowRoot {
+  const root = target.getRootNode();
+  return root instanceof ShadowRoot ? root : target.ownerDocument;
 }
 
 function getElementTextPreview(target: Element | null): string | undefined {
@@ -542,7 +588,13 @@ function resolveAriaLabelledBy(target: Element, maxTextLength: number): string |
 
   const parts = labelledBy
     .split(/\s+/)
-    .map((id) => target.ownerDocument.getElementById(id))
+    .map((id) => {
+      const root = getRootForElement(target);
+      if (root instanceof Document) {
+        return root.getElementById(id);
+      }
+      return root.getElementById(id);
+    })
     .filter((element): element is HTMLElement => Boolean(element))
     .map((element) => truncatePreview(element.textContent, maxTextLength))
     .filter((value): value is string => Boolean(value));
@@ -620,7 +672,7 @@ function resolveInputLabel(target: Element, maxTextLength: number): string | und
     }
 
     if (target.id) {
-      const explicit = target.ownerDocument.querySelector(`label[for="${cssEscape(target.id)}"]`);
+      const explicit = getRootForElement(target).querySelector(`label[for="${cssEscape(target.id)}"]`);
       if (explicit) {
         const text = truncatePreview(explicit.textContent, maxTextLength);
         if (text) {
@@ -642,18 +694,28 @@ function resolveInputLabel(target: Element, maxTextLength: number): string | und
   return undefined;
 }
 
-function collectUniqueElements(selectors: string[]): Element[] {
+function collectUniqueElements(selectors: string[], root: Document | ShadowRoot = document): Element[] {
   const seen = new Set<Element>();
   const elements: Element[] = [];
-  for (const selector of selectors) {
-    for (const element of Array.from(document.querySelectorAll(selector))) {
-      if (seen.has(element)) {
-        continue;
+  const visitRoot = (currentRoot: Document | ShadowRoot): void => {
+    for (const selector of selectors) {
+      for (const element of Array.from(currentRoot.querySelectorAll(selector))) {
+        if (seen.has(element)) {
+          continue;
+        }
+        seen.add(element);
+        elements.push(element);
       }
-      seen.add(element);
-      elements.push(element);
     }
-  }
+
+    for (const element of Array.from(currentRoot.querySelectorAll('*'))) {
+      if (element.shadowRoot) {
+        visitRoot(element.shadowRoot);
+      }
+    }
+  };
+
+  visitRoot(root);
   return elements;
 }
 
@@ -845,7 +907,7 @@ function resolveElementFromRef(win: Window, elementRef: string): Element | null 
 
   if (ref.testId) {
     const selector = `[data-testid="${cssEscape(ref.testId)}"]`;
-    for (const target of Array.from(win.document.querySelectorAll(selector))) {
+    for (const target of collectUniqueElements([selector], win.document)) {
       if (matches(target)) {
         return target;
       }
@@ -853,7 +915,7 @@ function resolveElementFromRef(win: Window, elementRef: string): Element | null 
   }
 
   if (ref.selector) {
-    const target = win.document.querySelector(ref.selector);
+    const target = queryElementInRoot(win.document, ref.selector);
     if (target && matches(target)) {
       return target;
     }
@@ -875,6 +937,14 @@ function resolveElementFromRef(win: Window, elementRef: string): Element | null 
   ]);
 
   return candidates.find((target) => matches(target)) ?? null;
+}
+
+function getDeepActiveElement(root: Document | ShadowRoot): Element | null {
+  let activeElement = root.activeElement;
+  while (activeElement?.shadowRoot?.activeElement) {
+    activeElement = activeElement.shadowRoot.activeElement;
+  }
+  return activeElement;
 }
 
 function capturePageState(win: Window, payload: Record<string, unknown>): { result: Record<string, unknown>; truncated: boolean } {
@@ -923,23 +993,24 @@ function capturePageState(win: Window, payload: Record<string, unknown>): { resu
   const links = linkElements.slice(0, maxItems).map((element) => summarizeLinkElement(element, maxTextLength));
   const inputs = inputElements.slice(0, maxItems).map((element) => summarizeInputElement(element, maxTextLength));
   const modals = modalElements.slice(0, maxItems).map((element) => summarizeModalElement(element, maxTextLength));
-  const focused = win.document.activeElement instanceof Element
+  const activeElement = getDeepActiveElement(win.document);
+  const focused = activeElement instanceof Element
     ? {
-        selector: getElementSelector(win.document.activeElement),
-        testId: getElementTestId(win.document.activeElement),
+        selector: getElementSelector(activeElement),
+        testId: getElementTestId(activeElement),
         elementRef: encodeElementRef({
-          selector: getElementSelector(win.document.activeElement),
-          testId: getElementTestId(win.document.activeElement),
-          text: truncatePreview(win.document.activeElement.textContent, maxTextLength),
-          name: getElementAccessibleName(win.document.activeElement, maxTextLength),
-          role: getNativeRole(win.document.activeElement),
-          tagName: win.document.activeElement.tagName.toLowerCase(),
+          selector: getElementSelector(activeElement),
+          testId: getElementTestId(activeElement),
+          text: truncatePreview(activeElement.textContent, maxTextLength),
+          name: getElementAccessibleName(activeElement, maxTextLength),
+          role: getNativeRole(activeElement),
+          tagName: activeElement.tagName.toLowerCase(),
         }),
-        tagName: win.document.activeElement.tagName.toLowerCase(),
-        text: truncatePreview(win.document.activeElement.textContent, maxTextLength),
-        name: getElementAccessibleName(win.document.activeElement, maxTextLength),
-        role: getNativeRole(win.document.activeElement),
-        visible: isElementVisibleForSummary(win.document.activeElement),
+        tagName: activeElement.tagName.toLowerCase(),
+        text: truncatePreview(activeElement.textContent, maxTextLength),
+        name: getElementAccessibleName(activeElement, maxTextLength),
+        role: getNativeRole(activeElement),
+        visible: isElementVisibleForSummary(activeElement),
       }
     : undefined;
 
@@ -1809,7 +1880,7 @@ export function executeCaptureCommand(
       throw new Error('selector is required');
     }
 
-    const target = win.document.querySelector(selector);
+    const target = queryElementInRoot(win.document, selector);
     if (!target) {
       throw new Error(`No element found for selector: ${selector}`);
     }
@@ -1878,7 +1949,7 @@ export function executeCaptureCommand(
       throw new Error('selector is required');
     }
 
-    const target = win.document.querySelector(selector);
+    const target = queryElementInRoot(win.document, selector);
     if (!target) {
       throw new Error(`No element found for selector: ${selector}`);
     }
@@ -1917,7 +1988,7 @@ export function executeCaptureCommand(
 
   if (command === 'CAPTURE_LAYOUT_METRICS') {
     const selector = typeof payload.selector === 'string' ? payload.selector : undefined;
-    const target = selector ? win.document.querySelector(selector) : win.document.documentElement;
+    const target = selector ? queryElementInRoot(win.document, selector) : win.document.documentElement;
 
     if (!target) {
       throw new Error(`No element found for selector: ${selector}`);
@@ -1963,8 +2034,8 @@ export function executeCaptureCommand(
     const includeStyles = payload.includeStyles !== false;
     const maxAncestors = clampMaxAncestors(payload.maxAncestors);
 
-    const selectedElement = selector ? win.document.querySelector(selector) : null;
-    const target = selectedElement ?? (win.document.activeElement instanceof Element ? win.document.activeElement : null)
+    const selectedElement = selector ? queryElementInRoot(win.document, selector) : null;
+    const target = selectedElement ?? getDeepActiveElement(win.document)
       ?? win.document.body
       ?? win.document.documentElement;
 
@@ -2040,8 +2111,8 @@ export function executeCaptureCommand(
     const target = request.target?.elementRef
       ? resolveElementFromRef(win, request.target.elementRef)
       : selector
-        ? win.document.querySelector(selector)
-        : (win.document.activeElement instanceof Element ? win.document.activeElement : null)
+        ? queryElementInRoot(win.document, selector)
+        : getDeepActiveElement(win.document)
           ?? win.document.body
           ?? win.document.documentElement;
 

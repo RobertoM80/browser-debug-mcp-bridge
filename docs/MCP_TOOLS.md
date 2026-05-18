@@ -299,11 +299,13 @@ Returns a compact structured page model so flows can avoid repeated large DOM ca
 
 Response highlights:
 
-- `summary`: counts for buttons, inputs, and modals
+- `summary`: counts for buttons, links, inputs, modals, and frames
 - `buttons`: compact action targets with text, selector, disabled, and selected/pressed metadata
+- `links`: compact link targets with text/name/href metadata
 - `inputs`: field labels/placeholders with value length only, never raw typed values
 - `modals`: open modal summaries with title, selector, and action counts
-- `frames`: discovered frame metadata; same-origin frame entries are merged into `buttons`, `inputs`, and `modals` with `frameId`, `frameUrl`, and frame-aware `elementRef` values
+- `frames`: discovered frame metadata; frame entries are merged into `buttons`, `links`, `inputs`, and `modals` with `frameId`, `frameUrl`, `frameTitle`, and frame-aware `elementRef` values
+- Open shadow roots are traversed for page-state discovery. Shadow selectors use `host >> target` syntax, for example `#settings-host >> #save`.
 
 Prefer this tool before `get_dom_document` or `get_dom_subtree` when the goal is understanding current page state rather than reading raw markup.
 
@@ -325,7 +327,8 @@ Returns compact live refs for interactive elements so automation can reuse `elem
 Response highlights:
 
 - `refs`: compact live element entries with `kind`, `elementRef`, selector/testId metadata, role/name metadata, and visible text or labels
-- `refs[].frameId` and `refs[].frameUrl`: present for refs discovered inside child frames; pass the returned `elementRef` back to `execute_ui_action` to keep frame targeting intact
+- `refs[].frameId`, `refs[].frameUrl`, and `refs[].frameTitle`: present for refs discovered inside child frames; pass the returned `elementRef` back to `execute_ui_action` to keep frame targeting intact
+- Open shadow-root refs use shadow selectors such as `#shadow-host >> #shadow-action`
 - `page`: current URL/title/language/viewport
 - `pageSummary`: current button/link/input/modal/frame counts
 
@@ -367,7 +370,7 @@ Response highlights:
 - `matched`: whether the assertion passed
 - `matchCount`: how many structured items matched
 - `sampledMatches`: up to 5 matching items for quick debugging
-- `pageSummary`: current button/input/modal/frame counts
+- `pageSummary`: current button/link/input/modal/frame counts
 
 Use this before large DOM captures when the goal is simply to verify UI state.
 
@@ -436,7 +439,7 @@ Override these only when full payloads are explicitly needed.
 ### execute_ui_action
 
 Executes one live UI action in the already bound extension session without creating a new browser runtime.
-`click`, `input`, `press_key`, `focus`, `blur`, `scroll`, and `submit` currently use the CDP-backed native automation backend (`cdp-native-v2`) for the top document and same-origin iframe targets. `reload` uses the extension tab API.
+`click`, `hover`, `input`, `press_key`, `focus`, `blur`, `scroll`, and `submit` currently use the CDP-backed native automation backend (`cdp-native-v2`) for the top document, open shadow roots, and same-origin iframe targets. `reload` uses the extension tab API.
 
 ```json
 {
@@ -478,7 +481,7 @@ You can also use compact semantic target matchers. The server resolves these thr
 }
 ```
 
-Semantic targets support `scope: "buttons" | "links" | "inputs" | "modals" | "focused"`, text/label/title matching, role/name/placeholder/alt matching, `exact: true`, and `nth` for deliberate disambiguation:
+Semantic targets support `scope: "buttons" | "links" | "inputs" | "modals" | "focused"`, text/label/title matching, role/name/placeholder/alt matching, frame filters (`frameUrlContains`, `frameTitleContains`), `exact: true`, and deliberate disambiguation with `nth`, `first`, `last`, or `strict: false`:
 
 ```json
 {
@@ -491,7 +494,7 @@ Semantic targets support `scope: "buttons" | "links" | "inputs" | "modals" | "fo
       "role": "link",
       "name": "Docs",
       "exact": true,
-      "nth": 1
+      "last": true
     }
   }
 }
@@ -519,11 +522,13 @@ Combined action + wait example:
 Important limits and safeguards:
 
 - Native automation supports the top document and same-origin iframe targets in the currently bound tab
+- Native actions and page-state discovery support open shadow roots with `host >> target` selectors. Closed shadow roots are not inspectable.
+- Nested same-origin iframe actions are covered when page-state returns a frame-aware `elementRef`
 - Native pointer actions in cross-origin or inaccessible frames return `unsupported_cross_origin_frame` when top-document coordinate translation is not possible
 - Invalid or stale frame ids return `target_frame_not_found`
 - `actionResult.result.backend` identifies the execution backend (`cdp-native-v2` for migrated native actions)
 - Native actions perform target inspection/actionability checks before dispatch, including visibility, disabled state, readonly/editable state for input, stable layout, pointer-events, viewport intersection, and hit-target mismatch diagnostics
-- Page-state assertions and waits support `visible: true/false`, `role`, `name`, `placeholder`, `altText`, and `exact` for structured refs where available
+- Page-state assertions and waits support `visible: true/false`, `role`, `name`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`, and `exact` for structured refs where available
 - `Allow live automation` must be enabled in the extension popup before any action can run
 - Sensitive selectors and input-like actions require the second `Allow sensitive field automation` opt-in
 - The extension shows a red in-page automation indicator while armed/executing and exposes an emergency stop in both the page overlay and popup
@@ -580,8 +585,8 @@ Runs a small generic UI workflow locally in the bridge using sequential action, 
   - supported step kinds: `action`, `waitFor`, `assert`
   - action targets can use:
       - direct handles: `elementRef`, `selector`
-      - semantic matchers: `testId`, `scope`, `textContains`, `labelContains`, `titleContains`, `role`, `name`, `placeholder`, `altText`
-      - optional refinements: `exact`, `nth`, `tagName`, `type`, `disabled`, `selected`, `pressed`, `expanded`, `readOnly`, `requiredField`
+      - semantic matchers: `testId`, `scope`, `textContains`, `labelContains`, `titleContains`, `role`, `name`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`
+      - optional refinements: `exact`, `nth`, `first`, `last`, `strict`, `tagName`, `type`, `disabled`, `selected`, `pressed`, `expanded`, `readOnly`, `requiredField`
   - the workflow stops on first failure by default and marks remaining steps as `skipped`
   - each step can set `onFailure.strategy` to `stop`, `continue`, or `retry_once`
   - each step can set `onFailure.capture` to collect a failure snapshot using the same snapshot options as `execute_ui_action.captureOnFailure`

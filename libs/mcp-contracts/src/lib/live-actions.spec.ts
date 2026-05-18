@@ -56,14 +56,29 @@ describe('live-actions', () => {
         role: 'link',
         name: 'Docs',
         exact: true,
-        nth: 1,
+        last: true,
+        strict: false,
+        frameUrlContains: '/embedded',
       },
     });
 
     expect(parsed.action).toBe('hover');
     expect(parsed.target?.scope).toBe('links');
     expect(parsed.target?.name).toBe('Docs');
-    expect(parsed.target?.nth).toBe(1);
+    expect(parsed.target?.last).toBe(true);
+    expect(parsed.target?.strict).toBe(false);
+    expect(parsed.target?.frameUrlContains).toBe('/embedded');
+  });
+
+  it('rejects conflicting target position helpers', () => {
+    expect(() => LiveUIActionRequestSchema.parse({
+      action: 'click',
+      target: {
+        scope: 'buttons',
+        nth: 0,
+        first: true,
+      },
+    })).toThrow('target can use only one of nth, first, or last');
   });
 
   it('creates readable trace ids', () => {

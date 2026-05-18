@@ -110,6 +110,8 @@ const LiveUIActionTargetSchema = z.object({
   tabId: z.number().int().min(0).optional(),
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
+  frameUrlContains: z.string().min(1).optional(),
+  frameTitleContains: z.string().min(1).optional(),
   testId: z.string().min(1).optional(),
   scope: z.enum(['buttons', 'links', 'inputs', 'modals', 'focused']).optional(),
   textContains: z.string().min(1).optional(),
@@ -123,6 +125,9 @@ const LiveUIActionTargetSchema = z.object({
   type: z.string().min(1).optional(),
   exact: z.boolean().optional(),
   nth: z.number().int().min(0).optional(),
+  first: z.boolean().optional(),
+  last: z.boolean().optional(),
+  strict: z.boolean().optional(),
   visible: z.boolean().optional(),
   disabled: z.boolean().optional(),
   selected: z.boolean().optional(),
@@ -130,6 +135,15 @@ const LiveUIActionTargetSchema = z.object({
   expanded: z.boolean().optional(),
   readOnly: z.boolean().optional(),
   requiredField: z.boolean().optional(),
+}).superRefine((value, ctx) => {
+  const positionFields = [value.nth !== undefined, value.first === true, value.last === true].filter(Boolean).length;
+  if (positionFields > 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'target can use only one of nth, first, or last',
+      path: ['target'],
+    });
+  }
 });
 
 const LiveUIActionBaseSchema = z.object({
@@ -228,6 +242,8 @@ const UIWorkflowActionTargetSchema = z.object({
   tabId: z.number().int().min(0).optional(),
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
+  frameUrlContains: z.string().min(1).optional(),
+  frameTitleContains: z.string().min(1).optional(),
   testId: z.string().min(1).optional(),
   scope: UIWorkflowActionTargetScopeSchema.optional(),
   textContains: z.string().min(1).optional(),
@@ -241,6 +257,9 @@ const UIWorkflowActionTargetSchema = z.object({
   type: z.string().min(1).optional(),
   exact: z.boolean().optional(),
   nth: z.number().int().min(0).optional(),
+  first: z.boolean().optional(),
+  last: z.boolean().optional(),
+  strict: z.boolean().optional(),
   visible: z.boolean().optional(),
   disabled: z.boolean().optional(),
   selected: z.boolean().optional(),
@@ -252,6 +271,7 @@ const UIWorkflowActionTargetSchema = z.object({
   if (
     !value.selector
     && !value.elementRef
+    && !value.scope
     && !value.testId
     && !value.textContains
     && !value.labelContains
@@ -263,7 +283,15 @@ const UIWorkflowActionTargetSchema = z.object({
   ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'target requires selector, elementRef, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText',
+      message: 'target requires selector, elementRef, scope, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText',
+      path: ['target'],
+    });
+  }
+  const positionFields = [value.nth !== undefined, value.first === true, value.last === true].filter(Boolean).length;
+  if (positionFields > 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'target can use only one of nth, first, or last',
       path: ['target'],
     });
   }
@@ -367,6 +395,8 @@ const UIWorkflowPageStateMatcherSchema = z.object({
   placeholder: z.string().optional(),
   altText: z.string().optional(),
   exact: z.boolean().optional(),
+  frameUrlContains: z.string().optional(),
+  frameTitleContains: z.string().optional(),
   urlContains: z.string().optional(),
   language: z.string().optional(),
   visible: z.boolean().optional(),
@@ -679,6 +709,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
       placeholder: { type: 'string' },
       altText: { type: 'string' },
       exact: { type: 'boolean' },
+      frameUrlContains: { type: 'string' },
+      frameTitleContains: { type: 'string' },
       urlContains: { type: 'string' },
       language: { type: 'string' },
       visible: { type: 'boolean' },
@@ -712,6 +744,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
       placeholder: { type: 'string' },
       altText: { type: 'string' },
       exact: { type: 'boolean' },
+      frameUrlContains: { type: 'string' },
+      frameTitleContains: { type: 'string' },
       urlContains: { type: 'string' },
       language: { type: 'string' },
       visible: { type: 'boolean' },
@@ -1074,6 +1108,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
           tabId: { type: 'number' },
           frameId: { type: 'number' },
           url: { type: 'string' },
+          frameUrlContains: { type: 'string' },
+          frameTitleContains: { type: 'string' },
           testId: { type: 'string' },
           scope: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused'] },
           textContains: { type: 'string' },
@@ -1085,6 +1121,9 @@ const TOOL_SCHEMAS: Record<string, object> = {
           altText: { type: 'string' },
           exact: { type: 'boolean' },
           nth: { type: 'number' },
+          first: { type: 'boolean' },
+          last: { type: 'boolean' },
+          strict: { type: 'boolean' },
           tagName: { type: 'string' },
           type: { type: 'string' },
           visible: { type: 'boolean' },
@@ -1127,6 +1166,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
           placeholder: { type: 'string' },
           altText: { type: 'string' },
           exact: { type: 'boolean' },
+          frameUrlContains: { type: 'string' },
+          frameTitleContains: { type: 'string' },
           urlContains: { type: 'string' },
           language: { type: 'string' },
           visible: { type: 'boolean' },
@@ -1177,6 +1218,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
                 tabId: { type: 'number' },
                 frameId: { type: 'number' },
                 url: { type: 'string' },
+                frameUrlContains: { type: 'string' },
+                frameTitleContains: { type: 'string' },
                 testId: { type: 'string' },
                 scope: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused'] },
                 textContains: { type: 'string' },
@@ -1188,6 +1231,9 @@ const TOOL_SCHEMAS: Record<string, object> = {
                 altText: { type: 'string' },
                 exact: { type: 'boolean' },
                 nth: { type: 'number' },
+                first: { type: 'boolean' },
+                last: { type: 'boolean' },
+                strict: { type: 'boolean' },
                 tagName: { type: 'string' },
                 type: { type: 'string' },
                 visible: { type: 'boolean' },
@@ -1235,6 +1281,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
                 placeholder: { type: 'string' },
                 altText: { type: 'string' },
                 exact: { type: 'boolean' },
+                frameUrlContains: { type: 'string' },
+                frameTitleContains: { type: 'string' },
                 urlContains: { type: 'string' },
                 language: { type: 'string' },
                 visible: { type: 'boolean' },
@@ -3469,6 +3517,8 @@ interface PageStateMatcher {
   placeholder?: string;
   altText?: string;
   exact?: boolean;
+  frameUrlContains?: string;
+  frameTitleContains?: string;
   urlContains?: string;
   language?: string;
   disabled?: boolean;
@@ -3605,6 +3655,8 @@ function resolvePageStateMatcher(input: ToolInput): PageStateMatcher {
     placeholder: resolveOptionalMatcherString(input.placeholder),
     altText: resolveOptionalMatcherString(input.altText),
     exact: resolveOptionalMatcherBoolean(input.exact),
+    frameUrlContains: resolveOptionalMatcherString(input.frameUrlContains),
+    frameTitleContains: resolveOptionalMatcherString(input.frameTitleContains),
     urlContains: resolveOptionalMatcherString(input.urlContains),
     language: resolveOptionalMatcherString(input.language),
     disabled: resolveOptionalMatcherBoolean(input.disabled),
@@ -3691,6 +3743,8 @@ function matchesPageStateItem(item: Record<string, unknown>, matcher: PageStateM
     && matchesTextValue(item.name, matcher.name, matcher.exact)
     && matchesTextValue(item.placeholder, matcher.placeholder, matcher.exact)
     && matchesTextValue(item.altText, matcher.altText, matcher.exact)
+    && includesNormalized(item.frameUrl, matcher.frameUrlContains)
+    && includesNormalized(item.frameTitle, matcher.frameTitleContains)
     && includesNormalized(item.url, matcher.urlContains)
     && equalsNormalized(item.language, matcher.language)
     && equalsNormalized(item.tagName, matcher.tagName)
@@ -3991,6 +4045,8 @@ function describeWorkflowTargetCandidate(item: Record<string, unknown>): Record<
     selector: typeof item.selector === 'string' ? item.selector : undefined,
     frameId: typeof item.frameId === 'number' ? item.frameId : undefined,
     frameUrl: typeof item.frameUrl === 'string' ? item.frameUrl : undefined,
+    frameTitle: typeof item.frameTitle === 'string' ? item.frameTitle : undefined,
+    frameSameOriginWithTop: typeof item.frameSameOriginWithTop === 'boolean' ? item.frameSameOriginWithTop : undefined,
     role: typeof item.role === 'string' ? item.role : undefined,
     name: typeof item.name === 'string' ? item.name : undefined,
     tagName: typeof item.tagName === 'string' ? item.tagName : undefined,
@@ -4032,6 +4088,8 @@ function matchesWorkflowActionTarget(
     && matchesTextValue(item.name, target.name, target.exact)
     && matchesTextValue(item.placeholder, target.placeholder, target.exact)
     && matchesTextValue(item.altText, target.altText, target.exact)
+    && includesNormalized(item.frameUrl, target.frameUrlContains)
+    && includesNormalized(item.frameTitle, target.frameTitleContains)
     && equalsNormalized(item.tagName, target.tagName)
     && equalsNormalized(item.type, target.type)
     && equalsOptionalBoolean(item.visible, target.visible)
@@ -4051,6 +4109,9 @@ function summarizeWorkflowTargetMatcher(target: UIWorkflowActionTarget): Record<
     selector: target.selector,
     elementRef: target.elementRef,
     testId: target.testId,
+    frameId: target.frameId,
+    frameUrlContains: target.frameUrlContains,
+    frameTitleContains: target.frameTitleContains,
     textContains: target.textContains,
     labelContains: target.labelContains,
     titleContains: target.titleContains,
@@ -4062,6 +4123,9 @@ function summarizeWorkflowTargetMatcher(target: UIWorkflowActionTarget): Record<
     type: target.type,
     exact: target.exact,
     nth: target.nth,
+    first: target.first,
+    last: target.last,
+    strict: target.strict,
     visible: target.visible,
     disabled: target.disabled,
     selected: target.selected,
@@ -4078,7 +4142,10 @@ function hasSemanticActionTargetMatcher(target: LiveUIActionRequest['target']): 
     && !target.selector
     && !target.elementRef
     && (
-      target.testId
+      target.scope
+      || target.frameUrlContains
+      || target.frameTitleContains
+      || target.testId
       || target.textContains
       || target.labelContains
       || target.titleContains
@@ -4088,6 +4155,10 @@ function hasSemanticActionTargetMatcher(target: LiveUIActionRequest['target']): 
       || target.altText
       || target.tagName
       || target.type
+      || target.first === true
+      || target.last === true
+      || target.nth !== undefined
+      || target.strict === false
       || target.visible !== undefined
       || target.disabled !== undefined
       || target.selected !== undefined
@@ -4097,6 +4168,56 @@ function hasSemanticActionTargetMatcher(target: LiveUIActionRequest['target']): 
       || target.requiredField !== undefined
     ),
   );
+}
+
+function selectWorkflowTargetCandidate(
+  candidates: Record<string, unknown>[],
+  target: UIWorkflowActionTarget,
+): {
+  candidate?: Record<string, unknown>;
+  selectedCandidates: Record<string, unknown>[];
+  selectedIndex?: number;
+  selectionStrategy: 'strict-single' | 'nth' | 'first' | 'last' | 'first-non-strict';
+  outOfRange: boolean;
+} {
+  if (typeof target.nth === 'number') {
+    return {
+      candidate: candidates[target.nth],
+      selectedCandidates: candidates[target.nth] ? [candidates[target.nth] as Record<string, unknown>] : [],
+      selectedIndex: target.nth,
+      selectionStrategy: 'nth',
+      outOfRange: candidates[target.nth] === undefined,
+    };
+  }
+
+  if (target.last === true) {
+    const selectedIndex = candidates.length - 1;
+    return {
+      candidate: selectedIndex >= 0 ? candidates[selectedIndex] : undefined,
+      selectedCandidates: selectedIndex >= 0 ? [candidates[selectedIndex] as Record<string, unknown>] : [],
+      selectedIndex,
+      selectionStrategy: 'last',
+      outOfRange: selectedIndex < 0,
+    };
+  }
+
+  if (target.first === true || target.strict === false) {
+    return {
+      candidate: candidates[0],
+      selectedCandidates: candidates[0] ? [candidates[0] as Record<string, unknown>] : [],
+      selectedIndex: 0,
+      selectionStrategy: target.strict === false && target.first !== true ? 'first-non-strict' : 'first',
+      outOfRange: candidates[0] === undefined,
+    };
+  }
+
+  return {
+    candidate: candidates.length === 1 ? candidates[0] : undefined,
+    selectedCandidates: candidates,
+    selectedIndex: candidates.length === 1 ? 0 : undefined,
+    selectionStrategy: 'strict-single',
+    outOfRange: false,
+  };
 }
 
 async function resolveWorkflowActionTarget(
@@ -4146,10 +4267,9 @@ async function resolveWorkflowActionTarget(
   });
   const candidates = pickWorkflowTargetItems(capture.payload, target.scope)
     .filter((item) => matchesWorkflowActionTarget(item, target));
-  const nthCandidate = typeof target.nth === 'number' ? candidates[target.nth] : undefined;
-  const resolvedCandidates = typeof target.nth === 'number' && nthCandidate ? [nthCandidate] : candidates;
+  const selection = selectWorkflowTargetCandidate(candidates, target);
 
-  if (candidates.length === 0 || (typeof target.nth === 'number' && !nthCandidate)) {
+  if (candidates.length === 0 || selection.outOfRange) {
     throw new WorkflowTargetResolutionError(
       'workflow_target_not_found',
       'No interactive element matched the workflow target.',
@@ -4157,6 +4277,8 @@ async function resolveWorkflowActionTarget(
         matcher: summarizeWorkflowTargetMatcher(target),
         searchedScope: target.scope ?? 'all-interactive',
         matchedCandidateCount: candidates.length,
+        selectionStrategy: selection.selectionStrategy,
+        selectedIndex: selection.selectedIndex,
         sampledCandidates: pickWorkflowTargetItems(capture.payload, target.scope)
           .slice(0, 5)
           .map((item) => describeWorkflowTargetCandidate(item)),
@@ -4164,20 +4286,21 @@ async function resolveWorkflowActionTarget(
     );
   }
 
-  if (resolvedCandidates.length > 1) {
+  if (!selection.candidate || selection.selectedCandidates.length > 1) {
     throw new WorkflowTargetResolutionError(
       'workflow_target_ambiguous',
-      `Workflow target matched ${resolvedCandidates.length} elements; refine the matcher or provide nth.`,
+      `Workflow target matched ${selection.selectedCandidates.length} elements; refine the matcher or provide nth, first, last, or strict:false.`,
       {
         matcher: summarizeWorkflowTargetMatcher(target),
-        matchedCandidateCount: resolvedCandidates.length,
+        matchedCandidateCount: selection.selectedCandidates.length,
         totalMatchedCandidateCount: candidates.length,
-        sampledCandidates: resolvedCandidates.slice(0, 5).map((item) => describeWorkflowTargetCandidate(item)),
+        selectionStrategy: selection.selectionStrategy,
+        sampledCandidates: selection.selectedCandidates.slice(0, 5).map((item) => describeWorkflowTargetCandidate(item)),
       },
     );
   }
 
-  const candidate = resolvedCandidates[0];
+  const candidate = selection.candidate;
   return {
     target: {
       elementRef: typeof candidate.elementRef === 'string' ? candidate.elementRef : undefined,
@@ -4190,7 +4313,8 @@ async function resolveWorkflowActionTarget(
       strategy: typeof candidate.elementRef === 'string' ? 'semantic_elementRef' : 'semantic_selector',
       matcher: summarizeWorkflowTargetMatcher(target),
       matchedCandidateCount: candidates.length,
-      selectedIndex: target.nth ?? 0,
+      selectedIndex: selection.selectedIndex ?? 0,
+      selectionStrategy: selection.selectionStrategy,
       matched: describeWorkflowTargetCandidate(candidate),
     },
     pageCapture: capture,
