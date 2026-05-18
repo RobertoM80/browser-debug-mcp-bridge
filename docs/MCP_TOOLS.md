@@ -427,6 +427,96 @@ Response highlights:
 - `waitedMs`: total wait duration
 - `sampledMatches`: matched items when successful
 
+### preflight_automation_flow
+
+Checks whether a live session is ready for a bounded automation flow before the agent starts clicking or typing.
+
+```json
+{
+  "name": "preflight_automation_flow",
+  "arguments": {
+    "sessionId": "sess_123",
+    "expectedUrlContains": "/checkout",
+    "plannedActions": ["click", "input"],
+    "requireSensitiveAutomation": true
+  }
+}
+```
+
+Response highlights:
+
+- `ready`: whether the flow can proceed
+- `blockers`: session, connection, URL, or page-state problems that should stop the flow
+- `warnings`: production-like origin, sensitive-field, or cross-origin frame risks
+- `checks`: compact readiness booleans for session, live connection, expected URL, page capture, and detected risks
+- `nextActions`: concrete guidance to run the flow or resolve blockers
+
+Run this before production or remote-origin flows so agents do not repeatedly try actions against the wrong tab, stale session, iframe noise, or sensitive surfaces.
+
+### URL, selector, console, and network waits
+
+These tools provide first-class waits beyond compact page-state polling:
+
+- `wait_for_url`: waits for `exactUrl`, `urlContains`, or `urlRegex`
+- `wait_for_selector_state`: waits for a selector to be `attached`, `detached`, `visible`, or `hidden`
+- `wait_for_console`: waits for a live console log matching `levels` and/or `contains`
+- `wait_for_network_quiet`: waits until persisted network activity has been quiet for a bounded window
+
+```json
+{
+  "name": "wait_for_url",
+  "arguments": {
+    "sessionId": "sess_123",
+    "urlContains": "/dashboard",
+    "timeoutMs": 5000,
+    "pollIntervalMs": 200
+  }
+}
+```
+
+```json
+{
+  "name": "wait_for_selector_state",
+  "arguments": {
+    "sessionId": "sess_123",
+    "selector": "#save-status",
+    "state": "visible",
+    "timeoutMs": 5000
+  }
+}
+```
+
+```json
+{
+  "name": "wait_for_console",
+  "arguments": {
+    "sessionId": "sess_123",
+    "levels": ["error"],
+    "contains": "checkout",
+    "timeoutMs": 5000
+  }
+}
+```
+
+```json
+{
+  "name": "wait_for_network_quiet",
+  "arguments": {
+    "sessionId": "sess_123",
+    "quietMs": 500,
+    "urlContains": "/api/checkout",
+    "method": "POST",
+    "timeoutMs": 10000
+  }
+}
+```
+
+Response highlights:
+
+- `matched`, `waitKind`, `attempts`, `waitedMs`
+- `evidence` with the final URL/page, selector state, sampled console logs, or sampled network calls
+- structured timeout error codes such as `url_wait_timeout`, `selector_state_wait_timeout`, `console_wait_timeout`, and `network_quiet_timeout`
+
 ### get_live_console_logs
 
 Reads session-scoped live console logs from extension memory (non-persistent buffer).
@@ -636,7 +726,9 @@ Runs a small generic UI workflow locally in the bridge using sequential action, 
   - modes:
     - `safe`: fuller verification and broader state capture
     - `fast`: smaller page-state captures, cached state reuse between steps, and lighter summaries
-  - supported step kinds: `action`, `waitFor`, `assert`
+  - supported step kinds: `action`, `waitFor`, `wait`, `assert`
+  - `waitFor` polls compact page-state matchers
+  - `wait` runs the first-class wait engine with `waitKind: "url" | "selector_state" | "console" | "network_quiet"`
   - action targets can use:
       - direct handles: `elementRef`, `selector`
       - semantic matchers: `testId`, `scope`, `locator`, `textContains`, `labelContains`, `titleContains`, `role`, `name`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`
@@ -651,6 +743,7 @@ Runs a small generic UI workflow locally in the bridge using sequential action, 
   - `steps`: per-step status, timing, and error details
   - `failedStepId`: first failed step when the workflow stops early
   - action-step failures include structured target diagnostics for not-found and ambiguous semantic matches
+  - `wait` step results include `wait.matched`, `wait.waitKind`, `attempts`, `waitedMs`, and wait-specific evidence under `target`
   - step results include `executionAttempts`, resolved `failurePolicy`, optional `failureEvidence`, and optional `recommendedAction`
   - step results can include `pageChangeSummary` with compact state diffs between workflow steps
   - `workflowDiagnostics` reports retry count, page-state capture count, failure-capture count, and whether cached state was used

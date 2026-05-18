@@ -22,7 +22,7 @@ The server now also guards against repeated unchanged tool failures. Guarded MCP
 
 ## What Works
 
-- `execute_ui_action`, `run_ui_steps`, `assert_page_state`, `wait_for_page_state`, and `get_interactive_elements` exist.
+- `execute_ui_action`, `run_ui_steps`, `preflight_automation_flow`, `assert_page_state`, `wait_for_page_state`, first-class URL/selector/console/network-quiet waits, and `get_interactive_elements` exist.
 - The MCP server sends commands through the existing live extension session.
 - Automation is guarded by extension settings, session tab binding, URL allowlist, sensitive-field opt-in, visible in-page indicator, and emergency stop.
 - `execute_ui_action` and workflow orchestration can resolve compact semantic targets and locator-style targets, run steps, retry once, capture failure evidence, and report structured diagnostics.
@@ -38,10 +38,10 @@ The server now also guards against repeated unchanged tool failures. Guarded MCP
 - Cross-origin, sandboxed opaque-origin, or inaccessible iframe pointer actions remain diagnostic because the native click driver must translate frame-local coordinates into top-document CDP coordinates. Native results now include frame policy metadata and explicit coordinate-resolution diagnostics.
 - The native actionability model now covers visibility, disabled state, readonly/editable input policy, pointer-events, viewport intersection, stable layout, hit-target mismatch diagnostics, shadow-host hit testing, and a short retry loop for transient inspection/actionability failures. It still needs parity coverage for offscreen scroll semantics, detached targets, overlay edge cases, and retry-on-detach.
 - Targeting supports CSS selector, frame-aware `elementRef`, shadow selectors, compact semantic matching, and native DOM `target.locator` resolution for direct actions and workflow action steps. Locator steps support `css`, `role`, `text`, `label`, `testId`, `placeholder`, `altText`, regex matchers, frame URL/title filters, exact text matching, `nth`, `first`, `last`, and `strict:false` disambiguation. There is still no full DOM locator engine for true ancestor/descendant chaining, closed shadow DOM, arbitrary selector state, or coordinate targeting.
-- Waits are based on compact page-state polling, now including visible/hidden structured refs, and do not cover navigation, URL predicates, network, console, arbitrary selector attached/detached state, layout stability, dialogs, downloads, or popups as workflow primitives.
+- Waits now cover compact page-state polling, URL predicates, arbitrary selector attached/detached/visible/hidden state, live console messages, and persisted network quiet windows. They still do not cover navigation lifecycle/load states, request/response predicates as workflow primitives, layout stability, dialogs, downloads, or popups.
 - Browser e2e coverage now has a full-path proof for the native top-document action set and common actionability rejections, but does not yet cover Playwright/Cypress parity cases.
 
-Coverage update: the full-path e2e proof now asserts `cdp-native-v2` for click, hover, input, key press, focus, blur, scroll, submit, open shadow-root click, same-origin iframe click/input, nested same-origin iframe click, stale frame-ref recovery, and native DOM locator targeting using refs returned by the extension resolver. It also asserts direct semantic action targeting, role/name positional link targeting, visible/hidden page-state assertions, readonly input rejection, disabled, hidden, pointer-events none, covered target, stale frame rejection, workflow, and automation-history trace lookup behavior. The remaining test gaps are deeper actionability edge cases, full DOM locator parity, richer waits, and broader cross-origin/sandboxed frame coverage.
+Coverage update: the full-path e2e proof now asserts `cdp-native-v2` for click, hover, input, key press, focus, blur, scroll, submit, open shadow-root click, same-origin iframe click/input, nested same-origin iframe click, stale frame-ref recovery, and native DOM locator targeting using refs returned by the extension resolver. It also asserts direct semantic action targeting, role/name positional link targeting, visible/hidden page-state assertions, readonly input rejection, disabled, hidden, pointer-events none, covered target, stale frame rejection, workflow, and automation-history trace lookup behavior. The remaining test gaps are deeper actionability edge cases, full DOM locator parity, lifecycle/request-response waits, e2e proof for the new wait primitives, and broader cross-origin/sandboxed frame coverage.
 
 ## Root Cause
 
@@ -64,7 +64,7 @@ Recommended layers:
 - `TargetResolver`: resolves selectors, element refs, semantic locators, coordinates, and frames. The compact MCP-side resolver is now extracted to `apps/mcp-server/src/mcp/target-resolution.ts` with focused unit coverage, and direct/workflow locator actions now use extension-side native DOM resolution. The next step is adding full DOM locator relationships beyond same-element structured filters.
 - `ActionabilityChecker`: validates visible, stable, enabled/editable, in viewport, and hit-testable targets.
 - `NativeInputDriver`: sends mouse and keyboard input with CDP, scrolls into view, and handles click/type/fill/clear/select semantics.
-- `WaitEngine`: keeps page-state waits and adds selector, URL, navigation, network, console, and layout waits.
+- `WaitEngine`: keeps page-state waits and now has the first URL, selector-state, console, and network-quiet primitives. The remaining work is navigation lifecycle, request/response predicates, layout stability, dialogs, downloads, and popups.
 - `AutomationDiagnostics`: persists resolved target, actionability, hit-test, screenshot/snapshot, and CDP failure metadata.
 
 ## Phased Plan
@@ -74,11 +74,11 @@ Recommended layers:
 3. Move keyboard/input execution to CDP keyboard events and explicit fill/type semantics.
 4. Add frame-aware target resolution and diagnostics for unsupported frame cases.
 5. Add locator semantics beyond CSS selectors and `elementRef`.
-6. Expand workflow waits to navigation, URL, selector state, network, console, and layout stability.
+6. Expand workflow waits to navigation lifecycle, request/response predicates, layout stability, dialogs, downloads, and popups. URL, selector-state, console, and network-quiet waits now exist.
 7. Persist richer automation diagnostics in history tables.
 8. Update docs and schemas so unsupported fields are not advertised as implemented behavior.
 
-Phase 1 now has a full-path test. Phase 2 has native click/hover with actionability checks for top-document and same-origin iframe targets. Phase 3 has native input/key plus native focus/blur/scroll/submit. Phase 4 has same-origin iframe action support, nested same-origin coverage, frame-ref discovery, stale frame-ref recovery by URL/title, and explicit cross-origin/sandboxed frame policy diagnostics. Phase 5 now has native DOM locator resolution for same-element structured filters, role/name/exact/regex/positional matching, frame URL/title filters, open shadow-root selectors, and an extracted MCP-side target-resolution module. It still needs full DOM locator relationships and frame-locator composition. Phase 7 has baseline history persistence plus trace lookup. Phase 6 and the richer diagnostics portion of 7 remain open and should be treated as the next refactor scope.
+Phase 1 now has a full-path test. Phase 2 has native click/hover with actionability checks for top-document and same-origin iframe targets. Phase 3 has native input/key plus native focus/blur/scroll/submit. Phase 4 has same-origin iframe action support, nested same-origin coverage, frame-ref discovery, stale frame-ref recovery by URL/title, and explicit cross-origin/sandboxed frame policy diagnostics. Phase 5 now has native DOM locator resolution for same-element structured filters, role/name/exact/regex/positional matching, frame URL/title filters, open shadow-root selectors, and an extracted MCP-side target-resolution module. It still needs full DOM locator relationships and frame-locator composition. Phase 6 now has the first production-useful wait slice: URL, selector-state, console, and network-quiet waits can run standalone and inside `run_ui_steps`. Phase 7 has baseline history persistence plus trace lookup. Remaining Phase 6 lifecycle waits and the richer diagnostics portion of 7 remain open and should be treated as the next refactor scope.
 
 ## Additional Tests To Add
 
@@ -87,10 +87,10 @@ Phase 1 now has a full-path test. Phase 2 has native click/hover with actionabil
 - Keyboard: shortcuts, modifiers, focus movement, form submission, and non-character keys.
 - Frames: broader cross-origin/sandboxed fixture coverage, multi-match frame ambiguity diagnostics, and frame ref stability across reloads/navigation beyond the current URL/title recovery baseline.
 - Locators: true DOM ancestor/descendant chained locators, full frame-locator composition, closed shadow DOM policy, coordinate targets, arbitrary selector state, and richer ambiguity diagnostics beyond the current same-element native locator baseline.
-- Waits: URL, navigation, selector state, request/response, console, and bounded network quiet windows.
+- Waits: navigation lifecycle/load states, request/response predicates, layout stability, dialogs, downloads, popups, and e2e coverage for the new URL/selector/console/network-quiet MCP waits.
 - Diagnostics/history: deeper run details, failure evidence linkage, actionability metadata, and CDP failure metadata after real MCP-triggered actions.
 - Safety: disabled automation, sensitive-field opt-in, unbound tab, disallowed URL, and emergency stop.
 
 ## Final Assessment
 
-This is now a working real-browser automation foundation for top-document, open shadow-root, and same-origin iframe targets, including nested same-origin frame coverage, frame-ref discovery, stale frame-ref recovery, and explicit unsupported-frame diagnostics. It is still not a finished Playwright/Cypress-equivalent engine. The remaining required work is full locator parity, stronger waits, deeper diagnostics, broader frame edge coverage, navigation-grade frame stability, and broader actionability parity.
+This is now a working real-browser automation foundation for top-document, open shadow-root, and same-origin iframe targets, including nested same-origin frame coverage, frame-ref discovery, stale frame-ref recovery, explicit unsupported-frame diagnostics, production-flow preflight, and first-class URL/selector/console/network-quiet waits. It is still not a finished Playwright/Cypress-equivalent engine. The remaining required work is full locator parity, lifecycle/request-response waits, deeper diagnostics, broader frame edge coverage, navigation-grade frame stability, and broader actionability parity.

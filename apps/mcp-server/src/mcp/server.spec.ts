@@ -3978,6 +3978,381 @@ describe('mcp/server V2 capture tools', () => {
     expect(response.waitedMs).toBeGreaterThanOrEqual(0);
   });
 
+  it('preflights production-like automation flows with session, page, and risk diagnostics', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const now = Date.now();
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, tab_id, url_start, url_last)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      'session-v2',
+      now - 1000,
+      now - 500,
+      0,
+      7,
+      'https://app.example.com/account',
+      'https://app.example.com/account',
+    );
+
+    const tools = createToolRegistry(
+      createV2ToolHandlers(
+        {
+          execute: async (_sessionId, command) => {
+            expect(command).toBe('CAPTURE_PAGE_STATE');
+            return {
+              ok: true,
+              payload: {
+                url: 'https://app.example.com/account',
+                title: 'Account',
+                language: 'en',
+                viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+                summary: { buttons: 2, links: 1, inputs: 2, modals: 0, frames: 1 },
+                inputs: [
+                  {
+                    label: 'Email address',
+                    selector: '#email',
+                    type: 'email',
+                  },
+                  {
+                    label: 'Password',
+                    selector: '#password',
+                    type: 'password',
+                  },
+                ],
+                frames: [
+                  {
+                    frameId: 22,
+                    url: 'https://payments.example/frame',
+                    title: 'Payment',
+                    sameOrigin: false,
+                    accessible: false,
+                  },
+                ],
+              },
+              truncated: false,
+            };
+          },
+        },
+        () => db,
+        () => ({
+          connected: true,
+          connectedAt: now - 900,
+          lastHeartbeatAt: now - 10,
+        }),
+      ),
+    );
+
+    const response = await routeToolCall(tools, 'preflight_automation_flow', {
+      sessionId: 'session-v2',
+      expectedUrlContains: '/account',
+      plannedActions: ['click', 'input'],
+      requireSensitiveAutomation: true,
+    });
+
+    expect(response.ready).toBe(true);
+    expect(response.blockers).toEqual([]);
+    expect((response.warnings as Array<Record<string, unknown>>).map((warning) => warning.code)).toEqual(
+      expect.arrayContaining([
+        'PRODUCTION_OR_REMOTE_ORIGIN',
+        'SENSITIVE_FIELD_AUTOMATION_RISK',
+        'CROSS_ORIGIN_FRAME_PRESENT',
+      ]),
+    );
+    expect(response.checks).toMatchObject({
+      sessionFound: true,
+      liveConnected: true,
+      expectedUrlMatched: true,
+      pageStateCaptured: true,
+      remoteOrProductionLike: true,
+      sensitiveInputCount: 2,
+      crossOriginFrameCount: 1,
+    });
+    expect(response.page).toMatchObject({
+      url: 'https://app.example.com/account',
+      title: 'Account',
+    });
+    db.close();
+  });
+
+  it('preflights disconnected or missing sessions as blockers before page capture', async () => {
+    let captureAttempted = false;
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const tools = createToolRegistry(
+      createV2ToolHandlers(
+        {
+          execute: async () => {
+            captureAttempted = true;
+            return { ok: true, payload: {}, truncated: false };
+          },
+        },
+        () => db,
+        () => undefined,
+      ),
+    );
+
+    const response = await routeToolCall(tools, 'preflight_automation_flow', {
+      sessionId: 'missing-session',
+      expectedUrlContains: '/dashboard',
+    });
+
+    expect(response.ready).toBe(false);
+    expect(captureAttempted).toBe(false);
+    expect((response.blockers as Array<Record<string, unknown>>).map((blocker) => blocker.code)).toEqual(
+      expect.arrayContaining(['SESSION_NOT_FOUND', 'LIVE_SESSION_DISCONNECTED']),
+    );
+    expect(response.nextActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'SESSION_NOT_FOUND' }),
+        expect.objectContaining({ code: 'LIVE_SESSION_DISCONNECTED' }),
+      ]),
+    );
+    db.close();
+  });
+
+  it('waits for URL predicates with exact, contains, or regex matching', async () => {
+    let attempt = 0;
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command) => {
+          expect(command).toBe('CAPTURE_PAGE_STATE');
+          attempt += 1;
+          return {
+            ok: true,
+            payload: {
+              url: attempt >= 2 ? 'https://app.example.com/dashboard?tab=weekly' : 'https://app.example.com/loading',
+              title: attempt >= 2 ? 'Dashboard' : 'Loading',
+              language: 'en',
+              viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+              summary: { buttons: 0, links: 0, inputs: 0, modals: 0 },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_url', {
+      sessionId: 'session-v2',
+      urlContains: '/dashboard',
+      urlRegex: 'tab=week',
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('url');
+    expect(response.attempts).toBeGreaterThanOrEqual(2);
+    expect(response.evidence).toMatchObject({
+      page: {
+        url: 'https://app.example.com/dashboard?tab=weekly',
+      },
+    });
+  });
+
+  it('waits for selector state using live style and layout captures', async () => {
+    let styleAttempt = 0;
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          expect(payload.selector).toBe('#ready');
+          if (command === 'CAPTURE_COMPUTED_STYLES') {
+            styleAttempt += 1;
+            return {
+              ok: true,
+              payload: {
+                selector: '#ready',
+                properties: {
+                  display: 'block',
+                  visibility: styleAttempt >= 2 ? 'visible' : 'hidden',
+                  opacity: '1',
+                },
+              },
+              truncated: false,
+            };
+          }
+
+          if (command === 'CAPTURE_LAYOUT_METRICS') {
+            return {
+              ok: true,
+              payload: {
+                selector: '#ready',
+                viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+                element: { x: 10, y: 10, width: 120, height: 40, top: 10, right: 130, bottom: 50, left: 10 },
+              },
+              truncated: false,
+            };
+          }
+
+          throw new Error(`Unexpected command ${command}`);
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_selector_state', {
+      sessionId: 'session-v2',
+      selector: '#ready',
+      state: 'visible',
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('selector_state');
+    expect(response.attempts).toBeGreaterThanOrEqual(2);
+    expect(response.evidence).toMatchObject({
+      selector: '#ready',
+      state: 'visible',
+      selectorState: {
+        attached: true,
+        visible: true,
+      },
+    });
+  });
+
+  it('waits for matching live console messages', async () => {
+    let attempt = 0;
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          expect(command).toBe('CAPTURE_GET_LIVE_CONSOLE_LOGS');
+          expect(payload).toMatchObject({
+            levels: ['error'],
+            contains: 'checkout',
+            includeRuntimeErrors: true,
+          });
+          attempt += 1;
+          return {
+            ok: true,
+            payload: {
+              logs:
+                attempt >= 2
+                  ? [
+                      {
+                        timestamp: Date.now(),
+                        level: 'error',
+                        message: 'checkout failed',
+                        url: 'https://app.example.com/checkout',
+                      },
+                    ]
+                  : [],
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_console', {
+      sessionId: 'session-v2',
+      levels: ['error'],
+      contains: 'checkout',
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('console');
+    expect(response.attempts).toBeGreaterThanOrEqual(2);
+    expect(response.evidence).toMatchObject({
+      logs: [expect.objectContaining({ level: 'error', message: 'checkout failed' })],
+    });
+  });
+
+  it('waits for a bounded network quiet window from persisted network activity', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const tools = createToolRegistry(
+      createV2ToolHandlers(
+        {
+          execute: async () => {
+            throw new Error('network quiet waits should not call the live capture client');
+          },
+        },
+        () => db,
+      ),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_network_quiet', {
+      sessionId: 'session-v2',
+      quietMs: 100,
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+      urlContains: '/api',
+      method: 'GET',
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('network_quiet');
+    expect(response.waitedMs).toBeGreaterThanOrEqual(100);
+    expect(response.evidence).toMatchObject({
+      quietMs: 100,
+      filters: {
+        urlContains: '/api',
+        method: 'GET',
+      },
+      sampledCalls: [],
+    });
+    db.close();
+  });
+
+  it('runs generic workflow wait steps for URL predicates', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command) => {
+          expect(command).toBe('CAPTURE_PAGE_STATE');
+          return {
+            ok: true,
+            payload: {
+              url: 'https://app.example.com/dashboard',
+              title: 'Dashboard',
+              language: 'en',
+              viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+              summary: { buttons: 1, links: 0, inputs: 0, modals: 0 },
+              buttons: [{ text: 'Refresh', selector: '#refresh', elementRef: 'ref:refresh' }],
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'run_ui_steps', {
+      sessionId: 'session-v2',
+      steps: [
+        {
+          kind: 'wait',
+          id: 'wait-dashboard-url',
+          wait: {
+            waitKind: 'url',
+            urlContains: '/dashboard',
+            timeoutMs: 250,
+            pollIntervalMs: 50,
+          },
+        },
+      ],
+    });
+
+    expect(response.status).toBe('succeeded');
+    expect(response.completedStepCount).toBe(1);
+    expect((response.steps as Array<Record<string, unknown>>)[0]).toMatchObject({
+      id: 'wait-dashboard-url',
+      kind: 'wait',
+      status: 'succeeded',
+      wait: {
+        waitKind: 'url',
+        matched: true,
+      },
+    });
+    expect(response.finalPage).toMatchObject({
+      url: 'https://app.example.com/dashboard',
+      title: 'Dashboard',
+    });
+  });
+
   it('runs a generic safe UI workflow with action, wait, and assert steps', async () => {
     let pageStateAttempts = 0;
     const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];

@@ -242,6 +242,61 @@ Recommended use:
 - after `execute_ui_action` when the expected result is a visible button/link/input/modal state change
 - before falling back to `capture_ui_snapshot` or raw DOM queries
 
+## `preflight_automation_flow`
+
+Checks live-session readiness and production risk before a multi-step flow runs.
+
+```json
+{
+  "name": "preflight_automation_flow",
+  "arguments": {
+    "sessionId": "sess_123",
+    "expectedUrlContains": "/checkout",
+    "plannedActions": ["click", "input"],
+    "requireSensitiveAutomation": true
+  }
+}
+```
+
+Response highlights:
+
+- `ready`: whether the flow should proceed
+- `blockers`: stale/missing session, disconnected live extension, expected URL mismatch, iframe-noise session, or page-state capture failure
+- `warnings`: remote/production-like origin, sensitive-looking fields, and cross-origin/inaccessible frame risks
+- `checks`: compact booleans for session, live connection, expected URL, page-state capture, sensitive fields, and cross-origin frames
+- `nextActions`: run guidance or blocker-specific recovery steps
+
+Use this before running automation against remote or production-like URLs.
+
+## First-class waits
+
+These waits are available as standalone tools and as `run_ui_steps` `kind: "wait"` steps.
+
+| Tool | Purpose |
+| --- | --- |
+| `wait_for_url` | Wait for `exactUrl`, `urlContains`, or `urlRegex`. |
+| `wait_for_selector_state` | Wait for a selector to become `attached`, `detached`, `visible`, or `hidden`. |
+| `wait_for_console` | Wait for a live console log matching `levels` and/or `contains`. |
+| `wait_for_network_quiet` | Wait for persisted network activity to stay quiet for `quietMs`. |
+
+```json
+{
+  "name": "wait_for_selector_state",
+  "arguments": {
+    "sessionId": "sess_123",
+    "selector": "#save-status",
+    "state": "visible",
+    "timeoutMs": 5000
+  }
+}
+```
+
+Common response fields:
+
+- `matched`, `waitKind`, `attempts`, `waitedMs`
+- `evidence` with final page/selector/log/network context
+- timeout error codes such as `url_wait_timeout`, `selector_state_wait_timeout`, `console_wait_timeout`, or `network_quiet_timeout`
+
 ## `run_ui_steps`
 
 Runs a small generic workflow locally in the bridge so the caller does not need one tool round trip per action.
@@ -289,7 +344,9 @@ Milestone 4 scope:
 - modes:
   - `safe`: fuller verification and broader state capture
   - `fast`: smaller page-state captures, cached state reuse between steps, and lighter summaries
-- step kinds: `action`, `waitFor`, `assert`
+- step kinds: `action`, `waitFor`, `wait`, `assert`
+- `waitFor` polls compact page-state matchers
+- `wait` runs first-class waits with `waitKind: "url" | "selector_state" | "console" | "network_quiet"`
 - action target matchers:
   - `elementRef`
   - `selector`
@@ -309,6 +366,7 @@ Response highlights:
 - `failedStepId` and `stoppedEarly`
 - `steps[]` with per-step duration, error info, execution attempts, failure policy, and optional failure evidence
 - action-step target resolution includes ambiguity and not-found diagnostics with sampled candidates
+- `wait` steps include `wait.matched`, `wait.waitKind`, `attempts`, `waitedMs`, and wait-specific evidence under `target`
 - step results can include `pageChangeSummary` describing compact state changes between steps
 - `workflowDiagnostics` includes retry count, state capture count, and failure capture count
 - `stepCounts`, `finalPageSummary`, and `finalPage`
