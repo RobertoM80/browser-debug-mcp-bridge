@@ -192,6 +192,7 @@ Introduce a dedicated automation engine with clear layers:
 2. `TargetResolver`
    - resolves selector, elementRef, role/name/text/testId, coordinates, and frame targets
    - returns a stable target descriptor, frame context, backend node/object id, bounding box, and sampled diagnostics
+   - current compact MCP-side target resolution is extracted to `apps/mcp-server/src/mcp/target-resolution.ts`; full DOM locator evaluation remains the next locator refactor
 
 3. `ActionabilityChecker`
    - computes visibility, enabled/editable state, viewport, hit target, stability, and scroll requirements
@@ -276,7 +277,7 @@ Status update:
 
 - Items 1, 2, 4, and 5 now have baseline implementation and e2e coverage for top-document and same-origin iframe actions, including stale frame-ref recovery by URL/title metadata.
 - Item 3 has a first actionability baseline for native targets, including disabled, hidden, pointer-events none, and covered-target diagnostics.
-- Item 7 has a compact role/name/exact/regex/positional locator baseline plus open shadow-root selectors, but not full DOM locator parity.
+- Item 7 has a compact role/name/exact/regex/positional locator baseline plus open shadow-root selectors. The MCP-side resolver is now isolated behind focused unit tests, but full DOM locator parity is still open.
 - Item 8 has baseline full-path history persistence and trace lookup.
 - Item 6, full locator parity, broader frame edge coverage, navigation-grade frame stability, and the richer diagnostics portion of 8 remain open and are the evidence-backed refactor scope.
 

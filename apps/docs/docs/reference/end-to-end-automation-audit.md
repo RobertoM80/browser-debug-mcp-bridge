@@ -58,7 +58,7 @@ Keep the real-browser extension architecture and replace the default action back
 Recommended layers:
 
 - `AutomationController`: owns one action at a time, CDP attach/reuse, emergency stop, and lifecycle events.
-- `TargetResolver`: resolves selectors, element refs, semantic locators, coordinates, and frames.
+- `TargetResolver`: resolves selectors, element refs, semantic locators, coordinates, and frames. The compact MCP-side resolver is now extracted to `apps/mcp-server/src/mcp/target-resolution.ts` with focused unit coverage; the next step is replacing compact page-state filtering with full DOM locator evaluation.
 - `ActionabilityChecker`: validates visible, stable, enabled/editable, in viewport, and hit-testable targets.
 - `NativeInputDriver`: sends mouse and keyboard input with CDP, scrolls into view, and handles click/type/fill/clear/select semantics.
 - `WaitEngine`: keeps page-state waits and adds selector, URL, navigation, network, console, and layout waits.
@@ -75,7 +75,7 @@ Recommended layers:
 7. Persist richer automation diagnostics in history tables.
 8. Update docs and schemas so unsupported fields are not advertised as implemented behavior.
 
-Phase 1 now has a full-path test. Phase 2 has native click/hover with actionability checks for top-document and same-origin iframe targets. Phase 3 has native input/key plus native focus/blur/scroll/submit. Phase 4 has same-origin iframe action support, nested same-origin coverage, frame-ref discovery, stale frame-ref recovery by URL/title, and explicit cross-origin/sandboxed frame policy diagnostics. Phase 5 now has a compact locator baseline for chained structured filters, role/name/exact/regex/positional matching, frame URL/title filters, and open shadow-root selectors, but still needs a full DOM locator engine. Phase 7 has baseline history persistence plus trace lookup. Phase 6 and the richer diagnostics portion of 7 remain open and should be treated as the next refactor scope.
+Phase 1 now has a full-path test. Phase 2 has native click/hover with actionability checks for top-document and same-origin iframe targets. Phase 3 has native input/key plus native focus/blur/scroll/submit. Phase 4 has same-origin iframe action support, nested same-origin coverage, frame-ref discovery, stale frame-ref recovery by URL/title, and explicit cross-origin/sandboxed frame policy diagnostics. Phase 5 now has a compact locator baseline for chained structured filters, role/name/exact/regex/positional matching, frame URL/title filters, open shadow-root selectors, and an extracted MCP-side target-resolution module. It still needs a full DOM locator engine. Phase 7 has baseline history persistence plus trace lookup. Phase 6 and the richer diagnostics portion of 7 remain open and should be treated as the next refactor scope.
 
 ## Additional Tests To Add
 
