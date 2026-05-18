@@ -388,6 +388,44 @@ test.describe('@full live automation through MCP and extension session', () => {
     expect(semanticClick.actionResult?.result?.backend).toBe('cdp-native-v2');
     await expect(targetPage.locator('#count')).toHaveText('2');
 
+    const locatorClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        tabId,
+        locator: {
+          scope: 'buttons',
+          steps: [
+            {
+              kind: 'role',
+              role: 'button',
+              name: {
+                pattern: '^Increment$',
+                flags: 'i',
+              },
+            },
+            {
+              kind: 'css',
+              value: '#increment',
+            },
+          ],
+        },
+      },
+    });
+    expect(locatorClick.status).toBe('succeeded');
+    expect(locatorClick.actionResult?.result?.backend).toBe('cdp-native-v2');
+    expect(locatorClick.targetResolution).toMatchObject({
+      matcher: {
+        locator: {
+          scope: 'buttons',
+        },
+      },
+      matched: {
+        selector: '#increment',
+      },
+    });
+    await expect(targetPage.locator('#count')).toHaveText('3');
+
     const input = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
       action: 'input',

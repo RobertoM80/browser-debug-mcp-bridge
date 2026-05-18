@@ -5,12 +5,54 @@ export const UIWorkflowFailureStrategySchema = z.enum(['stop', 'continue', 'retr
 
 export const UIWorkflowActionTargetScopeSchema = z.enum(['buttons', 'links', 'inputs', 'modals', 'focused']);
 
+export const UIWorkflowLocatorMatcherSchema = z.union([
+  z.string().min(1),
+  z.object({
+    pattern: z.string().min(1),
+    flags: z.string().regex(/^[imsu]*$/).optional(),
+  }),
+]);
+
+export const UIWorkflowLocatorStepSchema = z.object({
+  kind: z.enum(['css', 'role', 'text', 'label', 'testId', 'placeholder', 'altText']),
+  value: UIWorkflowLocatorMatcherSchema.optional(),
+  role: z.string().min(1).optional(),
+  name: UIWorkflowLocatorMatcherSchema.optional(),
+  exact: z.boolean().optional(),
+}).superRefine((value, ctx) => {
+  if (value.kind === 'role' && !value.role && !value.value) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'role locator step requires role or value',
+      path: ['role'],
+    });
+  }
+
+  if (value.kind !== 'role' && !value.value) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `${value.kind} locator step requires value`,
+      path: ['value'],
+    });
+  }
+});
+
+export const UIWorkflowLocatorSchema = z.object({
+  scope: UIWorkflowActionTargetScopeSchema.optional(),
+  frame: z.object({
+    urlContains: z.string().min(1).optional(),
+    titleContains: z.string().min(1).optional(),
+  }).optional(),
+  steps: z.array(UIWorkflowLocatorStepSchema).min(1).max(8),
+});
+
 export const UIWorkflowActionTargetSchema = z.object({
   selector: z.string().min(1).optional(),
   elementRef: z.string().min(1).optional(),
   tabId: z.number().int().min(0).optional(),
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
+  locator: UIWorkflowLocatorSchema.optional(),
   frameUrlContains: z.string().min(1).optional(),
   frameTitleContains: z.string().min(1).optional(),
   testId: z.string().min(1).optional(),
@@ -40,6 +82,7 @@ export const UIWorkflowActionTargetSchema = z.object({
   if (
     !value.selector
     && !value.elementRef
+    && !value.locator
     && !value.scope
     && !value.testId
     && !value.textContains
@@ -52,7 +95,7 @@ export const UIWorkflowActionTargetSchema = z.object({
   ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'target requires selector, elementRef, scope, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText',
+      message: 'target requires selector, elementRef, locator, scope, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText',
       path: ['target'],
     });
   }
@@ -227,6 +270,9 @@ export type UIWorkflowMode = z.infer<typeof UIWorkflowModeSchema>;
 export type UIWorkflowFailureStrategy = z.infer<typeof UIWorkflowFailureStrategySchema>;
 export type UIWorkflowFailureCapture = z.infer<typeof UIWorkflowFailureCaptureSchema>;
 export type UIWorkflowFailurePolicy = z.infer<typeof UIWorkflowFailurePolicySchema>;
+export type UIWorkflowLocatorMatcher = z.infer<typeof UIWorkflowLocatorMatcherSchema>;
+export type UIWorkflowLocatorStep = z.infer<typeof UIWorkflowLocatorStepSchema>;
+export type UIWorkflowLocator = z.infer<typeof UIWorkflowLocatorSchema>;
 export type UIWorkflowActionTarget = z.infer<typeof UIWorkflowActionTargetSchema>;
 export type UIWorkflowActionStep = z.infer<typeof UIWorkflowActionStepSchema>;
 export type UIWorkflowPageStateMatcher = z.infer<typeof UIWorkflowPageStateMatcherSchema>;

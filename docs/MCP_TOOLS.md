@@ -500,6 +500,30 @@ Semantic targets support `scope: "buttons" | "links" | "inputs" | "modals" | "fo
 }
 ```
 
+For more explicit locator-style targeting, use `target.locator`. The locator is resolved against compact page-state refs and supports chained structured steps, regex text/name matching, and frame filters:
+
+```json
+{
+  "name": "execute_ui_action",
+  "arguments": {
+    "sessionId": "sess_123",
+    "action": "click",
+    "target": {
+      "locator": {
+        "scope": "buttons",
+        "frame": { "titleContains": "Account" },
+        "steps": [
+          { "kind": "role", "role": "button", "name": { "pattern": "^Save", "flags": "i" } },
+          { "kind": "text", "value": "Save changes", "exact": true }
+        ]
+      }
+    }
+  }
+}
+```
+
+Locator step kinds are `css`, `role`, `text`, `label`, `testId`, `placeholder`, and `altText`. `css` and `testId` steps match exactly by default; text-like steps match by containment unless `exact: true` is set. Regex matchers use `{ "pattern": "...", "flags": "i" }`.
+
 Combined action + wait example:
 
 ```json
@@ -526,6 +550,7 @@ Important limits and safeguards:
 - Nested same-origin iframe actions are covered when page-state returns a frame-aware `elementRef`
 - Native pointer actions in cross-origin, sandboxed opaque-origin, or inaccessible frames return `unsupported_cross_origin_frame` when top-document coordinate translation is not possible. The response includes `actionResult.result.framePolicy` and `actionability.frameCoordinateResolved`.
 - Stale frame ids on frame-aware refs are re-resolved by encoded frame URL/title plus selector when possible. Invalid frame ids without enough metadata, or unresolved frame refs, return `target_frame_not_found`.
+- `target.locator` is a compact page-state locator baseline. It supports chained structured filters and regex matching over captured refs, but it is not yet a full DOM locator engine for ancestor/descendant relationships, closed shadow DOM, coordinate targeting, or arbitrary selector state.
 - `actionResult.result.backend` identifies the execution backend (`cdp-native-v2` for migrated native actions)
 - Native actions perform target inspection/actionability checks before dispatch, including visibility, disabled state, readonly/editable state for input, stable layout, pointer-events, viewport intersection, and hit-target mismatch diagnostics
 - Page-state assertions and waits support `visible: true/false`, `role`, `name`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`, and `exact` for structured refs where available
@@ -585,7 +610,7 @@ Runs a small generic UI workflow locally in the bridge using sequential action, 
   - supported step kinds: `action`, `waitFor`, `assert`
   - action targets can use:
       - direct handles: `elementRef`, `selector`
-      - semantic matchers: `testId`, `scope`, `textContains`, `labelContains`, `titleContains`, `role`, `name`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`
+      - semantic matchers: `testId`, `scope`, `locator`, `textContains`, `labelContains`, `titleContains`, `role`, `name`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`
       - optional refinements: `exact`, `nth`, `first`, `last`, `strict`, `tagName`, `type`, `disabled`, `selected`, `pressed`, `expanded`, `readOnly`, `requiredField`
   - the workflow stops on first failure by default and marks remaining steps as `skipped`
   - each step can set `onFailure.strategy` to `stop`, `continue`, or `retry_once`

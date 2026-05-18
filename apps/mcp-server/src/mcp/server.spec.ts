@@ -5289,6 +5289,143 @@ describe('mcp/server V2 capture tools', () => {
     });
   });
 
+  it('resolves chained locator execute_ui_action targets through page-state refs', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          if (command === 'CAPTURE_PAGE_STATE') {
+            return {
+              ok: true,
+              payload: {
+                buttons: [
+                  {
+                    text: 'Save changes',
+                    name: 'Save changes',
+                    role: 'button',
+                    selector: '#save-top',
+                    elementRef: 'ref:save-top',
+                    frameId: 0,
+                    frameTitle: 'Top',
+                  },
+                  {
+                    text: 'Save changes',
+                    name: 'Save changes',
+                    role: 'button',
+                    selector: '#save-account',
+                    elementRef: 'ref:save-account',
+                    frameId: 22,
+                    frameUrl: 'http://localhost:3000/account-frame',
+                    frameTitle: 'Account iframe',
+                  },
+                ],
+                summary: {
+                  buttons: 2,
+                  links: 0,
+                  inputs: 0,
+                  modals: 0,
+                  frames: 2,
+                },
+              },
+              truncated: false,
+            };
+          }
+
+          return {
+            ok: true,
+            payload: {
+              action: 'click',
+              traceId: 'trace-live-locator-1',
+              status: 'succeeded',
+              executionScope: 'top-document-v1',
+              startedAt: 1700000000000,
+              finishedAt: 1700000000020,
+              target: {
+                matched: true,
+                selector: '#save-account',
+                resolvedSelector: '#save-account',
+                tagName: 'button',
+                tabId: 9,
+                frameId: 22,
+                url: 'http://localhost:3000/account-frame',
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'execute_ui_action', {
+      sessionId: 'session-v2',
+      action: 'click',
+      target: {
+        tabId: 9,
+        locator: {
+          scope: 'buttons',
+          frame: {
+            titleContains: 'Account',
+          },
+          steps: [
+            {
+              kind: 'role',
+              role: 'button',
+              name: {
+                pattern: '^save',
+                flags: 'i',
+              },
+            },
+            {
+              kind: 'text',
+              value: 'Save changes',
+              exact: true,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(captureCalls[0]).toMatchObject({
+      command: 'CAPTURE_PAGE_STATE',
+      payload: {
+        includeButtons: true,
+        includeLinks: false,
+        includeInputs: false,
+        includeModals: false,
+      },
+    });
+    expect(captureCalls[1]).toMatchObject({
+      command: 'EXECUTE_UI_ACTION',
+      payload: {
+        action: 'click',
+        target: {
+          elementRef: 'ref:save-account',
+          selector: '#save-account',
+          frameId: 22,
+          tabId: 9,
+        },
+      },
+    });
+    expect(response.status).toBe('succeeded');
+    expect(response.targetResolution).toMatchObject({
+      strategy: 'semantic_elementRef',
+      matchedCandidateCount: 1,
+      matcher: {
+        locator: {
+          scope: 'buttons',
+          frame: {
+            titleContains: 'Account',
+          },
+        },
+      },
+      matched: {
+        selector: '#save-account',
+        frameTitle: 'Account iframe',
+      },
+    });
+  });
+
   it('resolves semantic targets with first/last/strict and frame metadata filters', async () => {
     const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
     const tools = createToolRegistry(

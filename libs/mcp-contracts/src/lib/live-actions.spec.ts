@@ -70,6 +70,54 @@ describe('live-actions', () => {
     expect(parsed.target?.frameUrlContains).toBe('/embedded');
   });
 
+  it('parses chained locator live UI action targets', () => {
+    const parsed = LiveUIActionRequestSchema.parse({
+      action: 'click',
+      target: {
+        locator: {
+          scope: 'buttons',
+          frame: {
+            titleContains: 'Account',
+          },
+          steps: [
+            {
+              kind: 'role',
+              role: 'button',
+              name: {
+                pattern: '^Save',
+                flags: 'i',
+              },
+            },
+            {
+              kind: 'text',
+              value: 'Save changes',
+              exact: true,
+            },
+          ],
+        },
+      },
+    });
+
+    expect(parsed.target?.locator?.scope).toBe('buttons');
+    expect(parsed.target?.locator?.steps).toHaveLength(2);
+    expect(parsed.target?.locator?.steps[0]?.kind).toBe('role');
+  });
+
+  it('rejects incomplete locator steps', () => {
+    expect(() => LiveUIActionRequestSchema.parse({
+      action: 'click',
+      target: {
+        locator: {
+          steps: [
+            {
+              kind: 'text',
+            },
+          ],
+        },
+      },
+    })).toThrow('text locator step requires value');
+  });
+
   it('rejects conflicting target position helpers', () => {
     expect(() => LiveUIActionRequestSchema.parse({
       action: 'click',

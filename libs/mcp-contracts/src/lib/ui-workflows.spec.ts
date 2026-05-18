@@ -123,6 +123,68 @@ describe('ui-workflows', () => {
     }
   });
 
+  it('accepts chained locator action targets', () => {
+    const parsed = RunUIStepsSchema.parse({
+      sessionId: 'sess_123',
+      steps: [
+        {
+          kind: 'action',
+          action: 'click',
+          target: {
+            locator: {
+              scope: 'buttons',
+              frame: {
+                urlContains: '/account',
+              },
+              steps: [
+                {
+                  kind: 'role',
+                  role: 'button',
+                  name: 'Save',
+                },
+                {
+                  kind: 'text',
+                  value: {
+                    pattern: 'changes$',
+                    flags: 'i',
+                  },
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+
+    const step = parsed.steps[0];
+    expect(step.kind).toBe('action');
+    if (step.kind === 'action') {
+      expect(step.target?.locator?.scope).toBe('buttons');
+      expect(step.target?.locator?.steps).toHaveLength(2);
+    }
+  });
+
+  it('rejects incomplete workflow locator steps', () => {
+    expect(() => RunUIStepsSchema.parse({
+      sessionId: 'sess_123',
+      steps: [
+        {
+          kind: 'action',
+          action: 'click',
+          target: {
+            locator: {
+              steps: [
+                {
+                  kind: 'role',
+                },
+              ],
+            },
+          },
+        },
+      ],
+    })).toThrow('role locator step requires role or value');
+  });
+
   it('rejects conflicting action target position helpers', () => {
     expect(() => RunUIStepsSchema.parse({
       sessionId: 'sess_123',
@@ -150,7 +212,7 @@ describe('ui-workflows', () => {
           target: {},
         },
       ],
-    })).toThrow('target requires selector, elementRef, scope, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText');
+    })).toThrow('target requires selector, elementRef, locator, scope, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText');
   });
 
   it('creates readable workflow trace ids', () => {

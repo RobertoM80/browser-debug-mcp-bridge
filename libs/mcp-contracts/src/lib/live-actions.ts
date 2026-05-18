@@ -12,12 +12,54 @@ export const LiveUIActionSchema = z.enum([
   'reload',
 ]);
 
+export const LiveUIActionLocatorMatcherSchema = z.union([
+  z.string().min(1),
+  z.object({
+    pattern: z.string().min(1),
+    flags: z.string().regex(/^[imsu]*$/).optional(),
+  }),
+]);
+
+export const LiveUIActionLocatorStepSchema = z.object({
+  kind: z.enum(['css', 'role', 'text', 'label', 'testId', 'placeholder', 'altText']),
+  value: LiveUIActionLocatorMatcherSchema.optional(),
+  role: z.string().min(1).optional(),
+  name: LiveUIActionLocatorMatcherSchema.optional(),
+  exact: z.boolean().optional(),
+}).superRefine((value, ctx) => {
+  if (value.kind === 'role' && !value.role && !value.value) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'role locator step requires role or value',
+      path: ['role'],
+    });
+  }
+
+  if (value.kind !== 'role' && !value.value) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `${value.kind} locator step requires value`,
+      path: ['value'],
+    });
+  }
+});
+
+export const LiveUIActionLocatorSchema = z.object({
+  scope: z.enum(['buttons', 'links', 'inputs', 'modals', 'focused']).optional(),
+  frame: z.object({
+    urlContains: z.string().min(1).optional(),
+    titleContains: z.string().min(1).optional(),
+  }).optional(),
+  steps: z.array(LiveUIActionLocatorStepSchema).min(1).max(8),
+});
+
 export const LiveUIActionTargetSchema = z.object({
   selector: z.string().min(1).optional(),
   elementRef: z.string().min(1).optional(),
   tabId: z.number().int().min(0).optional(),
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
+  locator: LiveUIActionLocatorSchema.optional(),
   frameUrlContains: z.string().min(1).optional(),
   frameTitleContains: z.string().min(1).optional(),
   testId: z.string().min(1).optional(),
@@ -144,6 +186,9 @@ export const LiveUIActionResultSchema = z.object({
 });
 
 export type LiveUIAction = z.infer<typeof LiveUIActionSchema>;
+export type LiveUIActionLocatorMatcher = z.infer<typeof LiveUIActionLocatorMatcherSchema>;
+export type LiveUIActionLocatorStep = z.infer<typeof LiveUIActionLocatorStepSchema>;
+export type LiveUIActionLocator = z.infer<typeof LiveUIActionLocatorSchema>;
 export type LiveUIActionTarget = z.infer<typeof LiveUIActionTargetSchema>;
 export type LiveUIActionRequest = z.infer<typeof LiveUIActionRequestSchema>;
 export type LiveUIActionFailureReason = z.infer<typeof LiveUIActionFailureReasonSchema>;

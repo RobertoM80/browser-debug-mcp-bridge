@@ -104,16 +104,60 @@ function createDefaultMcpLogger(): MCPLogger {
   };
 }
 
+const UIActionTargetScopeSchema = z.enum(['buttons', 'links', 'inputs', 'modals', 'focused']);
+
+const UIActionLocatorMatcherSchema = z.union([
+  z.string().min(1),
+  z.object({
+    pattern: z.string().min(1),
+    flags: z.string().regex(/^[imsu]*$/).optional(),
+  }),
+]);
+
+const UIActionLocatorStepSchema = z.object({
+  kind: z.enum(['css', 'role', 'text', 'label', 'testId', 'placeholder', 'altText']),
+  value: UIActionLocatorMatcherSchema.optional(),
+  role: z.string().min(1).optional(),
+  name: UIActionLocatorMatcherSchema.optional(),
+  exact: z.boolean().optional(),
+}).superRefine((value, ctx) => {
+  if (value.kind === 'role' && !value.role && !value.value) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'role locator step requires role or value',
+      path: ['role'],
+    });
+  }
+
+  if (value.kind !== 'role' && !value.value) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `${value.kind} locator step requires value`,
+      path: ['value'],
+    });
+  }
+});
+
+const UIActionLocatorSchema = z.object({
+  scope: UIActionTargetScopeSchema.optional(),
+  frame: z.object({
+    urlContains: z.string().min(1).optional(),
+    titleContains: z.string().min(1).optional(),
+  }).optional(),
+  steps: z.array(UIActionLocatorStepSchema).min(1).max(8),
+});
+
 const LiveUIActionTargetSchema = z.object({
   selector: z.string().min(1).optional(),
   elementRef: z.string().min(1).optional(),
   tabId: z.number().int().min(0).optional(),
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
+  locator: UIActionLocatorSchema.optional(),
   frameUrlContains: z.string().min(1).optional(),
   frameTitleContains: z.string().min(1).optional(),
   testId: z.string().min(1).optional(),
-  scope: z.enum(['buttons', 'links', 'inputs', 'modals', 'focused']).optional(),
+  scope: UIActionTargetScopeSchema.optional(),
   textContains: z.string().min(1).optional(),
   labelContains: z.string().min(1).optional(),
   titleContains: z.string().min(1).optional(),
@@ -234,7 +278,7 @@ type LiveUIActionResult = {
 
 const UIWorkflowModeSchema = z.enum(['safe', 'fast']);
 const UIWorkflowFailureStrategySchema = z.enum(['stop', 'continue', 'retry_once']);
-const UIWorkflowActionTargetScopeSchema = z.enum(['buttons', 'links', 'inputs', 'modals', 'focused']);
+const UIWorkflowActionTargetScopeSchema = UIActionTargetScopeSchema;
 
 const UIWorkflowActionTargetSchema = z.object({
   selector: z.string().min(1).optional(),
@@ -242,6 +286,7 @@ const UIWorkflowActionTargetSchema = z.object({
   tabId: z.number().int().min(0).optional(),
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
+  locator: UIActionLocatorSchema.optional(),
   frameUrlContains: z.string().min(1).optional(),
   frameTitleContains: z.string().min(1).optional(),
   testId: z.string().min(1).optional(),
@@ -271,6 +316,7 @@ const UIWorkflowActionTargetSchema = z.object({
   if (
     !value.selector
     && !value.elementRef
+    && !value.locator
     && !value.scope
     && !value.testId
     && !value.textContains
@@ -283,7 +329,7 @@ const UIWorkflowActionTargetSchema = z.object({
   ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'target requires selector, elementRef, scope, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText',
+      message: 'target requires selector, elementRef, locator, scope, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText',
       path: ['target'],
     });
   }
@@ -451,6 +497,8 @@ const RunUIStepsSchema = z.object({
 });
 
 type UIWorkflowActionTarget = z.infer<typeof UIWorkflowActionTargetSchema>;
+type UIActionLocatorMatcher = z.infer<typeof UIActionLocatorMatcherSchema>;
+type UIActionLocatorStep = z.infer<typeof UIActionLocatorStepSchema>;
 type UIWorkflowActionStep = z.infer<typeof UIWorkflowActionStepSchema>;
 type UIWorkflowStep = z.infer<typeof UIWorkflowStepSchema>;
 type RunUIStepsRequest = z.infer<typeof RunUIStepsSchema>;
@@ -458,6 +506,51 @@ type RunUIStepsRequest = z.infer<typeof RunUIStepsSchema>;
 function createUIWorkflowTraceId(): string {
   return `uiworkflow-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
+
+const LOCATOR_MATCHER_TOOL_SCHEMA = {
+  anyOf: [
+    { type: 'string' },
+    {
+      type: 'object',
+      required: ['pattern'],
+      properties: {
+        pattern: { type: 'string' },
+        flags: { type: 'string' },
+      },
+    },
+  ],
+};
+
+const ACTION_LOCATOR_TOOL_SCHEMA = {
+  type: 'object',
+  required: ['steps'],
+  properties: {
+    scope: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused'] },
+    frame: {
+      type: 'object',
+      properties: {
+        urlContains: { type: 'string' },
+        titleContains: { type: 'string' },
+      },
+    },
+    steps: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 8,
+      items: {
+        type: 'object',
+        required: ['kind'],
+        properties: {
+          kind: { type: 'string', enum: ['css', 'role', 'text', 'label', 'testId', 'placeholder', 'altText'] },
+          value: LOCATOR_MATCHER_TOOL_SCHEMA,
+          role: { type: 'string' },
+          name: LOCATOR_MATCHER_TOOL_SCHEMA,
+          exact: { type: 'boolean' },
+        },
+      },
+    },
+  },
+};
 
 const TOOL_SCHEMAS: Record<string, object> = {
   list_sessions: {
@@ -1108,6 +1201,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
           tabId: { type: 'number' },
           frameId: { type: 'number' },
           url: { type: 'string' },
+          locator: ACTION_LOCATOR_TOOL_SCHEMA,
           frameUrlContains: { type: 'string' },
           frameTitleContains: { type: 'string' },
           testId: { type: 'string' },
@@ -1218,6 +1312,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
                 tabId: { type: 'number' },
                 frameId: { type: 'number' },
                 url: { type: 'string' },
+                locator: ACTION_LOCATOR_TOOL_SCHEMA,
                 frameUrlContains: { type: 'string' },
                 frameTitleContains: { type: 'string' },
                 testId: { type: 'string' },
@@ -4038,6 +4133,105 @@ function candidateTextForWorkflowTarget(item: Record<string, unknown>): string {
     .trim();
 }
 
+function locatorMatcherToDebugValue(matcher: UIActionLocatorMatcher | undefined): unknown {
+  return matcher;
+}
+
+function matchesLocatorMatcher(value: unknown, matcher: UIActionLocatorMatcher | undefined, exact: boolean | undefined): boolean {
+  if (matcher === undefined) {
+    return true;
+  }
+
+  if (typeof value !== 'string') {
+    return false;
+  }
+
+  if (typeof matcher === 'string') {
+    return matchesTextValue(value, matcher, exact);
+  }
+
+  try {
+    return new RegExp(matcher.pattern, matcher.flags).test(value);
+  } catch {
+    return false;
+  }
+}
+
+function locatorStepRoleValue(step: UIActionLocatorStep): string | undefined {
+  if (typeof step.role === 'string') {
+    return step.role;
+  }
+
+  return typeof step.value === 'string' ? step.value : undefined;
+}
+
+function matchesWorkflowLocatorStep(item: Record<string, unknown>, step: UIActionLocatorStep): boolean {
+  if (step.kind === 'css') {
+    return matchesLocatorMatcher(item.selector, step.value, step.exact ?? true);
+  }
+
+  if (step.kind === 'role') {
+    const role = locatorStepRoleValue(step);
+    return equalsNormalized(item.role, role?.toLowerCase())
+      && matchesLocatorMatcher(item.name, step.name, step.exact);
+  }
+
+  if (step.kind === 'text') {
+    return matchesLocatorMatcher(
+      typeof item.text === 'string' && item.text.trim().length > 0 ? item.text : candidateTextForWorkflowTarget(item),
+      step.value,
+      step.exact,
+    );
+  }
+
+  if (step.kind === 'label') {
+    return matchesLocatorMatcher(item.label, step.value, step.exact);
+  }
+
+  if (step.kind === 'testId') {
+    return matchesLocatorMatcher(item.testId, step.value, step.exact ?? true);
+  }
+
+  if (step.kind === 'placeholder') {
+    return matchesLocatorMatcher(item.placeholder, step.value, step.exact);
+  }
+
+  return matchesLocatorMatcher(item.altText, step.value, step.exact);
+}
+
+function matchesWorkflowLocator(item: Record<string, unknown>, target: UIWorkflowActionTarget): boolean {
+  const locator = target.locator;
+  if (!locator) {
+    return true;
+  }
+
+  return includesNormalized(item.frameUrl, locator.frame?.urlContains)
+    && includesNormalized(item.frameTitle, locator.frame?.titleContains)
+    && locator.steps.every((step) => matchesWorkflowLocatorStep(item, step));
+}
+
+function summarizeWorkflowLocator(target: UIWorkflowActionTarget): Record<string, unknown> | undefined {
+  if (!target.locator) {
+    return undefined;
+  }
+
+  return {
+    scope: target.locator.scope,
+    frame: target.locator.frame,
+    steps: target.locator.steps.map((step) => ({
+      kind: step.kind,
+      value: locatorMatcherToDebugValue(step.value),
+      role: step.role,
+      name: locatorMatcherToDebugValue(step.name),
+      exact: step.exact,
+    })),
+  };
+}
+
+function resolveWorkflowTargetScope(target: UIWorkflowActionTarget): UIWorkflowActionTarget['scope'] {
+  return target.locator?.scope ?? target.scope;
+}
+
 function describeWorkflowTargetCandidate(item: Record<string, unknown>): Record<string, unknown> {
   return {
     text: candidateTextForWorkflowTarget(item) || undefined,
@@ -4080,7 +4274,8 @@ function matchesWorkflowActionTarget(
   target: UIWorkflowActionTarget,
 ): boolean {
   return (
-    equalsNormalized(item.testId, target.testId)
+    matchesWorkflowLocator(item, target)
+    && equalsNormalized(item.testId, target.testId)
     && matchesTextValue(item.text, target.textContains, target.exact)
     && matchesTextValue(item.label, target.labelContains, target.exact)
     && matchesTextValue(item.title, target.titleContains, target.exact)
@@ -4106,6 +4301,7 @@ function matchesWorkflowActionTarget(
 function summarizeWorkflowTargetMatcher(target: UIWorkflowActionTarget): Record<string, unknown> {
   return {
     scope: target.scope,
+    locator: summarizeWorkflowLocator(target),
     selector: target.selector,
     elementRef: target.elementRef,
     testId: target.testId,
@@ -4142,7 +4338,8 @@ function hasSemanticActionTargetMatcher(target: LiveUIActionRequest['target']): 
     && !target.selector
     && !target.elementRef
     && (
-      target.scope
+      target.locator
+      || target.scope
       || target.frameUrlContains
       || target.frameTitleContains
       || target.testId
@@ -4258,14 +4455,15 @@ async function resolveWorkflowActionTarget(
   }
 
   const capture = existingCapture ?? await capturePageState(sessionId, {
-    includeButtons: target.scope ? target.scope === 'buttons' : true,
-    includeLinks: target.scope ? target.scope === 'links' : true,
-    includeInputs: target.scope ? target.scope === 'inputs' : true,
-    includeModals: target.scope ? target.scope === 'modals' : true,
+    includeButtons: resolveWorkflowTargetScope(target) ? resolveWorkflowTargetScope(target) === 'buttons' : true,
+    includeLinks: resolveWorkflowTargetScope(target) ? resolveWorkflowTargetScope(target) === 'links' : true,
+    includeInputs: resolveWorkflowTargetScope(target) ? resolveWorkflowTargetScope(target) === 'inputs' : true,
+    includeModals: resolveWorkflowTargetScope(target) ? resolveWorkflowTargetScope(target) === 'modals' : true,
     maxItems: 100,
     maxTextLength: 120,
   });
-  const candidates = pickWorkflowTargetItems(capture.payload, target.scope)
+  const searchedScope = resolveWorkflowTargetScope(target);
+  const candidates = pickWorkflowTargetItems(capture.payload, searchedScope)
     .filter((item) => matchesWorkflowActionTarget(item, target));
   const selection = selectWorkflowTargetCandidate(candidates, target);
 
@@ -4275,11 +4473,11 @@ async function resolveWorkflowActionTarget(
       'No interactive element matched the workflow target.',
       {
         matcher: summarizeWorkflowTargetMatcher(target),
-        searchedScope: target.scope ?? 'all-interactive',
+        searchedScope: searchedScope ?? 'all-interactive',
         matchedCandidateCount: candidates.length,
         selectionStrategy: selection.selectionStrategy,
         selectedIndex: selection.selectedIndex,
-        sampledCandidates: pickWorkflowTargetItems(capture.payload, target.scope)
+        sampledCandidates: pickWorkflowTargetItems(capture.payload, searchedScope)
           .slice(0, 5)
           .map((item) => describeWorkflowTargetCandidate(item)),
       },
