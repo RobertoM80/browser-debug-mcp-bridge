@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+* **automation:** add live document load-state waits for MCP workflows
+* **automation:** persist native action diagnostics in automation history
+* **automation:** support explicit descendant relations in native locator chains
+
 ## [1.11.1](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.11.0...browser-debug-mcp-bridge-v1.11.1) (2026-05-15)
 
 

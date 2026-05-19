@@ -19,6 +19,7 @@ export const UIWorkflowLocatorStepSchema = z.object({
   role: z.string().min(1).optional(),
   name: UIWorkflowLocatorMatcherSchema.optional(),
   exact: z.boolean().optional(),
+  relation: z.enum(['filter', 'descendant']).optional(),
 }).superRefine((value, ctx) => {
   if (value.kind === 'role' && !value.role && !value.value) {
     ctx.addIssue({
@@ -288,6 +289,14 @@ export const AutomationWaitNavigationSchema = AutomationWaitBaseSchema.extend({
   }
 });
 
+export const AutomationWaitLoadStateSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('load_state'),
+  state: z.enum(['domcontentloaded', 'load']).default('load'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+});
+
 export const AutomationWaitSelectorStateSchema = AutomationWaitBaseSchema.extend({
   waitKind: z.literal('selector_state'),
   selector: z.string().min(1),
@@ -363,6 +372,7 @@ export const AutomationWaitResponseSchema = AutomationWaitNetworkBaseSchema.exte
 export const AutomationWaitSpecSchema = z.discriminatedUnion('waitKind', [
   AutomationWaitUrlSchema,
   AutomationWaitNavigationSchema,
+  AutomationWaitLoadStateSchema,
   AutomationWaitSelectorStateSchema,
   AutomationWaitConsoleSchema,
   AutomationWaitNetworkQuietSchema,

@@ -1021,6 +1021,7 @@ function capturePageState(win: Window, payload: Record<string, unknown>): { resu
     result: {
       url: win.location.href,
       title: truncatePreview(win.document.title, maxTextLength),
+      readyState: win.document.readyState,
       language: truncatePreview(win.document.documentElement.lang || navigator.language, 32),
       viewport: {
         width: win.innerWidth,

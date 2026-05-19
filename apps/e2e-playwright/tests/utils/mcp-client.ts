@@ -160,6 +160,7 @@ export const EXPECTED_TOOL_NAMES = [
   'wait_for_page_state',
   'wait_for_url',
   'wait_for_navigation',
+  'wait_for_load_state',
   'wait_for_selector_state',
   'wait_for_console',
   'wait_for_network_quiet',

@@ -106,6 +106,7 @@ function ensureAutomationTablesAndBackfill(db: Database): void {
       completed_at INTEGER,
       stop_reason TEXT,
       target_summary_json TEXT,
+      diagnostics_json TEXT,
       failure_json TEXT,
       redaction_json TEXT,
       created_at INTEGER NOT NULL,
@@ -131,6 +132,7 @@ function ensureAutomationTablesAndBackfill(db: Database): void {
       duration_ms INTEGER,
       tab_id INTEGER,
       target_summary_json TEXT,
+      diagnostics_json TEXT,
       redaction_json TEXT,
       failure_json TEXT,
       input_metadata_json TEXT,
@@ -148,6 +150,8 @@ function ensureAutomationTablesAndBackfill(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_automation_steps_session_started ON automation_steps(session_id, started_at);
     CREATE INDEX IF NOT EXISTS idx_automation_steps_trace_id ON automation_steps(trace_id);
   `);
+
+  ensureAutomationDiagnosticsColumns(db);
 
   const automationRepository = new AutomationRepository(db);
   const rows = db.prepare(`
@@ -187,6 +191,15 @@ function ensureAutomationTablesAndBackfill(db: Database): void {
       tabId: row.tab_id,
       payload,
     });
+  }
+}
+
+function ensureAutomationDiagnosticsColumns(db: Database): void {
+  if (tableExists(db, 'automation_runs') && !getColumnNames(db, 'automation_runs').has('diagnostics_json')) {
+    db.exec('ALTER TABLE automation_runs ADD COLUMN diagnostics_json TEXT;');
+  }
+  if (tableExists(db, 'automation_steps') && !getColumnNames(db, 'automation_steps').has('diagnostics_json')) {
+    db.exec('ALTER TABLE automation_steps ADD COLUMN diagnostics_json TEXT;');
   }
 }
 
@@ -904,6 +917,11 @@ const migrations: Migration[] = [
     version: 15,
     name: 'mcp_tool_loop_guard',
     up: ensureMcpToolLoopGuardTables,
+  },
+  {
+    version: 16,
+    name: 'automation_diagnostics_json',
+    up: ensureAutomationDiagnosticsColumns,
   },
 ];
 

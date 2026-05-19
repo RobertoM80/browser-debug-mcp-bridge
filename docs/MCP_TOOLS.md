@@ -453,12 +453,13 @@ Response highlights:
 
 Run this before production or remote-origin flows so agents do not repeatedly try actions against the wrong tab, stale session, iframe noise, or sensitive surfaces.
 
-### URL, navigation, selector, console, and network waits
+### URL, navigation, load-state, selector, console, and network waits
 
 These tools provide first-class waits beyond compact page-state polling:
 
 - `wait_for_url`: waits for `exactUrl`, `urlContains`, or `urlRegex`
 - `wait_for_navigation`: waits for a persisted navigation event by destination URL, source URL, trigger, or tab
+- `wait_for_load_state`: waits for the live document `readyState` to reach `domcontentloaded` or `load`, optionally scoped by URL predicates
 - `wait_for_selector_state`: waits for a selector to be `attached`, `detached`, `visible`, or `hidden`
 - `wait_for_console`: waits for a live console log matching `levels` and/or `contains`
 - `wait_for_network_quiet`: waits until persisted network activity has been quiet for a bounded window
@@ -473,6 +474,18 @@ These tools provide first-class waits beyond compact page-state polling:
     "urlContains": "/dashboard",
     "timeoutMs": 5000,
     "pollIntervalMs": 200
+  }
+}
+```
+
+```json
+{
+  "name": "wait_for_load_state",
+  "arguments": {
+    "sessionId": "sess_123",
+    "state": "domcontentloaded",
+    "urlContains": "/dashboard",
+    "timeoutMs": 5000
   }
 }
 ```
@@ -677,7 +690,7 @@ For more explicit locator-style targeting, use `target.locator`. Direct live act
         "frame": { "titleContains": "Account" },
         "steps": [
           { "kind": "role", "role": "button", "name": { "pattern": "^Save", "flags": "i" } },
-          { "kind": "text", "value": "Save changes", "exact": true }
+          { "kind": "text", "value": "Save changes", "exact": true, "relation": "descendant" }
         ]
       }
     }
@@ -685,7 +698,7 @@ For more explicit locator-style targeting, use `target.locator`. Direct live act
 }
 ```
 
-Locator step kinds are `css`, `role`, `text`, `label`, `testId`, `placeholder`, and `altText`. `css` and `testId` steps match exactly by default; text-like steps match by containment unless `exact: true` is set. Regex matchers use `{ "pattern": "...", "flags": "i" }`.
+Locator step kinds are `css`, `role`, `text`, `label`, `testId`, `placeholder`, and `altText`. `css` and `testId` steps match exactly by default; text-like steps match by containment unless `exact: true` is set. Regex matchers use `{ "pattern": "...", "flags": "i" }`. By default each step filters the current candidate set; set `relation: "descendant"` on a later step to search descendants of the previous step's matches.
 
 Combined action + wait example:
 
@@ -713,7 +726,7 @@ Important limits and safeguards:
 - Nested same-origin iframe actions are covered when page-state returns a frame-aware `elementRef`
 - Native pointer actions in cross-origin, sandboxed opaque-origin, or inaccessible frames return `unsupported_cross_origin_frame` when top-document coordinate translation is not possible. The response includes `actionResult.result.framePolicy` and `actionability.frameCoordinateResolved`.
 - Stale frame ids on frame-aware refs are re-resolved by encoded frame URL/title plus selector when possible. Invalid frame ids without enough metadata, or unresolved frame refs, return `target_frame_not_found`.
-- `target.locator` now has native DOM resolution for direct/workflow actions and compact page-state semantics for server-side diagnostics. It supports chained structured filters and regex matching, but it is not yet a full Playwright/Cypress locator engine for ancestor/descendant relationships, closed shadow DOM, coordinate targeting, or arbitrary selector state.
+- `target.locator` now has native DOM resolution for direct/workflow actions and compact page-state semantics for server-side diagnostics. It supports chained structured filters, explicit descendant relations, and regex matching, but it is not yet a full Playwright/Cypress locator engine for ancestor relations, closed shadow DOM, coordinate targeting, or arbitrary selector state.
 - `actionResult.result.backend` identifies the execution backend (`cdp-native-v2` for migrated native actions)
 - Native actions perform target inspection/actionability checks before dispatch, including visibility, disabled state, readonly/editable state for input, stable layout, pointer-events, viewport intersection, and hit-target mismatch diagnostics
 - Page-state assertions and waits support `visible: true/false`, `role`, `name`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`, and `exact` for structured refs where available
@@ -772,7 +785,7 @@ Runs a small generic UI workflow locally in the bridge using sequential action, 
     - `fast`: smaller page-state captures, cached state reuse between steps, and lighter summaries
   - supported step kinds: `action`, `waitFor`, `wait`, `assert`
   - `waitFor` polls compact page-state matchers
-  - `wait` runs the first-class wait engine with `waitKind: "url" | "navigation" | "selector_state" | "console" | "network_quiet" | "request" | "response"`
+  - `wait` runs the first-class wait engine with `waitKind: "url" | "navigation" | "load_state" | "selector_state" | "console" | "network_quiet" | "request" | "response"`
   - action targets can use:
       - direct handles: `elementRef`, `selector`
       - semantic matchers: `testId`, `scope`, `locator`, `textContains`, `labelContains`, `titleContains`, `role`, `name`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`
@@ -809,7 +822,7 @@ Use this before long live flows to distinguish:
 
 ## V6 Automation history tools
 
-These tools read from the dedicated `automation_runs` and `automation_steps` tables, so historical automation analysis no longer depends on reconstructing flows from generic `ui` event breadcrumbs.
+These tools read from the dedicated `automation_runs` and `automation_steps` tables, so historical automation analysis no longer depends on reconstructing flows from generic `ui` event breadcrumbs. Native action diagnostics are persisted with the history rows, including backend, actionability, frame policy, locator resolution, and point metadata when the live action returned them.
 
 ### list_automation_runs
 
@@ -846,8 +859,8 @@ Returns one automation run plus bounded step details from `automation_steps`.
 
 Response highlights:
 
-- `run`: run-level status, selector, trace id, failure/redaction metadata, and step count
-- `steps`: ordered step records with event linkage and redacted input metadata
+- `run`: run-level status, selector, trace id, failure/redaction metadata, diagnostics, and step count
+- `steps`: ordered step records with event linkage, diagnostics, and redacted input metadata
 - `pagination`: step pagination metadata for larger runs
 
 ### Live capture disconnection behavior

@@ -66,6 +66,7 @@ export const AUTOMATION_TOOLS = {
   PREFLIGHT_AUTOMATION_FLOW: 'preflight_automation_flow',
   WAIT_FOR_URL: 'wait_for_url',
   WAIT_FOR_NAVIGATION: 'wait_for_navigation',
+  WAIT_FOR_LOAD_STATE: 'wait_for_load_state',
   WAIT_FOR_SELECTOR_STATE: 'wait_for_selector_state',
   WAIT_FOR_CONSOLE: 'wait_for_console',
   WAIT_FOR_NETWORK_QUIET: 'wait_for_network_quiet',

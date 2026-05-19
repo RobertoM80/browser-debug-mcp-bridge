@@ -26,6 +26,7 @@ export const LiveUIActionLocatorStepSchema = z.object({
   role: z.string().min(1).optional(),
   name: LiveUIActionLocatorMatcherSchema.optional(),
   exact: z.boolean().optional(),
+  relation: z.enum(['filter', 'descendant']).optional(),
 }).superRefine((value, ctx) => {
   if (value.kind === 'role' && !value.role && !value.value) {
     ctx.addIssue({

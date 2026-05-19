@@ -92,6 +92,7 @@ describe('live-actions', () => {
               kind: 'text',
               value: 'Save changes',
               exact: true,
+              relation: 'descendant',
             },
           ],
         },
@@ -101,6 +102,7 @@ describe('live-actions', () => {
     expect(parsed.target?.locator?.scope).toBe('buttons');
     expect(parsed.target?.locator?.steps).toHaveLength(2);
     expect(parsed.target?.locator?.steps[0]?.kind).toBe('role');
+    expect(parsed.target?.locator?.steps[1]?.relation).toBe('descendant');
   });
 
   it('rejects incomplete locator steps', () => {

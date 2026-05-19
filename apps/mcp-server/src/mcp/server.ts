@@ -130,6 +130,7 @@ const UIActionLocatorStepSchema = z.object({
   role: z.string().min(1).optional(),
   name: UIActionLocatorMatcherSchema.optional(),
   exact: z.boolean().optional(),
+  relation: z.enum(['filter', 'descendant']).optional(),
 }).superRefine((value, ctx) => {
   if (value.kind === 'role' && !value.role && !value.value) {
     ctx.addIssue({
@@ -538,6 +539,14 @@ const AutomationWaitNavigationSchema = AutomationWaitBaseSchema.extend({
   }
 });
 
+const AutomationWaitLoadStateSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('load_state'),
+  state: z.enum(['domcontentloaded', 'load']).default('load'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+});
+
 const AutomationWaitSelectorStateSchema = AutomationWaitBaseSchema.extend({
   waitKind: z.literal('selector_state'),
   selector: z.string().min(1),
@@ -613,6 +622,7 @@ const AutomationWaitResponseSchema = AutomationWaitNetworkBaseSchema.extend({
 const AutomationWaitSpecSchema = z.discriminatedUnion('waitKind', [
   AutomationWaitUrlSchema,
   AutomationWaitNavigationSchema,
+  AutomationWaitLoadStateSchema,
   AutomationWaitSelectorStateSchema,
   AutomationWaitConsoleSchema,
   AutomationWaitNetworkQuietSchema,
@@ -689,6 +699,7 @@ const ACTION_LOCATOR_TOOL_SCHEMA = {
           role: { type: 'string' },
           name: LOCATOR_MATCHER_TOOL_SCHEMA,
           exact: { type: 'boolean' },
+          relation: { type: 'string', enum: ['filter', 'descendant'] },
         },
       },
     },
@@ -699,7 +710,7 @@ const AUTOMATION_WAIT_TOOL_SCHEMA = {
   type: 'object',
   required: ['waitKind'],
   properties: {
-    waitKind: { type: 'string', enum: ['url', 'navigation', 'selector_state', 'console', 'network_quiet', 'request', 'response'] },
+    waitKind: { type: 'string', enum: ['url', 'navigation', 'load_state', 'selector_state', 'console', 'network_quiet', 'request', 'response'] },
     timeoutMs: { type: 'number' },
     pollIntervalMs: { type: 'number' },
     urlContains: { type: 'string' },
@@ -708,8 +719,8 @@ const AUTOMATION_WAIT_TOOL_SCHEMA = {
     fromUrlContains: { type: 'string' },
     fromUrlRegex: { type: 'string' },
     trigger: { type: 'string' },
+    state: { type: 'string', enum: ['domcontentloaded', 'load', 'attached', 'detached', 'visible', 'hidden'] },
     selector: { type: 'string' },
-    state: { type: 'string', enum: ['attached', 'detached', 'visible', 'hidden'] },
     frameId: { type: 'number' },
     levels: { type: 'array', items: { type: 'string' } },
     contains: { type: 'string' },
@@ -1076,6 +1087,19 @@ const TOOL_SCHEMAS: Record<string, object> = {
       trigger: { type: 'string' },
       sinceTs: { type: 'number' },
       tabId: { type: 'number' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_load_state: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      state: { type: 'string', enum: ['domcontentloaded', 'load'] },
+      urlContains: { type: 'string' },
+      urlRegex: { type: 'string' },
+      exactUrl: { type: 'string' },
       timeoutMs: { type: 'number' },
       pollIntervalMs: { type: 'number' },
     },
@@ -1742,6 +1766,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   preflight_automation_flow: 'Check live-session readiness and production risks before running an automation flow',
   wait_for_url: 'Poll the live page URL until it matches an exact, contains, or regex condition',
   wait_for_navigation: 'Poll persisted navigation events until a matching URL or trigger is observed',
+  wait_for_load_state: 'Poll the live page document readiness until domcontentloaded or load is reached',
   wait_for_selector_state: 'Poll a selector until it is attached, detached, visible, or hidden',
   wait_for_console: 'Poll live console logs until a matching message appears',
   wait_for_network_quiet: 'Wait until persisted network activity is quiet for a bounded window',
@@ -1970,6 +1995,7 @@ interface AutomationRunRow {
   completed_at: number | null;
   stop_reason: string | null;
   target_summary_json: string | null;
+  diagnostics_json: string | null;
   failure_json: string | null;
   redaction_json: string | null;
   created_at: number;
@@ -1992,6 +2018,7 @@ interface AutomationStepRow {
   duration_ms: number | null;
   tab_id: number | null;
   target_summary_json: string | null;
+  diagnostics_json: string | null;
   redaction_json: string | null;
   failure_json: string | null;
   input_metadata_json: string | null;
@@ -3791,6 +3818,7 @@ function mapAutomationRunRecord(row: AutomationRunRow): Record<string, unknown> 
         : undefined,
     stopReason: row.stop_reason ?? undefined,
     target: parseJsonOrUndefined(row.target_summary_json),
+    diagnostics: parseJsonOrUndefined(row.diagnostics_json),
     failure: parseJsonOrUndefined(row.failure_json),
     redaction: parseJsonOrUndefined(row.redaction_json),
     stepCount: row.step_count,
@@ -3816,6 +3844,7 @@ function mapAutomationStepRecord(row: AutomationStepRow): Record<string, unknown
     durationMs: row.duration_ms ?? undefined,
     tabId: row.tab_id ?? undefined,
     target: parseJsonOrUndefined(row.target_summary_json),
+    diagnostics: parseJsonOrUndefined(row.diagnostics_json),
     redaction: parseJsonOrUndefined(row.redaction_json),
     failure: parseJsonOrUndefined(row.failure_json),
     inputMetadata: parseJsonOrUndefined(row.input_metadata_json),
@@ -4702,6 +4731,96 @@ async function waitForUrlCondition(
   };
 }
 
+function pageReadyStateMatches(
+  readyState: unknown,
+  expectedState: z.infer<typeof AutomationWaitLoadStateSchema>['state'],
+): boolean {
+  if (readyState !== 'loading' && readyState !== 'interactive' && readyState !== 'complete') {
+    return false;
+  }
+  if (expectedState === 'domcontentloaded') {
+    return readyState === 'interactive' || readyState === 'complete';
+  }
+  return readyState === 'complete';
+}
+
+async function waitForLoadStateCondition(
+  sessionId: string,
+  wait: z.infer<typeof AutomationWaitLoadStateSchema>,
+  capturePageState: (
+    sessionId: string,
+    input: ToolInput,
+  ) => Promise<PageStateCaptureResult>,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, 5_000, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const pollIntervalMs = resolveDurationMs(wait.pollIntervalMs, 100, 5_000);
+  const expectedState = wait.state ?? 'load';
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let attempts = 0;
+  let lastPage: Record<string, unknown> | undefined;
+
+  while (Date.now() <= deadline) {
+    attempts += 1;
+    const capture = await capturePageState(sessionId, {
+      includeButtons: false,
+      includeLinks: false,
+      includeInputs: false,
+      includeModals: false,
+      maxItems: 1,
+      maxTextLength: 40,
+    });
+    lastPage = {
+      url: capture.payload.url,
+      title: capture.payload.title,
+      readyState: capture.payload.readyState,
+      language: capture.payload.language,
+      viewport: capture.payload.viewport,
+    };
+    const urlMatches = matchesUrlPredicates(
+      typeof capture.payload.url === 'string' ? capture.payload.url : undefined,
+      {
+        exactUrl: wait.exactUrl,
+        urlContains: wait.urlContains,
+        urlRegex: wait.urlRegex,
+      },
+    );
+    if (urlMatches && pageReadyStateMatches(capture.payload.readyState, expectedState)) {
+      return {
+        waitKind: 'load_state',
+        matched: true,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        timeoutMs,
+        pollIntervalMs,
+        evidence: {
+          state: expectedState,
+          page: lastPage,
+        },
+      };
+    }
+    await sleep(pollIntervalMs);
+  }
+
+  return {
+    waitKind: 'load_state',
+    matched: false,
+    waitedMs: Date.now() - startedAt,
+    attempts,
+    timeoutMs,
+    pollIntervalMs,
+    evidence: {
+      state: expectedState,
+      page: lastPage,
+      expected: wait,
+    },
+    error: {
+      code: 'load_state_wait_timeout',
+      message: `Timed out waiting for page load state "${expectedState}".`,
+    },
+  };
+}
+
 async function waitForSelectorStateCondition(
   sessionId: string,
   wait: z.infer<typeof AutomationWaitSelectorStateSchema>,
@@ -5244,6 +5363,8 @@ async function runAutomationWait(options: {
       }
       return waitForNavigationCondition(options.sessionId, options.wait, db);
     }
+    case 'load_state':
+      return waitForLoadStateCondition(options.sessionId, options.wait, options.capturePageState);
     case 'selector_state':
       return waitForSelectorStateCondition(options.sessionId, options.wait, options.captureClient);
     case 'console':
@@ -8413,9 +8534,10 @@ export function createV1ToolHandlers(
            r.status,
            r.started_at,
            r.completed_at,
-           r.stop_reason,
-           r.target_summary_json,
-           r.failure_json,
+            r.stop_reason,
+            r.target_summary_json,
+            r.diagnostics_json,
+            r.failure_json,
            r.redaction_json,
            r.created_at,
            r.updated_at,
@@ -8485,9 +8607,10 @@ export function createV1ToolHandlers(
            r.status,
            r.started_at,
            r.completed_at,
-           r.stop_reason,
-           r.target_summary_json,
-           r.failure_json,
+            r.stop_reason,
+            r.target_summary_json,
+            r.diagnostics_json,
+            r.failure_json,
            r.redaction_json,
            r.created_at,
            r.updated_at,
@@ -8523,9 +8646,10 @@ export function createV1ToolHandlers(
            started_at,
            finished_at,
            duration_ms,
-           tab_id,
-           target_summary_json,
-           redaction_json,
+            tab_id,
+            target_summary_json,
+            diagnostics_json,
+            redaction_json,
            failure_json,
            input_metadata_json,
            event_type,
@@ -9581,6 +9705,24 @@ export function createV2ToolHandlers(
       };
     },
 
+    wait_for_load_state: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const wait = AutomationWaitLoadStateSchema.parse({ ...input, waitKind: 'load_state' });
+      const waited = await waitForLoadStateCondition(sessionId, wait, capturePageState);
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
     wait_for_selector_state: async (input) => {
       const sessionId = getSessionId(input);
       if (!sessionId) {
@@ -9825,7 +9967,7 @@ export function createV2ToolHandlers(
                 captureClient,
                 getDb,
               });
-              if (waited.waitKind === 'url' || waited.waitKind === 'navigation') {
+              if (waited.waitKind === 'url' || waited.waitKind === 'navigation' || waited.waitKind === 'load_state') {
                 lastPageCapture = await workflowCapturePageState(
                   request.sessionId,
                   {

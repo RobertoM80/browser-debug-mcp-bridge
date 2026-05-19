@@ -2479,12 +2479,12 @@ describe('mcp/server V1 query tools', () => {
       `
         INSERT INTO automation_runs (
           run_id, session_id, trace_id, action, tab_id, selector, status, started_at, completed_at,
-          stop_reason, target_summary_json, failure_json, redaction_json, created_at, updated_at
+          stop_reason, target_summary_json, diagnostics_json, failure_json, redaction_json, created_at, updated_at
         ) VALUES
           ('run-new', 'session-automation', 'trace-new', 'click', 7, '#checkout', 'succeeded', 3000, 3050,
-           NULL, '{"resolvedSelector":"#checkout"}', NULL, '{"fields":0}', 3000, 3050),
+           NULL, '{"resolvedSelector":"#checkout"}', '{"backend":"cdp-native-v2"}', NULL, '{"fields":0}', 3000, 3050),
           ('run-old', 'session-automation', 'trace-old', 'input', 7, '#email', 'failed', 2000, 2100,
-           'field_blocked', '{"resolvedSelector":"#email"}', '{"code":"blocked"}', '{"fields":1}', 2000, 2100)
+           'field_blocked', '{"resolvedSelector":"#email"}', '{"actionability":{"visible":true,"editable":false}}', '{"code":"blocked"}', '{"fields":1}', 2000, 2100)
       `
     ).run();
 
@@ -2492,14 +2492,14 @@ describe('mcp/server V1 query tools', () => {
       `
         INSERT INTO automation_steps (
           step_id, run_id, session_id, step_order, trace_id, action, selector, status, started_at,
-          finished_at, duration_ms, tab_id, target_summary_json, redaction_json, failure_json,
+          finished_at, duration_ms, tab_id, target_summary_json, diagnostics_json, redaction_json, failure_json,
           input_metadata_json, event_type, event_id, created_at, updated_at
         ) VALUES
           ('run-new:1', 'run-new', 'session-automation', 1, 'trace-new', 'click', '#checkout', 'succeeded', 3000,
-           3050, 50, 7, '{"resolvedSelector":"#checkout"}', '{"fields":0}', NULL,
+           3050, 50, 7, '{"resolvedSelector":"#checkout"}', '{"backend":"cdp-native-v2"}', '{"fields":0}', NULL,
            NULL, 'automation_succeeded', NULL, 3000, 3050),
           ('run-old:1', 'run-old', 'session-automation', 1, 'trace-old', 'input', '#email', 'failed', 2000,
-           2100, 100, 7, '{"resolvedSelector":"#email"}', '{"fields":1}', '{"code":"blocked"}',
+           2100, 100, 7, '{"resolvedSelector":"#email"}', '{"actionability":{"visible":true,"editable":false}}', '{"fields":1}', '{"code":"blocked"}',
            '{"valueLength":12}', 'automation_failed', NULL, 2000, 2100)
       `
     ).run();
@@ -2518,6 +2518,11 @@ describe('mcp/server V1 query tools', () => {
       runId: 'run-old',
       status: 'failed',
       action: 'input',
+      diagnostics: {
+        actionability: {
+          editable: false,
+        },
+      },
       stepCount: 1,
       source: 'automation_runs',
     });
@@ -2539,10 +2544,10 @@ describe('mcp/server V1 query tools', () => {
       `
         INSERT INTO automation_runs (
           run_id, session_id, trace_id, action, tab_id, selector, status, started_at, completed_at,
-          stop_reason, target_summary_json, failure_json, redaction_json, created_at, updated_at
+          stop_reason, target_summary_json, diagnostics_json, failure_json, redaction_json, created_at, updated_at
         ) VALUES (
           'run-detail', 'session-automation-detail', 'trace-detail', 'click', 9, '#submit', 'failed', 4000, 4200,
-          'action_failed', '{"resolvedSelector":"#submit"}', '{"code":"action_failed"}', '{"fields":1}', 4000, 4200
+          'action_failed', '{"resolvedSelector":"#submit"}', '{"backend":"cdp-native-v2","actionability":{"hitTargetMatches":false}}', '{"code":"action_failed"}', '{"fields":1}', 4000, 4200
         )
       `
     ).run();
@@ -2551,14 +2556,14 @@ describe('mcp/server V1 query tools', () => {
       `
         INSERT INTO automation_steps (
           step_id, run_id, session_id, step_order, trace_id, action, selector, status, started_at,
-          finished_at, duration_ms, tab_id, target_summary_json, redaction_json, failure_json,
+          finished_at, duration_ms, tab_id, target_summary_json, diagnostics_json, redaction_json, failure_json,
           input_metadata_json, event_type, event_id, created_at, updated_at
         ) VALUES
           ('run-detail:1', 'run-detail', 'session-automation-detail', 1, 'trace-detail', 'click', '#submit', 'started', 4000,
-           NULL, NULL, 9, '{"resolvedSelector":"#submit"}', '{"fields":0}', NULL,
+           NULL, NULL, 9, '{"resolvedSelector":"#submit"}', NULL, '{"fields":0}', NULL,
            NULL, 'automation_started', NULL, 4000, 4000),
           ('run-detail:2', 'run-detail', 'session-automation-detail', 2, 'trace-detail', 'click', '#submit', 'failed', 4100,
-           4200, 100, 9, '{"resolvedSelector":"#submit"}', '{"fields":1}', '{"code":"action_failed"}',
+           4200, 100, 9, '{"resolvedSelector":"#submit"}', '{"backend":"cdp-native-v2","actionability":{"hitTargetMatches":false}}', '{"fields":1}', '{"code":"action_failed"}',
            '{"valueLength":0}', 'automation_failed', NULL, 4100, 4200)
       `
     ).run();
@@ -2575,6 +2580,11 @@ describe('mcp/server V1 query tools', () => {
     expect((response.run as Record<string, unknown>)).toMatchObject({
       runId: 'run-detail',
       status: 'failed',
+      diagnostics: {
+        actionability: {
+          hitTargetMatches: false,
+        },
+      },
       stepCount: 2,
       source: 'automation_runs',
     });
@@ -2583,6 +2593,12 @@ describe('mcp/server V1 query tools', () => {
       stepId: 'run-detail:2',
       stepOrder: 2,
       status: 'failed',
+      diagnostics: {
+        backend: 'cdp-native-v2',
+        actionability: {
+          hitTargetMatches: false,
+        },
+      },
       eventType: 'automation_failed',
       source: 'automation_steps',
     });
@@ -4153,6 +4169,49 @@ describe('mcp/server V2 capture tools', () => {
     });
   });
 
+  it('waits for live document load state with optional URL predicates', async () => {
+    let attempt = 0;
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command) => {
+          expect(command).toBe('CAPTURE_PAGE_STATE');
+          attempt += 1;
+          return {
+            ok: true,
+            payload: {
+              url: attempt >= 2 ? 'https://app.example.com/dashboard' : 'https://app.example.com/loading',
+              title: attempt >= 2 ? 'Dashboard' : 'Loading',
+              readyState: attempt >= 2 ? 'interactive' : 'loading',
+              language: 'en',
+              viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+              summary: { buttons: 0, links: 0, inputs: 0, modals: 0 },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_load_state', {
+      sessionId: 'session-v2',
+      state: 'domcontentloaded',
+      urlContains: '/dashboard',
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('load_state');
+    expect(response.attempts).toBeGreaterThanOrEqual(2);
+    expect(response.evidence).toMatchObject({
+      state: 'domcontentloaded',
+      page: {
+        url: 'https://app.example.com/dashboard',
+        readyState: 'interactive',
+      },
+    });
+  });
+
   it('waits for persisted navigation events with URL, from-URL, trigger, and tab filters', async () => {
     const db = new Database(':memory:');
     initializeDatabase(db);
@@ -4625,6 +4684,68 @@ describe('mcp/server V2 capture tools', () => {
     expect(response.finalPage).toMatchObject({
       url: 'https://app.example.com/dashboard',
       title: 'Dashboard',
+    });
+  });
+
+  it('runs generic workflow load-state wait steps', async () => {
+    let attempt = 0;
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command) => {
+          expect(command).toBe('CAPTURE_PAGE_STATE');
+          attempt += 1;
+          return {
+            ok: true,
+            payload: {
+              url: 'https://app.example.com/dashboard',
+              title: 'Dashboard',
+              readyState: attempt >= 2 ? 'complete' : 'interactive',
+              language: 'en',
+              viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+              summary: { buttons: 0, links: 0, inputs: 0, modals: 0 },
+              buttons: [],
+              links: [],
+              inputs: [],
+              modals: [],
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'run_ui_steps', {
+      sessionId: 'session-v2',
+      steps: [
+        {
+          kind: 'wait',
+          id: 'wait-dashboard-load',
+          wait: {
+            waitKind: 'load_state',
+            state: 'load',
+            urlContains: '/dashboard',
+            timeoutMs: 500,
+            pollIntervalMs: 50,
+          },
+        },
+      ],
+    });
+
+    expect(response.status).toBe('succeeded');
+    expect((response.steps as Array<Record<string, unknown>>)[0]).toMatchObject({
+      id: 'wait-dashboard-load',
+      kind: 'wait',
+      status: 'succeeded',
+      wait: {
+        waitKind: 'load_state',
+        matched: true,
+      },
+      target: {
+        state: 'load',
+        page: {
+          readyState: 'complete',
+        },
+      },
     });
   });
 
@@ -6134,6 +6255,7 @@ describe('mcp/server V2 capture tools', () => {
               kind: 'text',
               value: 'Save changes',
               exact: true,
+              relation: 'descendant',
             },
           ],
         },
@@ -6152,6 +6274,12 @@ describe('mcp/server V2 capture tools', () => {
             frame: {
               titleContains: 'Account',
             },
+            steps: expect.arrayContaining([
+              expect.objectContaining({
+                kind: 'text',
+                relation: 'descendant',
+              }),
+            ]),
           },
         },
       },

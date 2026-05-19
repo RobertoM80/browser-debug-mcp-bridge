@@ -64,6 +64,39 @@ describe('ui-workflows', () => {
     expect(parsed.mode).toBe('fast');
   });
 
+  it('parses descendant locator relations in workflow action targets', () => {
+    const parsed = RunUIStepsSchema.parse({
+      sessionId: 'sess_123',
+      steps: [
+        {
+          kind: 'action',
+          action: 'click',
+          target: {
+            locator: {
+              steps: [
+                {
+                  kind: 'testId',
+                  value: 'settings-panel',
+                },
+                {
+                  kind: 'role',
+                  role: 'button',
+                  name: 'Save',
+                  exact: true,
+                  relation: 'descendant',
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+
+    const firstStep = parsed.steps[0];
+    expect(firstStep?.kind).toBe('action');
+    expect(firstStep?.target.locator?.steps[1]?.relation).toBe('descendant');
+  });
+
   it('parses first-class wait steps including navigation and request/response waits', () => {
     const parsed = RunUIStepsSchema.parse({
       sessionId: 'sess_123',
@@ -78,6 +111,15 @@ describe('ui-workflows', () => {
             trigger: 'pushState',
             tabId: 4,
             timeoutMs: 5000,
+          },
+        },
+        {
+          kind: 'wait',
+          id: 'wait-load-state',
+          wait: {
+            waitKind: 'load_state',
+            state: 'domcontentloaded',
+            urlContains: '/dashboard',
           },
         },
         {
@@ -112,8 +154,8 @@ describe('ui-workflows', () => {
       ],
     });
 
-    expect(parsed.steps.map((step) => step.kind)).toEqual(['wait', 'wait', 'wait', 'wait']);
-    const selectorStep = parsed.steps[1];
+    expect(parsed.steps.map((step) => step.kind)).toEqual(['wait', 'wait', 'wait', 'wait', 'wait']);
+    const selectorStep = parsed.steps[2];
     expect(selectorStep.kind).toBe('wait');
     if (selectorStep.kind === 'wait') {
       expect(selectorStep.wait.waitKind).toBe('selector_state');

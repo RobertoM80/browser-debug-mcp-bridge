@@ -182,13 +182,17 @@ describe('native automation backend', () => {
       target: {
         tabId: 7,
         locator: {
-          scope: 'buttons',
           steps: [
+            {
+              kind: 'testId',
+              value: 'settings-panel',
+            },
             {
               kind: 'role',
               role: 'button',
               name: 'Save',
               exact: true,
+              relation: 'descendant',
             },
           ],
         },
@@ -228,6 +232,17 @@ describe('native automation backend', () => {
           tabId: 7,
           allFrames: true,
         },
+        args: [
+          expect.objectContaining({
+            steps: expect.arrayContaining([
+              expect.objectContaining({
+                kind: 'role',
+                relation: 'descendant',
+              }),
+            ]),
+          }),
+          expect.any(Object),
+        ],
       }),
     );
     expect(sendCommand).toHaveBeenCalledWith(

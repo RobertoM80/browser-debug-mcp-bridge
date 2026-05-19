@@ -279,9 +279,13 @@ describe('Database Schema', () => {
 
     it('should create indexes on automation tables', () => {
       initializeSchema(db);
+      const runColumns = db.prepare("PRAGMA table_info('automation_runs')").all() as { name: string }[];
+      const stepColumns = db.prepare("PRAGMA table_info('automation_steps')").all() as { name: string }[];
       const runIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='automation_runs'").all() as { name: string }[];
       const stepIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='automation_steps'").all() as { name: string }[];
 
+      expect(runColumns.map((column) => column.name)).toContain('diagnostics_json');
+      expect(stepColumns.map((column) => column.name)).toContain('diagnostics_json');
       expect(runIndexes.map((index) => index.name)).toEqual(expect.arrayContaining([
         'idx_automation_runs_session_started',
         'idx_automation_runs_session_status',
@@ -489,6 +493,7 @@ describe('Database Migrations', () => {
         status: string;
         duration_ms: number;
         event_type: string;
+        diagnostics_json: string | null;
       };
 
       expect(run.trace_id).toBe('trace-legacy');
@@ -497,6 +502,50 @@ describe('Database Migrations', () => {
       expect(step.status).toBe('succeeded');
       expect(step.duration_ms).toBe(50);
       expect(step.event_type).toBe('automation_succeeded');
+      expect(step.diagnostics_json).toBeNull();
+    });
+
+    it('should add automation diagnostics columns to migrated databases', () => {
+      initializeSchema(db);
+      db.exec(`
+        DELETE FROM schema_version;
+        INSERT INTO schema_version (version, applied_at) VALUES (15, 999);
+        CREATE TABLE automation_runs_v15 AS SELECT * FROM automation_runs;
+        CREATE TABLE automation_steps_v15 AS SELECT * FROM automation_steps;
+        DROP TABLE automation_steps;
+        DROP TABLE automation_runs;
+        ALTER TABLE automation_runs_v15 RENAME TO automation_runs;
+        ALTER TABLE automation_steps_v15 RENAME TO automation_steps;
+      `);
+
+      const dropColumn = (tableName: string, columnName: string): void => {
+        const columns = db.prepare(`PRAGMA table_info('${tableName}')`).all() as Array<{
+          name: string;
+          type: string;
+          notnull: number;
+          dflt_value: string | null;
+        }>;
+        const kept = columns.filter((column) => column.name !== columnName);
+        db.exec(`ALTER TABLE ${tableName} RENAME TO ${tableName}_old;`);
+        db.exec(`
+          CREATE TABLE ${tableName} (
+            ${kept.map((column) => `${column.name} ${column.type}${column.notnull ? ' NOT NULL' : ''}${column.dflt_value ? ` DEFAULT ${column.dflt_value}` : ''}`).join(', ')}
+          );
+          INSERT INTO ${tableName} (${kept.map((column) => column.name).join(', ')})
+          SELECT ${kept.map((column) => column.name).join(', ')} FROM ${tableName}_old;
+          DROP TABLE ${tableName}_old;
+        `);
+      };
+      dropColumn('automation_runs', 'diagnostics_json');
+      dropColumn('automation_steps', 'diagnostics_json');
+
+      runMigrations(db);
+
+      expect((db.prepare("PRAGMA table_info('automation_runs')").all() as { name: string }[])
+        .map((column) => column.name)).toContain('diagnostics_json');
+      expect((db.prepare("PRAGMA table_info('automation_steps')").all() as { name: string }[])
+        .map((column) => column.name)).toContain('diagnostics_json');
+      expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
     });
   });
 

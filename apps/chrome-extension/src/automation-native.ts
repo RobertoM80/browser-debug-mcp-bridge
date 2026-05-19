@@ -1188,30 +1188,75 @@ async function resolveNativeLocatorTarget(
         const allScopedElements = (): Element[] => collectAllElements(document)
           .filter((element) => scopeMatches(element, locatorValue.scope));
 
+        const descendantElements = (roots: Element[]): Element[] => {
+          const seen = new Set<Element>();
+          const descendants: Element[] = [];
+          const addElement = (element: Element): void => {
+            if (seen.has(element)) {
+              return;
+            }
+            seen.add(element);
+            descendants.push(element);
+            if (element.shadowRoot) {
+              for (const shadowElement of collectAllElements(element.shadowRoot)) {
+                addElement(shadowElement);
+              }
+            }
+            for (const child of Array.from(element.querySelectorAll('*'))) {
+              addElement(child);
+            }
+          };
+
+          for (const root of roots) {
+            if (root.shadowRoot) {
+              for (const shadowElement of collectAllElements(root.shadowRoot)) {
+                addElement(shadowElement);
+              }
+            }
+            for (const child of Array.from(root.querySelectorAll('*'))) {
+              addElement(child);
+            }
+          }
+          return descendants.filter((element) => scopeMatches(element, locatorValue.scope));
+        };
+
+        const stepSource = (step: LiveUIActionLocator['steps'][number]): Element[] => {
+          if (step.relation === 'descendant' && candidates) {
+            return descendantElements(candidates);
+          }
+          return candidates ?? allScopedElements();
+        };
+
+        const matchesCssLocator = (element: Element, matcher: string): boolean => {
+          try {
+            return matcher.includes(shadowSeparator)
+              ? elementSelectorPath(element) === matcher
+              : element.matches(matcher);
+          } catch {
+            return elementSelectorPath(element) === matcher;
+          }
+        };
+
         for (const step of locatorValue.steps) {
           if (step.kind === 'css') {
             const matcher = step.value;
             if (typeof matcher === 'string') {
-              const cssMatches = candidates
-                ? candidates.filter((element) => {
-                  try {
-                    return matcher.includes(shadowSeparator)
-                      ? elementSelectorPath(element) === matcher
-                      : element.matches(matcher);
-                  } catch {
-                    return elementSelectorPath(element) === matcher;
-                  }
-                })
-                : queryAllElements(document, matcher);
-              candidates = cssMatches.filter((element) => scopeMatches(element, locatorValue.scope));
+              if (step.relation === 'descendant' && candidates) {
+                candidates = stepSource(step).filter((element) => matchesCssLocator(element, matcher));
+              } else if (candidates) {
+                candidates = candidates.filter((element) => matchesCssLocator(element, matcher));
+              } else {
+                candidates = queryAllElements(document, matcher);
+              }
+              candidates = candidates.filter((element) => scopeMatches(element, locatorValue.scope));
             } else {
-              const source = candidates ?? allScopedElements();
+              const source = stepSource(step);
               candidates = source.filter((element) => matchesLocatorMatcher(elementSelectorPath(element), matcher, step.exact ?? true));
             }
             continue;
           }
 
-          const source = candidates ?? allScopedElements();
+          const source = stepSource(step);
           if (step.kind === 'role') {
             const expectedRole = roleValue(step)?.toLowerCase();
             candidates = source.filter((element) => {

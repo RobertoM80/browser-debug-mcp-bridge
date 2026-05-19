@@ -191,6 +191,15 @@ function buildAutomationFixtureHtml(): string {
         <main>
           <h1>Live automation fixture</h1>
           <button id="increment" data-testid="increment">Increment</button>
+          <section id="profile-panel" data-testid="profile-panel">
+            <h2>Profile</h2>
+            <button id="profile-apply">Apply</button>
+          </section>
+          <section id="billing-panel" data-testid="billing-panel">
+            <h2>Billing</h2>
+            <button id="billing-apply">Apply</button>
+          </section>
+          <output id="panel-output"></output>
           <button id="disabled-action" disabled>Disabled action</button>
           <button id="hidden-action">Hidden action</button>
           <button id="no-pointer-action">No pointer action</button>
@@ -257,6 +266,12 @@ function buildAutomationFixtureHtml(): string {
           document.querySelector('#increment').addEventListener('click', () => {
             const count = document.querySelector('#count');
             count.textContent = String(Number(count.textContent || '0') + 1);
+          });
+          document.querySelector('#profile-apply').addEventListener('click', () => {
+            document.querySelector('#panel-output').textContent = 'profile';
+          });
+          document.querySelector('#billing-apply').addEventListener('click', () => {
+            document.querySelector('#panel-output').textContent = 'billing';
           });
           document.querySelector('#displayName').addEventListener('input', (event) => {
             document.querySelector('#name-output').textContent = event.target.value;
@@ -470,6 +485,38 @@ test.describe('@full live automation through MCP and extension session', () => {
       },
     });
     await expect(targetPage.locator('#count')).toHaveText('3');
+
+    const descendantLocatorClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        tabId,
+        locator: {
+          steps: [
+            {
+              kind: 'testId',
+              value: 'billing-panel',
+            },
+            {
+              kind: 'role',
+              role: 'button',
+              name: 'Apply',
+              exact: true,
+              relation: 'descendant',
+            },
+          ],
+        },
+      },
+    });
+    expect(descendantLocatorClick.status).toBe('succeeded');
+    expect(descendantLocatorClick.actionResult?.result?.backend).toBe('cdp-native-v2');
+    expect(descendantLocatorClick.targetResolution).toMatchObject({
+      strategy: 'native_locator',
+      matched: {
+        selector: '#billing-apply',
+      },
+    });
+    await expect(targetPage.locator('#panel-output')).toHaveText('billing');
 
     const input = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
@@ -744,6 +791,18 @@ test.describe('@full live automation through MCP and extension session', () => {
     expect(urlWait.matched).toBe(true);
     expect(urlWait.waitKind).toBe('url');
 
+    const loadStateWait = await callToolJson<WaitToolResponse>(mcp.client, 'wait_for_load_state', {
+      sessionId,
+      state: 'load',
+      urlContains: '/automation-fixture/next?step=nav',
+      timeoutMs: 5_000,
+    });
+    expect(loadStateWait.matched).toBe(true);
+    expect(loadStateWait.waitKind).toBe('load_state');
+    expect(loadStateWait.evidence?.page).toMatchObject({
+      readyState: 'complete',
+    });
+
     const consoleSince = Date.now();
     const consoleClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
@@ -829,6 +888,16 @@ test.describe('@full live automation through MCP and extension session', () => {
         },
         {
           kind: 'wait',
+          id: 'wait-workflow-load-state',
+          wait: {
+            waitKind: 'load_state',
+            state: 'load',
+            urlContains: '/automation-fixture/next?step=nav',
+            timeoutMs: 5_000,
+          },
+        },
+        {
+          kind: 'wait',
           id: 'wait-workflow-request',
           wait: {
             waitKind: 'request',
@@ -857,10 +926,12 @@ test.describe('@full live automation through MCP and extension session', () => {
       ],
     });
     expect(waitWorkflow.status).toBe('succeeded');
-    expect(waitWorkflow.completedStepCount).toBe(3);
-    expect(waitWorkflow.steps.map((step) => step.status)).toEqual(['succeeded', 'succeeded', 'succeeded']);
+    expect(waitWorkflow.completedStepCount).toBe(4);
+    expect(waitWorkflow.steps.map((step) => step.status)).toEqual(['succeeded', 'succeeded', 'succeeded', 'succeeded']);
     expect(waitWorkflow.steps[1]?.wait?.matched).toBe(true);
+    expect(waitWorkflow.steps[1]?.wait?.waitKind).toBe('load_state');
     expect(waitWorkflow.steps[2]?.wait?.matched).toBe(true);
+    expect(waitWorkflow.steps[3]?.wait?.matched).toBe(true);
     await expect(targetPage.locator('#workflow-network-output')).toHaveText('/health?automation=workflow:200');
 
     const visibleAssertion = await callToolJson<{ matched: boolean; matchCount: number }>(mcp.client, 'assert_page_state', {

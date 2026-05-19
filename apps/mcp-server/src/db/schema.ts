@@ -6,7 +6,7 @@ import {
   OVERRIDE_POC_RUN_STATUSES,
 } from '../override-audit-contract.js';
 
-export const SCHEMA_VERSION = 15;
+export const SCHEMA_VERSION = 16;
 
 const OVERRIDE_POC_RUN_STATUS_SQL = OVERRIDE_POC_RUN_STATUSES.map((value) => `'${value}'`).join(', ');
 const OVERRIDE_POC_REQUEST_STATUS_SQL = OVERRIDE_POC_REQUEST_STATUSES.map((value) => `'${value}'`).join(', ');
@@ -184,6 +184,7 @@ CREATE TABLE IF NOT EXISTS automation_runs (
   completed_at INTEGER,
   stop_reason TEXT,
   target_summary_json TEXT,
+  diagnostics_json TEXT,
   failure_json TEXT,
   redaction_json TEXT,
   created_at INTEGER NOT NULL,
@@ -210,6 +211,7 @@ CREATE TABLE IF NOT EXISTS automation_steps (
   duration_ms INTEGER,
   tab_id INTEGER,
   target_summary_json TEXT,
+  diagnostics_json TEXT,
   redaction_json TEXT,
   failure_json TEXT,
   input_metadata_json TEXT,
