@@ -511,10 +511,38 @@ const AutomationWaitUrlSchema = AutomationWaitBaseSchema.extend({
   }
 });
 
+const AutomationWaitNavigationSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('navigation'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  fromUrlContains: z.string().min(1).optional(),
+  fromUrlRegex: z.string().min(1).optional(),
+  trigger: z.string().min(1).optional(),
+  sinceTs: z.number().int().min(0).optional(),
+  tabId: z.number().int().min(0).optional(),
+}).superRefine((value, ctx) => {
+  if (
+    !value.urlContains
+    && !value.urlRegex
+    && !value.exactUrl
+    && !value.fromUrlContains
+    && !value.fromUrlRegex
+    && !value.trigger
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'navigation wait requires a URL, from-URL, or trigger predicate',
+      path: ['wait'],
+    });
+  }
+});
+
 const AutomationWaitSelectorStateSchema = AutomationWaitBaseSchema.extend({
   waitKind: z.literal('selector_state'),
   selector: z.string().min(1),
   state: z.enum(['attached', 'detached', 'visible', 'hidden']).default('visible'),
+  frameId: z.number().int().min(0).default(0),
 });
 
 const AutomationWaitConsoleSchema = AutomationWaitBaseSchema.extend({
@@ -533,11 +561,63 @@ const AutomationWaitNetworkQuietSchema = AutomationWaitBaseSchema.extend({
   tabId: z.number().int().min(0).optional(),
 });
 
+const AutomationWaitNetworkBaseSchema = AutomationWaitBaseSchema.extend({
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  method: z.string().min(1).optional(),
+  traceId: z.string().min(1).optional(),
+  initiator: z.enum(['fetch', 'xhr', 'img', 'script', 'other']).optional(),
+  requestContentType: z.string().min(1).optional(),
+  sinceTs: z.number().int().min(0).optional(),
+  tabId: z.number().int().min(0).optional(),
+  includeBodies: z.boolean().optional(),
+});
+
+const AutomationWaitRequestSchema = AutomationWaitNetworkBaseSchema.extend({
+  waitKind: z.literal('request'),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl && !value.traceId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'request wait requires urlContains, urlRegex, exactUrl, or traceId',
+      path: ['wait'],
+    });
+  }
+});
+
+const AutomationWaitResponseSchema = AutomationWaitNetworkBaseSchema.extend({
+  waitKind: z.literal('response'),
+  statusIn: z.array(z.number().int().min(100).max(599)).optional(),
+  statusGte: z.number().int().min(100).max(599).optional(),
+  statusLt: z.number().int().min(100).max(600).optional(),
+  responseContentType: z.string().min(1).optional(),
+  errorType: z.string().min(1).optional(),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl && !value.traceId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'response wait requires urlContains, urlRegex, exactUrl, or traceId',
+      path: ['wait'],
+    });
+  }
+  if (value.statusGte !== undefined && value.statusLt !== undefined && value.statusGte >= value.statusLt) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'statusGte must be less than statusLt',
+      path: ['statusGte'],
+    });
+  }
+});
+
 const AutomationWaitSpecSchema = z.discriminatedUnion('waitKind', [
   AutomationWaitUrlSchema,
+  AutomationWaitNavigationSchema,
   AutomationWaitSelectorStateSchema,
   AutomationWaitConsoleSchema,
   AutomationWaitNetworkQuietSchema,
+  AutomationWaitRequestSchema,
+  AutomationWaitResponseSchema,
 ]);
 
 const UIWorkflowGenericWaitStepSchema = UIWorkflowStepBaseSchema.extend({
@@ -619,20 +699,33 @@ const AUTOMATION_WAIT_TOOL_SCHEMA = {
   type: 'object',
   required: ['waitKind'],
   properties: {
-    waitKind: { type: 'string', enum: ['url', 'selector_state', 'console', 'network_quiet'] },
+    waitKind: { type: 'string', enum: ['url', 'navigation', 'selector_state', 'console', 'network_quiet', 'request', 'response'] },
     timeoutMs: { type: 'number' },
     pollIntervalMs: { type: 'number' },
     urlContains: { type: 'string' },
     urlRegex: { type: 'string' },
     exactUrl: { type: 'string' },
+    fromUrlContains: { type: 'string' },
+    fromUrlRegex: { type: 'string' },
+    trigger: { type: 'string' },
     selector: { type: 'string' },
     state: { type: 'string', enum: ['attached', 'detached', 'visible', 'hidden'] },
+    frameId: { type: 'number' },
     levels: { type: 'array', items: { type: 'string' } },
     contains: { type: 'string' },
     sinceTs: { type: 'number' },
     includeRuntimeErrors: { type: 'boolean' },
     quietMs: { type: 'number' },
     method: { type: 'string' },
+    traceId: { type: 'string' },
+    initiator: { type: 'string', enum: ['fetch', 'xhr', 'img', 'script', 'other'] },
+    requestContentType: { type: 'string' },
+    responseContentType: { type: 'string' },
+    statusIn: { type: 'array', items: { type: 'number' } },
+    statusGte: { type: 'number' },
+    statusLt: { type: 'number' },
+    errorType: { type: 'string' },
+    includeBodies: { type: 'boolean' },
     tabId: { type: 'number' },
   },
 };
@@ -825,6 +918,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       selector: { type: 'string' },
+      frameId: { type: 'number' },
       properties: { type: 'array', items: { type: 'string' } },
     },
   },
@@ -834,6 +928,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       selector: { type: 'string' },
+      frameId: { type: 'number' },
     },
   },
   get_page_state: {
@@ -968,6 +1063,23 @@ const TOOL_SCHEMAS: Record<string, object> = {
       pollIntervalMs: { type: 'number' },
     },
   },
+  wait_for_navigation: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      urlContains: { type: 'string' },
+      urlRegex: { type: 'string' },
+      exactUrl: { type: 'string' },
+      fromUrlContains: { type: 'string' },
+      fromUrlRegex: { type: 'string' },
+      trigger: { type: 'string' },
+      sinceTs: { type: 'number' },
+      tabId: { type: 'number' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
   wait_for_selector_state: {
     type: 'object',
     required: ['sessionId', 'selector'],
@@ -975,6 +1087,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       sessionId: { type: 'string' },
       selector: { type: 'string' },
       state: { type: 'string', enum: ['attached', 'detached', 'visible', 'hidden'] },
+      frameId: { type: 'number' },
       timeoutMs: { type: 'number' },
       pollIntervalMs: { type: 'number' },
     },
@@ -988,6 +1101,49 @@ const TOOL_SCHEMAS: Record<string, object> = {
       contains: { type: 'string' },
       sinceTs: { type: 'number' },
       includeRuntimeErrors: { type: 'boolean' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_request: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      urlContains: { type: 'string' },
+      urlRegex: { type: 'string' },
+      exactUrl: { type: 'string' },
+      method: { type: 'string' },
+      traceId: { type: 'string' },
+      initiator: { type: 'string', enum: ['fetch', 'xhr', 'img', 'script', 'other'] },
+      requestContentType: { type: 'string' },
+      sinceTs: { type: 'number' },
+      tabId: { type: 'number' },
+      includeBodies: { type: 'boolean' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_response: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      urlContains: { type: 'string' },
+      urlRegex: { type: 'string' },
+      exactUrl: { type: 'string' },
+      method: { type: 'string' },
+      traceId: { type: 'string' },
+      initiator: { type: 'string', enum: ['fetch', 'xhr', 'img', 'script', 'other'] },
+      requestContentType: { type: 'string' },
+      responseContentType: { type: 'string' },
+      statusIn: { type: 'array', items: { type: 'number' } },
+      statusGte: { type: 'number' },
+      statusLt: { type: 'number' },
+      errorType: { type: 'string' },
+      sinceTs: { type: 'number' },
+      tabId: { type: 'number' },
+      includeBodies: { type: 'boolean' },
       timeoutMs: { type: 'number' },
       pollIntervalMs: { type: 'number' },
     },
@@ -1585,9 +1741,12 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   wait_for_page_state: 'Poll compact page state until a structured assertion becomes true',
   preflight_automation_flow: 'Check live-session readiness and production risks before running an automation flow',
   wait_for_url: 'Poll the live page URL until it matches an exact, contains, or regex condition',
+  wait_for_navigation: 'Poll persisted navigation events until a matching URL or trigger is observed',
   wait_for_selector_state: 'Poll a selector until it is attached, detached, visible, or hidden',
   wait_for_console: 'Poll live console logs until a matching message appears',
   wait_for_network_quiet: 'Wait until persisted network activity is quiet for a bounded window',
+  wait_for_request: 'Poll persisted network activity until a matching request is observed',
+  wait_for_response: 'Poll persisted network activity until a matching response is observed',
   capture_ui_snapshot: 'Capture redacted UI snapshot (DOM/styles/optional PNG) and persist it',
   get_live_console_logs: 'Read in-memory live console logs for a connected session',
   list_override_profiles: 'List configured browser override profiles',
@@ -1637,6 +1796,7 @@ const MAX_BODY_CHUNK_BYTES = 256 * 1024;
 const DEFAULT_NETWORK_POLL_TIMEOUT_MS = 15_000;
 const MAX_NETWORK_POLL_TIMEOUT_MS = 120_000;
 const DEFAULT_NETWORK_POLL_INTERVAL_MS = 250;
+const DEFAULT_AUTOMATION_WAIT_LOOKBACK_MS = 5_000;
 const LIVE_SESSION_DISCONNECTED_CODE = 'LIVE_SESSION_DISCONNECTED';
 const OVERRIDE_LIVE_COMMAND_TIMEOUT_CODE = 'OVERRIDE_LIVE_COMMAND_TIMEOUT';
 const OVERRIDE_LIVE_COMMAND_FAILED_CODE = 'OVERRIDE_LIVE_COMMAND_FAILED';
@@ -4367,20 +4527,35 @@ function compileWaitRegex(value: string | undefined, fieldName: string): RegExp 
 }
 
 function matchesUrlWait(url: unknown, wait: z.infer<typeof AutomationWaitUrlSchema>): boolean {
+  return matchesUrlPredicates(url, {
+    exactUrl: wait.exactUrl,
+    urlContains: wait.urlContains,
+    urlRegex: wait.urlRegex,
+  });
+}
+
+function matchesUrlPredicates(
+  url: unknown,
+  predicates: { exactUrl?: string; urlContains?: string; urlRegex?: string; regexFieldName?: string },
+): boolean {
   if (typeof url !== 'string') {
     return false;
   }
-  if (wait.exactUrl && url !== wait.exactUrl) {
+  if (predicates.exactUrl && url !== predicates.exactUrl) {
     return false;
   }
-  if (wait.urlContains && !url.includes(wait.urlContains)) {
+  if (predicates.urlContains && !url.includes(predicates.urlContains)) {
     return false;
   }
-  const regex = compileWaitRegex(wait.urlRegex, 'urlRegex');
+  const regex = compileWaitRegex(predicates.urlRegex, predicates.regexFieldName ?? 'urlRegex');
   if (regex && !regex.test(url)) {
     return false;
   }
   return true;
+}
+
+function resolveAutomationWaitSinceTs(value: unknown): number {
+  return resolveOptionalTimestamp(value) ?? Math.max(0, Date.now() - DEFAULT_AUTOMATION_WAIT_LOOKBACK_MS);
 }
 
 function isElementMissingError(error: unknown): boolean {
@@ -4392,6 +4567,7 @@ async function captureSelectorState(
   captureClient: CaptureCommandClient,
   sessionId: string,
   selector: string,
+  frameId: number = 0,
 ): Promise<Record<string, unknown>> {
   try {
     const [styleCapture, layoutCapture] = await Promise.all([
@@ -4399,14 +4575,14 @@ async function captureSelectorState(
         captureClient,
         sessionId,
         'CAPTURE_COMPUTED_STYLES',
-        { selector, properties: ['display', 'visibility', 'opacity'] },
+        { selector, frameId, properties: ['display', 'visibility', 'opacity'] },
         3_000,
       ),
       executeLiveCapture(
         captureClient,
         sessionId,
         'CAPTURE_LAYOUT_METRICS',
-        { selector },
+        { selector, frameId },
         3_000,
       ),
     ]);
@@ -4429,6 +4605,7 @@ async function captureSelectorState(
 
     return {
       selector,
+      frameId,
       attached: true,
       visible,
       styles: properties,
@@ -4439,6 +4616,7 @@ async function captureSelectorState(
     if (isElementMissingError(error)) {
       return {
         selector,
+        frameId,
         attached: false,
         visible: false,
         missing: true,
@@ -4539,7 +4717,7 @@ async function waitForSelectorStateCondition(
 
   while (Date.now() <= deadline) {
     attempts += 1;
-    lastState = await captureSelectorState(captureClient, sessionId, wait.selector);
+    lastState = await captureSelectorState(captureClient, sessionId, wait.selector, wait.frameId);
     if (selectorStateMatches(lastState, expectedState)) {
       return {
         waitKind: 'selector_state',
@@ -4586,7 +4764,7 @@ async function waitForConsoleCondition(
   const pollIntervalMs = resolveDurationMs(wait.pollIntervalMs, 100, 5_000);
   const levels = resolveLiveConsoleLevels(wait.levels);
   const contains = normalizeOptionalString(wait.contains);
-  const sinceTs = wait.sinceTs ?? Date.now();
+  const sinceTs = resolveAutomationWaitSinceTs(wait.sinceTs);
   const includeRuntimeErrors = wait.includeRuntimeErrors !== false;
   const startedAt = Date.now();
   const deadline = startedAt + timeoutMs;
@@ -4641,6 +4819,302 @@ async function waitForConsoleCondition(
     error: {
       code: 'console_wait_timeout',
       message: 'Timed out waiting for a matching live console log.',
+    },
+  };
+}
+
+function mapNavigationWaitEvent(row: EventRow): Record<string, unknown> {
+  const payload = readJsonPayload(row.payload_json);
+  return {
+    eventId: row.event_id,
+    sessionId: row.session_id,
+    timestamp: row.ts,
+    tabId: row.tab_id ?? undefined,
+    origin: row.origin ?? undefined,
+    url: resolveLastUrl(payload),
+    from: typeof payload.from === 'string' ? payload.from : undefined,
+    trigger: typeof payload.trigger === 'string' ? payload.trigger : undefined,
+    payload,
+  };
+}
+
+function navigationEventMatches(row: EventRow, wait: z.infer<typeof AutomationWaitNavigationSchema>): boolean {
+  const payload = readJsonPayload(row.payload_json);
+  const toUrl = resolveLastUrl(payload);
+  const fromUrl = typeof payload.from === 'string' ? payload.from : undefined;
+  const trigger = typeof payload.trigger === 'string' ? payload.trigger : undefined;
+
+  if (!matchesUrlPredicates(toUrl, {
+    exactUrl: wait.exactUrl,
+    urlContains: wait.urlContains,
+    urlRegex: wait.urlRegex,
+  })) {
+    return false;
+  }
+
+  if (wait.fromUrlContains || wait.fromUrlRegex) {
+    if (!matchesUrlPredicates(fromUrl, {
+      urlContains: wait.fromUrlContains,
+      urlRegex: wait.fromUrlRegex,
+      regexFieldName: 'fromUrlRegex',
+    })) {
+      return false;
+    }
+  }
+
+  if (wait.trigger && trigger !== wait.trigger) {
+    return false;
+  }
+
+  return true;
+}
+
+function queryNavigationWaitCandidates(
+  db: Database,
+  options: {
+    sessionId: string;
+    sinceTs: number;
+    tabId?: number;
+  },
+): EventRow[] {
+  const where: string[] = ['session_id = ?', "type = 'nav'", 'ts >= ?'];
+  const params: unknown[] = [options.sessionId, options.sinceTs];
+  if (options.tabId !== undefined) {
+    where.push('tab_id = ?');
+    params.push(options.tabId);
+  }
+
+  return db.prepare(
+    `SELECT event_id, session_id, ts, type, payload_json, tab_id, origin
+     FROM events
+     WHERE ${where.join(' AND ')}
+     ORDER BY ts ASC
+     LIMIT 200`
+  ).all(...params) as EventRow[];
+}
+
+async function waitForNavigationCondition(
+  sessionId: string,
+  wait: z.infer<typeof AutomationWaitNavigationSchema>,
+  db: Database,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, 5_000, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const pollIntervalMs = resolveDurationMs(wait.pollIntervalMs, 100, 5_000);
+  const sinceTs = resolveAutomationWaitSinceTs(wait.sinceTs);
+  const tabId = resolveOptionalTabId(wait.tabId);
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let attempts = 0;
+  let lastEvents: EventRow[] = [];
+
+  while (Date.now() <= deadline) {
+    attempts += 1;
+    lastEvents = queryNavigationWaitCandidates(db, { sessionId, sinceTs, tabId });
+    const matched = lastEvents.find((row) => navigationEventMatches(row, wait));
+    if (matched) {
+      return {
+        waitKind: 'navigation',
+        matched: true,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        timeoutMs,
+        pollIntervalMs,
+        evidence: {
+          filters: {
+            urlContains: wait.urlContains,
+            urlRegex: wait.urlRegex,
+            exactUrl: wait.exactUrl,
+            fromUrlContains: wait.fromUrlContains,
+            fromUrlRegex: wait.fromUrlRegex,
+            trigger: wait.trigger,
+            sinceTs,
+            tabId,
+          },
+          navigation: mapNavigationWaitEvent(matched),
+        },
+      };
+    }
+    await sleep(pollIntervalMs);
+  }
+
+  return {
+    waitKind: 'navigation',
+    matched: false,
+    waitedMs: Date.now() - startedAt,
+    attempts,
+    timeoutMs,
+    pollIntervalMs,
+    evidence: {
+      filters: {
+        urlContains: wait.urlContains,
+        urlRegex: wait.urlRegex,
+        exactUrl: wait.exactUrl,
+        fromUrlContains: wait.fromUrlContains,
+        fromUrlRegex: wait.fromUrlRegex,
+        trigger: wait.trigger,
+        sinceTs,
+        tabId,
+      },
+      sampledEvents: lastEvents.slice(0, 5).map((row) => mapNavigationWaitEvent(row)),
+    },
+    error: {
+      code: 'navigation_wait_timeout',
+      message: 'Timed out waiting for a matching navigation event.',
+    },
+  };
+}
+
+type AutomationNetworkWaitSpec =
+  | z.infer<typeof AutomationWaitRequestSchema>
+  | z.infer<typeof AutomationWaitResponseSchema>;
+
+function normalizeNetworkWaitFilters(wait: AutomationNetworkWaitSpec): Record<string, unknown> {
+  const responseWait = wait.waitKind === 'response' ? wait as z.infer<typeof AutomationWaitResponseSchema> : undefined;
+  return {
+    urlContains: normalizeOptionalString(wait.urlContains),
+    urlRegex: normalizeOptionalString(wait.urlRegex),
+    exactUrl: normalizeOptionalString(wait.exactUrl),
+    method: normalizeHttpMethod(wait.method),
+    traceId: normalizeOptionalString(wait.traceId),
+    initiator: normalizeOptionalString(wait.initiator),
+    requestContentType: normalizeOptionalString(wait.requestContentType),
+    responseContentType: normalizeOptionalString(responseWait?.responseContentType),
+    statusIn: responseWait ? normalizeStatusIn(responseWait.statusIn) : [],
+    statusGte: responseWait?.statusGte,
+    statusLt: responseWait?.statusLt,
+    errorType: normalizeOptionalString(responseWait?.errorType),
+    sinceTs: resolveAutomationWaitSinceTs(wait.sinceTs),
+    tabId: resolveOptionalTabId(wait.tabId),
+    includeBodies: wait.includeBodies === true,
+  };
+}
+
+function queryNetworkWaitCandidates(
+  db: Database,
+  sessionId: string,
+  filters: Record<string, unknown>,
+): NetworkCallRow[] {
+  const where: string[] = ['session_id = ?', 'ts_start >= ?'];
+  const params: unknown[] = [sessionId, filters.sinceTs];
+  if (filters.exactUrl) {
+    where.push('url = ?');
+    params.push(filters.exactUrl);
+  } else if (filters.urlContains) {
+    where.push('url LIKE ?');
+    params.push(`%${filters.urlContains}%`);
+  }
+  if (filters.method) {
+    where.push('method = ?');
+    params.push(filters.method);
+  }
+  if (filters.traceId) {
+    where.push('trace_id = ?');
+    params.push(filters.traceId);
+  }
+  if (filters.initiator) {
+    where.push('initiator = ?');
+    params.push(filters.initiator);
+  }
+  if (filters.requestContentType) {
+    where.push('request_content_type LIKE ?');
+    params.push(`%${filters.requestContentType}%`);
+  }
+  if (filters.responseContentType) {
+    where.push('response_content_type LIKE ?');
+    params.push(`%${filters.responseContentType}%`);
+  }
+  const statusIn = Array.isArray(filters.statusIn) ? filters.statusIn : [];
+  if (statusIn.length > 0) {
+    where.push(`status IN (${statusIn.map(() => '?').join(', ')})`);
+    params.push(...statusIn);
+  }
+  if (typeof filters.statusGte === 'number') {
+    where.push('status >= ?');
+    params.push(filters.statusGte);
+  }
+  if (typeof filters.statusLt === 'number') {
+    where.push('status < ?');
+    params.push(filters.statusLt);
+  }
+  if (filters.tabId !== undefined) {
+    where.push('tab_id = ?');
+    params.push(filters.tabId);
+  }
+
+  return db.prepare(
+    `SELECT ${NETWORK_CALL_SELECT_COLUMNS}
+     FROM network
+     WHERE ${where.join(' AND ')}
+     ORDER BY ts_start ASC
+     LIMIT 200`
+  ).all(...params) as NetworkCallRow[];
+}
+
+function networkCallMatchesFilters(row: NetworkCallRow, filters: Record<string, unknown>): boolean {
+  if (!matchesUrlPredicates(row.url, {
+    exactUrl: typeof filters.exactUrl === 'string' ? filters.exactUrl : undefined,
+    urlContains: typeof filters.urlContains === 'string' ? filters.urlContains : undefined,
+    urlRegex: typeof filters.urlRegex === 'string' ? filters.urlRegex : undefined,
+  })) {
+    return false;
+  }
+
+  if (typeof filters.errorType === 'string' && classifyNetworkFailure(row.status, row.error_class) !== filters.errorType) {
+    return false;
+  }
+
+  return true;
+}
+
+async function waitForNetworkMatchCondition(
+  sessionId: string,
+  wait: AutomationNetworkWaitSpec,
+  db: Database,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, DEFAULT_NETWORK_POLL_TIMEOUT_MS, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const pollIntervalMs = resolveDurationMs(wait.pollIntervalMs, DEFAULT_NETWORK_POLL_INTERVAL_MS, 5_000);
+  const filters = normalizeNetworkWaitFilters(wait);
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let attempts = 0;
+  let lastCalls: NetworkCallRow[] = [];
+
+  while (Date.now() <= deadline) {
+    attempts += 1;
+    lastCalls = queryNetworkWaitCandidates(db, sessionId, filters);
+    const matched = lastCalls.find((row) => networkCallMatchesFilters(row, filters));
+    if (matched) {
+      return {
+        waitKind: wait.waitKind,
+        matched: true,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        timeoutMs,
+        pollIntervalMs,
+        evidence: {
+          filters,
+          call: mapNetworkCallRecord(matched, filters.includeBodies === true),
+        },
+      };
+    }
+
+    await sleep(pollIntervalMs);
+  }
+
+  return {
+    waitKind: wait.waitKind,
+    matched: false,
+    waitedMs: Date.now() - startedAt,
+    attempts,
+    timeoutMs,
+    pollIntervalMs,
+    evidence: {
+      filters,
+      sampledCalls: lastCalls.slice(0, 5).map((row) => mapNetworkCallRecord(row, false)),
+    },
+    error: {
+      code: wait.waitKind === 'request' ? 'request_wait_timeout' : 'response_wait_timeout',
+      message: `Timed out waiting for a matching ${wait.waitKind}.`,
     },
   };
 }
@@ -4763,6 +5237,13 @@ async function runAutomationWait(options: {
   switch (options.wait.waitKind) {
     case 'url':
       return waitForUrlCondition(options.sessionId, options.wait, options.capturePageState);
+    case 'navigation': {
+      const db = options.getDb?.();
+      if (!db) {
+        throw new Error('navigation waits require database access');
+      }
+      return waitForNavigationCondition(options.sessionId, options.wait, db);
+    }
     case 'selector_state':
       return waitForSelectorStateCondition(options.sessionId, options.wait, options.captureClient);
     case 'console':
@@ -4773,6 +5254,14 @@ async function runAutomationWait(options: {
         throw new Error('network_quiet waits require database access');
       }
       return waitForNetworkQuietCondition(options.sessionId, options.wait, db);
+    }
+    case 'request':
+    case 'response': {
+      const db = options.getDb?.();
+      if (!db) {
+        throw new Error(`${options.wait.waitKind} waits require database access`);
+      }
+      return waitForNetworkMatchCondition(options.sessionId, options.wait, db);
     }
   }
 }
@@ -5135,7 +5624,7 @@ function resolveWorkflowRecommendedAction(error: { code: string; message: string
   if (error.code === 'page_state_not_matched' || error.code === 'page_state_assertion_failed') {
     return 'inspect_page_state';
   }
-  if (error.code === 'url_wait_timeout') {
+  if (error.code === 'url_wait_timeout' || error.code === 'navigation_wait_timeout') {
     return 'inspect_navigation_state';
   }
   if (error.code === 'selector_state_wait_timeout') {
@@ -5144,7 +5633,11 @@ function resolveWorkflowRecommendedAction(error: { code: string; message: string
   if (error.code === 'console_wait_timeout') {
     return 'inspect_live_console_logs';
   }
-  if (error.code === 'network_quiet_timeout') {
+  if (
+    error.code === 'network_quiet_timeout'
+    || error.code === 'request_wait_timeout'
+    || error.code === 'response_wait_timeout'
+  ) {
     return 'inspect_network_calls';
   }
 
@@ -8853,11 +9346,14 @@ export function createV2ToolHandlers(
       }
 
       const properties = asStringArray(input.properties, 64);
+      const frameId = typeof input.frameId === 'number' && Number.isFinite(input.frameId)
+        ? Math.max(0, Math.floor(input.frameId))
+        : 0;
       const capture = await executeLiveCapture(
         captureClient,
         sessionId,
         'CAPTURE_COMPUTED_STYLES',
-        { selector, properties },
+        { selector, frameId, properties },
         3_000,
       );
 
@@ -8878,11 +9374,14 @@ export function createV2ToolHandlers(
       }
 
       const selector = typeof input.selector === 'string' ? input.selector : undefined;
+      const frameId = typeof input.frameId === 'number' && Number.isFinite(input.frameId)
+        ? Math.max(0, Math.floor(input.frameId))
+        : 0;
       const capture = await executeLiveCapture(
         captureClient,
         sessionId,
         'CAPTURE_LAYOUT_METRICS',
-        { selector },
+        { selector, frameId },
         3_000,
       );
 
@@ -9061,6 +9560,27 @@ export function createV2ToolHandlers(
       };
     },
 
+    wait_for_navigation: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+      if (!getDb) {
+        throw new Error('wait_for_navigation requires database access');
+      }
+
+      const wait = AutomationWaitNavigationSchema.parse({ ...input, waitKind: 'navigation' });
+      const waited = await waitForNavigationCondition(sessionId, wait, getDb());
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 10,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
     wait_for_selector_state: async (input) => {
       const sessionId = getSessionId(input);
       if (!sessionId) {
@@ -9073,6 +9593,48 @@ export function createV2ToolHandlers(
         ...createBaseResponse(sessionId),
         limitsApplied: {
           maxResults: 1,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
+    wait_for_request: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+      if (!getDb) {
+        throw new Error('wait_for_request requires database access');
+      }
+
+      const wait = AutomationWaitRequestSchema.parse({ ...input, waitKind: 'request' });
+      const waited = await waitForNetworkMatchCondition(sessionId, wait, getDb());
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 10,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
+    wait_for_response: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+      if (!getDb) {
+        throw new Error('wait_for_response requires database access');
+      }
+
+      const wait = AutomationWaitResponseSchema.parse({ ...input, waitKind: 'response' });
+      const waited = await waitForNetworkMatchCondition(sessionId, wait, getDb());
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 10,
           truncated: false,
         },
         ...waited,
@@ -9263,7 +9825,7 @@ export function createV2ToolHandlers(
                 captureClient,
                 getDb,
               });
-              if (waited.waitKind === 'url') {
+              if (waited.waitKind === 'url' || waited.waitKind === 'navigation') {
                 lastPageCapture = await workflowCapturePageState(
                   request.sessionId,
                   {

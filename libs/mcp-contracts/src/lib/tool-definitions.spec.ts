@@ -67,6 +67,14 @@ describe('tool-definitions', () => {
     expect(AUTOMATION_TOOLS.EXECUTE_UI_ACTION).toBe('execute_ui_action');
     expect(AUTOMATION_TOOLS.ASSERT_PAGE_STATE).toBe('assert_page_state');
     expect(AUTOMATION_TOOLS.WAIT_FOR_PAGE_STATE).toBe('wait_for_page_state');
+    expect(AUTOMATION_TOOLS.PREFLIGHT_AUTOMATION_FLOW).toBe('preflight_automation_flow');
+    expect(AUTOMATION_TOOLS.WAIT_FOR_URL).toBe('wait_for_url');
+    expect(AUTOMATION_TOOLS.WAIT_FOR_NAVIGATION).toBe('wait_for_navigation');
+    expect(AUTOMATION_TOOLS.WAIT_FOR_SELECTOR_STATE).toBe('wait_for_selector_state');
+    expect(AUTOMATION_TOOLS.WAIT_FOR_CONSOLE).toBe('wait_for_console');
+    expect(AUTOMATION_TOOLS.WAIT_FOR_NETWORK_QUIET).toBe('wait_for_network_quiet');
+    expect(AUTOMATION_TOOLS.WAIT_FOR_REQUEST).toBe('wait_for_request');
+    expect(AUTOMATION_TOOLS.WAIT_FOR_RESPONSE).toBe('wait_for_response');
     expect(AUTOMATION_TOOLS.RUN_UI_STEPS).toBe('run_ui_steps');
   });
 });

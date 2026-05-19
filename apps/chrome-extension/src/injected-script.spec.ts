@@ -49,6 +49,26 @@ describe('injected-script capture', () => {
     postSpy.mockRestore();
   });
 
+  it('captures page-world history navigation events', () => {
+    const postSpy = vi.spyOn(window, 'postMessage');
+    const startUrl = window.location.href;
+    const cleanup = installInjectedCapture({ win: window });
+
+    window.history.pushState({ route: true }, '', '#captured-route');
+
+    const payloads = postSpy.mock.calls.map((entry) => entry[0] as { eventType: string; data: Record<string, unknown> });
+    const navigationPayload = payloads.find((payload) => payload.eventType === 'navigation');
+
+    expect(navigationPayload).toBeDefined();
+    expect(navigationPayload?.data.from).toBe(startUrl);
+    expect(navigationPayload?.data.to).toContain('#captured-route');
+    expect(navigationPayload?.data.trigger).toBe('pushState');
+
+    cleanup();
+    window.history.replaceState(null, '', startUrl);
+    postSpy.mockRestore();
+  });
+
   it('captures fetch metadata and classifies HTTP errors', async () => {
     const postSpy = vi.spyOn(window, 'postMessage');
     const originalFetch = window.fetch;

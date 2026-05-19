@@ -360,6 +360,23 @@ function resolveLiveConsoleTabId(value: unknown): number | undefined {
   return tabId;
 }
 
+function resolveCaptureFrameId(value: unknown): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error('frameId must be an integer');
+  }
+
+  const frameId = Math.floor(value);
+  if (!Number.isInteger(frameId) || frameId < 0) {
+    throw new Error('frameId must be an integer');
+  }
+
+  return frameId;
+}
+
 function resolveLiveConsoleSinceTs(value: unknown): number | undefined {
   if (value === undefined) {
     return undefined;
@@ -3400,7 +3417,7 @@ async function executeCaptureCommand(
     };
   }
 
-  return sendCaptureCommandToTab(tabId, command, payload);
+  return sendCaptureCommandToTab(tabId, command, payload, true, resolveCaptureFrameId(payload.frameId));
 }
 
 const sessionManager = new SessionManager({

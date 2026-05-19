@@ -211,6 +211,7 @@ test.describe('@full mcp tool end-to-end coverage', () => {
             data: {
               url: 'http://localhost:3000/login',
               to: 'http://localhost:3000/login',
+              trigger: 'init',
             },
             origin: 'http://localhost:3000',
             tabId: 10,
@@ -377,6 +378,17 @@ test.describe('@full mcp tool end-to-end coverage', () => {
       });
       expect(nav.events.length).toBeGreaterThan(0);
 
+      const navigationWait = await callToolJson<{ matched: boolean; waitKind: string }>(mcp.client, 'wait_for_navigation', {
+        sessionId: liveSessionId,
+        urlContains: '/login',
+        trigger: 'init',
+        tabId: 10,
+        sinceTs: Date.now() - 10_000,
+        timeoutMs: 2_000,
+      });
+      expect(navigationWait.matched).toBe(true);
+      expect(navigationWait.waitKind).toBe('navigation');
+
       const consoleEvents = await callToolJson<{ events: EventRecord[] }>(mcp.client, 'get_console_events', {
         sessionId: liveSessionId,
         level: 'error',
@@ -392,6 +404,31 @@ test.describe('@full mcp tool end-to-end coverage', () => {
         sessionId: liveSessionId,
       });
       expect(failures.failures.length).toBeGreaterThan(0);
+
+      const requestWait = await callToolJson<{ matched: boolean; waitKind: string }>(mcp.client, 'wait_for_request', {
+        sessionId: liveSessionId,
+        urlContains: '/api/login',
+        method: 'POST',
+        initiator: 'fetch',
+        tabId: 10,
+        sinceTs: Date.now() - 10_000,
+        timeoutMs: 2_000,
+      });
+      expect(requestWait.matched).toBe(true);
+      expect(requestWait.waitKind).toBe('request');
+
+      const responseWait = await callToolJson<{ matched: boolean; waitKind: string }>(mcp.client, 'wait_for_response', {
+        sessionId: liveSessionId,
+        urlContains: '/api/login',
+        method: 'POST',
+        statusIn: [500],
+        errorType: 'http_error',
+        tabId: 10,
+        sinceTs: Date.now() - 10_000,
+        timeoutMs: 2_000,
+      });
+      expect(responseWait.matched).toBe(true);
+      expect(responseWait.waitKind).toBe('response');
 
       const elementRefs = await callToolJson<{ refs: EventRecord[] }>(mcp.client, 'get_element_refs', {
         sessionId: liveSessionId,

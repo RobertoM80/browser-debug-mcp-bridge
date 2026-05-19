@@ -275,9 +275,12 @@ These waits are available as standalone tools and as `run_ui_steps` `kind: "wait
 | Tool | Purpose |
 | --- | --- |
 | `wait_for_url` | Wait for `exactUrl`, `urlContains`, or `urlRegex`. |
+| `wait_for_navigation` | Wait for a persisted navigation event by destination URL, source URL, trigger, or tab. |
 | `wait_for_selector_state` | Wait for a selector to become `attached`, `detached`, `visible`, or `hidden`. |
 | `wait_for_console` | Wait for a live console log matching `levels` and/or `contains`. |
 | `wait_for_network_quiet` | Wait for persisted network activity to stay quiet for `quietMs`. |
+| `wait_for_request` | Wait for a persisted request by URL, method, trace id, initiator, content type, or tab. |
+| `wait_for_response` | Wait for a persisted response by request filters plus status, response content type, or error type. |
 
 ```json
 {
@@ -285,8 +288,23 @@ These waits are available as standalone tools and as `run_ui_steps` `kind: "wait
   "arguments": {
     "sessionId": "sess_123",
     "selector": "#save-status",
+    "frameId": 0,
     "state": "visible",
     "timeoutMs": 5000
+  }
+}
+```
+
+```json
+{
+  "name": "wait_for_response",
+  "arguments": {
+    "sessionId": "sess_123",
+    "urlContains": "/api/checkout",
+    "method": "POST",
+    "statusGte": 200,
+    "statusLt": 300,
+    "timeoutMs": 10000
   }
 }
 ```
@@ -295,7 +313,7 @@ Common response fields:
 
 - `matched`, `waitKind`, `attempts`, `waitedMs`
 - `evidence` with final page/selector/log/network context
-- timeout error codes such as `url_wait_timeout`, `selector_state_wait_timeout`, `console_wait_timeout`, or `network_quiet_timeout`
+- timeout error codes such as `url_wait_timeout`, `navigation_wait_timeout`, `selector_state_wait_timeout`, `console_wait_timeout`, `network_quiet_timeout`, `request_wait_timeout`, or `response_wait_timeout`
 
 ## `run_ui_steps`
 
@@ -346,7 +364,7 @@ Milestone 4 scope:
   - `fast`: smaller page-state captures, cached state reuse between steps, and lighter summaries
 - step kinds: `action`, `waitFor`, `wait`, `assert`
 - `waitFor` polls compact page-state matchers
-- `wait` runs first-class waits with `waitKind: "url" | "selector_state" | "console" | "network_quiet"`
+- `wait` runs first-class waits with `waitKind: "url" | "navigation" | "selector_state" | "console" | "network_quiet" | "request" | "response"`
 - action target matchers:
   - `elementRef`
   - `selector`

@@ -64,6 +64,94 @@ describe('ui-workflows', () => {
     expect(parsed.mode).toBe('fast');
   });
 
+  it('parses first-class wait steps including navigation and request/response waits', () => {
+    const parsed = RunUIStepsSchema.parse({
+      sessionId: 'sess_123',
+      steps: [
+        {
+          kind: 'wait',
+          id: 'wait-route',
+          wait: {
+            waitKind: 'navigation',
+            urlContains: '/dashboard',
+            fromUrlContains: '/login',
+            trigger: 'pushState',
+            tabId: 4,
+            timeoutMs: 5000,
+          },
+        },
+        {
+          kind: 'wait',
+          id: 'wait-selector',
+          wait: {
+            waitKind: 'selector_state',
+            selector: '#ready',
+          },
+        },
+        {
+          kind: 'wait',
+          id: 'wait-api-request',
+          wait: {
+            waitKind: 'request',
+            urlContains: '/api/session',
+            method: 'POST',
+            initiator: 'fetch',
+          },
+        },
+        {
+          kind: 'wait',
+          id: 'wait-api-response',
+          wait: {
+            waitKind: 'response',
+            urlContains: '/api/session',
+            statusGte: 200,
+            statusLt: 300,
+            responseContentType: 'application/json',
+          },
+        },
+      ],
+    });
+
+    expect(parsed.steps.map((step) => step.kind)).toEqual(['wait', 'wait', 'wait', 'wait']);
+    const selectorStep = parsed.steps[1];
+    expect(selectorStep.kind).toBe('wait');
+    if (selectorStep.kind === 'wait') {
+      expect(selectorStep.wait.waitKind).toBe('selector_state');
+      if (selectorStep.wait.waitKind === 'selector_state') {
+        expect(selectorStep.wait.frameId).toBe(0);
+      }
+    }
+  });
+
+  it('rejects under-specified first-class wait steps', () => {
+    expect(() => RunUIStepsSchema.parse({
+      sessionId: 'sess_123',
+      steps: [
+        {
+          kind: 'wait',
+          wait: {
+            waitKind: 'request',
+          },
+        },
+      ],
+    })).toThrow('request wait requires urlContains, urlRegex, exactUrl, or traceId');
+
+    expect(() => RunUIStepsSchema.parse({
+      sessionId: 'sess_123',
+      steps: [
+        {
+          kind: 'wait',
+          wait: {
+            waitKind: 'response',
+            urlContains: '/api/session',
+            statusGte: 300,
+            statusLt: 200,
+          },
+        },
+      ],
+    })).toThrow('statusGte must be less than statusLt');
+  });
+
   it('parses per-step failure policies', () => {
     const parsed = RunUIStepsSchema.parse({
       sessionId: 'sess_123',

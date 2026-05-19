@@ -63,6 +63,14 @@ export const AUTOMATION_TOOLS = {
   EXECUTE_UI_ACTION: 'execute_ui_action',
   ASSERT_PAGE_STATE: 'assert_page_state',
   WAIT_FOR_PAGE_STATE: 'wait_for_page_state',
+  PREFLIGHT_AUTOMATION_FLOW: 'preflight_automation_flow',
+  WAIT_FOR_URL: 'wait_for_url',
+  WAIT_FOR_NAVIGATION: 'wait_for_navigation',
+  WAIT_FOR_SELECTOR_STATE: 'wait_for_selector_state',
+  WAIT_FOR_CONSOLE: 'wait_for_console',
+  WAIT_FOR_NETWORK_QUIET: 'wait_for_network_quiet',
+  WAIT_FOR_REQUEST: 'wait_for_request',
+  WAIT_FOR_RESPONSE: 'wait_for_response',
   RUN_UI_STEPS: 'run_ui_steps',
 } as const;
 

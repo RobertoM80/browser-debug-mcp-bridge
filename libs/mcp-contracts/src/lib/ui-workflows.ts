@@ -241,6 +241,140 @@ export const UIWorkflowWaitForStepSchema = UIWorkflowStepBaseSchema.extend({
   }),
 });
 
+export const AutomationWaitBaseSchema = z.object({
+  timeoutMs: z.number().int().min(100).max(120000).optional(),
+  pollIntervalMs: z.number().int().min(50).max(5000).optional(),
+});
+
+export const AutomationWaitUrlSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('url'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'url wait requires urlContains, urlRegex, or exactUrl',
+      path: ['wait'],
+    });
+  }
+});
+
+export const AutomationWaitNavigationSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('navigation'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  fromUrlContains: z.string().min(1).optional(),
+  fromUrlRegex: z.string().min(1).optional(),
+  trigger: z.string().min(1).optional(),
+  sinceTs: z.number().int().min(0).optional(),
+  tabId: z.number().int().min(0).optional(),
+}).superRefine((value, ctx) => {
+  if (
+    !value.urlContains
+    && !value.urlRegex
+    && !value.exactUrl
+    && !value.fromUrlContains
+    && !value.fromUrlRegex
+    && !value.trigger
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'navigation wait requires a URL, from-URL, or trigger predicate',
+      path: ['wait'],
+    });
+  }
+});
+
+export const AutomationWaitSelectorStateSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('selector_state'),
+  selector: z.string().min(1),
+  state: z.enum(['attached', 'detached', 'visible', 'hidden']).default('visible'),
+  frameId: z.number().int().min(0).default(0),
+});
+
+export const AutomationWaitConsoleSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('console'),
+  levels: z.array(z.string().min(1)).optional(),
+  contains: z.string().min(1).optional(),
+  sinceTs: z.number().int().min(0).optional(),
+  includeRuntimeErrors: z.boolean().optional(),
+});
+
+export const AutomationWaitNetworkQuietSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('network_quiet'),
+  quietMs: z.number().int().min(100).max(10000).default(500),
+  urlContains: z.string().min(1).optional(),
+  method: z.string().min(1).optional(),
+  tabId: z.number().int().min(0).optional(),
+});
+
+export const AutomationWaitNetworkBaseSchema = AutomationWaitBaseSchema.extend({
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  method: z.string().min(1).optional(),
+  traceId: z.string().min(1).optional(),
+  initiator: z.enum(['fetch', 'xhr', 'img', 'script', 'other']).optional(),
+  requestContentType: z.string().min(1).optional(),
+  sinceTs: z.number().int().min(0).optional(),
+  tabId: z.number().int().min(0).optional(),
+  includeBodies: z.boolean().optional(),
+});
+
+export const AutomationWaitRequestSchema = AutomationWaitNetworkBaseSchema.extend({
+  waitKind: z.literal('request'),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl && !value.traceId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'request wait requires urlContains, urlRegex, exactUrl, or traceId',
+      path: ['wait'],
+    });
+  }
+});
+
+export const AutomationWaitResponseSchema = AutomationWaitNetworkBaseSchema.extend({
+  waitKind: z.literal('response'),
+  statusIn: z.array(z.number().int().min(100).max(599)).optional(),
+  statusGte: z.number().int().min(100).max(599).optional(),
+  statusLt: z.number().int().min(100).max(600).optional(),
+  responseContentType: z.string().min(1).optional(),
+  errorType: z.string().min(1).optional(),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl && !value.traceId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'response wait requires urlContains, urlRegex, exactUrl, or traceId',
+      path: ['wait'],
+    });
+  }
+  if (value.statusGte !== undefined && value.statusLt !== undefined && value.statusGte >= value.statusLt) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'statusGte must be less than statusLt',
+      path: ['statusGte'],
+    });
+  }
+});
+
+export const AutomationWaitSpecSchema = z.discriminatedUnion('waitKind', [
+  AutomationWaitUrlSchema,
+  AutomationWaitNavigationSchema,
+  AutomationWaitSelectorStateSchema,
+  AutomationWaitConsoleSchema,
+  AutomationWaitNetworkQuietSchema,
+  AutomationWaitRequestSchema,
+  AutomationWaitResponseSchema,
+]);
+
+export const UIWorkflowGenericWaitStepSchema = UIWorkflowStepBaseSchema.extend({
+  kind: z.literal('wait'),
+  wait: AutomationWaitSpecSchema,
+});
+
 export const UIWorkflowAssertStepSchema = UIWorkflowStepBaseSchema.extend({
   kind: z.literal('assert'),
   matcher: UIWorkflowPageStateMatcherSchema,
@@ -249,6 +383,7 @@ export const UIWorkflowAssertStepSchema = UIWorkflowStepBaseSchema.extend({
 export const UIWorkflowStepSchema = z.discriminatedUnion('kind', [
   UIWorkflowActionStepSchema,
   UIWorkflowWaitForStepSchema,
+  UIWorkflowGenericWaitStepSchema,
   UIWorkflowAssertStepSchema,
 ]);
 
@@ -277,6 +412,8 @@ export type UIWorkflowActionTarget = z.infer<typeof UIWorkflowActionTargetSchema
 export type UIWorkflowActionStep = z.infer<typeof UIWorkflowActionStepSchema>;
 export type UIWorkflowPageStateMatcher = z.infer<typeof UIWorkflowPageStateMatcherSchema>;
 export type UIWorkflowWaitForStep = z.infer<typeof UIWorkflowWaitForStepSchema>;
+export type AutomationWaitSpec = z.infer<typeof AutomationWaitSpecSchema>;
+export type UIWorkflowGenericWaitStep = z.infer<typeof UIWorkflowGenericWaitStepSchema>;
 export type UIWorkflowAssertStep = z.infer<typeof UIWorkflowAssertStepSchema>;
 export type UIWorkflowStep = z.infer<typeof UIWorkflowStepSchema>;
 export type RunUIStepsRequest = z.infer<typeof RunUIStepsSchema>;

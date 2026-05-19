@@ -4153,12 +4153,84 @@ describe('mcp/server V2 capture tools', () => {
     });
   });
 
+  it('waits for persisted navigation events with URL, from-URL, trigger, and tab filters', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const now = Date.now();
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, tab_id, url_start, url_last)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      'session-v2',
+      now - 2000,
+      now - 100,
+      0,
+      7,
+      'https://app.example.com/cart',
+      'https://app.example.com/checkout?step=shipping',
+    );
+    db.prepare(
+      `
+        INSERT INTO events (event_id, session_id, ts, type, payload_json, tab_id, origin)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      'evt-nav-checkout',
+      'session-v2',
+      now - 100,
+      'nav',
+      JSON.stringify({
+        from: 'https://app.example.com/cart',
+        to: 'https://app.example.com/checkout?step=shipping',
+        trigger: 'pushState',
+      }),
+      7,
+      'https://app.example.com',
+    );
+    const tools = createToolRegistry(
+      createV2ToolHandlers(
+        {
+          execute: async () => {
+            throw new Error('navigation waits should not call the live capture client');
+          },
+        },
+        () => db,
+      ),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_navigation', {
+      sessionId: 'session-v2',
+      urlContains: '/checkout',
+      fromUrlContains: '/cart',
+      trigger: 'pushState',
+      tabId: 7,
+      sinceTs: now - 1000,
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('navigation');
+    expect(response.evidence).toMatchObject({
+      navigation: {
+        eventId: 'evt-nav-checkout',
+        url: 'https://app.example.com/checkout?step=shipping',
+        from: 'https://app.example.com/cart',
+        trigger: 'pushState',
+      },
+    });
+    db.close();
+  });
+
   it('waits for selector state using live style and layout captures', async () => {
     let styleAttempt = 0;
     const tools = createToolRegistry(
       createV2ToolHandlers({
         execute: async (_sessionId, command, payload) => {
           expect(payload.selector).toBe('#ready');
+          expect(payload.frameId).toBe(0);
           if (command === 'CAPTURE_COMPUTED_STYLES') {
             styleAttempt += 1;
             return {
@@ -4211,6 +4283,145 @@ describe('mcp/server V2 capture tools', () => {
         visible: true,
       },
     });
+  });
+
+  it('waits for persisted request predicates with method, trace, and content-type filters', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const now = Date.now();
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode)
+        VALUES (?, ?, ?, ?)
+      `,
+    ).run('session-v2', now - 2000, now - 100, 0);
+    db.prepare(
+      `
+        INSERT INTO network (
+          request_id, session_id, trace_id, tab_id, ts_start, duration_ms, method, url, origin,
+          status, initiator, request_content_type, response_content_type
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      'req-checkout',
+      'session-v2',
+      'trace-checkout',
+      7,
+      now - 100,
+      42,
+      'POST',
+      'https://app.example.com/api/checkout',
+      'https://app.example.com',
+      202,
+      'fetch',
+      'application/json',
+      'application/json',
+    );
+    const tools = createToolRegistry(
+      createV2ToolHandlers(
+        {
+          execute: async () => {
+            throw new Error('request waits should not call the live capture client');
+          },
+        },
+        () => db,
+      ),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_request', {
+      sessionId: 'session-v2',
+      urlContains: '/api/checkout',
+      method: 'post',
+      traceId: 'trace-checkout',
+      requestContentType: 'json',
+      sinceTs: now - 1000,
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('request');
+    expect(response.evidence).toMatchObject({
+      call: {
+        requestId: 'req-checkout',
+        method: 'POST',
+        url: 'https://app.example.com/api/checkout',
+        request: {
+          contentType: 'application/json',
+        },
+      },
+    });
+    db.close();
+  });
+
+  it('waits for persisted response predicates with status and content-type filters', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const now = Date.now();
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode)
+        VALUES (?, ?, ?, ?)
+      `,
+    ).run('session-v2', now - 2000, now - 100, 0);
+    db.prepare(
+      `
+        INSERT INTO network (
+          request_id, session_id, tab_id, ts_start, duration_ms, method, url, origin,
+          status, initiator, response_content_type
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      'req-checkout-created',
+      'session-v2',
+      7,
+      now - 100,
+      64,
+      'POST',
+      'https://app.example.com/api/checkout',
+      'https://app.example.com',
+      201,
+      'fetch',
+      'application/json; charset=utf-8',
+    );
+    const tools = createToolRegistry(
+      createV2ToolHandlers(
+        {
+          execute: async () => {
+            throw new Error('response waits should not call the live capture client');
+          },
+        },
+        () => db,
+      ),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_response', {
+      sessionId: 'session-v2',
+      urlRegex: '/api/check',
+      method: 'POST',
+      statusIn: [201],
+      statusGte: 200,
+      statusLt: 300,
+      responseContentType: 'json',
+      sinceTs: now - 1000,
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('response');
+    expect(response.evidence).toMatchObject({
+      call: {
+        requestId: 'req-checkout-created',
+        status: 201,
+        response: {
+          contentType: 'application/json; charset=utf-8',
+        },
+      },
+    });
+    db.close();
   });
 
   it('waits for matching live console messages', async () => {
@@ -4295,6 +4506,70 @@ describe('mcp/server V2 capture tools', () => {
         method: 'GET',
       },
       sampledCalls: [],
+    });
+    db.close();
+  });
+
+  it('runs generic workflow wait steps for response predicates', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const now = Date.now();
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode)
+        VALUES (?, ?, ?, ?)
+      `,
+    ).run('session-v2', now - 2000, now - 100, 0);
+    db.prepare(
+      `
+        INSERT INTO network (request_id, session_id, ts_start, duration_ms, method, url, status, initiator)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run('req-workflow-response', 'session-v2', now - 100, 30, 'GET', 'https://app.example.com/api/ready', 200, 'fetch');
+    const tools = createToolRegistry(
+      createV2ToolHandlers(
+        {
+          execute: async () => {
+            throw new Error('workflow response waits should not call the live capture client');
+          },
+        },
+        () => db,
+      ),
+    );
+
+    const response = await routeToolCall(tools, 'run_ui_steps', {
+      sessionId: 'session-v2',
+      steps: [
+        {
+          kind: 'wait',
+          id: 'wait-api-ready',
+          wait: {
+            waitKind: 'response',
+            urlContains: '/api/ready',
+            statusIn: [200],
+            sinceTs: now - 1000,
+            timeoutMs: 500,
+            pollIntervalMs: 50,
+          },
+        },
+      ],
+    });
+
+    expect(response.status).toBe('succeeded');
+    expect((response.steps as Array<Record<string, unknown>>)[0]).toMatchObject({
+      id: 'wait-api-ready',
+      kind: 'wait',
+      status: 'succeeded',
+      wait: {
+        waitKind: 'response',
+        matched: true,
+      },
+      target: {
+        call: {
+          requestId: 'req-workflow-response',
+          status: 200,
+        },
+      },
     });
     db.close();
   });

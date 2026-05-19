@@ -453,14 +453,17 @@ Response highlights:
 
 Run this before production or remote-origin flows so agents do not repeatedly try actions against the wrong tab, stale session, iframe noise, or sensitive surfaces.
 
-### URL, selector, console, and network waits
+### URL, navigation, selector, console, and network waits
 
 These tools provide first-class waits beyond compact page-state polling:
 
 - `wait_for_url`: waits for `exactUrl`, `urlContains`, or `urlRegex`
+- `wait_for_navigation`: waits for a persisted navigation event by destination URL, source URL, trigger, or tab
 - `wait_for_selector_state`: waits for a selector to be `attached`, `detached`, `visible`, or `hidden`
 - `wait_for_console`: waits for a live console log matching `levels` and/or `contains`
 - `wait_for_network_quiet`: waits until persisted network activity has been quiet for a bounded window
+- `wait_for_request`: waits for a persisted request by URL, method, trace id, initiator, content type, or tab
+- `wait_for_response`: waits for a persisted response by request filters plus status, response content type, or error type
 
 ```json
 {
@@ -480,7 +483,21 @@ These tools provide first-class waits beyond compact page-state polling:
   "arguments": {
     "sessionId": "sess_123",
     "selector": "#save-status",
+    "frameId": 0,
     "state": "visible",
+    "timeoutMs": 5000
+  }
+}
+```
+
+```json
+{
+  "name": "wait_for_navigation",
+  "arguments": {
+    "sessionId": "sess_123",
+    "urlContains": "/dashboard",
+    "fromUrlContains": "/login",
+    "trigger": "pushState",
     "timeoutMs": 5000
   }
 }
@@ -511,11 +528,38 @@ These tools provide first-class waits beyond compact page-state polling:
 }
 ```
 
+```json
+{
+  "name": "wait_for_request",
+  "arguments": {
+    "sessionId": "sess_123",
+    "urlContains": "/api/checkout",
+    "method": "POST",
+    "initiator": "fetch",
+    "timeoutMs": 10000
+  }
+}
+```
+
+```json
+{
+  "name": "wait_for_response",
+  "arguments": {
+    "sessionId": "sess_123",
+    "urlContains": "/api/checkout",
+    "method": "POST",
+    "statusGte": 200,
+    "statusLt": 300,
+    "timeoutMs": 10000
+  }
+}
+```
+
 Response highlights:
 
 - `matched`, `waitKind`, `attempts`, `waitedMs`
 - `evidence` with the final URL/page, selector state, sampled console logs, or sampled network calls
-- structured timeout error codes such as `url_wait_timeout`, `selector_state_wait_timeout`, `console_wait_timeout`, and `network_quiet_timeout`
+- structured timeout error codes such as `url_wait_timeout`, `navigation_wait_timeout`, `selector_state_wait_timeout`, `console_wait_timeout`, `network_quiet_timeout`, `request_wait_timeout`, and `response_wait_timeout`
 
 ### get_live_console_logs
 
@@ -728,7 +772,7 @@ Runs a small generic UI workflow locally in the bridge using sequential action, 
     - `fast`: smaller page-state captures, cached state reuse between steps, and lighter summaries
   - supported step kinds: `action`, `waitFor`, `wait`, `assert`
   - `waitFor` polls compact page-state matchers
-  - `wait` runs the first-class wait engine with `waitKind: "url" | "selector_state" | "console" | "network_quiet"`
+  - `wait` runs the first-class wait engine with `waitKind: "url" | "navigation" | "selector_state" | "console" | "network_quiet" | "request" | "response"`
   - action targets can use:
       - direct handles: `elementRef`, `selector`
       - semantic matchers: `testId`, `scope`, `locator`, `textContains`, `labelContains`, `titleContains`, `role`, `name`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`

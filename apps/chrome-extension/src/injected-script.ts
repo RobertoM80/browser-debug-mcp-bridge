@@ -428,6 +428,8 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
   const originalDebug = console.debug;
   const originalTrace = console.trace;
   const originalFetch = win.fetch ? win.fetch.bind(win) : undefined;
+  const originalPushState = win.history.pushState.bind(win.history);
+  const originalReplaceState = win.history.replaceState.bind(win.history);
   const xhrPrototype = winWithXhr.XMLHttpRequest?.prototype;
   const originalXhrOpen = xhrPrototype?.open;
   const originalXhrSend = xhrPrototype?.send;
@@ -439,6 +441,7 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
     maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
   };
   let lastTraceHint: TraceHint | null = null;
+  let lastUrl = win.location.href;
 
   const emit = (eventType: string, data: Record<string, unknown>): void => {
     const payload: BridgePayload = {
@@ -503,6 +506,20 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
       timestamp: Date.now(),
     });
   };
+
+  const emitNavigation = (trigger: string): void => {
+    const nextUrl = win.location.href;
+    emit('navigation', {
+      from: lastUrl,
+      to: nextUrl,
+      trigger,
+      timestamp: Date.now(),
+    });
+    lastUrl = nextUrl;
+  };
+
+  const onPopState = (): void => emitNavigation('popstate');
+  const onHashChange = (): void => emitNavigation('hashchange');
 
   const onControlMessage = (event: MessageEvent<unknown>): void => {
     if (event.source && event.source !== win) {
@@ -735,9 +752,19 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
   console.error = hookConsole('error', originalError);
   console.debug = hookConsole('debug', originalDebug);
   console.trace = hookConsole('trace', originalTrace);
+  win.history.pushState = function pushState(...args: Parameters<History['pushState']>): void {
+    originalPushState(...args);
+    emitNavigation('pushState');
+  };
+  win.history.replaceState = function replaceState(...args: Parameters<History['replaceState']>): void {
+    originalReplaceState(...args);
+    emitNavigation('replaceState');
+  };
   win.addEventListener('error', onRuntimeError);
   win.addEventListener('unhandledrejection', onUnhandledRejection);
   win.addEventListener('message', onControlMessage);
+  win.addEventListener('popstate', onPopState);
+  win.addEventListener('hashchange', onHashChange);
 
   emit('custom', {
     marker: 'injected_script_loaded',
@@ -752,6 +779,8 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
     console.error = originalError;
     console.debug = originalDebug;
     console.trace = originalTrace;
+    win.history.pushState = originalPushState;
+    win.history.replaceState = originalReplaceState;
     if (originalFetch) {
       win.fetch = originalFetch;
     }
@@ -763,6 +792,8 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
     win.removeEventListener('error', onRuntimeError);
     win.removeEventListener('unhandledrejection', onUnhandledRejection);
     win.removeEventListener('message', onControlMessage);
+    win.removeEventListener('popstate', onPopState);
+    win.removeEventListener('hashchange', onHashChange);
   };
 }
 

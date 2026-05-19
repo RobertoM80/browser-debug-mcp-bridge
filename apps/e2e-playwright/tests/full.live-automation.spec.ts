@@ -77,7 +77,17 @@ type WorkflowResponse = {
     id: string;
     status: 'succeeded' | 'failed' | 'skipped';
     action?: string;
+    wait?: {
+      matched?: boolean;
+      waitKind?: string;
+    };
   }>;
+};
+
+type WaitToolResponse = {
+  matched: boolean;
+  waitKind: string;
+  evidence?: Record<string, unknown>;
 };
 
 type AutomationRunsResponse = {
@@ -151,8 +161,8 @@ async function expectMcpSeesLiveSession(mcp: MCPClientHandle, sessionId: string)
   expect(health.liveConnection?.connected).toBe(true);
 }
 
-async function installAutomationFixture(page: Page): Promise<void> {
-  await page.setContent(`
+function buildAutomationFixtureHtml(): string {
+  return `
     <!doctype html>
     <html lang="en">
       <head>
@@ -198,6 +208,14 @@ async function installAutomationFixture(page: Page): Promise<void> {
             <button id="submit-form" type="submit">Submit form</button>
           </form>
           <output id="submit-output"></output>
+          <button id="push-route" data-testid="push-route">Push route</button>
+          <output id="navigation-output"></output>
+          <button id="fetch-health" data-testid="fetch-health">Fetch health</button>
+          <output id="network-output"></output>
+          <button id="fetch-health-workflow" data-testid="fetch-health-workflow">Fetch health workflow</button>
+          <output id="workflow-network-output"></output>
+          <button id="emit-console-error" data-testid="emit-console-error">Emit console error</button>
+          <output id="console-output"></output>
           <div id="scroll-box">
             <div id="scroll-content">Scrollable content</div>
           </div>
@@ -256,6 +274,22 @@ async function installAutomationFixture(page: Page): Promise<void> {
             event.preventDefault();
             document.querySelector('#submit-output').textContent = 'submitted';
           });
+          document.querySelector('#push-route').addEventListener('click', () => {
+            history.pushState({ automation: true }, '', '/automation-fixture/next?step=nav');
+            document.querySelector('#navigation-output').textContent = location.href;
+          });
+          document.querySelector('#fetch-health').addEventListener('click', async () => {
+            const response = await fetch('/health?automation=standalone', { cache: 'no-store' });
+            document.querySelector('#network-output').textContent = '/health?automation=standalone:' + response.status;
+          });
+          document.querySelector('#fetch-health-workflow').addEventListener('click', async () => {
+            const response = await fetch('/health?automation=workflow', { cache: 'no-store' });
+            document.querySelector('#workflow-network-output').textContent = '/health?automation=workflow:' + response.status;
+          });
+          document.querySelector('#emit-console-error').addEventListener('click', () => {
+            console.error('automation wait console signal');
+            document.querySelector('#console-output').textContent = 'console error emitted';
+          });
           document.querySelector('#scroll-box').addEventListener('scroll', (event) => {
             document.querySelector('#scroll-output').textContent = String(event.target.scrollTop);
           });
@@ -289,7 +323,18 @@ async function installAutomationFixture(page: Page): Promise<void> {
         </script>
       </body>
     </html>
-  `, { waitUntil: 'domcontentloaded' });
+  `;
+}
+
+async function installAutomationFixture(page: Page, fixtureUrl: string): Promise<void> {
+  await page.route(fixtureUrl, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      body: buildAutomationFixtureHtml(),
+    });
+  });
+  await page.goto(fixtureUrl, { waitUntil: 'domcontentloaded' });
 }
 
 test.describe('@full live automation through MCP and extension session', () => {
@@ -319,8 +364,7 @@ test.describe('@full live automation through MCP and extension session', () => {
     await extension.setServerBaseUrl(`http://127.0.0.1:${port}`);
 
     const targetPage = await extension.context.newPage();
-    await targetPage.goto(`http://127.0.0.1:${port}/automation-fixture`, { waitUntil: 'domcontentloaded' });
-    await installAutomationFixture(targetPage);
+    await installAutomationFixture(targetPage, `http://127.0.0.1:${port}/automation-fixture`);
 
     const popupPage = await openExtensionPage(extension.context, extension.extensionId, 'popup.html');
     await configureAutomation(popupPage);
@@ -658,6 +702,166 @@ test.describe('@full live automation through MCP and extension session', () => {
     expect(workflow.completedStepCount).toBe(3);
     expect(workflow.steps.every((step) => step.status === 'succeeded')).toBe(true);
     await expect(targetPage.locator('#dialog-result')).toHaveText('confirmed');
+
+    const selectorWait = await callToolJson<WaitToolResponse>(mcp.client, 'wait_for_selector_state', {
+      sessionId,
+      selector: '#increment',
+      state: 'visible',
+      timeoutMs: 5_000,
+    });
+    expect(selectorWait.matched).toBe(true);
+    expect(selectorWait.waitKind).toBe('selector_state');
+
+    const navigationSince = Date.now();
+    const routeClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        selector: '#push-route',
+        tabId,
+      },
+    });
+    expect(routeClick.status).toBe('succeeded');
+    await expect(targetPage.locator('#navigation-output')).toContainText('/automation-fixture/next?step=nav');
+
+    const navigationWait = await callToolJson<WaitToolResponse>(mcp.client, 'wait_for_navigation', {
+      sessionId,
+      urlContains: '/automation-fixture/next',
+      fromUrlContains: '/automation-fixture',
+      trigger: 'pushState',
+      tabId,
+      sinceTs: navigationSince,
+      timeoutMs: 5_000,
+    });
+    expect(navigationWait.matched).toBe(true);
+    expect(navigationWait.waitKind).toBe('navigation');
+
+    const urlWait = await callToolJson<WaitToolResponse>(mcp.client, 'wait_for_url', {
+      sessionId,
+      urlContains: '/automation-fixture/next?step=nav',
+      timeoutMs: 5_000,
+    });
+    expect(urlWait.matched).toBe(true);
+    expect(urlWait.waitKind).toBe('url');
+
+    const consoleSince = Date.now();
+    const consoleClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        selector: '#emit-console-error',
+        tabId,
+      },
+    });
+    expect(consoleClick.status).toBe('succeeded');
+    await expect(targetPage.locator('#console-output')).toHaveText('console error emitted');
+
+    const consoleWait = await callToolJson<WaitToolResponse>(mcp.client, 'wait_for_console', {
+      sessionId,
+      levels: ['error'],
+      contains: 'automation wait console signal',
+      sinceTs: consoleSince,
+      timeoutMs: 5_000,
+    });
+    expect(consoleWait.matched).toBe(true);
+    expect(consoleWait.waitKind).toBe('console');
+
+    const networkSince = Date.now();
+    const fetchClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        selector: '#fetch-health',
+        tabId,
+      },
+    });
+    expect(fetchClick.status).toBe('succeeded');
+    await expect(targetPage.locator('#network-output')).toHaveText('/health?automation=standalone:200');
+
+    const requestWait = await callToolJson<WaitToolResponse>(mcp.client, 'wait_for_request', {
+      sessionId,
+      urlContains: '/health?automation=standalone',
+      method: 'GET',
+      initiator: 'fetch',
+      tabId,
+      sinceTs: networkSince,
+      timeoutMs: 5_000,
+    });
+    expect(requestWait.matched).toBe(true);
+    expect(requestWait.waitKind).toBe('request');
+
+    const responseWait = await callToolJson<WaitToolResponse>(mcp.client, 'wait_for_response', {
+      sessionId,
+      urlContains: '/health?automation=standalone',
+      method: 'GET',
+      statusIn: [200],
+      tabId,
+      sinceTs: networkSince,
+      timeoutMs: 5_000,
+    });
+    expect(responseWait.matched).toBe(true);
+    expect(responseWait.waitKind).toBe('response');
+
+    const quietWait = await callToolJson<WaitToolResponse>(mcp.client, 'wait_for_network_quiet', {
+      sessionId,
+      urlContains: '/health?automation=standalone',
+      method: 'GET',
+      tabId,
+      quietMs: 150,
+      timeoutMs: 5_000,
+    });
+    expect(quietWait.matched).toBe(true);
+    expect(quietWait.waitKind).toBe('network_quiet');
+
+    const workflowNetworkSince = Date.now();
+    const waitWorkflow = await callToolJson<WorkflowResponse>(mcp.client, 'run_ui_steps', {
+      sessionId,
+      mode: 'safe',
+      steps: [
+        {
+          kind: 'action',
+          id: 'fetch-health-workflow',
+          action: 'click',
+          target: {
+            selector: '#fetch-health-workflow',
+            tabId,
+          },
+        },
+        {
+          kind: 'wait',
+          id: 'wait-workflow-request',
+          wait: {
+            waitKind: 'request',
+            urlContains: '/health?automation=workflow',
+            method: 'GET',
+            initiator: 'fetch',
+            tabId,
+            sinceTs: workflowNetworkSince,
+            timeoutMs: 5_000,
+          },
+        },
+        {
+          kind: 'wait',
+          id: 'wait-workflow-response',
+          wait: {
+            waitKind: 'response',
+            urlContains: '/health?automation=workflow',
+            method: 'GET',
+            statusGte: 200,
+            statusLt: 300,
+            tabId,
+            sinceTs: workflowNetworkSince,
+            timeoutMs: 5_000,
+          },
+        },
+      ],
+    });
+    expect(waitWorkflow.status).toBe('succeeded');
+    expect(waitWorkflow.completedStepCount).toBe(3);
+    expect(waitWorkflow.steps.map((step) => step.status)).toEqual(['succeeded', 'succeeded', 'succeeded']);
+    expect(waitWorkflow.steps[1]?.wait?.matched).toBe(true);
+    expect(waitWorkflow.steps[2]?.wait?.matched).toBe(true);
+    await expect(targetPage.locator('#workflow-network-output')).toHaveText('/health?automation=workflow:200');
 
     const visibleAssertion = await callToolJson<{ matched: boolean; matchCount: number }>(mcp.client, 'assert_page_state', {
       sessionId,
