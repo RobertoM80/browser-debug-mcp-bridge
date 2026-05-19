@@ -4532,6 +4532,59 @@ describe('mcp/server V2 capture tools', () => {
     });
   });
 
+  it('waits for a native JavaScript dialog through the live extension session', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload, timeoutMs) => {
+          expect(command).toBe('CAPTURE_WAIT_FOR_DIALOG');
+          expect(timeoutMs).toBe(2500);
+          expect(payload).toMatchObject({
+            type: 'alert',
+            messageContains: 'Saved',
+            action: 'accept',
+            tabId: 7,
+            timeoutMs: 500,
+          });
+          return {
+            ok: true,
+            payload: {
+              matched: true,
+              type: 'alert',
+              message: 'Saved successfully',
+              action: 'accept',
+              tabId: 7,
+              url: 'https://app.example.com/settings',
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_dialog', {
+      sessionId: 'session-v2',
+      type: 'alert',
+      messageContains: 'Saved',
+      action: 'accept',
+      tabId: 7,
+      timeoutMs: 500,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('dialog');
+    expect(response.evidence).toMatchObject({
+      filters: {
+        type: 'alert',
+        messageContains: 'Saved',
+        action: 'accept',
+        tabId: 7,
+      },
+      dialog: {
+        message: 'Saved successfully',
+      },
+    });
+  });
+
   it('waits for a bounded network quiet window from persisted network activity', async () => {
     const db = new Database(':memory:');
     initializeDatabase(db);

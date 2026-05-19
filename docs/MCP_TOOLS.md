@@ -453,7 +453,7 @@ Response highlights:
 
 Run this before production or remote-origin flows so agents do not repeatedly try actions against the wrong tab, stale session, iframe noise, or sensitive surfaces.
 
-### URL, navigation, load-state, selector, console, and network waits
+### URL, navigation, load-state, selector, console, dialog, and network waits
 
 These tools provide first-class waits beyond compact page-state polling:
 
@@ -462,6 +462,7 @@ These tools provide first-class waits beyond compact page-state polling:
 - `wait_for_load_state`: waits for the live document `readyState` to reach `domcontentloaded` or `load`, optionally scoped by URL predicates
 - `wait_for_selector_state`: waits for a selector to be `attached`, `detached`, `visible`, or `hidden`
 - `wait_for_console`: waits for a live console log matching `levels` and/or `contains`
+- `wait_for_dialog`: waits for a native JavaScript `alert`, `confirm`, `prompt`, or `beforeunload` dialog and can accept or dismiss it
 - `wait_for_network_quiet`: waits until persisted network activity has been quiet for a bounded window
 - `wait_for_request`: waits for a persisted request by URL, method, trace id, initiator, content type, or tab
 - `wait_for_response`: waits for a persisted response by request filters plus status, response content type, or error type
@@ -523,6 +524,19 @@ These tools provide first-class waits beyond compact page-state polling:
     "sessionId": "sess_123",
     "levels": ["error"],
     "contains": "checkout",
+    "timeoutMs": 5000
+  }
+}
+```
+
+```json
+{
+  "name": "wait_for_dialog",
+  "arguments": {
+    "sessionId": "sess_123",
+    "type": "alert",
+    "messageContains": "Saved",
+    "action": "accept",
     "timeoutMs": 5000
   }
 }
@@ -785,7 +799,7 @@ Runs a small generic UI workflow locally in the bridge using sequential action, 
     - `fast`: smaller page-state captures, cached state reuse between steps, and lighter summaries
   - supported step kinds: `action`, `waitFor`, `wait`, `assert`
   - `waitFor` polls compact page-state matchers
-  - `wait` runs the first-class wait engine with `waitKind: "url" | "navigation" | "load_state" | "selector_state" | "console" | "network_quiet" | "request" | "response"`
+- `wait` runs the first-class wait engine with `waitKind: "url" | "navigation" | "load_state" | "selector_state" | "console" | "dialog" | "network_quiet" | "request" | "response"`
   - action targets can use:
       - direct handles: `elementRef`, `selector`
       - semantic matchers: `testId`, `scope`, `locator`, `textContains`, `labelContains`, `titleContains`, `role`, `name`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`

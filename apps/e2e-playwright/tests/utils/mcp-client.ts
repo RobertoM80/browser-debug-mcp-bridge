@@ -163,6 +163,7 @@ export const EXPECTED_TOOL_NAMES = [
   'wait_for_load_state',
   'wait_for_selector_state',
   'wait_for_console',
+  'wait_for_dialog',
   'wait_for_network_quiet',
   'wait_for_request',
   'wait_for_response',

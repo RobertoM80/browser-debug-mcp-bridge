@@ -56,7 +56,7 @@ The MCP server now also has an agent loop guard for repeated unchanged tool fail
 - The native actionability model now covers visibility, disabled state, readonly/editable input policy, pointer-events, viewport intersection, stable layout, hit-target mismatch diagnostics, shadow-host hit testing, and a short retry loop for transient inspection/actionability failures, but still needs parity coverage for offscreen scroll semantics, detached targets, overlay edge cases, and retry-on-detach.
 - Same-origin iframe click/input and nested same-origin iframe click are now covered end to end. Cross-origin, sandboxed opaque-origin, or inaccessible iframe pointer actions remain diagnostic because the native click driver must translate frame-local coordinates into top-document CDP coordinates. Native results include `framePolicy` and `frameCoordinateResolved` diagnostics for these cases.
 - Targeting supports CSS selectors, frame-aware element refs, open shadow-root selectors, compact semantic matching, and native DOM locator resolution for same-element role/name/exact/regex/positional helpers plus explicit descendant relations, but not coordinates, ancestor locator chaining, full frame-locator composition, closed shadow DOM, or full locator semantics comparable to modern browser test tools.
-- Waits understand compact page-state summaries, URL exact/contains/regex predicates, persisted navigation events, live document readiness for `domcontentloaded`/`load`, selector attached/detached/visible/hidden state, live console messages, bounded persisted network quiet windows, and request/response predicates. They still cannot wait for broader navigation lifecycle events, animation/layout stability, dialogs, downloads, or popups.
+- Waits understand compact page-state summaries, URL exact/contains/regex predicates, persisted navigation events, live document readiness for `domcontentloaded`/`load`, selector attached/detached/visible/hidden state, live console messages, native JavaScript dialogs, bounded persisted network quiet windows, and request/response predicates. They still cannot wait for broader navigation lifecycle events, animation/layout stability, downloads, or popups.
 - The e2e suite now has a full-path proof for native top-document actions, same-origin iframe click/input, stale frame-ref recovery, native DOM locator targeting, common actionability rejections, and the current wait primitives, but does not yet cover Playwright/Cypress parity cases such as full DOM locator relationships, broader navigation lifecycle semantics, broad cross-origin/sandboxed frame fixtures, and deeper actionability edges.
 - The remaining compatibility actions and missing actionability/frame/locator/wait features still prevent full Playwright/Cypress parity.
 
@@ -141,13 +141,13 @@ Remaining checks:
 
 ### 7. Wait Model Has First-Class Primitives But Is Still Incomplete
 
-`wait_for_page_state` and workflow `waitFor` steps poll compact state. The dedicated wait engine now adds standalone and workflow waits for URL, persisted navigation events, selector state, console messages, network quiet windows, requests, and responses. This is now production-useful for common flows, but not enough for full e2e parity.
+`wait_for_page_state` and workflow `waitFor` steps poll compact state. The dedicated wait engine now adds standalone and workflow waits for URL, persisted navigation events, document load state, selector state, console messages, native JavaScript dialogs, network quiet windows, requests, and responses. This is now production-useful for common flows, but not enough for full e2e parity.
 
 Missing wait primitives:
 
 - wait for broader navigation lifecycle states beyond document readiness
 - wait for stable layout
-- wait for download/dialog/popup
+- wait for download/popup
 - expect-style assertions with diagnostics
 
 ### 8. E2E Coverage Does Not Prove the Feature End to End
@@ -213,8 +213,8 @@ Introduce a dedicated automation engine with clear layers:
 
 5. `WaitEngine`
    - keeps current page-state waits
-   - now includes URL, persisted navigation-event, selector-state, console, network-quiet, request, and response waits
-   - still needs broader navigation lifecycle, layout-stability, dialog, download, and popup waits
+  - now includes URL, persisted navigation-event, document load-state, selector-state, console, dialog, network-quiet, request, and response waits
+  - still needs broader navigation lifecycle, layout-stability, download, and popup waits
    - can be reused by `execute_ui_action.waitFor...` and `run_ui_steps`
 
 6. `AutomationDiagnostics`
@@ -261,7 +261,7 @@ This phase should happen before the big refactor so regressions are visible.
 
 - Add full locator semantics beyond the compact role/name/exact/positional baseline.
 - Add full strict target resolution modes for semantic locators. Baseline `strict:false`, `first`, `last`, and `nth` are implemented for compact page-state refs and native DOM locator action targets.
-- Add workflow wait kinds for broader navigation lifecycle semantics, layout stability, dialogs, downloads, and popups. URL, persisted navigation-event, document load-state, selector-state, console, network-quiet, request, and response waits now exist.
+- Add workflow wait kinds for broader navigation lifecycle semantics, layout stability, dialogs, downloads, and popups. URL, persisted navigation-event, document load-state, selector-state, console, native JavaScript dialog, network-quiet, request, and response waits now exist.
 - Add better failure suggestions based on actual actionability failures.
 
 #### Phase 6: Documentation and Tool Contract Cleanup
@@ -300,7 +300,7 @@ The new full-path spec should be expanded after the native-input refactor starts
 3. Keyboard: shortcuts, modifiers, Tab focus movement, Enter submit, non-character keys.
 4. Frames: broader cross-origin/sandboxed fixture coverage, multi-match frame ambiguity diagnostics, and frame ref stability across reload/navigation beyond the current URL/title recovery baseline.
 5. Locators: ancestor chained locators, full frame locators, closed shadow DOM policy, coordinate targets, arbitrary selector state, and richer ambiguity diagnostics beyond the current same-element and descendant-relation native locator baseline.
-6. Waits: broader navigation lifecycle semantics, layout stability, dialogs, downloads, popups, and deeper timeout/diagnostic e2e coverage for the current URL/navigation-event/load-state/selector/console/network/request/response MCP waits.
+6. Waits: broader navigation lifecycle semantics, layout stability, downloads, popups, and deeper timeout/diagnostic e2e coverage for the current URL/navigation-event/load-state/selector/console/dialog/network/request/response MCP waits.
 7. Diagnostics/history: failure evidence linkage and deeper raw CDP failure metadata after real MCP-triggered actions.
 8. Safety: automation disabled, sensitive-field opt-in, unbound tab, disallowed URL, emergency stop during a long action.
 

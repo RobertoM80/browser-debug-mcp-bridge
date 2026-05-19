@@ -225,6 +225,7 @@ function buildAutomationFixtureHtml(): string {
           <output id="workflow-network-output"></output>
           <button id="emit-console-error" data-testid="emit-console-error">Emit console error</button>
           <output id="console-output"></output>
+          <button id="open-native-dialog" data-testid="open-native-dialog">Open native dialog</button>
           <div id="scroll-box">
             <div id="scroll-content">Scrollable content</div>
           </div>
@@ -304,6 +305,11 @@ function buildAutomationFixtureHtml(): string {
           document.querySelector('#emit-console-error').addEventListener('click', () => {
             console.error('automation wait console signal');
             document.querySelector('#console-output').textContent = 'console error emitted';
+          });
+          document.querySelector('#open-native-dialog').addEventListener('click', () => {
+            setTimeout(() => {
+              alert('Automation native dialog');
+            }, 1500);
           });
           document.querySelector('#scroll-box').addEventListener('scroll', (event) => {
             document.querySelector('#scroll-output').textContent = String(event.target.scrollTop);
@@ -824,6 +830,32 @@ test.describe('@full live automation through MCP and extension session', () => {
     });
     expect(consoleWait.matched).toBe(true);
     expect(consoleWait.waitKind).toBe('console');
+
+    const dialogClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        selector: '#open-native-dialog',
+        tabId,
+      },
+    });
+    expect(dialogClick.status).toBe('succeeded');
+
+    const dialogWait = await callToolJson<WaitToolResponse>(mcp.client, 'wait_for_dialog', {
+      sessionId,
+      type: 'alert',
+      messageContains: 'Automation native dialog',
+      action: 'accept',
+      tabId,
+      timeoutMs: 5_000,
+    });
+    expect(dialogWait.matched).toBe(true);
+    expect(dialogWait.waitKind).toBe('dialog');
+    expect(dialogWait.evidence?.dialog).toMatchObject({
+      type: 'alert',
+      message: 'Automation native dialog',
+      action: 'accept',
+    });
 
     const networkSince = Date.now();
     const fetchClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {

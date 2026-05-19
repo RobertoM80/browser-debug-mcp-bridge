@@ -312,6 +312,16 @@ export const AutomationWaitConsoleSchema = AutomationWaitBaseSchema.extend({
   includeRuntimeErrors: z.boolean().optional(),
 });
 
+export const AutomationWaitDialogSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('dialog'),
+  type: z.enum(['alert', 'confirm', 'prompt', 'beforeunload']).optional(),
+  messageContains: z.string().min(1).optional(),
+  urlContains: z.string().min(1).optional(),
+  action: z.enum(['none', 'accept', 'dismiss']).default('none'),
+  promptText: z.string().optional(),
+  tabId: z.number().int().min(0).optional(),
+});
+
 export const AutomationWaitNetworkQuietSchema = AutomationWaitBaseSchema.extend({
   waitKind: z.literal('network_quiet'),
   quietMs: z.number().int().min(100).max(10000).default(500),
@@ -375,6 +385,7 @@ export const AutomationWaitSpecSchema = z.discriminatedUnion('waitKind', [
   AutomationWaitLoadStateSchema,
   AutomationWaitSelectorStateSchema,
   AutomationWaitConsoleSchema,
+  AutomationWaitDialogSchema,
   AutomationWaitNetworkQuietSchema,
   AutomationWaitRequestSchema,
   AutomationWaitResponseSchema,

@@ -562,6 +562,16 @@ const AutomationWaitConsoleSchema = AutomationWaitBaseSchema.extend({
   includeRuntimeErrors: z.boolean().optional(),
 });
 
+const AutomationWaitDialogSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('dialog'),
+  type: z.enum(['alert', 'confirm', 'prompt', 'beforeunload']).optional(),
+  messageContains: z.string().min(1).optional(),
+  urlContains: z.string().min(1).optional(),
+  action: z.enum(['none', 'accept', 'dismiss']).default('none'),
+  promptText: z.string().optional(),
+  tabId: z.number().int().min(0).optional(),
+});
+
 const AutomationWaitNetworkQuietSchema = AutomationWaitBaseSchema.extend({
   waitKind: z.literal('network_quiet'),
   quietMs: z.number().int().min(100).max(10000).default(500),
@@ -625,6 +635,7 @@ const AutomationWaitSpecSchema = z.discriminatedUnion('waitKind', [
   AutomationWaitLoadStateSchema,
   AutomationWaitSelectorStateSchema,
   AutomationWaitConsoleSchema,
+  AutomationWaitDialogSchema,
   AutomationWaitNetworkQuietSchema,
   AutomationWaitRequestSchema,
   AutomationWaitResponseSchema,
@@ -710,7 +721,7 @@ const AUTOMATION_WAIT_TOOL_SCHEMA = {
   type: 'object',
   required: ['waitKind'],
   properties: {
-    waitKind: { type: 'string', enum: ['url', 'navigation', 'load_state', 'selector_state', 'console', 'network_quiet', 'request', 'response'] },
+    waitKind: { type: 'string', enum: ['url', 'navigation', 'load_state', 'selector_state', 'console', 'dialog', 'network_quiet', 'request', 'response'] },
     timeoutMs: { type: 'number' },
     pollIntervalMs: { type: 'number' },
     urlContains: { type: 'string' },
@@ -726,6 +737,8 @@ const AUTOMATION_WAIT_TOOL_SCHEMA = {
     contains: { type: 'string' },
     sinceTs: { type: 'number' },
     includeRuntimeErrors: { type: 'boolean' },
+    action: { type: 'string', enum: ['none', 'accept', 'dismiss'] },
+    promptText: { type: 'string' },
     quietMs: { type: 'number' },
     method: { type: 'string' },
     traceId: { type: 'string' },
@@ -1125,6 +1138,21 @@ const TOOL_SCHEMAS: Record<string, object> = {
       contains: { type: 'string' },
       sinceTs: { type: 'number' },
       includeRuntimeErrors: { type: 'boolean' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_dialog: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      type: { type: 'string', enum: ['alert', 'confirm', 'prompt', 'beforeunload'] },
+      messageContains: { type: 'string' },
+      urlContains: { type: 'string' },
+      action: { type: 'string', enum: ['none', 'accept', 'dismiss'] },
+      promptText: { type: 'string' },
+      tabId: { type: 'number' },
       timeoutMs: { type: 'number' },
       pollIntervalMs: { type: 'number' },
     },
@@ -1769,6 +1797,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   wait_for_load_state: 'Poll the live page document readiness until domcontentloaded or load is reached',
   wait_for_selector_state: 'Poll a selector until it is attached, detached, visible, or hidden',
   wait_for_console: 'Poll live console logs until a matching message appears',
+  wait_for_dialog: 'Wait for a native JavaScript dialog and optionally accept or dismiss it',
   wait_for_network_quiet: 'Wait until persisted network activity is quiet for a bounded window',
   wait_for_request: 'Poll persisted network activity until a matching request is observed',
   wait_for_response: 'Poll persisted network activity until a matching response is observed',
@@ -2061,6 +2090,7 @@ type CaptureCommandName =
   | 'CAPTURE_PAGE_STATE'
   | 'CAPTURE_UI_SNAPSHOT'
   | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+  | 'CAPTURE_WAIT_FOR_DIALOG'
   | 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
   | 'CAPTURE_OVERRIDE_RESPONSE_BODY'
   | 'CAPTURE_OVERRIDE_POC_GET_STATUS'
@@ -4942,6 +4972,58 @@ async function waitForConsoleCondition(
   };
 }
 
+async function waitForDialogCondition(
+  sessionId: string,
+  wait: z.infer<typeof AutomationWaitDialogSchema>,
+  captureClient: CaptureCommandClient,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, 5_000, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const startedAt = Date.now();
+  const capture = await executeLiveCapture(
+    captureClient,
+    sessionId,
+    'CAPTURE_WAIT_FOR_DIALOG',
+    {
+      type: wait.type,
+      messageContains: wait.messageContains,
+      urlContains: wait.urlContains,
+      action: wait.action,
+      promptText: wait.promptText,
+      tabId: wait.tabId,
+      timeoutMs,
+    },
+    timeoutMs + 2_000,
+  );
+  const payload = ensureCaptureSuccess(capture, sessionId);
+  const matched = payload.matched === true;
+
+  return {
+    waitKind: 'dialog',
+    matched,
+    waitedMs: Date.now() - startedAt,
+    attempts: 1,
+    timeoutMs,
+    pollIntervalMs: timeoutMs,
+    evidence: {
+      filters: {
+        type: wait.type,
+        messageContains: wait.messageContains,
+        urlContains: wait.urlContains,
+        action: wait.action,
+        tabId: wait.tabId,
+      },
+      dialog: matched ? payload : undefined,
+      expected: matched ? undefined : payload.expected ?? wait,
+    },
+    error: matched
+      ? undefined
+      : {
+          code: 'dialog_wait_timeout',
+          message: 'Timed out waiting for a matching JavaScript dialog.',
+        },
+  };
+}
+
 function mapNavigationWaitEvent(row: EventRow): Record<string, unknown> {
   const payload = readJsonPayload(row.payload_json);
   return {
@@ -5369,6 +5451,8 @@ async function runAutomationWait(options: {
       return waitForSelectorStateCondition(options.sessionId, options.wait, options.captureClient);
     case 'console':
       return waitForConsoleCondition(options.sessionId, options.wait, options.captureClient);
+    case 'dialog':
+      return waitForDialogCondition(options.sessionId, options.wait, options.captureClient);
     case 'network_quiet': {
       const db = options.getDb?.();
       if (!db) {
@@ -9795,6 +9879,24 @@ export function createV2ToolHandlers(
         ...createBaseResponse(sessionId),
         limitsApplied: {
           maxResults: 10,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
+    wait_for_dialog: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const wait = AutomationWaitDialogSchema.parse({ ...input, waitKind: 'dialog' });
+      const waited = await waitForDialogCondition(sessionId, wait, captureClient);
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
           truncated: false,
         },
         ...waited,

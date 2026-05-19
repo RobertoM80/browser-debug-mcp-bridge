@@ -1134,6 +1134,14 @@ interface CdpGetResponseBodyResult {
   base64Encoded?: boolean;
 }
 
+interface CdpJavascriptDialogOpeningPayload {
+  url?: string;
+  frameId?: string;
+  message?: string;
+  type?: 'alert' | 'confirm' | 'prompt' | 'beforeunload';
+  defaultPrompt?: string;
+}
+
 function normalizeOverrideResponseCaptureBytes(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return DEFAULT_OVERRIDE_RESPONSE_CAPTURE_BYTES;
@@ -1661,6 +1669,140 @@ async function captureOverrideResponseBodyWithCdp(options: {
     }
 
     return await resultPromise;
+  } finally {
+    await cleanup();
+  }
+}
+
+function normalizeDialogWaitTimeoutMs(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 5_000;
+  }
+  return Math.min(Math.max(Math.floor(value), 100), 120_000);
+}
+
+function normalizeDialogWaitAction(value: unknown): 'none' | 'accept' | 'dismiss' {
+  return value === 'accept' || value === 'dismiss' ? value : 'none';
+}
+
+function normalizeDialogWaitPromptText(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function dialogMatchesWaitPayload(
+  dialog: CdpJavascriptDialogOpeningPayload,
+  payload: Record<string, unknown>,
+): boolean {
+  if (typeof payload.type === 'string' && dialog.type !== payload.type) {
+    return false;
+  }
+  if (typeof payload.messageContains === 'string' && !String(dialog.message ?? '').includes(payload.messageContains)) {
+    return false;
+  }
+  if (typeof payload.urlContains === 'string' && !String(dialog.url ?? '').includes(payload.urlContains)) {
+    return false;
+  }
+  return true;
+}
+
+async function waitForJavascriptDialogInTab(options: {
+  payload: Record<string, unknown>;
+  tab: chrome.tabs.Tab & { id: number };
+}): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  const { payload, tab } = options;
+  const tabId = tab.id;
+  const timeoutMs = normalizeDialogWaitTimeoutMs(payload.timeoutMs);
+  const action = normalizeDialogWaitAction(payload.action);
+  const promptText = normalizeDialogWaitPromptText(payload.promptText);
+  const debuggee: chrome.debugger.Debuggee = { tabId };
+  let attached = false;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let listener: ((source: chrome.debugger.Debuggee, method: string, params?: unknown) => void) | undefined;
+
+  const cleanup = async (): Promise<void> => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = undefined;
+    }
+    if (listener) {
+      chrome.debugger.onEvent.removeListener(listener);
+      listener = undefined;
+    }
+    if (!attached) {
+      return;
+    }
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Page.disable').catch(() => undefined);
+    await chrome.debugger.detach(debuggee).catch(() => undefined);
+    attached = false;
+  };
+
+  const resultPromise = new Promise<Record<string, unknown>>((resolve, reject) => {
+    const fail = (error: unknown): void => {
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+
+    timeoutId = setTimeout(() => {
+      resolve({
+        matched: false,
+        timeoutMs,
+        tabId,
+        url: tab.url,
+        expected: {
+          type: payload.type,
+          messageContains: payload.messageContains,
+          urlContains: payload.urlContains,
+        },
+      });
+    }, timeoutMs);
+
+    listener = (source, method, params) => {
+      if (source.tabId !== tabId || method !== 'Page.javascriptDialogOpening') {
+        return;
+      }
+
+      const dialog = params as CdpJavascriptDialogOpeningPayload | undefined;
+      if (!dialog || !dialogMatchesWaitPayload(dialog, payload)) {
+        return;
+      }
+
+      void (async () => {
+        if (action !== 'none') {
+          await sendResponseCaptureDebuggerCommand(debuggee, 'Page.handleJavaScriptDialog', {
+            accept: action === 'accept',
+            promptText,
+          }).catch((error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            if (!message.includes('No dialog is showing')) {
+              throw error;
+            }
+          });
+        }
+
+        resolve({
+          matched: true,
+          timeoutMs,
+          tabId,
+          url: dialog.url ?? tab.url,
+          frameId: dialog.frameId,
+          type: dialog.type,
+          message: dialog.message,
+          defaultPrompt: dialog.defaultPrompt,
+          action,
+        });
+      })().catch(fail);
+    };
+
+    chrome.debugger.onEvent.addListener(listener);
+  });
+
+  try {
+    await chrome.debugger.attach(debuggee, '1.3');
+    attached = true;
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Page.enable');
+    return {
+      payload: await resultPromise,
+      truncated: false,
+    };
   } finally {
     await cleanup();
   }
@@ -3124,6 +3266,33 @@ async function executeCaptureCommand(
       },
       truncated: queryResult.truncated,
     };
+  }
+
+  if (command === 'CAPTURE_WAIT_FOR_DIALOG') {
+    const requestedTabId = resolveLiveConsoleTabId(payload.tabId);
+    const sessionScope = getSessionTabScope(context.sessionId);
+    if (requestedTabId !== undefined && sessionScope && !sessionScope.allowedTabIds.has(requestedTabId)) {
+      throw new Error(`tabId ${requestedTabId} is not bound to this session`);
+    }
+
+    const tab = requestedTabId !== undefined
+      ? await chrome.tabs.get(requestedTabId).catch(() => undefined)
+      : await resolveCaptureTab(context.sessionId);
+    if (!tab || typeof tab.id !== 'number') {
+      throw new Error('No capture tab is available for dialog wait.');
+    }
+    if (!isTabAllowedForSession(context.sessionId, tab.id)) {
+      throw new Error(`tabId ${tab.id} is not bound to this session`);
+    }
+    if (!isUrlAllowed(tab.url ?? '', captureConfig.allowlist)) {
+      throw new Error('Dialog waits are blocked because the target tab is no longer allowlisted.');
+    }
+
+    rememberCaptureTabForSession(context.sessionId, tab);
+    return waitForJavascriptDialogInTab({
+      payload,
+      tab: tab as chrome.tabs.Tab & { id: number },
+    });
   }
 
   if (command === 'CAPTURE_OVERRIDE_OBSERVE_ASSETS') {
