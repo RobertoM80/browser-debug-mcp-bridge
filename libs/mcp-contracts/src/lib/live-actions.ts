@@ -26,7 +26,7 @@ export const LiveUIActionLocatorStepSchema = z.object({
   role: z.string().min(1).optional(),
   name: LiveUIActionLocatorMatcherSchema.optional(),
   exact: z.boolean().optional(),
-  relation: z.enum(['filter', 'descendant']).optional(),
+  relation: z.enum(['filter', 'descendant', 'ancestor']).optional(),
 }).superRefine((value, ctx) => {
   if (value.kind === 'role' && !value.role && !value.value) {
     ctx.addIssue({
@@ -48,6 +48,7 @@ export const LiveUIActionLocatorStepSchema = z.object({
 export const LiveUIActionLocatorSchema = z.object({
   scope: z.enum(['buttons', 'links', 'inputs', 'modals', 'focused']).optional(),
   frame: z.object({
+    selector: z.string().min(1).optional(),
     urlContains: z.string().min(1).optional(),
     titleContains: z.string().min(1).optional(),
   }).optional(),

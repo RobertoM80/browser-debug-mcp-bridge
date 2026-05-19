@@ -714,7 +714,7 @@ For more explicit locator-style targeting, use `target.locator`. Direct live act
     "target": {
       "locator": {
         "scope": "buttons",
-        "frame": { "titleContains": "Account" },
+        "frame": { "selector": "#settings-frame", "titleContains": "Account" },
         "steps": [
           { "kind": "role", "role": "button", "name": { "pattern": "^Save", "flags": "i" } },
           { "kind": "text", "value": "Save changes", "exact": true, "relation": "descendant" }
@@ -725,7 +725,7 @@ For more explicit locator-style targeting, use `target.locator`. Direct live act
 }
 ```
 
-Locator step kinds are `css`, `role`, `text`, `label`, `testId`, `placeholder`, and `altText`. `css` and `testId` steps match exactly by default; text-like steps match by containment unless `exact: true` is set. Regex matchers use `{ "pattern": "...", "flags": "i" }`. By default each step filters the current candidate set; set `relation: "descendant"` on a later step to search descendants of the previous step's matches.
+Locator step kinds are `css`, `role`, `text`, `label`, `testId`, `placeholder`, and `altText`. `css` and `testId` steps match exactly by default; text-like steps match by containment unless `exact: true` is set. Regex matchers use `{ "pattern": "...", "flags": "i" }`. By default each step filters the current candidate set; set `relation: "descendant"` to search descendants of the previous matches or `relation: "ancestor"` to require a matching ancestor. `locator.frame.selector` can narrow locator execution to a same-origin frame path such as `#outer-frame => #inner-frame`.
 
 Combined action + wait example:
 
@@ -753,9 +753,9 @@ Important limits and safeguards:
 - Nested same-origin iframe actions are covered when page-state returns a frame-aware `elementRef`
 - Native pointer actions in cross-origin, sandboxed opaque-origin, or inaccessible frames return `unsupported_cross_origin_frame` when top-document coordinate translation is not possible. The response includes `actionResult.result.framePolicy` and `actionability.frameCoordinateResolved`.
 - Stale frame ids on frame-aware refs are re-resolved by encoded frame URL/title plus selector when possible. Invalid frame ids without enough metadata, or unresolved frame refs, return `target_frame_not_found`.
-- `target.locator` now has native DOM resolution for direct/workflow actions and compact page-state semantics for server-side diagnostics. It supports chained structured filters, explicit descendant relations, and regex matching, but it is not yet a full Playwright/Cypress locator engine for ancestor relations, closed shadow DOM, coordinate targeting, or arbitrary selector state.
+- `target.locator` now has native DOM resolution for direct/workflow actions and compact page-state semantics for server-side diagnostics. It supports chained structured filters, ancestor/descendant relations, regex matching, and same-origin frame selector paths, but it is not yet a full Playwright/Cypress locator engine for closed shadow DOM, coordinate targeting, or arbitrary selector state.
 - `actionResult.result.backend` identifies the execution backend (`cdp-native-v2` for migrated native actions)
-- Native actions perform target inspection/actionability checks before dispatch, including visibility, disabled state, readonly/editable state for input, stable layout, pointer-events, viewport intersection, and hit-target mismatch diagnostics
+- Native actions perform target inspection/actionability checks before dispatch, including visibility, disabled state, readonly/editable state for input, stable layout, pointer-events, viewport intersection, offscreen scroll-into-view, detached-target retry, and hit-target mismatch diagnostics
 - Page-state assertions and waits support `visible: true/false`, `role`, `name`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`, and `exact` for structured refs where available
 - `Allow live automation` must be enabled in the extension popup before any action can run
 - Sensitive selectors and input-like actions require the second `Allow sensitive field automation` opt-in
@@ -812,7 +812,7 @@ Runs a small generic UI workflow locally in the bridge using sequential action, 
     - `fast`: smaller page-state captures, cached state reuse between steps, and lighter summaries
   - supported step kinds: `action`, `waitFor`, `wait`, `assert`
   - `waitFor` polls compact page-state matchers
-- `wait` runs the first-class wait engine with `waitKind: "url" | "navigation" | "load_state" | "selector_state" | "console" | "dialog" | "stable_layout" | "network_quiet" | "request" | "response"`
+- `wait` runs the first-class wait engine with `waitKind: "url" | "navigation" | "navigation_lifecycle" | "load_state" | "selector_state" | "console" | "dialog" | "stable_layout" | "download" | "popup" | "network_quiet" | "request" | "response"`
   - action targets can use:
       - direct handles: `elementRef`, `selector`
       - semantic matchers: `testId`, `scope`, `locator`, `textContains`, `labelContains`, `titleContains`, `role`, `name`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`

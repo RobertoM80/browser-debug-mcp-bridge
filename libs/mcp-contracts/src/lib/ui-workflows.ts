@@ -19,7 +19,7 @@ export const UIWorkflowLocatorStepSchema = z.object({
   role: z.string().min(1).optional(),
   name: UIWorkflowLocatorMatcherSchema.optional(),
   exact: z.boolean().optional(),
-  relation: z.enum(['filter', 'descendant']).optional(),
+  relation: z.enum(['filter', 'descendant', 'ancestor']).optional(),
 }).superRefine((value, ctx) => {
   if (value.kind === 'role' && !value.role && !value.value) {
     ctx.addIssue({
@@ -289,6 +289,15 @@ export const AutomationWaitNavigationSchema = AutomationWaitBaseSchema.extend({
   }
 });
 
+export const AutomationWaitNavigationLifecycleSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('navigation_lifecycle'),
+  state: z.enum(['commit', 'same_document', 'domcontentloaded', 'load', 'network_idle']).default('load'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  tabId: z.number().int().min(0).optional(),
+});
+
 export const AutomationWaitLoadStateSchema = AutomationWaitBaseSchema.extend({
   waitKind: z.literal('load_state'),
   state: z.enum(['domcontentloaded', 'load']).default('load'),
@@ -327,6 +336,41 @@ export const AutomationWaitStableLayoutSchema = AutomationWaitBaseSchema.extend(
   selector: z.string().min(1).optional(),
   stableMs: z.number().int().min(100).max(10000).default(500),
   tabId: z.number().int().min(0).optional(),
+});
+
+export const AutomationWaitDownloadSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('download'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  filenameContains: z.string().min(1).optional(),
+  filenameRegex: z.string().min(1).optional(),
+  state: z.enum(['started', 'completed']).default('started'),
+  tabId: z.number().int().min(0).optional(),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl && !value.filenameContains && !value.filenameRegex) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'download wait requires a URL or filename predicate',
+      path: ['wait'],
+    });
+  }
+});
+
+export const AutomationWaitPopupSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('popup'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  openerTabId: z.number().int().min(0).optional(),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl && value.openerTabId === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'popup wait requires a URL predicate or openerTabId',
+      path: ['wait'],
+    });
+  }
 });
 
 export const AutomationWaitNetworkQuietSchema = AutomationWaitBaseSchema.extend({
@@ -389,11 +433,14 @@ export const AutomationWaitResponseSchema = AutomationWaitNetworkBaseSchema.exte
 export const AutomationWaitSpecSchema = z.discriminatedUnion('waitKind', [
   AutomationWaitUrlSchema,
   AutomationWaitNavigationSchema,
+  AutomationWaitNavigationLifecycleSchema,
   AutomationWaitLoadStateSchema,
   AutomationWaitSelectorStateSchema,
   AutomationWaitConsoleSchema,
   AutomationWaitDialogSchema,
   AutomationWaitStableLayoutSchema,
+  AutomationWaitDownloadSchema,
+  AutomationWaitPopupSchema,
   AutomationWaitNetworkQuietSchema,
   AutomationWaitRequestSchema,
   AutomationWaitResponseSchema,

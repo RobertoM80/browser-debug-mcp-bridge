@@ -20,11 +20,13 @@ export interface UIActionLocatorStep {
   role?: string;
   name?: UIActionLocatorMatcher;
   exact?: boolean;
+  relation?: 'filter' | 'descendant' | 'ancestor';
 }
 
 export interface UIActionLocator {
   scope?: UIActionTargetScope;
   frame?: {
+    selector?: string;
     urlContains?: string;
     titleContains?: string;
   };
@@ -259,6 +261,7 @@ function summarizeWorkflowLocator(target: UIWorkflowActionTarget): Record<string
       role: step.role,
       name: locatorMatcherToDebugValue(step.name),
       exact: step.exact,
+      relation: step.relation,
     })),
   };
 }

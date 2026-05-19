@@ -77,6 +77,7 @@ describe('live-actions', () => {
         locator: {
           scope: 'buttons',
           frame: {
+            selector: '#account-frame',
             titleContains: 'Account',
           },
           steps: [
@@ -100,9 +101,34 @@ describe('live-actions', () => {
     });
 
     expect(parsed.target?.locator?.scope).toBe('buttons');
+    expect(parsed.target?.locator?.frame?.selector).toBe('#account-frame');
     expect(parsed.target?.locator?.steps).toHaveLength(2);
     expect(parsed.target?.locator?.steps[0]?.kind).toBe('role');
     expect(parsed.target?.locator?.steps[1]?.relation).toBe('descendant');
+  });
+
+  it('parses ancestor locator relations in live UI action targets', () => {
+    const parsed = LiveUIActionRequestSchema.parse({
+      action: 'click',
+      target: {
+        locator: {
+          steps: [
+            {
+              kind: 'role',
+              role: 'button',
+              name: 'Apply',
+            },
+            {
+              kind: 'testId',
+              value: 'billing-panel',
+              relation: 'ancestor',
+            },
+          ],
+        },
+      },
+    });
+
+    expect(parsed.target?.locator?.steps[1]?.relation).toBe('ancestor');
   });
 
   it('rejects incomplete locator steps', () => {

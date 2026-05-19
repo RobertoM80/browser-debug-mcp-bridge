@@ -130,7 +130,7 @@ const UIActionLocatorStepSchema = z.object({
   role: z.string().min(1).optional(),
   name: UIActionLocatorMatcherSchema.optional(),
   exact: z.boolean().optional(),
-  relation: z.enum(['filter', 'descendant']).optional(),
+  relation: z.enum(['filter', 'descendant', 'ancestor']).optional(),
 }).superRefine((value, ctx) => {
   if (value.kind === 'role' && !value.role && !value.value) {
     ctx.addIssue({
@@ -152,6 +152,7 @@ const UIActionLocatorStepSchema = z.object({
 const UIActionLocatorSchema = z.object({
   scope: UIActionTargetScopeSchema.optional(),
   frame: z.object({
+    selector: z.string().min(1).optional(),
     urlContains: z.string().min(1).optional(),
     titleContains: z.string().min(1).optional(),
   }).optional(),
@@ -539,6 +540,15 @@ const AutomationWaitNavigationSchema = AutomationWaitBaseSchema.extend({
   }
 });
 
+const AutomationWaitNavigationLifecycleSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('navigation_lifecycle'),
+  state: z.enum(['commit', 'same_document', 'domcontentloaded', 'load', 'network_idle']).default('load'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  tabId: z.number().int().min(0).optional(),
+});
+
 const AutomationWaitLoadStateSchema = AutomationWaitBaseSchema.extend({
   waitKind: z.literal('load_state'),
   state: z.enum(['domcontentloaded', 'load']).default('load'),
@@ -577,6 +587,41 @@ const AutomationWaitStableLayoutSchema = AutomationWaitBaseSchema.extend({
   selector: z.string().min(1).optional(),
   stableMs: z.number().int().min(100).max(10000).default(500),
   tabId: z.number().int().min(0).optional(),
+});
+
+const AutomationWaitDownloadSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('download'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  filenameContains: z.string().min(1).optional(),
+  filenameRegex: z.string().min(1).optional(),
+  state: z.enum(['started', 'completed']).default('started'),
+  tabId: z.number().int().min(0).optional(),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl && !value.filenameContains && !value.filenameRegex) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'download wait requires a URL or filename predicate',
+      path: ['wait'],
+    });
+  }
+});
+
+const AutomationWaitPopupSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('popup'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  openerTabId: z.number().int().min(0).optional(),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl && value.openerTabId === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'popup wait requires a URL predicate or openerTabId',
+      path: ['wait'],
+    });
+  }
 });
 
 const AutomationWaitNetworkQuietSchema = AutomationWaitBaseSchema.extend({
@@ -639,11 +684,14 @@ const AutomationWaitResponseSchema = AutomationWaitNetworkBaseSchema.extend({
 const AutomationWaitSpecSchema = z.discriminatedUnion('waitKind', [
   AutomationWaitUrlSchema,
   AutomationWaitNavigationSchema,
+  AutomationWaitNavigationLifecycleSchema,
   AutomationWaitLoadStateSchema,
   AutomationWaitSelectorStateSchema,
   AutomationWaitConsoleSchema,
   AutomationWaitDialogSchema,
   AutomationWaitStableLayoutSchema,
+  AutomationWaitDownloadSchema,
+  AutomationWaitPopupSchema,
   AutomationWaitNetworkQuietSchema,
   AutomationWaitRequestSchema,
   AutomationWaitResponseSchema,
@@ -701,6 +749,7 @@ const ACTION_LOCATOR_TOOL_SCHEMA = {
     frame: {
       type: 'object',
       properties: {
+        selector: { type: 'string' },
         urlContains: { type: 'string' },
         titleContains: { type: 'string' },
       },
@@ -718,7 +767,7 @@ const ACTION_LOCATOR_TOOL_SCHEMA = {
           role: { type: 'string' },
           name: LOCATOR_MATCHER_TOOL_SCHEMA,
           exact: { type: 'boolean' },
-          relation: { type: 'string', enum: ['filter', 'descendant'] },
+          relation: { type: 'string', enum: ['filter', 'descendant', 'ancestor'] },
         },
       },
     },
@@ -729,7 +778,7 @@ const AUTOMATION_WAIT_TOOL_SCHEMA = {
   type: 'object',
   required: ['waitKind'],
   properties: {
-    waitKind: { type: 'string', enum: ['url', 'navigation', 'load_state', 'selector_state', 'console', 'dialog', 'stable_layout', 'network_quiet', 'request', 'response'] },
+    waitKind: { type: 'string', enum: ['url', 'navigation', 'navigation_lifecycle', 'load_state', 'selector_state', 'console', 'dialog', 'stable_layout', 'download', 'popup', 'network_quiet', 'request', 'response'] },
     timeoutMs: { type: 'number' },
     pollIntervalMs: { type: 'number' },
     urlContains: { type: 'string' },
@@ -738,7 +787,7 @@ const AUTOMATION_WAIT_TOOL_SCHEMA = {
     fromUrlContains: { type: 'string' },
     fromUrlRegex: { type: 'string' },
     trigger: { type: 'string' },
-    state: { type: 'string', enum: ['domcontentloaded', 'load', 'attached', 'detached', 'visible', 'hidden'] },
+    state: { type: 'string', enum: ['commit', 'same_document', 'domcontentloaded', 'load', 'network_idle', 'attached', 'detached', 'visible', 'hidden', 'started', 'completed'] },
     selector: { type: 'string' },
     frameId: { type: 'number' },
     levels: { type: 'array', items: { type: 'string' } },
@@ -748,6 +797,9 @@ const AUTOMATION_WAIT_TOOL_SCHEMA = {
     action: { type: 'string', enum: ['none', 'accept', 'dismiss'] },
     promptText: { type: 'string' },
     stableMs: { type: 'number' },
+    filenameContains: { type: 'string' },
+    filenameRegex: { type: 'string' },
+    openerTabId: { type: 'number' },
     quietMs: { type: 'number' },
     method: { type: 'string' },
     traceId: { type: 'string' },
@@ -1113,6 +1165,20 @@ const TOOL_SCHEMAS: Record<string, object> = {
       pollIntervalMs: { type: 'number' },
     },
   },
+  wait_for_navigation_lifecycle: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      state: { type: 'string', enum: ['commit', 'same_document', 'domcontentloaded', 'load', 'network_idle'] },
+      urlContains: { type: 'string' },
+      urlRegex: { type: 'string' },
+      exactUrl: { type: 'string' },
+      tabId: { type: 'number' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
   wait_for_load_state: {
     type: 'object',
     required: ['sessionId'],
@@ -1174,6 +1240,35 @@ const TOOL_SCHEMAS: Record<string, object> = {
       selector: { type: 'string' },
       stableMs: { type: 'number' },
       tabId: { type: 'number' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_download: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      urlContains: { type: 'string' },
+      urlRegex: { type: 'string' },
+      exactUrl: { type: 'string' },
+      filenameContains: { type: 'string' },
+      filenameRegex: { type: 'string' },
+      state: { type: 'string', enum: ['started', 'completed'] },
+      tabId: { type: 'number' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_popup: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      urlContains: { type: 'string' },
+      urlRegex: { type: 'string' },
+      exactUrl: { type: 'string' },
+      openerTabId: { type: 'number' },
       timeoutMs: { type: 'number' },
       pollIntervalMs: { type: 'number' },
     },
@@ -1815,11 +1910,14 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   preflight_automation_flow: 'Check live-session readiness and production risks before running an automation flow',
   wait_for_url: 'Poll the live page URL until it matches an exact, contains, or regex condition',
   wait_for_navigation: 'Poll persisted navigation events until a matching URL or trigger is observed',
+  wait_for_navigation_lifecycle: 'Wait for a live navigation lifecycle milestone such as commit, load, or network idle',
   wait_for_load_state: 'Poll the live page document readiness until domcontentloaded or load is reached',
   wait_for_selector_state: 'Poll a selector until it is attached, detached, visible, or hidden',
   wait_for_console: 'Poll live console logs until a matching message appears',
   wait_for_dialog: 'Wait for a native JavaScript dialog and optionally accept or dismiss it',
   wait_for_stable_layout: 'Wait until the page or selector layout stays unchanged for a stable window',
+  wait_for_download: 'Wait for a download started by the bound tab and optionally until completion',
+  wait_for_popup: 'Wait for a popup tab or window opened from the bound session tab',
   wait_for_network_quiet: 'Wait until persisted network activity is quiet for a bounded window',
   wait_for_request: 'Poll persisted network activity until a matching request is observed',
   wait_for_response: 'Poll persisted network activity until a matching response is observed',
@@ -2112,8 +2210,11 @@ type CaptureCommandName =
   | 'CAPTURE_PAGE_STATE'
   | 'CAPTURE_UI_SNAPSHOT'
   | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+  | 'CAPTURE_WAIT_FOR_NAVIGATION_LIFECYCLE'
   | 'CAPTURE_WAIT_FOR_DIALOG'
   | 'CAPTURE_WAIT_FOR_STABLE_LAYOUT'
+  | 'CAPTURE_WAIT_FOR_DOWNLOAD'
+  | 'CAPTURE_WAIT_FOR_POPUP'
   | 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
   | 'CAPTURE_OVERRIDE_RESPONSE_BODY'
   | 'CAPTURE_OVERRIDE_POC_GET_STATUS'
@@ -3909,6 +4010,158 @@ function mapAutomationStepRecord(row: AutomationStepRow): Record<string, unknown
   };
 }
 
+function asRecordOrUndefined(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function buildFailureEvidenceSummary(
+  failureEvidence: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!failureEvidence) {
+    return undefined;
+  }
+
+  const snapshot = asRecordOrUndefined(failureEvidence.snapshot);
+  const snapshotRoot = asRecordOrUndefined(snapshot?.snapshot);
+  return {
+    captured: failureEvidence.captured === true,
+    error: typeof failureEvidence.error === 'string' ? failureEvidence.error : undefined,
+    limitsApplied: asRecordOrUndefined(failureEvidence.limitsApplied),
+    snapshot: snapshot
+      ? {
+          timestamp: typeof snapshot.timestamp === 'number' ? snapshot.timestamp : undefined,
+          trigger: typeof snapshot.trigger === 'string' ? snapshot.trigger : undefined,
+          selector: typeof snapshot.selector === 'string' ? snapshot.selector : undefined,
+          url: typeof snapshot.url === 'string' ? snapshot.url : undefined,
+          mode: snapshot.mode,
+          hasDom: Boolean(snapshotRoot && 'dom' in snapshotRoot),
+          hasStyles: Boolean(snapshotRoot && 'styles' in snapshotRoot),
+          hasPng: Boolean(snapshot.png),
+        }
+      : undefined,
+  };
+}
+
+function findRelatedFailureSnapshot(
+  db: Database,
+  sessionId: string,
+  failureEvidence: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  const snapshotSummary = asRecordOrUndefined(buildFailureEvidenceSummary(failureEvidence)?.snapshot);
+  if (!snapshotSummary) {
+    return undefined;
+  }
+
+  const timestamp = typeof snapshotSummary.timestamp === 'number' ? snapshotSummary.timestamp : undefined;
+  const selector = typeof snapshotSummary.selector === 'string' ? snapshotSummary.selector : undefined;
+  const url = typeof snapshotSummary.url === 'string' ? snapshotSummary.url : undefined;
+  const where: string[] = ['session_id = ?'];
+  const params: unknown[] = [sessionId];
+
+  if (selector) {
+    where.push('selector = ?');
+    params.push(selector);
+  }
+  if (url) {
+    where.push('url = ?');
+    params.push(url);
+  }
+  if (timestamp !== undefined) {
+    where.push('ts BETWEEN ? AND ?');
+    params.push(timestamp - 10_000, timestamp + 10_000);
+  }
+
+  const row = db.prepare(
+    `SELECT snapshot_id, trigger_event_id, ts, selector, url
+     FROM snapshots
+     WHERE ${where.join(' AND ')}
+     ORDER BY ${timestamp !== undefined ? 'ABS(ts - ?) ASC,' : ''} ts DESC
+     LIMIT 1`
+  ).get(...params, ...(timestamp !== undefined ? [timestamp] : [])) as {
+    snapshot_id: string;
+    trigger_event_id: string | null;
+    ts: number;
+    selector: string | null;
+    url: string | null;
+  } | undefined;
+
+  if (!row) {
+    return undefined;
+  }
+
+  return {
+    snapshotId: row.snapshot_id,
+    triggerEventId: row.trigger_event_id ?? undefined,
+    timestamp: row.ts,
+    selector: row.selector ?? undefined,
+    url: row.url ?? undefined,
+  };
+}
+
+function mergeAutomationDiagnosticsEvidence(
+  db: Database,
+  options: {
+    sessionId: string;
+    traceId: string;
+    failureEvidence?: Record<string, unknown>;
+    cdpFailure?: Record<string, unknown>;
+  },
+): void {
+  if (!options.traceId) {
+    return;
+  }
+
+  const failureEvidence = buildFailureEvidenceSummary(options.failureEvidence);
+  const linkedSnapshot = findRelatedFailureSnapshot(db, options.sessionId, options.failureEvidence);
+  if (!failureEvidence && !linkedSnapshot && !options.cdpFailure) {
+    return;
+  }
+
+  const updateDiagnosticsJson = (
+    tableName: 'automation_runs' | 'automation_steps',
+    keyColumn: 'run_id' | 'step_id',
+    keyValue: string,
+    existingJson: string | null,
+  ): void => {
+    const existing = asRecordOrUndefined(parseJsonOrUndefined(existingJson)) ?? {};
+    const merged = {
+      ...existing,
+      ...(options.cdpFailure ? { cdpFailure: options.cdpFailure } : {}),
+      ...(failureEvidence ? { failureEvidence } : {}),
+      ...(linkedSnapshot ? { linkedSnapshot } : {}),
+    };
+    db.prepare(`UPDATE ${tableName} SET diagnostics_json = ?, updated_at = ? WHERE ${keyColumn} = ?`).run(
+      JSON.stringify(merged),
+      Date.now(),
+      keyValue,
+    );
+  };
+
+  const runRow = db.prepare(
+    `SELECT run_id, diagnostics_json
+     FROM automation_runs
+     WHERE session_id = ? AND trace_id = ?
+     ORDER BY started_at DESC, updated_at DESC
+     LIMIT 1`
+  ).get(options.sessionId, options.traceId) as { run_id: string; diagnostics_json: string | null } | undefined;
+  if (runRow) {
+    updateDiagnosticsJson('automation_runs', 'run_id', runRow.run_id, runRow.diagnostics_json);
+  }
+
+  const stepRow = db.prepare(
+    `SELECT step_id, diagnostics_json
+     FROM automation_steps
+     WHERE session_id = ? AND trace_id = ?
+     ORDER BY step_order DESC, updated_at DESC
+     LIMIT 1`
+  ).get(options.sessionId, options.traceId) as { step_id: string; diagnostics_json: string | null } | undefined;
+  if (stepRow) {
+    updateDiagnosticsJson('automation_steps', 'step_id', stepRow.step_id, stepRow.diagnostics_json);
+  }
+}
+
 function formatUrlPath(url: string): string {
   try {
     const parsed = new URL(url);
@@ -5237,6 +5490,161 @@ async function waitForNavigationCondition(
   };
 }
 
+async function waitForNavigationLifecycleCondition(
+  sessionId: string,
+  wait: z.infer<typeof AutomationWaitNavigationLifecycleSchema>,
+  captureClient: CaptureCommandClient,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, 5_000, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const startedAt = Date.now();
+  const capture = await executeLiveCapture(
+    captureClient,
+    sessionId,
+    'CAPTURE_WAIT_FOR_NAVIGATION_LIFECYCLE',
+    {
+      state: wait.state,
+      urlContains: wait.urlContains,
+      urlRegex: wait.urlRegex,
+      exactUrl: wait.exactUrl,
+      tabId: wait.tabId,
+      timeoutMs,
+    },
+    timeoutMs + 2_000,
+  );
+  const payload = ensureCaptureSuccess(capture, sessionId);
+  const matched = payload.matched === true;
+
+  return {
+    waitKind: 'navigation_lifecycle',
+    matched,
+    waitedMs: Date.now() - startedAt,
+    attempts: 1,
+    timeoutMs,
+    pollIntervalMs: timeoutMs,
+    evidence: {
+      filters: {
+        state: wait.state,
+        urlContains: wait.urlContains,
+        urlRegex: wait.urlRegex,
+        exactUrl: wait.exactUrl,
+        tabId: wait.tabId,
+      },
+      lifecycle: matched ? payload : undefined,
+      expected: matched ? undefined : payload.expected ?? wait,
+    },
+    error: matched
+      ? undefined
+      : {
+          code: 'navigation_lifecycle_wait_timeout',
+          message: 'Timed out waiting for a matching navigation lifecycle event.',
+        },
+  };
+}
+
+async function waitForDownloadCondition(
+  sessionId: string,
+  wait: z.infer<typeof AutomationWaitDownloadSchema>,
+  captureClient: CaptureCommandClient,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, 5_000, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const startedAt = Date.now();
+  const capture = await executeLiveCapture(
+    captureClient,
+    sessionId,
+    'CAPTURE_WAIT_FOR_DOWNLOAD',
+    {
+      urlContains: wait.urlContains,
+      urlRegex: wait.urlRegex,
+      exactUrl: wait.exactUrl,
+      filenameContains: wait.filenameContains,
+      filenameRegex: wait.filenameRegex,
+      state: wait.state,
+      tabId: wait.tabId,
+      timeoutMs,
+    },
+    timeoutMs + 2_000,
+  );
+  const payload = ensureCaptureSuccess(capture, sessionId);
+  const matched = payload.matched === true;
+
+  return {
+    waitKind: 'download',
+    matched,
+    waitedMs: Date.now() - startedAt,
+    attempts: 1,
+    timeoutMs,
+    pollIntervalMs: timeoutMs,
+    evidence: {
+      filters: {
+        urlContains: wait.urlContains,
+        urlRegex: wait.urlRegex,
+        exactUrl: wait.exactUrl,
+        filenameContains: wait.filenameContains,
+        filenameRegex: wait.filenameRegex,
+        state: wait.state,
+        tabId: wait.tabId,
+      },
+      download: matched ? payload : undefined,
+      expected: matched ? undefined : payload.expected ?? wait,
+    },
+    error: matched
+      ? undefined
+      : {
+          code: 'download_wait_timeout',
+          message: 'Timed out waiting for a matching download.',
+        },
+  };
+}
+
+async function waitForPopupCondition(
+  sessionId: string,
+  wait: z.infer<typeof AutomationWaitPopupSchema>,
+  captureClient: CaptureCommandClient,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, 5_000, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const startedAt = Date.now();
+  const capture = await executeLiveCapture(
+    captureClient,
+    sessionId,
+    'CAPTURE_WAIT_FOR_POPUP',
+    {
+      urlContains: wait.urlContains,
+      urlRegex: wait.urlRegex,
+      exactUrl: wait.exactUrl,
+      openerTabId: wait.openerTabId,
+      timeoutMs,
+    },
+    timeoutMs + 2_000,
+  );
+  const payload = ensureCaptureSuccess(capture, sessionId);
+  const matched = payload.matched === true;
+
+  return {
+    waitKind: 'popup',
+    matched,
+    waitedMs: Date.now() - startedAt,
+    attempts: 1,
+    timeoutMs,
+    pollIntervalMs: timeoutMs,
+    evidence: {
+      filters: {
+        urlContains: wait.urlContains,
+        urlRegex: wait.urlRegex,
+        exactUrl: wait.exactUrl,
+        openerTabId: wait.openerTabId,
+      },
+      popup: matched ? payload : undefined,
+      expected: matched ? undefined : payload.expected ?? wait,
+    },
+    error: matched
+      ? undefined
+      : {
+          code: 'popup_wait_timeout',
+          message: 'Timed out waiting for a matching popup tab.',
+        },
+  };
+}
+
 type AutomationNetworkWaitSpec =
   | z.infer<typeof AutomationWaitRequestSchema>
   | z.infer<typeof AutomationWaitResponseSchema>;
@@ -5517,6 +5925,8 @@ async function runAutomationWait(options: {
       }
       return waitForNavigationCondition(options.sessionId, options.wait, db);
     }
+    case 'navigation_lifecycle':
+      return waitForNavigationLifecycleCondition(options.sessionId, options.wait, options.captureClient);
     case 'load_state':
       return waitForLoadStateCondition(options.sessionId, options.wait, options.capturePageState);
     case 'selector_state':
@@ -5527,6 +5937,10 @@ async function runAutomationWait(options: {
       return waitForDialogCondition(options.sessionId, options.wait, options.captureClient);
     case 'stable_layout':
       return waitForStableLayoutCondition(options.sessionId, options.wait, options.captureClient);
+    case 'download':
+      return waitForDownloadCondition(options.sessionId, options.wait, options.captureClient);
+    case 'popup':
+      return waitForPopupCondition(options.sessionId, options.wait, options.captureClient);
     case 'network_quiet': {
       const db = options.getDb?.();
       if (!db) {
@@ -9863,6 +10277,24 @@ export function createV2ToolHandlers(
       };
     },
 
+    wait_for_navigation_lifecycle: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const wait = AutomationWaitNavigationLifecycleSchema.parse({ ...input, waitKind: 'navigation_lifecycle' });
+      const waited = await waitForNavigationLifecycleCondition(sessionId, wait, captureClient);
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
     wait_for_load_state: async (input) => {
       const sessionId = getSessionId(input);
       if (!sessionId) {
@@ -9995,6 +10427,42 @@ export function createV2ToolHandlers(
       };
     },
 
+    wait_for_download: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const wait = AutomationWaitDownloadSchema.parse({ ...input, waitKind: 'download' });
+      const waited = await waitForDownloadCondition(sessionId, wait, captureClient);
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
+    wait_for_popup: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const wait = AutomationWaitPopupSchema.parse({ ...input, waitKind: 'popup' });
+      const waited = await waitForPopupCondition(sessionId, wait, captureClient);
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
     wait_for_network_quiet: async (input) => {
       const sessionId = getSessionId(input);
       if (!sessionId) {
@@ -10117,6 +10585,14 @@ export function createV2ToolHandlers(
                   : undefined,
                 pageChangeSummary: createPageChangeSummary(previousCapture, currentCapture),
               };
+              if (failed && getDb && finalStepResult.traceId) {
+                mergeAutomationDiagnosticsEvidence(getDb(), {
+                  sessionId: request.sessionId,
+                  traceId: finalStepResult.traceId,
+                  failureEvidence: finalStepResult.failureEvidence,
+                  cdpFailure: actionResult.failureReason as unknown as Record<string, unknown> | undefined,
+                });
+              }
             } else if (step.kind === 'waitFor') {
               const waitInput: ToolInput = {
                 ...step.matcher,
@@ -10261,6 +10737,14 @@ export function createV2ToolHandlers(
           if (evidence) {
             failureCaptureCount += 1;
             finalStepResult.failureEvidence = evidence;
+            if (getDb && finalStepResult.traceId) {
+              mergeAutomationDiagnosticsEvidence(getDb(), {
+                sessionId: request.sessionId,
+                traceId: finalStepResult.traceId,
+                failureEvidence: evidence,
+                cdpFailure: finalStepResult.error as unknown as Record<string, unknown> | undefined,
+              });
+            }
           }
         }
 
@@ -10624,6 +11108,14 @@ export function createV2ToolHandlers(
         : undefined;
       if (nativeLocatorResolution) {
         targetResolution = nativeLocatorResolution;
+      }
+      if (failed && getDb && actionResult.traceId) {
+        mergeAutomationDiagnosticsEvidence(getDb(), {
+          sessionId,
+          traceId: actionResult.traceId,
+          failureEvidence,
+          cdpFailure: actionResult.failureReason as unknown as Record<string, unknown> | undefined,
+        });
       }
 
       return {

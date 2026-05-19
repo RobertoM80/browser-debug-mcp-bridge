@@ -584,6 +584,27 @@ function setSessionTabScope(sessionId: string, baseUrl: string, tabId?: number):
   void persistSessionBindings(chrome.storage.local);
 }
 
+function addTabToSessionScope(sessionId: string, tab: chrome.tabs.Tab): void {
+  if (typeof tab.id !== 'number') {
+    return;
+  }
+
+  const existing = getSessionTabScope(sessionId);
+  const allowedTabIds = new Set<number>(existing?.allowedTabIds ?? []);
+  allowedTabIds.add(tab.id);
+  const baseOrigin = normalizeHttpOrigin(tab.url ?? '') ?? existing?.baseOrigin;
+  sessionTabScopeBySession.set(sessionId, {
+    baseOrigin,
+    allowedTabIds,
+  });
+  sessionManager.setSessionScope({
+    baseOrigin,
+    allowedTabIds: Array.from(allowedTabIds),
+  });
+  void persistSessionBindings(chrome.storage.local);
+  void syncCaptureConfigToSessionTabs(sessionId);
+}
+
 function getSessionTabScope(sessionId: string): SessionTabScope | undefined {
   return sessionTabScopeBySession.get(sessionId);
 }
@@ -1146,6 +1167,52 @@ interface CdpJavascriptDialogOpeningPayload {
   defaultPrompt?: string;
 }
 
+interface CdpFrameNavigatedPayload {
+  frame?: {
+    id?: string;
+    parentId?: string;
+    url?: string;
+    loaderId?: string;
+  };
+}
+
+interface CdpNavigatedWithinDocumentPayload {
+  frameId?: string;
+  url?: string;
+  navigationType?: string;
+}
+
+interface CdpLifecycleEventPayload {
+  frameId?: string;
+  loaderId?: string;
+  name?: string;
+  timestamp?: number;
+}
+
+interface CdpFrameTreeResult {
+  frameTree?: {
+    frame?: {
+      id?: string;
+      parentId?: string;
+      url?: string;
+    };
+  };
+}
+
+interface CdpDownloadWillBeginPayload {
+  frameId?: string;
+  guid?: string;
+  url?: string;
+  suggestedFilename?: string;
+}
+
+interface CdpDownloadProgressPayload {
+  guid?: string;
+  totalBytes?: number;
+  receivedBytes?: number;
+  state?: 'inProgress' | 'completed' | 'canceled';
+}
+
 function normalizeOverrideResponseCaptureBytes(value: unknown): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
     return DEFAULT_OVERRIDE_RESPONSE_CAPTURE_BYTES;
@@ -1685,6 +1752,64 @@ function normalizeDialogWaitTimeoutMs(value: unknown): number {
   return Math.min(Math.max(Math.floor(value), 100), 120_000);
 }
 
+function normalizeWaitRegex(value: unknown, fieldName: string): RegExp | undefined {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return undefined;
+  }
+
+  try {
+    return new RegExp(value);
+  } catch {
+    throw new Error(`${fieldName} must be a valid regular expression`);
+  }
+}
+
+function matchesWaitUrl(url: string | undefined, payload: Record<string, unknown>): boolean {
+  const candidate = typeof url === 'string' ? url : '';
+  if (typeof payload.exactUrl === 'string' && candidate !== payload.exactUrl) {
+    return false;
+  }
+  if (typeof payload.urlContains === 'string' && !candidate.includes(payload.urlContains)) {
+    return false;
+  }
+  const urlRegex = normalizeWaitRegex(payload.urlRegex, 'urlRegex');
+  if (urlRegex && !urlRegex.test(candidate)) {
+    return false;
+  }
+  return true;
+}
+
+function matchesWaitFilename(filename: string | undefined, payload: Record<string, unknown>): boolean {
+  const candidate = typeof filename === 'string' ? filename : '';
+  if (typeof payload.filenameContains === 'string' && !candidate.includes(payload.filenameContains)) {
+    return false;
+  }
+  const filenameRegex = normalizeWaitRegex(payload.filenameRegex, 'filenameRegex');
+  if (filenameRegex && !filenameRegex.test(candidate)) {
+    return false;
+  }
+  return true;
+}
+
+function normalizeNavigationLifecycleWaitState(
+  value: unknown,
+): 'commit' | 'same_document' | 'domcontentloaded' | 'load' | 'network_idle' {
+  if (
+    value === 'commit'
+    || value === 'same_document'
+    || value === 'domcontentloaded'
+    || value === 'load'
+    || value === 'network_idle'
+  ) {
+    return value;
+  }
+  return 'load';
+}
+
+function normalizeDownloadWaitState(value: unknown): 'started' | 'completed' {
+  return value === 'completed' ? 'completed' : 'started';
+}
+
 function normalizeDialogWaitAction(value: unknown): 'none' | 'accept' | 'dismiss' {
   return value === 'accept' || value === 'dismiss' ? value : 'none';
 }
@@ -1712,6 +1837,13 @@ function normalizeStableLayoutWaitPollIntervalMs(value: unknown): number {
     return 100;
   }
   return Math.min(Math.max(Math.floor(value), 50), 5_000);
+}
+
+function isRetryableStableLayoutFrameError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('Frame with ID 0 was removed')
+    || /No frame with id/i.test(message)
+    || /frame.*removed/i.test(message);
 }
 
 function dialogMatchesWaitPayload(
@@ -1842,7 +1974,7 @@ async function waitForStableLayoutInTab(options: {
   const stableMs = normalizeStableLayoutWaitStableMs(payload.stableMs);
   const timeoutMs = normalizeStableLayoutWaitTimeoutMs(payload.timeoutMs);
   const pollIntervalMs = normalizeStableLayoutWaitPollIntervalMs(payload.pollIntervalMs);
-  const result = await executeScriptInTab<Record<string, unknown>>(
+  const runStableLayoutProbe = (): Promise<Record<string, unknown>> => executeScriptInTab<Record<string, unknown>>(
     tab.id,
     (selectorArg, stableMsArg, timeoutMsArg, pollIntervalMsArg) => {
       const selectorValue = typeof selectorArg === 'string' ? selectorArg : undefined;
@@ -1995,6 +2127,16 @@ async function waitForStableLayoutInTab(options: {
     },
     [selector, stableMs, timeoutMs, pollIntervalMs],
   );
+  let result: Record<string, unknown>;
+  try {
+    result = await runStableLayoutProbe();
+  } catch (error) {
+    if (!isRetryableStableLayoutFrameError(error)) {
+      throw error;
+    }
+    await sleep(100);
+    result = await runStableLayoutProbe();
+  }
 
   return {
     payload: {
@@ -2004,6 +2146,407 @@ async function waitForStableLayoutInTab(options: {
     },
     truncated: false,
   };
+}
+
+async function waitForNavigationLifecycleInTab(options: {
+  payload: Record<string, unknown>;
+  tab: chrome.tabs.Tab & { id: number };
+}): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  const { payload, tab } = options;
+  normalizeWaitRegex(payload.urlRegex, 'urlRegex');
+  const tabId = tab.id;
+  const timeoutMs = normalizeDialogWaitTimeoutMs(payload.timeoutMs);
+  const state = normalizeNavigationLifecycleWaitState(payload.state);
+  const debuggee: chrome.debugger.Debuggee = { tabId };
+  let attached = false;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let listener: ((source: chrome.debugger.Debuggee, method: string, params?: unknown) => void) | undefined;
+  let mainFrameId: string | undefined;
+
+  const cleanup = async (): Promise<void> => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = undefined;
+    }
+    if (listener) {
+      chrome.debugger.onEvent.removeListener(listener);
+      listener = undefined;
+    }
+    if (!attached) {
+      return;
+    }
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Page.disable').catch(() => undefined);
+    await chrome.debugger.detach(debuggee).catch(() => undefined);
+    attached = false;
+  };
+
+  const resolveMatch = async (
+    resolve: (value: Record<string, unknown>) => void,
+    event: Record<string, unknown>,
+  ): Promise<void> => {
+    const liveTab = await chrome.tabs.get(tabId).catch(() => undefined);
+    const resolvedUrl = typeof event.url === 'string'
+      ? event.url
+      : liveTab?.pendingUrl ?? liveTab?.url ?? tab.url;
+    if (!matchesWaitUrl(resolvedUrl, payload)) {
+      return;
+    }
+
+    resolve({
+      matched: true,
+      state,
+      timeoutMs,
+      tabId,
+      url: resolvedUrl,
+      ...event,
+    });
+  };
+
+  const resultPromise = new Promise<Record<string, unknown>>((resolve, reject) => {
+    const fail = (error: unknown): void => {
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+
+    timeoutId = setTimeout(() => {
+      resolve({
+        matched: false,
+        state,
+        timeoutMs,
+        tabId,
+        url: tab.url,
+        expected: {
+          state,
+          urlContains: payload.urlContains,
+          urlRegex: payload.urlRegex,
+          exactUrl: payload.exactUrl,
+        },
+      });
+    }, timeoutMs);
+
+    listener = (source, method, params) => {
+      if (source.tabId !== tabId) {
+        return;
+      }
+
+      void (async () => {
+        if (state === 'commit' && method === 'Page.frameNavigated') {
+          const event = params as CdpFrameNavigatedPayload | undefined;
+          const frame = event?.frame;
+          if (!frame || frame.parentId) {
+            return;
+          }
+          mainFrameId = frame.id ?? mainFrameId;
+          await resolveMatch(resolve, {
+            state,
+            frameId: frame.id,
+            loaderId: frame.loaderId,
+            eventMethod: method,
+            url: frame.url,
+          });
+          return;
+        }
+
+        if (state === 'same_document' && method === 'Page.navigatedWithinDocument') {
+          const event = params as CdpNavigatedWithinDocumentPayload | undefined;
+          if (!event) {
+            return;
+          }
+          if (mainFrameId && event.frameId && event.frameId !== mainFrameId) {
+            return;
+          }
+          await resolveMatch(resolve, {
+            state,
+            frameId: event.frameId,
+            navigationType: event.navigationType,
+            eventMethod: method,
+            url: event.url,
+          });
+          return;
+        }
+
+        if (state === 'domcontentloaded' && method === 'Page.domContentEventFired') {
+          await resolveMatch(resolve, {
+            state,
+            eventMethod: method,
+          });
+          return;
+        }
+
+        if (state === 'load' && method === 'Page.loadEventFired') {
+          await resolveMatch(resolve, {
+            state,
+            eventMethod: method,
+          });
+          return;
+        }
+
+        if (state === 'network_idle' && method === 'Page.lifecycleEvent') {
+          const event = params as CdpLifecycleEventPayload | undefined;
+          if (!event || event.name !== 'networkIdle') {
+            return;
+          }
+          if (mainFrameId && event.frameId && event.frameId !== mainFrameId) {
+            return;
+          }
+          await resolveMatch(resolve, {
+            state,
+            frameId: event.frameId,
+            loaderId: event.loaderId,
+            lifecycleName: event.name,
+            timestamp: event.timestamp,
+            eventMethod: method,
+          });
+        }
+      })().catch(fail);
+    };
+
+    chrome.debugger.onEvent.addListener(listener);
+  });
+
+  try {
+    await chrome.debugger.attach(debuggee, '1.3');
+    attached = true;
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Page.enable');
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Page.setLifecycleEventsEnabled', { enabled: true }).catch(() => undefined);
+    const frameTree = await sendResponseCaptureDebuggerCommand<CdpFrameTreeResult>(debuggee, 'Page.getFrameTree').catch(() => undefined);
+    mainFrameId = frameTree?.frameTree?.frame?.id;
+    return {
+      payload: await resultPromise,
+      truncated: false,
+    };
+  } finally {
+    await cleanup();
+  }
+}
+
+async function waitForDownloadInTab(options: {
+  payload: Record<string, unknown>;
+  tab: chrome.tabs.Tab & { id: number };
+}): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  const { payload, tab } = options;
+  normalizeWaitRegex(payload.urlRegex, 'urlRegex');
+  normalizeWaitRegex(payload.filenameRegex, 'filenameRegex');
+  const tabId = tab.id;
+  const timeoutMs = normalizeDialogWaitTimeoutMs(payload.timeoutMs);
+  const state = normalizeDownloadWaitState(payload.state);
+  const debuggee: chrome.debugger.Debuggee = { tabId };
+  let attached = false;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let listener: ((source: chrome.debugger.Debuggee, method: string, params?: unknown) => void) | undefined;
+  let matchedDownload: Record<string, unknown> | undefined;
+
+  const cleanup = async (): Promise<void> => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = undefined;
+    }
+    if (listener) {
+      chrome.debugger.onEvent.removeListener(listener);
+      listener = undefined;
+    }
+    if (!attached) {
+      return;
+    }
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Page.disable').catch(() => undefined);
+    await chrome.debugger.detach(debuggee).catch(() => undefined);
+    attached = false;
+  };
+
+  const resultPromise = new Promise<Record<string, unknown>>((resolve, reject) => {
+    const fail = (error: unknown): void => {
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+
+    timeoutId = setTimeout(() => {
+      resolve({
+        matched: false,
+        state,
+        timeoutMs,
+        tabId,
+        url: tab.url,
+        expected: {
+          state,
+          urlContains: payload.urlContains,
+          urlRegex: payload.urlRegex,
+          exactUrl: payload.exactUrl,
+          filenameContains: payload.filenameContains,
+          filenameRegex: payload.filenameRegex,
+        },
+      });
+    }, timeoutMs);
+
+    listener = (source, method, params) => {
+      if (source.tabId !== tabId) {
+        return;
+      }
+
+      void (async () => {
+        if (method === 'Page.downloadWillBegin') {
+          const event = params as CdpDownloadWillBeginPayload | undefined;
+          if (!event || !matchesWaitUrl(event.url, payload) || !matchesWaitFilename(event.suggestedFilename, payload)) {
+            return;
+          }
+
+          matchedDownload = {
+            guid: event.guid,
+            frameId: event.frameId,
+            url: event.url,
+            suggestedFilename: event.suggestedFilename,
+            state: 'started',
+          };
+
+          if (state === 'started') {
+            resolve({
+              matched: true,
+              timeoutMs,
+              tabId,
+              ...matchedDownload,
+            });
+          }
+          return;
+        }
+
+        if (method === 'Page.downloadProgress') {
+          const event = params as CdpDownloadProgressPayload | undefined;
+          if (!event || !matchedDownload || event.guid !== matchedDownload.guid || state !== 'completed') {
+            return;
+          }
+
+          if (event.state === 'completed') {
+            resolve({
+              matched: true,
+              timeoutMs,
+              tabId,
+              ...matchedDownload,
+              state: 'completed',
+              totalBytes: event.totalBytes,
+              receivedBytes: event.receivedBytes,
+            });
+          }
+        }
+      })().catch(fail);
+    };
+
+    chrome.debugger.onEvent.addListener(listener);
+  });
+
+  try {
+    await chrome.debugger.attach(debuggee, '1.3');
+    attached = true;
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Page.enable');
+    return {
+      payload: await resultPromise,
+      truncated: false,
+    };
+  } finally {
+    await cleanup();
+  }
+}
+
+async function waitForPopupFromTab(options: {
+  payload: Record<string, unknown>;
+  sessionId: string;
+  tab: chrome.tabs.Tab & { id: number };
+}): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  const { payload, sessionId, tab } = options;
+  normalizeWaitRegex(payload.urlRegex, 'urlRegex');
+  const openerTabId = typeof payload.openerTabId === 'number' ? payload.openerTabId : tab.id;
+  const timeoutMs = normalizeDialogWaitTimeoutMs(payload.timeoutMs);
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let createdListener: ((createdTab: chrome.tabs.Tab) => void) | undefined;
+  let updatedListener: ((tabId: number, changeInfo: chrome.tabs.OnUpdatedInfo, updatedTab: chrome.tabs.Tab) => void) | undefined;
+  const pendingTabs = new Set<number>();
+
+  const cleanup = (): void => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = undefined;
+    }
+    if (createdListener) {
+      chrome.tabs.onCreated.removeListener(createdListener);
+      createdListener = undefined;
+    }
+    if (updatedListener) {
+      chrome.tabs.onUpdated.removeListener(updatedListener);
+      updatedListener = undefined;
+    }
+  };
+
+  const matchPopup = (resolve: (value: Record<string, unknown>) => void, popupTab: chrome.tabs.Tab): boolean => {
+    if (popupTab.openerTabId !== openerTabId) {
+      return false;
+    }
+
+    const url = popupTab.pendingUrl ?? popupTab.url;
+    const hasUrlPredicate = typeof payload.exactUrl === 'string'
+      || typeof payload.urlContains === 'string'
+      || typeof payload.urlRegex === 'string';
+    if (hasUrlPredicate && !matchesWaitUrl(url, payload)) {
+      return false;
+    }
+
+    addTabToSessionScope(sessionId, popupTab);
+    rememberCaptureTabForSession(sessionId, popupTab);
+    resolve({
+      matched: true,
+      timeoutMs,
+      tabId: popupTab.id,
+      openerTabId,
+      windowId: popupTab.windowId,
+      url,
+    });
+    return true;
+  };
+
+  const resultPromise = new Promise<Record<string, unknown>>((resolve) => {
+    timeoutId = setTimeout(() => {
+      resolve({
+        matched: false,
+        timeoutMs,
+        openerTabId,
+        expected: {
+          urlContains: payload.urlContains,
+          urlRegex: payload.urlRegex,
+          exactUrl: payload.exactUrl,
+          openerTabId,
+        },
+      });
+    }, timeoutMs);
+
+    createdListener = (createdTab) => {
+      if (createdTab.openerTabId !== openerTabId || typeof createdTab.id !== 'number') {
+        return;
+      }
+
+      if (matchPopup(resolve, createdTab)) {
+        return;
+      }
+
+      pendingTabs.add(createdTab.id);
+    };
+
+    updatedListener = (updatedTabId, _changeInfo, updatedTab) => {
+      if (!pendingTabs.has(updatedTabId) && updatedTab.openerTabId !== openerTabId) {
+        return;
+      }
+
+      if (matchPopup(resolve, updatedTab)) {
+        pendingTabs.delete(updatedTabId);
+      }
+    };
+
+    chrome.tabs.onCreated.addListener(createdListener);
+    chrome.tabs.onUpdated.addListener(updatedListener);
+  });
+
+  try {
+    return {
+      payload: await resultPromise,
+      truncated: false,
+    };
+  } finally {
+    cleanup();
+  }
 }
 
 async function observeOverrideAssetsInTab(tabId: number, includePerformance = true): Promise<ObservedOverrideAssetsResult> {
@@ -3466,6 +4009,33 @@ async function executeCaptureCommand(
     };
   }
 
+  if (command === 'CAPTURE_WAIT_FOR_NAVIGATION_LIFECYCLE') {
+    const requestedTabId = resolveLiveConsoleTabId(payload.tabId);
+    const sessionScope = getSessionTabScope(context.sessionId);
+    if (requestedTabId !== undefined && sessionScope && !sessionScope.allowedTabIds.has(requestedTabId)) {
+      throw new Error(`tabId ${requestedTabId} is not bound to this session`);
+    }
+
+    const tab = requestedTabId !== undefined
+      ? await chrome.tabs.get(requestedTabId).catch(() => undefined)
+      : await resolveCaptureTab(context.sessionId);
+    if (!tab || typeof tab.id !== 'number') {
+      throw new Error('No capture tab is available for navigation lifecycle wait.');
+    }
+    if (!isTabAllowedForSession(context.sessionId, tab.id)) {
+      throw new Error(`tabId ${tab.id} is not bound to this session`);
+    }
+    if (!isUrlAllowed(tab.url ?? '', captureConfig.allowlist)) {
+      throw new Error('Navigation lifecycle waits are blocked because the target tab is no longer allowlisted.');
+    }
+
+    rememberCaptureTabForSession(context.sessionId, tab);
+    return waitForNavigationLifecycleInTab({
+      payload,
+      tab: tab as chrome.tabs.Tab & { id: number },
+    });
+  }
+
   if (command === 'CAPTURE_WAIT_FOR_DIALOG') {
     const requestedTabId = resolveLiveConsoleTabId(payload.tabId);
     const sessionScope = getSessionTabScope(context.sessionId);
@@ -3516,6 +4086,61 @@ async function executeCaptureCommand(
     rememberCaptureTabForSession(context.sessionId, tab);
     return waitForStableLayoutInTab({
       payload,
+      tab: tab as chrome.tabs.Tab & { id: number },
+    });
+  }
+
+  if (command === 'CAPTURE_WAIT_FOR_DOWNLOAD') {
+    const requestedTabId = resolveLiveConsoleTabId(payload.tabId);
+    const sessionScope = getSessionTabScope(context.sessionId);
+    if (requestedTabId !== undefined && sessionScope && !sessionScope.allowedTabIds.has(requestedTabId)) {
+      throw new Error(`tabId ${requestedTabId} is not bound to this session`);
+    }
+
+    const tab = requestedTabId !== undefined
+      ? await chrome.tabs.get(requestedTabId).catch(() => undefined)
+      : await resolveCaptureTab(context.sessionId);
+    if (!tab || typeof tab.id !== 'number') {
+      throw new Error('No capture tab is available for download wait.');
+    }
+    if (!isTabAllowedForSession(context.sessionId, tab.id)) {
+      throw new Error(`tabId ${tab.id} is not bound to this session`);
+    }
+    if (!isUrlAllowed(tab.url ?? '', captureConfig.allowlist)) {
+      throw new Error('Download waits are blocked because the target tab is no longer allowlisted.');
+    }
+
+    rememberCaptureTabForSession(context.sessionId, tab);
+    return waitForDownloadInTab({
+      payload,
+      tab: tab as chrome.tabs.Tab & { id: number },
+    });
+  }
+
+  if (command === 'CAPTURE_WAIT_FOR_POPUP') {
+    const requestedTabId = resolveLiveConsoleTabId(payload.openerTabId);
+    const sessionScope = getSessionTabScope(context.sessionId);
+    if (requestedTabId !== undefined && sessionScope && !sessionScope.allowedTabIds.has(requestedTabId)) {
+      throw new Error(`tabId ${requestedTabId} is not bound to this session`);
+    }
+
+    const tab = requestedTabId !== undefined
+      ? await chrome.tabs.get(requestedTabId).catch(() => undefined)
+      : await resolveCaptureTab(context.sessionId);
+    if (!tab || typeof tab.id !== 'number') {
+      throw new Error('No capture tab is available for popup wait.');
+    }
+    if (!isTabAllowedForSession(context.sessionId, tab.id)) {
+      throw new Error(`tabId ${tab.id} is not bound to this session`);
+    }
+    if (!isUrlAllowed(tab.url ?? '', captureConfig.allowlist)) {
+      throw new Error('Popup waits are blocked because the opener tab is no longer allowlisted.');
+    }
+
+    rememberCaptureTabForSession(context.sessionId, tab);
+    return waitForPopupFromTab({
+      payload,
+      sessionId: context.sessionId,
       tab: tab as chrome.tabs.Tab & { id: number },
     });
   }

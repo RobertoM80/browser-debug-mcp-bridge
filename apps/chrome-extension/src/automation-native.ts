@@ -50,6 +50,19 @@ interface NativeClickTargetSnapshot {
     inViewport: boolean;
     receivesPointerEvents: boolean;
     hitTargetMatches: boolean;
+    scrolledIntoView?: boolean;
+    preScrollRect?: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+    postScrollRect?: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
     frameCoordinateResolved?: boolean;
     frameRefreshed?: boolean;
     previousFrameId?: number;
@@ -58,6 +71,9 @@ interface NativeClickTargetSnapshot {
     hitTargetTagName?: string;
     hitTargetSelector?: string;
     attempts?: number;
+    retryCount?: number;
+    retriedAfterDetach?: boolean;
+    previousFailureCode?: string;
     retryable?: boolean;
   };
   locatorResolution?: Record<string, unknown>;
@@ -145,6 +161,7 @@ function resolveActionFrameId(request: LiveUIActionRequest): number {
 
 interface ActionFrameContext {
   frameId: number;
+  frameSelector?: string;
   frameUrl?: string;
   frameTitle?: string;
   frameUrlContains?: string;
@@ -155,6 +172,7 @@ function resolveActionFrameContext(request: LiveUIActionRequest): ActionFrameCon
   const decoded = decodeElementRef(request.target?.elementRef);
   return {
     frameId: request.target?.frameId ?? decoded?.frameId ?? 0,
+    frameSelector: request.target?.locator?.frame?.selector,
     frameUrl: decoded?.frameUrl,
     frameTitle: decoded?.frameTitle,
     frameUrlContains: request.target?.locator?.frame?.urlContains ?? request.target?.frameUrlContains,
@@ -460,6 +478,12 @@ async function inspectClickableTarget(tabId: number, frameId: number, selector: 
           failureMessage: message,
         },
       });
+      const rectSnapshot = (rect: DOMRect | DOMRectReadOnly): { x: number; y: number; width: number; height: number } => ({
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+      });
 
       const target = queryElement(document, selectorValue);
       if (!target) {
@@ -470,12 +494,37 @@ async function inspectClickableTarget(tabId: number, frameId: number, selector: 
         return makeFailure('target_not_clickable', 'The matching element cannot receive native pointer input.', target);
       }
 
+      const preScrollRect = rectSnapshot(target.getBoundingClientRect());
       target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'auto' });
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      if (!target.isConnected) {
+        return makeFailure(
+          'target_detached',
+          'The native click target detached while scrolling into view.',
+          target,
+          {
+            scrolledIntoView: true,
+            preScrollRect,
+          },
+        );
+      }
 
       const firstRect = target.getBoundingClientRect();
       await new Promise((resolve) => requestAnimationFrame(resolve));
+      if (!target.isConnected) {
+        return makeFailure(
+          'target_detached',
+          'The native click target detached before layout stabilized.',
+          target,
+          {
+            scrolledIntoView: true,
+            preScrollRect,
+            postScrollRect: rectSnapshot(firstRect),
+          },
+        );
+      }
       const rect = target.getBoundingClientRect();
+      const postScrollRect = rectSnapshot(rect);
       const stable = Math.abs(firstRect.x - rect.x) < 0.5
         && Math.abs(firstRect.y - rect.y) < 0.5
         && Math.abs(firstRect.width - rect.width) < 0.5
@@ -540,6 +589,10 @@ async function inspectClickableTarget(tabId: number, frameId: number, selector: 
           inViewport,
           receivesPointerEvents,
           hitTargetMatches,
+          scrolledIntoView: Math.abs(preScrollRect.x - postScrollRect.x) >= 0.5
+            || Math.abs(preScrollRect.y - postScrollRect.y) >= 0.5,
+          preScrollRect,
+          postScrollRect,
           frameCoordinateResolved: resolvedFrameId === 0,
           hitTargetTagName: hitTarget instanceof Element ? hitTarget.tagName.toLowerCase() : undefined,
           hitTargetSelector: hitTarget instanceof Element ? getElementSelector(hitTarget) : undefined,
@@ -616,6 +669,7 @@ function sleep(ms: number): Promise<void> {
 
 function isRetryableActionabilityFailure(code: string | undefined): boolean {
   return code === 'target_not_found'
+    || code === 'target_detached'
     || code === 'target_not_stable'
     || code === 'target_outside_viewport'
     || code === 'hit_target_mismatch';
@@ -634,12 +688,168 @@ function matchesFrameText(value: string | undefined, expected: string | undefine
     && (!partial || Boolean(normalizedValue?.includes(partial)));
 }
 
+function matchesFrameSelector(value: string | undefined, expected: string | undefined): boolean {
+  if (!expected) {
+    return true;
+  }
+
+  if (!value) {
+    return false;
+  }
+
+  const actualSegments = value
+    .split('=>')
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+  const expectedSegments = expected
+    .split('=>')
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0);
+
+  if (actualSegments.length === 0 || expectedSegments.length === 0) {
+    return value.trim() === expected.trim();
+  }
+
+  const shorter = actualSegments.length <= expectedSegments.length ? actualSegments : expectedSegments;
+  const longer = actualSegments.length <= expectedSegments.length ? expectedSegments : actualSegments;
+  if (shorter.length === longer.length) {
+    return shorter.every((segment, index) => segment === longer[index]);
+  }
+
+  const startIndex = longer.length - shorter.length;
+  return shorter.every((segment, index) => segment === longer[startIndex + index]);
+}
+
 function hasFrameLocatorContext(context: ActionFrameContext): boolean {
-  return Boolean(context.frameUrl || context.frameTitle || context.frameUrlContains || context.frameTitleContains);
+  return Boolean(
+    context.frameSelector
+    || context.frameUrl
+    || context.frameTitle
+    || context.frameUrlContains
+    || context.frameTitleContains,
+  );
+}
+
+async function resolveFrameSelectorChainsForSelector(
+  tabId: number,
+  selector: string,
+  frameUrl: string | undefined,
+): Promise<string[]> {
+  return executeScriptInFrame(
+    tabId,
+    0,
+    (rawSelector, rawFrameUrl) => {
+      const selectorValue = String(rawSelector);
+      const frameUrlValue = typeof rawFrameUrl === 'string' && rawFrameUrl.length > 0 ? rawFrameUrl : undefined;
+      const shadowSeparator = ' >> ';
+      const framePathSeparator = ' => ';
+      const cssEscapeFallback = (value: string): string => {
+        const cssApi = (globalThis as { CSS?: { escape?: (input: string) => string } }).CSS;
+        if (cssApi?.escape) {
+          return cssApi.escape(value);
+        }
+        return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+      };
+      const localSelector = (element: Element): string => {
+        if (element.id) {
+          return `#${cssEscapeFallback(element.id)}`;
+        }
+        const testId = element.getAttribute('data-testid');
+        if (testId) {
+          return `[data-testid="${cssEscapeFallback(testId)}"]`;
+        }
+
+        const parent = element.parentElement;
+        const tagName = element.tagName.toLowerCase();
+        if (!parent) {
+          return tagName;
+        }
+
+        const sameTagSiblings = Array.from(parent.children).filter((child) => child.tagName === element.tagName);
+        if (sameTagSiblings.length <= 1) {
+          return tagName;
+        }
+
+        return `${tagName}:nth-of-type(${sameTagSiblings.indexOf(element) + 1})`;
+      };
+      const elementSelectorPath = (element: Element): string => {
+        const root = element.getRootNode();
+        const parts: string[] = [];
+        let current: Element | null = element;
+        while (current) {
+          const part = localSelector(current);
+          parts.unshift(part);
+          if (part.startsWith('#') || part.startsWith('[data-testid=')) {
+            break;
+          }
+          current = current.parentElement;
+        }
+        const localPath = parts.join(' > ');
+        if (root instanceof ShadowRoot) {
+          return `${elementSelectorPath(root.host)}${shadowSeparator}${localPath}`;
+        }
+        return localPath;
+      };
+      const queryElement = (root: Document | ShadowRoot, query: string): Element | null => {
+        const parts = query
+          .split(shadowSeparator)
+          .map((part) => part.trim())
+          .filter((part) => part.length > 0);
+        if (parts.length === 0) {
+          return null;
+        }
+
+        let currentRoot: Document | ShadowRoot = root;
+        let currentElement: Element | null = null;
+        for (const [index, part] of parts.entries()) {
+          currentElement = currentRoot.querySelector(part);
+          if (!currentElement) {
+            return null;
+          }
+          if (index < parts.length - 1) {
+            const shadowRoot = currentElement.shadowRoot;
+            if (!shadowRoot) {
+              return null;
+            }
+            currentRoot = shadowRoot;
+          }
+        }
+        return currentElement;
+      };
+      const matches: string[] = [];
+
+      const visitFrameTree = (rootWindow: Window, selectors: string[]): void => {
+        const frameElements = Array.from(rootWindow.document.querySelectorAll('iframe, frame')) as HTMLIFrameElement[];
+        for (const frameElement of frameElements) {
+          try {
+            const childWindow = frameElement.contentWindow;
+            const childDocument = frameElement.contentDocument;
+            if (!childWindow || !childDocument) {
+              continue;
+            }
+
+            const nextSelectors = [...selectors, elementSelectorPath(frameElement)];
+            if ((!frameUrlValue || childWindow.location.href === frameUrlValue) && queryElement(childDocument, selectorValue)) {
+              matches.push(nextSelectors.join(framePathSeparator));
+            }
+
+            visitFrameTree(childWindow, nextSelectors);
+          } catch {
+            // Cross-origin frames cannot be inspected from the top document.
+          }
+        }
+      };
+
+      visitFrameTree(window, []);
+      return matches;
+    },
+    [selector, frameUrl],
+  );
 }
 
 interface FrameResolutionCandidate {
   frameId: number;
+  selector?: string;
   url?: string;
   title?: string;
 }
@@ -652,6 +862,7 @@ type FrameResolutionResult =
 interface NativeLocatorCandidate {
   selector: string;
   frameId: number;
+  frameSelector?: string;
   url?: string;
   title?: string;
   text?: string;
@@ -665,6 +876,7 @@ interface NativeLocatorCandidate {
 }
 
 interface NativeLocatorFrameResult {
+  frameSelector?: string;
   url?: string;
   title?: string;
   candidates: Array<Omit<NativeLocatorCandidate, 'frameId' | 'url' | 'title'>>;
@@ -696,6 +908,54 @@ async function resolveFrameIdForTarget(
     func: (rawSelector) => {
       const selectorValue = String(rawSelector);
       const shadowSeparator = ' >> ';
+      const framePathSeparator = ' => ';
+      const cssEscapeFallback = (value: string): string => {
+        const cssApi = (globalThis as { CSS?: { escape?: (input: string) => string } }).CSS;
+        if (cssApi?.escape) {
+          return cssApi.escape(value);
+        }
+        return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+      };
+      const localSelector = (element: Element): string => {
+        if (element.id) {
+          return `#${cssEscapeFallback(element.id)}`;
+        }
+        const testId = element.getAttribute('data-testid');
+        if (testId) {
+          return `[data-testid="${cssEscapeFallback(testId)}"]`;
+        }
+
+        const parent = element.parentElement;
+        const tagName = element.tagName.toLowerCase();
+        if (!parent) {
+          return tagName;
+        }
+
+        const sameTagSiblings = Array.from(parent.children).filter((child) => child.tagName === element.tagName);
+        if (sameTagSiblings.length <= 1) {
+          return tagName;
+        }
+
+        return `${tagName}:nth-of-type(${sameTagSiblings.indexOf(element) + 1})`;
+      };
+      const elementSelectorPath = (element: Element): string => {
+        const root = element.getRootNode();
+        const parts: string[] = [];
+        let current: Element | null = element;
+        while (current) {
+          const part = localSelector(current);
+          parts.unshift(part);
+          if (part.startsWith('#') || part.startsWith('[data-testid=')) {
+            break;
+          }
+          current = current.parentElement;
+        }
+        const localPath = parts.join(' > ');
+        if (root instanceof ShadowRoot) {
+          return `${elementSelectorPath(root.host)}${shadowSeparator}${localPath}`;
+        }
+        return localPath;
+      };
       const queryElement = (root: Document | ShadowRoot, query: string): Element | null => {
         const parts = query
           .split(shadowSeparator)
@@ -722,9 +982,31 @@ async function resolveFrameIdForTarget(
         }
         return currentElement;
       };
+      const resolveCurrentFrameSelector = (): string | undefined => {
+        if (window === window.top) {
+          return undefined;
+        }
+
+        try {
+          const selectors: string[] = [];
+          let currentWindow: Window | null = window;
+          while (currentWindow && currentWindow !== currentWindow.top) {
+            const frameElement = currentWindow.frameElement;
+            if (!(frameElement instanceof Element)) {
+              return undefined;
+            }
+            selectors.unshift(elementSelectorPath(frameElement));
+            currentWindow = currentWindow.parent;
+          }
+          return selectors.length > 0 ? selectors.join(framePathSeparator) : undefined;
+        } catch {
+          return undefined;
+        }
+      };
 
       return {
         matched: Boolean(queryElement(document, selectorValue)),
+        selector: resolveCurrentFrameSelector(),
         url: window.location.href,
         title: document.title,
       };
@@ -732,9 +1014,10 @@ async function resolveFrameIdForTarget(
     args: [selector],
   });
 
-  const candidates = results
+  let candidates = results
     .map((entry) => ({
       frameId: entry.frameId ?? 0,
+      selector: typeof entry.result?.selector === 'string' ? entry.result.selector : undefined,
       url: typeof entry.result?.url === 'string' ? entry.result.url : undefined,
       title: typeof entry.result?.title === 'string' ? entry.result.title : undefined,
       matched: entry.result?.matched === true,
@@ -743,6 +1026,24 @@ async function resolveFrameIdForTarget(
     .filter((entry) => matchesFrameText(entry.url, context.frameUrl, context.frameUrlContains))
     .filter((entry) => matchesFrameText(entry.title, context.frameTitle, context.frameTitleContains))
     .map(({ matched: _matched, ...entry }) => entry);
+
+  if (context.frameSelector && candidates.length > 0) {
+    const expectedFrameSelector = context.frameSelector;
+    const enrichedCandidates = await Promise.all(
+      candidates.map(async (candidate) => {
+        const frameSelectors = await resolveFrameSelectorChainsForSelector(tabId, selector, candidate.url).catch(() => []);
+        const frameSelectorList = Array.isArray(frameSelectors) ? frameSelectors : [];
+        const matchedFrameSelector = frameSelectorList.find((frameSelector) => matchesFrameSelector(frameSelector, expectedFrameSelector));
+        return matchedFrameSelector
+          ? {
+              ...candidate,
+              selector: matchedFrameSelector,
+            }
+          : undefined;
+      }),
+    );
+    candidates = enrichedCandidates.filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined);
+  }
 
   if (candidates.length === 1) {
     return {
@@ -760,6 +1061,7 @@ function describeNativeLocatorCandidate(candidate: NativeLocatorCandidate): Reco
   return {
     selector: candidate.selector,
     frameId: candidate.frameId,
+    frameSelector: candidate.frameSelector,
     frameUrl: candidate.url,
     frameTitle: candidate.title,
     text: candidate.text,
@@ -849,6 +1151,7 @@ async function resolveNativeLocatorTarget(
         const locatorValue = rawLocator as LiveUIActionLocator;
         const targetValue = rawTarget as LiveUIActionTarget;
         const shadowSeparator = ' >> ';
+        const framePathSeparator = ' => ';
 
         const cssEscapeFallback = (value: string): string => {
           const cssApi = (globalThis as { CSS?: { escape?: (input: string) => string } }).CSS;
@@ -911,6 +1214,27 @@ async function resolveNativeLocatorTarget(
             return `${elementSelectorPath(root.host)}${shadowSeparator}${localPath}`;
           }
           return localPath;
+        };
+        const resolveCurrentFrameSelector = (): string | undefined => {
+          if (window === window.top) {
+            return undefined;
+          }
+
+          try {
+            const selectors: string[] = [];
+            let currentWindow: Window | null = window;
+            while (currentWindow && currentWindow !== currentWindow.top) {
+              const frameElement = currentWindow.frameElement;
+              if (!(frameElement instanceof Element)) {
+                return undefined;
+              }
+              selectors.unshift(elementSelectorPath(frameElement));
+              currentWindow = currentWindow.parent;
+            }
+            return selectors.length > 0 ? selectors.join(framePathSeparator) : undefined;
+          } catch {
+            return undefined;
+          }
         };
 
         const queryElement = (root: Document | ShadowRoot, query: string): Element | null => {
@@ -1220,9 +1544,36 @@ async function resolveNativeLocatorTarget(
           return descendants.filter((element) => scopeMatches(element, locatorValue.scope));
         };
 
+        const immediateAncestor = (element: Element): Element | null => {
+          if (element.parentElement) {
+            return element.parentElement;
+          }
+          const root = element.getRootNode();
+          return root instanceof ShadowRoot ? root.host : null;
+        };
+
+        const ancestorElements = (roots: Element[]): Element[] => {
+          const seen = new Set<Element>();
+          const ancestors: Element[] = [];
+          for (const root of roots) {
+            let current = immediateAncestor(root);
+            while (current) {
+              if (!seen.has(current)) {
+                seen.add(current);
+                ancestors.push(current);
+              }
+              current = immediateAncestor(current);
+            }
+          }
+          return ancestors.filter((element) => scopeMatches(element, locatorValue.scope));
+        };
+
         const stepSource = (step: LiveUIActionLocator['steps'][number]): Element[] => {
           if (step.relation === 'descendant' && candidates) {
             return descendantElements(candidates);
+          }
+          if (step.relation === 'ancestor' && candidates) {
+            return ancestorElements(candidates);
           }
           return candidates ?? allScopedElements();
         };
@@ -1237,7 +1588,45 @@ async function resolveNativeLocatorTarget(
           }
         };
 
+        const matchesStep = (element: Element, step: LiveUIActionLocator['steps'][number]): boolean => {
+          if (step.kind === 'role') {
+            const expectedRole = roleValue(step)?.toLowerCase();
+            return (!expectedRole || getNativeRole(element) === expectedRole)
+              && matchesLocatorMatcher(accessibleName(element), step.name, step.exact);
+          }
+          if (step.kind === 'text') {
+            return matchesLocatorMatcher(elementText(element), step.value, step.exact);
+          }
+          if (step.kind === 'label') {
+            return matchesLocatorMatcher(resolveInputLabel(element), step.value, step.exact);
+          }
+          if (step.kind === 'testId') {
+            return matchesLocatorMatcher(element.getAttribute('data-testid') ?? undefined, step.value, step.exact ?? true);
+          }
+          if (step.kind === 'placeholder') {
+            const placeholder = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
+              ? element.placeholder
+              : undefined;
+            return matchesLocatorMatcher(placeholder, step.value, step.exact);
+          }
+          if (step.kind === 'altText') {
+            return matchesLocatorMatcher(getAltText(element), step.value, step.exact);
+          }
+          const matcher = step.value;
+          if (typeof matcher === 'string') {
+            return matchesCssLocator(element, matcher);
+          }
+          return matchesLocatorMatcher(elementSelectorPath(element), matcher, step.exact ?? true);
+        };
+
         for (const step of locatorValue.steps) {
+          if (step.relation === 'ancestor' && candidates) {
+            candidates = candidates.filter((candidate) => {
+              return ancestorElements([candidate]).some((ancestor) => matchesStep(ancestor, step));
+            });
+            continue;
+          }
+
           if (step.kind === 'css') {
             const matcher = step.value;
             if (typeof matcher === 'string') {
@@ -1257,28 +1646,7 @@ async function resolveNativeLocatorTarget(
           }
 
           const source = stepSource(step);
-          if (step.kind === 'role') {
-            const expectedRole = roleValue(step)?.toLowerCase();
-            candidates = source.filter((element) => {
-              return (!expectedRole || getNativeRole(element) === expectedRole)
-                && matchesLocatorMatcher(accessibleName(element), step.name, step.exact);
-            });
-          } else if (step.kind === 'text') {
-            candidates = source.filter((element) => matchesLocatorMatcher(elementText(element), step.value, step.exact));
-          } else if (step.kind === 'label') {
-            candidates = source.filter((element) => matchesLocatorMatcher(resolveInputLabel(element), step.value, step.exact));
-          } else if (step.kind === 'testId') {
-            candidates = source.filter((element) => matchesLocatorMatcher(element.getAttribute('data-testid') ?? undefined, step.value, step.exact ?? true));
-          } else if (step.kind === 'placeholder') {
-            candidates = source.filter((element) => {
-              const placeholder = element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement
-                ? element.placeholder
-                : undefined;
-              return matchesLocatorMatcher(placeholder, step.value, step.exact);
-            });
-          } else {
-            candidates = source.filter((element) => matchesLocatorMatcher(getAltText(element), step.value, step.exact));
-          }
+          candidates = source.filter((element) => matchesStep(element, step));
         }
 
         candidates = (candidates ?? allScopedElements()).filter((element) => {
@@ -1302,6 +1670,7 @@ async function resolveNativeLocatorTarget(
         });
 
         return {
+          frameSelector: resolveCurrentFrameSelector(),
           url: window.location.href,
           title: document.title,
           candidates: candidates.slice(0, 200).map((element) => ({
@@ -1334,7 +1703,7 @@ async function resolveNativeLocatorTarget(
     };
   }
 
-  const candidates = frameResults
+  let candidates = frameResults
     .flatMap((entry) => {
       const result = entry.result;
       if (!result) {
@@ -1348,15 +1717,46 @@ async function resolveNativeLocatorTarget(
         .map((candidate) => ({
           ...candidate,
           frameId,
+          frameSelector: result.frameSelector,
           url: result.url,
           title: result.title,
         }));
     });
+
+  if (locator.frame?.selector && candidates.length > 0) {
+    const expectedFrameSelector = locator.frame.selector;
+    const enrichedCandidates = await Promise.all(
+      candidates.map(async (candidate) => {
+        const frameSelectors = await resolveFrameSelectorChainsForSelector(tabId, candidate.selector, candidate.url).catch(() => []);
+        const frameSelectorList = Array.isArray(frameSelectors) ? frameSelectors : [];
+        const matchedFrameSelector = frameSelectorList.find((frameSelector) => matchesFrameSelector(frameSelector, expectedFrameSelector));
+        return matchedFrameSelector
+          ? {
+              ...candidate,
+              frameSelector: matchedFrameSelector,
+            }
+          : undefined;
+      }),
+    );
+    candidates = enrichedCandidates.filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined);
+  }
+  const searchedFrameCandidates = frameResults
+    .map((entry) => {
+      const result = entry.result;
+      return {
+        frameId: entry.frameId ?? 0,
+        frameSelector: result?.frameSelector,
+        frameUrl: result?.url,
+        frameTitle: result?.title,
+      };
+    })
+    .slice(0, 10);
   const selection = selectNativeLocatorCandidate(candidates, target);
   const baseResolution = {
     strategy: 'native_locator',
     matcher: {
       locator,
+      frameSelector: locator.frame?.selector,
       frameUrlContains: target.frameUrlContains,
       frameTitleContains: target.frameTitleContains,
       nth: target.nth,
@@ -1365,6 +1765,7 @@ async function resolveNativeLocatorTarget(
       strict: target.strict,
     },
     searchedFrames: frameResults.length,
+    searchedFrameCandidates,
     matchedCandidateCount: candidates.length,
     selectionStrategy: selection.selectionStrategy,
     selectedIndex: selection.selectedIndex,
@@ -1434,6 +1835,29 @@ function annotateFrameCoordinateResolution(
     actionability: {
       ...snapshot.actionability,
       frameCoordinateResolved: resolved || snapshot.frameId === 0,
+    },
+  };
+}
+
+function annotateActionabilityRetryMetadata(
+  snapshot: NativeClickTargetSnapshot,
+  options: {
+    retryCount: number;
+    retriedAfterDetach: boolean;
+    previousFailureCode?: string;
+  },
+): NativeClickTargetSnapshot {
+  if (options.retryCount < 1 && !options.retriedAfterDetach && !options.previousFailureCode) {
+    return snapshot;
+  }
+
+  return {
+    ...snapshot,
+    actionability: {
+      ...snapshot.actionability,
+      retryCount: options.retryCount > 0 ? options.retryCount : undefined,
+      retriedAfterDetach: options.retriedAfterDetach || undefined,
+      previousFailureCode: options.previousFailureCode,
     },
   };
 }
@@ -1539,6 +1963,9 @@ async function inspectActionableTargetForRequest(
   let snapshot: NativeClickTargetSnapshot | undefined;
   try {
     const maxAttempts = 3;
+    let retryCount = 0;
+    let retriedAfterDetach = false;
+    let previousFailureCode: string | undefined;
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       snapshot = await inspectClickableTarget(tab.id, frameId, selector);
       snapshot = {
@@ -1554,8 +1981,17 @@ async function inspectActionableTargetForRequest(
       };
 
       if (!isRetryableActionabilityFailure(snapshot.actionability.failureCode) || attempt === maxAttempts) {
+        snapshot = annotateActionabilityRetryMetadata(snapshot, {
+          retryCount,
+          retriedAfterDetach,
+          previousFailureCode,
+        });
         break;
       }
+
+      retryCount += 1;
+      retriedAfterDetach = retriedAfterDetach || snapshot.actionability.failureCode === 'target_detached';
+      previousFailureCode = snapshot.actionability.failureCode ?? previousFailureCode;
       await sleep(75);
     }
   } catch (error) {

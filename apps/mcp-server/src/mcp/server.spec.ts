@@ -4643,6 +4643,150 @@ describe('mcp/server V2 capture tools', () => {
     });
   });
 
+  it('waits for a navigation lifecycle event through the live extension session', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload, timeoutMs) => {
+          expect(command).toBe('CAPTURE_WAIT_FOR_NAVIGATION_LIFECYCLE');
+          expect(timeoutMs).toBe(2500);
+          expect(payload).toMatchObject({
+            state: 'load',
+            urlContains: '/checkout/complete',
+            tabId: 7,
+            timeoutMs: 500,
+          });
+          return {
+            ok: true,
+            payload: {
+              matched: true,
+              state: 'load',
+              eventMethod: 'Page.loadEventFired',
+              tabId: 7,
+              url: 'https://app.example.com/checkout/complete',
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_navigation_lifecycle', {
+      sessionId: 'session-v2',
+      state: 'load',
+      urlContains: '/checkout/complete',
+      tabId: 7,
+      timeoutMs: 500,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('navigation_lifecycle');
+    expect(response.evidence).toMatchObject({
+      filters: {
+        state: 'load',
+        urlContains: '/checkout/complete',
+        tabId: 7,
+      },
+      lifecycle: {
+        eventMethod: 'Page.loadEventFired',
+      },
+    });
+  });
+
+  it('waits for a download through the live extension session', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload, timeoutMs) => {
+          expect(command).toBe('CAPTURE_WAIT_FOR_DOWNLOAD');
+          expect(timeoutMs).toBe(2500);
+          expect(payload).toMatchObject({
+            filenameContains: 'report',
+            state: 'completed',
+            tabId: 7,
+            timeoutMs: 500,
+          });
+          return {
+            ok: true,
+            payload: {
+              matched: true,
+              state: 'completed',
+              tabId: 7,
+              url: 'https://app.example.com/export/report.csv',
+              suggestedFilename: 'report.csv',
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_download', {
+      sessionId: 'session-v2',
+      filenameContains: 'report',
+      state: 'completed',
+      tabId: 7,
+      timeoutMs: 500,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('download');
+    expect(response.evidence).toMatchObject({
+      filters: {
+        filenameContains: 'report',
+        state: 'completed',
+        tabId: 7,
+      },
+      download: {
+        suggestedFilename: 'report.csv',
+      },
+    });
+  });
+
+  it('waits for a popup through the live extension session', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload, timeoutMs) => {
+          expect(command).toBe('CAPTURE_WAIT_FOR_POPUP');
+          expect(timeoutMs).toBe(2500);
+          expect(payload).toMatchObject({
+            urlContains: '/oauth/callback',
+            openerTabId: 7,
+            timeoutMs: 500,
+          });
+          return {
+            ok: true,
+            payload: {
+              matched: true,
+              tabId: 11,
+              openerTabId: 7,
+              windowId: 4,
+              url: 'https://app.example.com/oauth/callback',
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_popup', {
+      sessionId: 'session-v2',
+      urlContains: '/oauth/callback',
+      openerTabId: 7,
+      timeoutMs: 500,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('popup');
+    expect(response.evidence).toMatchObject({
+      filters: {
+        urlContains: '/oauth/callback',
+        openerTabId: 7,
+      },
+      popup: {
+        tabId: 11,
+      },
+    });
+  });
+
   it('waits for a bounded network quiet window from persisted network activity', async () => {
     const db = new Database(':memory:');
     initializeDatabase(db);

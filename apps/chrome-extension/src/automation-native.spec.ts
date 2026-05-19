@@ -256,6 +256,154 @@ describe('native automation backend', () => {
     );
   });
 
+  it('uses frame selector paths to disambiguate locator targets across nested frames', async () => {
+    const attach = vi.fn(async () => undefined);
+    const detach = vi.fn(async () => undefined);
+    const sendCommand = vi.fn(async () => ({}));
+    const executeScript = vi
+      .fn()
+      .mockResolvedValueOnce([
+        {
+          frameId: 4,
+          result: {
+            frameSelector: '#child-frame',
+            url: 'https://example.com/child-frame',
+            title: 'Child frame',
+            candidates: [
+              {
+                selector: '#inside-frame',
+                text: 'Inside frame',
+                role: 'button',
+                name: 'Inside frame',
+                tagName: 'button',
+                visible: true,
+                disabled: false,
+              },
+            ],
+          },
+        },
+        {
+          frameId: 8,
+          result: {
+            url: 'https://example.com/nested-frame',
+            title: 'Nested frame',
+            candidates: [
+              {
+                selector: '#nested-frame-action',
+                text: 'Nested frame action',
+                role: 'button',
+                name: 'Nested frame action',
+                tagName: 'button',
+                visible: true,
+                disabled: false,
+              },
+            ],
+          },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          result: ['#child-frame'],
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          result: ['#outer-frame => #inner-frame'],
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          result: {
+            ...targetSnapshot,
+            selector: '#nested-frame-action',
+            resolvedSelector: '#nested-frame-action',
+            frameId: 8,
+            url: 'https://example.com/nested-frame',
+          },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          result: {
+            x: 100,
+            y: 200,
+          },
+        },
+      ]);
+
+    vi.stubGlobal('chrome', {
+      scripting: {
+        executeScript,
+      },
+      debugger: {
+        attach,
+        detach,
+        sendCommand,
+      },
+    });
+
+    const request: Extract<LiveUIActionRequest, { action: 'click' }> = {
+      action: 'click',
+      traceId: 'trace-click-native-frame-selector',
+      target: {
+        tabId: 7,
+        locator: {
+          frame: {
+            selector: '#outer-frame => #inner-frame',
+          },
+          steps: [
+            {
+              kind: 'testId',
+              value: 'nested-frame-action',
+            },
+          ],
+        },
+      },
+    };
+
+    const result = await executeNativeClickAction({
+      request,
+      tab: {
+        id: 7,
+        url: 'https://example.com/settings',
+      } as chrome.tabs.Tab & { id: number },
+      startedAt: 1000,
+      traceId: 'trace-click-native-frame-selector',
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(result.target).toMatchObject({
+      selector: '#nested-frame-action',
+      frameId: 8,
+    });
+    expect(result.result).toMatchObject({
+      backend: nativeAutomationBackend,
+      locatorResolution: {
+        strategy: 'native_locator',
+        matcher: {
+          locator: {
+            frame: {
+              selector: '#outer-frame => #inner-frame',
+            },
+          },
+        },
+        matched: {
+          selector: '#nested-frame-action',
+          frameSelector: '#outer-frame => #inner-frame',
+        },
+      },
+    });
+    expect(sendCommand).toHaveBeenCalledWith(
+      { tabId: 7 },
+      'Input.dispatchMouseEvent',
+      expect.objectContaining({
+        type: 'mousePressed',
+        x: 142,
+        y: 224,
+      }),
+    );
+  });
+
   it('rejects ambiguous native locator targets before dispatch', async () => {
     const attach = vi.fn(async () => undefined);
     const detach = vi.fn(async () => undefined);
@@ -520,6 +668,55 @@ describe('native automation backend', () => {
     expect(result.status).toBe('succeeded');
     expect(result.result?.actionability).toMatchObject({
       attempts: 2,
+    });
+    expect(chromeMock.executeScript).toHaveBeenCalledTimes(2);
+    expect(chromeMock.sendCommand).toHaveBeenCalledWith(
+      { tabId: 7 },
+      'Input.dispatchMouseEvent',
+      expect.objectContaining({
+        type: 'mousePressed',
+      }),
+    );
+  });
+
+  it('retries detached native targets after scroll-time replacement', async () => {
+    const chromeMock = installChromeMock([
+      {
+        ...targetSnapshot,
+        actionability: {
+          ...targetSnapshot.actionability,
+          scrolledIntoView: true,
+          failureCode: 'target_detached',
+          failureMessage: 'The native click target detached while scrolling into view.',
+        },
+      },
+      targetSnapshot,
+    ]);
+    const request: Extract<LiveUIActionRequest, { action: 'click' }> = {
+      action: 'click',
+      traceId: 'trace-click-detached-retry',
+      target: {
+        selector: '#save',
+        tabId: 7,
+      },
+    };
+
+    const result = await executeNativeClickAction({
+      request,
+      tab: {
+        id: 7,
+        url: 'https://example.com/settings',
+      } as chrome.tabs.Tab & { id: number },
+      startedAt: 1000,
+      traceId: 'trace-click-detached-retry',
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(result.result?.actionability).toMatchObject({
+      attempts: 2,
+      retryCount: 1,
+      retriedAfterDetach: true,
+      previousFailureCode: 'target_detached',
     });
     expect(chromeMock.executeScript).toHaveBeenCalledTimes(2);
     expect(chromeMock.sendCommand).toHaveBeenCalledWith(

@@ -5,9 +5,13 @@
 ### Features
 
 * **automation:** add live document load-state waits for MCP workflows
+* **automation:** add navigation lifecycle, download, and popup waits
 * **automation:** add native JavaScript dialog waits
 * **automation:** add stable layout waits
+* **automation:** add ancestor and frame-selector native locator support
+* **automation:** harden native actionability for offscreen scroll and detached-target retry
 * **automation:** persist native action diagnostics in automation history
+* **automation:** link failure evidence and related snapshots into automation history
 * **automation:** support explicit descendant relations in native locator chains
 
 ## [1.11.1](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.11.0...browser-debug-mcp-bridge-v1.11.1) (2026-05-15)

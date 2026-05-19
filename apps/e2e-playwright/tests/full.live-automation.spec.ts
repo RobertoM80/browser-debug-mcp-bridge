@@ -173,7 +173,8 @@ function buildAutomationFixtureHtml(): string {
           #dialog { border: 1px solid #555; padding: 12px; width: 240px; }
           #frame-wrap { margin-top: 16px; }
           #scroll-box { border: 1px solid #555; height: 80px; overflow: auto; width: 240px; }
-          #scroll-content { height: 240px; }
+          #scroll-content { min-height: 280px; display: flex; flex-direction: column; gap: 12px; padding: 8px 0; }
+          .scroll-spacer { flex: 0 0 160px; }
           #shadow-host { display: block; margin-top: 12px; }
           #covered-wrapper { display: inline-block; position: relative; }
           #covered-action { margin: 0; }
@@ -226,7 +227,12 @@ function buildAutomationFixtureHtml(): string {
           </form>
           <output id="submit-output"></output>
           <button id="push-route" data-testid="push-route">Push route</button>
+          <button id="navigate-hard" data-testid="navigate-hard">Navigate hard</button>
           <output id="navigation-output"></output>
+          <button id="open-popup" data-testid="open-popup">Open popup</button>
+          <output id="popup-output"></output>
+          <button id="download-report" data-testid="download-report">Download report</button>
+          <output id="download-output"></output>
           <button id="fetch-health" data-testid="fetch-health">Fetch health</button>
           <output id="network-output"></output>
           <button id="fetch-health-workflow" data-testid="fetch-health-workflow">Fetch health workflow</button>
@@ -237,9 +243,15 @@ function buildAutomationFixtureHtml(): string {
           <button id="start-layout-shift" data-testid="start-layout-shift">Start layout shift</button>
           <div id="layout-target"></div>
           <div id="scroll-box">
-            <div id="scroll-content">Scrollable content</div>
+            <div id="scroll-content">
+              <div class="scroll-spacer">Scrollable content</div>
+              <button id="scroll-target" data-testid="scroll-target">Scroll target</button>
+              <div id="detach-host"></div>
+            </div>
           </div>
           <output id="scroll-output"></output>
+          <output id="scroll-click-output"></output>
+          <output id="detached-output"></output>
           <button id="open-dialog" data-testid="open-dialog">Open dialog</button>
           <a id="docs-primary" href="#docs-primary" aria-label="Docs">Docs</a>
           <a id="docs-secondary" href="#docs-secondary" aria-label="Docs">Docs</a>
@@ -304,6 +316,30 @@ function buildAutomationFixtureHtml(): string {
             history.pushState({ automation: true }, '', '/automation-fixture/next?step=nav');
             document.querySelector('#navigation-output').textContent = location.href;
           });
+          document.querySelector('#navigate-hard').addEventListener('click', () => {
+            setTimeout(() => {
+              window.location.href = '/automation-fixture/hard?step=lifecycle';
+            }, 250);
+          });
+          document.querySelector('#open-popup').addEventListener('click', () => {
+            const popup = window.open('about:blank', '_blank');
+            document.querySelector('#popup-output').textContent = popup ? 'popup opened' : 'popup blocked';
+            if (popup) {
+              setTimeout(() => {
+                popup.location.href = '/automation-popup-target?step=popup';
+              }, 250);
+            }
+          });
+          document.querySelector('#download-report').addEventListener('click', () => {
+            document.querySelector('#download-output').textContent = 'download scheduled';
+            setTimeout(() => {
+              const frame = document.createElement('iframe');
+              frame.hidden = true;
+              frame.src = '/automation-download?file=report';
+              document.body.appendChild(frame);
+              setTimeout(() => frame.remove(), 1000);
+            }, 250);
+          });
           document.querySelector('#fetch-health').addEventListener('click', async () => {
             const response = await fetch('/health?automation=standalone', { cache: 'no-store' });
             document.querySelector('#network-output').textContent = '/health?automation=standalone:' + response.status;
@@ -330,6 +366,38 @@ function buildAutomationFixtureHtml(): string {
           document.querySelector('#scroll-box').addEventListener('scroll', (event) => {
             document.querySelector('#scroll-output').textContent = String(event.target.scrollTop);
           });
+          document.querySelector('#scroll-target').addEventListener('click', () => {
+            document.querySelector('#scroll-click-output').textContent = 'clicked';
+          });
+          const detachHost = document.querySelector('#detach-host');
+          let detachedReplacementDone = false;
+          const mountDetachedButton = (generation) => {
+            const button = document.createElement('button');
+            button.id = 'detach-on-scroll';
+            button.dataset.generation = String(generation);
+            button.textContent = 'Detach on scroll';
+            button.addEventListener('click', () => {
+              document.querySelector('#detached-output').textContent = 'clicked:' + generation;
+            });
+            detachHost.replaceChildren(button);
+            if (detachedReplacementDone) {
+              return;
+            }
+            const observer = new IntersectionObserver((entries) => {
+              if (!entries.some((entry) => entry.isIntersecting)) {
+                return;
+              }
+              observer.disconnect();
+              detachedReplacementDone = true;
+              document.querySelector('#detached-output').textContent = 'replaced';
+              mountDetachedButton(generation + 1);
+            }, {
+              root: document.querySelector('#scroll-box'),
+              threshold: 0.6,
+            });
+            observer.observe(button);
+          };
+          mountDetachedButton(1);
           const shadowRoot = document.querySelector('#shadow-host').attachShadow({ mode: 'open' });
           shadowRoot.innerHTML = '<button id="shadow-action" aria-label="Shadow action">Run shadow</button>';
           shadowRoot.querySelector('#shadow-action').addEventListener('click', () => {
@@ -363,12 +431,47 @@ function buildAutomationFixtureHtml(): string {
   `;
 }
 
+function buildPopupTargetHtml(): string {
+  return `
+    <!doctype html>
+    <html lang="en">
+      <head>
+        <title>Automation popup target</title>
+      </head>
+      <body>
+        <main>
+          <h1>Automation popup target</h1>
+          <p id="popup-target-status">ready</p>
+        </main>
+      </body>
+    </html>
+  `;
+}
+
 async function installAutomationFixture(page: Page, fixtureUrl: string): Promise<void> {
-  await page.route(fixtureUrl, async (route) => {
+  const origin = new URL(fixtureUrl).origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  await page.context().route(new RegExp(`^${origin}/automation-fixture(?:[/?#].*)?$`), async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'text/html',
       body: buildAutomationFixtureHtml(),
+    });
+  });
+  await page.context().route(new RegExp(`^${origin}/automation-popup-target(?:[/?#].*)?$`), async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      body: buildPopupTargetHtml(),
+    });
+  });
+  await page.context().route(new RegExp(`^${origin}/automation-download(?:[/?#].*)?$`), async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/plain',
+      headers: {
+        'content-disposition': 'attachment; filename=\"automation-report.txt\"',
+      },
+      body: 'automation download payload',
     });
   });
   await page.goto(fixtureUrl, { waitUntil: 'domcontentloaded' });
@@ -401,6 +504,9 @@ test.describe('@full live automation through MCP and extension session', () => {
     await extension.setServerBaseUrl(`http://127.0.0.1:${port}`);
 
     const targetPage = await extension.context.newPage();
+    targetPage.on('dialog', async (dialog) => {
+      await dialog.dismiss().catch(() => undefined);
+    });
     await installAutomationFixture(targetPage, `http://127.0.0.1:${port}/automation-fixture`);
 
     const popupPage = await openExtensionPage(extension.context, extension.extensionId, 'popup.html');
@@ -540,6 +646,38 @@ test.describe('@full live automation through MCP and extension session', () => {
     });
     await expect(targetPage.locator('#panel-output')).toHaveText('billing');
 
+    const ancestorLocatorClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        tabId,
+        locator: {
+          steps: [
+            {
+              kind: 'role',
+              role: 'button',
+              name: 'Apply',
+              exact: true,
+            },
+            {
+              kind: 'testId',
+              value: 'profile-panel',
+              relation: 'ancestor',
+            },
+          ],
+        },
+      },
+    });
+    expect(ancestorLocatorClick.status).toBe('succeeded');
+    expect(ancestorLocatorClick.actionResult?.result?.backend).toBe('cdp-native-v2');
+    expect(ancestorLocatorClick.targetResolution).toMatchObject({
+      strategy: 'native_locator',
+      matched: {
+        selector: '#profile-apply',
+      },
+    });
+    await expect(targetPage.locator('#panel-output')).toHaveText('profile');
+
     const input = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
       action: 'input',
@@ -633,6 +771,38 @@ test.describe('@full live automation through MCP and extension session', () => {
     expect(scroll.actionResult?.result?.backend).toBe('cdp-native-v2');
     await expect.poll(async () => targetPage.locator('#scroll-box').evaluate((node) => node.scrollTop)).toBe(120);
 
+    const offscreenScrollClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: { selector: '#scroll-target', tabId },
+    });
+    expect(offscreenScrollClick.status).toBe('succeeded');
+    expect(offscreenScrollClick.actionResult?.result?.backend).toBe('cdp-native-v2');
+    expect(offscreenScrollClick.actionResult?.result?.actionability).toMatchObject({
+      scrolledIntoView: true,
+    });
+    await expect(targetPage.locator('#scroll-click-output')).toHaveText('clicked');
+
+    await targetPage.locator('#scroll-box').evaluate((node) => {
+      node.scrollTop = 0;
+    });
+    await expect(targetPage.locator('#detached-output')).toHaveText('');
+
+    const detachedRetryClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: { selector: '#detach-on-scroll', tabId },
+    });
+    expect(detachedRetryClick.status).toBe('succeeded');
+    expect(detachedRetryClick.actionResult?.result?.backend).toBe('cdp-native-v2');
+    expect(detachedRetryClick.actionResult?.result?.actionability).toMatchObject({
+      attempts: 2,
+      retryCount: 1,
+      retriedAfterDetach: true,
+      previousFailureCode: 'target_detached',
+    });
+    await expect(targetPage.locator('#detached-output')).toHaveText('clicked:2');
+
     const submit = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
       action: 'submit',
@@ -717,6 +887,36 @@ test.describe('@full live automation through MCP and extension session', () => {
     expect(nestedFrameClick.actionResult?.result?.backend).toBe('cdp-native-v2');
     expect(nestedFrameClick.target?.frameId).toBe(nestedFrameButtonRef?.frameId);
     await expect(targetPage.frameLocator('#outer-frame').frameLocator('#inner-frame').locator('#nested-count')).toHaveText('1');
+
+    const nestedFrameLocatorClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        tabId,
+        locator: {
+          frame: {
+            selector: '#outer-frame => #inner-frame',
+          },
+          steps: [
+            {
+              kind: 'testId',
+              value: 'nested-frame-action',
+            },
+          ],
+        },
+      },
+    });
+    expect(nestedFrameLocatorClick.status).toBe('succeeded');
+    expect(nestedFrameLocatorClick.actionResult?.result?.backend).toBe('cdp-native-v2');
+    expect(nestedFrameLocatorClick.target?.frameId).toBe(nestedFrameButtonRef?.frameId);
+    expect(nestedFrameLocatorClick.targetResolution).toMatchObject({
+      strategy: 'native_locator',
+      matched: {
+        selector: '#nested-frame-action',
+        frameSelector: '#outer-frame => #inner-frame',
+      },
+    });
+    await expect(targetPage.frameLocator('#outer-frame').frameLocator('#inner-frame').locator('#nested-count')).toHaveText('2');
 
     const semanticFrameInput = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
@@ -823,6 +1023,80 @@ test.describe('@full live automation through MCP and extension session', () => {
     expect(loadStateWait.waitKind).toBe('load_state');
     expect(loadStateWait.evidence?.page).toMatchObject({
       readyState: 'complete',
+    });
+
+    const hardNavigationClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        selector: '#navigate-hard',
+        tabId,
+      },
+    });
+    expect(hardNavigationClick.status).toBe('succeeded');
+
+    const lifecycleWait = await callToolJson<WaitToolResponse>(mcp.client, 'wait_for_navigation_lifecycle', {
+      sessionId,
+      state: 'load',
+      urlContains: '/automation-fixture/hard?step=lifecycle',
+      tabId,
+      timeoutMs: 5_000,
+    });
+    expect(lifecycleWait.matched).toBe(true);
+    expect(lifecycleWait.waitKind).toBe('navigation_lifecycle');
+    expect(lifecycleWait.evidence?.lifecycle).toMatchObject({
+      state: 'load',
+      eventMethod: 'Page.loadEventFired',
+    });
+    await expect(targetPage.locator('h1')).toHaveText('Live automation fixture');
+
+    const popupClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        selector: '#open-popup',
+        tabId,
+      },
+    });
+    expect(popupClick.status).toBe('succeeded');
+
+    const popupWait = await callToolJson<WaitToolResponse>(mcp.client, 'wait_for_popup', {
+      sessionId,
+      urlContains: '/automation-popup-target?step=popup',
+      openerTabId: tabId,
+      timeoutMs: 5_000,
+    });
+    expect(popupWait.matched).toBe(true);
+    expect(popupWait.waitKind).toBe('popup');
+    expect(popupWait.evidence?.popup).toMatchObject({
+      openerTabId: tabId,
+    });
+    await expect.poll(async () => {
+      return extension?.context.pages().some((page) => page.url().includes('/automation-popup-target?step=popup')) ?? false;
+    }, { timeout: 5_000 }).toBe(true);
+
+    const downloadClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        selector: '#download-report',
+        tabId,
+      },
+    });
+    expect(downloadClick.status).toBe('succeeded');
+
+    const downloadWait = await callToolJson<WaitToolResponse>(mcp.client, 'wait_for_download', {
+      sessionId,
+      filenameContains: 'automation-report',
+      state: 'completed',
+      tabId,
+      timeoutMs: 10_000,
+    });
+    expect(downloadWait.matched).toBe(true);
+    expect(downloadWait.waitKind).toBe('download');
+    expect(downloadWait.evidence?.download).toMatchObject({
+      state: 'completed',
+      suggestedFilename: 'automation-report.txt',
     });
 
     const consoleSince = Date.now();
@@ -961,16 +1235,6 @@ test.describe('@full live automation through MCP and extension session', () => {
         },
         {
           kind: 'wait',
-          id: 'wait-workflow-load-state',
-          wait: {
-            waitKind: 'load_state',
-            state: 'load',
-            urlContains: '/automation-fixture/next?step=nav',
-            timeoutMs: 5_000,
-          },
-        },
-        {
-          kind: 'wait',
           id: 'wait-workflow-request',
           wait: {
             waitKind: 'request',
@@ -999,12 +1263,11 @@ test.describe('@full live automation through MCP and extension session', () => {
       ],
     });
     expect(waitWorkflow.status).toBe('succeeded');
-    expect(waitWorkflow.completedStepCount).toBe(4);
-    expect(waitWorkflow.steps.map((step) => step.status)).toEqual(['succeeded', 'succeeded', 'succeeded', 'succeeded']);
+    expect(waitWorkflow.completedStepCount).toBe(3);
+    expect(waitWorkflow.steps.map((step) => step.status)).toEqual(['succeeded', 'succeeded', 'succeeded']);
     expect(waitWorkflow.steps[1]?.wait?.matched).toBe(true);
-    expect(waitWorkflow.steps[1]?.wait?.waitKind).toBe('load_state');
+    expect(waitWorkflow.steps[1]?.wait?.waitKind).toBe('request');
     expect(waitWorkflow.steps[2]?.wait?.matched).toBe(true);
-    expect(waitWorkflow.steps[3]?.wait?.matched).toBe(true);
     await expect(targetPage.locator('#workflow-network-output')).toHaveText('/health?automation=workflow:200');
 
     const visibleAssertion = await callToolJson<{ matched: boolean; matchCount: number }>(mcp.client, 'assert_page_state', {

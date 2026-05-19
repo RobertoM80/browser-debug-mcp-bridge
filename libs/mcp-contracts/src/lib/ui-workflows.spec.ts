@@ -97,6 +97,38 @@ describe('ui-workflows', () => {
     expect(firstStep?.target.locator?.steps[1]?.relation).toBe('descendant');
   });
 
+  it('parses ancestor locator relations in workflow action targets', () => {
+    const parsed = RunUIStepsSchema.parse({
+      sessionId: 'sess_123',
+      steps: [
+        {
+          kind: 'action',
+          action: 'click',
+          target: {
+            locator: {
+              steps: [
+                {
+                  kind: 'role',
+                  role: 'button',
+                  name: 'Save',
+                },
+                {
+                  kind: 'testId',
+                  value: 'settings-panel',
+                  relation: 'ancestor',
+                },
+              ],
+            },
+          },
+        },
+      ],
+    });
+
+    const firstStep = parsed.steps[0];
+    expect(firstStep?.kind).toBe('action');
+    expect(firstStep?.target.locator?.steps[1]?.relation).toBe('ancestor');
+  });
+
   it('parses first-class wait steps including navigation and request/response waits', () => {
     const parsed = RunUIStepsSchema.parse({
       sessionId: 'sess_123',
@@ -110,6 +142,16 @@ describe('ui-workflows', () => {
             fromUrlContains: '/login',
             trigger: 'pushState',
             tabId: 4,
+            timeoutMs: 5000,
+          },
+        },
+        {
+          kind: 'wait',
+          id: 'wait-lifecycle',
+          wait: {
+            waitKind: 'navigation_lifecycle',
+            state: 'network_idle',
+            urlContains: '/dashboard',
             timeoutMs: 5000,
           },
         },
@@ -138,6 +180,23 @@ describe('ui-workflows', () => {
             type: 'alert',
             messageContains: 'Saved',
             action: 'accept',
+          },
+        },
+        {
+          kind: 'wait',
+          id: 'wait-download',
+          wait: {
+            waitKind: 'download',
+            filenameContains: 'invoice',
+            state: 'completed',
+          },
+        },
+        {
+          kind: 'wait',
+          id: 'wait-popup',
+          wait: {
+            waitKind: 'popup',
+            urlContains: '/oauth/callback',
           },
         },
         {
@@ -173,8 +232,8 @@ describe('ui-workflows', () => {
       ],
     });
 
-    expect(parsed.steps.map((step) => step.kind)).toEqual(['wait', 'wait', 'wait', 'wait', 'wait', 'wait', 'wait']);
-    const selectorStep = parsed.steps[2];
+    expect(parsed.steps.map((step) => step.kind)).toEqual(['wait', 'wait', 'wait', 'wait', 'wait', 'wait', 'wait', 'wait', 'wait', 'wait']);
+    const selectorStep = parsed.steps[3];
     expect(selectorStep.kind).toBe('wait');
     if (selectorStep.kind === 'wait') {
       expect(selectorStep.wait.waitKind).toBe('selector_state');
@@ -182,12 +241,27 @@ describe('ui-workflows', () => {
         expect(selectorStep.wait.frameId).toBe(0);
       }
     }
-    const dialogStep = parsed.steps[3];
+    const dialogStep = parsed.steps[4];
     expect(dialogStep.kind).toBe('wait');
     if (dialogStep.kind === 'wait') {
       expect(dialogStep.wait.waitKind).toBe('dialog');
     }
-    const layoutStep = parsed.steps[4];
+    const lifecycleStep = parsed.steps[1];
+    expect(lifecycleStep.kind).toBe('wait');
+    if (lifecycleStep.kind === 'wait') {
+      expect(lifecycleStep.wait.waitKind).toBe('navigation_lifecycle');
+    }
+    const downloadStep = parsed.steps[5];
+    expect(downloadStep.kind).toBe('wait');
+    if (downloadStep.kind === 'wait') {
+      expect(downloadStep.wait.waitKind).toBe('download');
+    }
+    const popupStep = parsed.steps[6];
+    expect(popupStep.kind).toBe('wait');
+    if (popupStep.kind === 'wait') {
+      expect(popupStep.wait.waitKind).toBe('popup');
+    }
+    const layoutStep = parsed.steps[7];
     expect(layoutStep.kind).toBe('wait');
     if (layoutStep.kind === 'wait') {
       expect(layoutStep.wait.waitKind).toBe('stable_layout');
@@ -206,6 +280,30 @@ describe('ui-workflows', () => {
         },
       ],
     })).toThrow('request wait requires urlContains, urlRegex, exactUrl, or traceId');
+
+    expect(() => RunUIStepsSchema.parse({
+      sessionId: 'sess_123',
+      steps: [
+        {
+          kind: 'wait',
+          wait: {
+            waitKind: 'download',
+          },
+        },
+      ],
+    })).toThrow('download wait requires a URL or filename predicate');
+
+    expect(() => RunUIStepsSchema.parse({
+      sessionId: 'sess_123',
+      steps: [
+        {
+          kind: 'wait',
+          wait: {
+            waitKind: 'popup',
+          },
+        },
+      ],
+    })).toThrow('popup wait requires a URL predicate or openerTabId');
 
     expect(() => RunUIStepsSchema.parse({
       sessionId: 'sess_123',

@@ -89,6 +89,7 @@ For explicit locator-style targeting, use `target.locator`. Direct live actions 
       "locator": {
         "scope": "buttons",
         "frame": {
+          "selector": "#settings-frame",
           "titleContains": "Account"
         },
         "steps": [
@@ -113,7 +114,7 @@ For explicit locator-style targeting, use `target.locator`. Direct live actions 
 }
 ```
 
-Locator step kinds are `css`, `role`, `text`, `label`, `testId`, `placeholder`, and `altText`. `css` and `testId` steps match exactly by default; text-like steps match by containment unless `exact: true` is set. Regex matchers use `{ "pattern": "...", "flags": "i" }`. By default each step filters the current candidate set; set `relation: "descendant"` on a later step to search descendants of the previous step's matches.
+Locator step kinds are `css`, `role`, `text`, `label`, `testId`, `placeholder`, and `altText`. `css` and `testId` steps match exactly by default; text-like steps match by containment unless `exact: true` is set. Regex matchers use `{ "pattern": "...", "flags": "i" }`. By default each step filters the current candidate set; set `relation: "descendant"` to search descendants of the previous matches or `relation: "ancestor"` to require a matching ancestor. `locator.frame.selector` can narrow locator execution to a same-origin frame path such as `#outer-frame => #inner-frame`.
 
 ### Supported actions
 
@@ -154,8 +155,8 @@ When this happens, do not retry the same action. Inspect page state, refresh ref
 - Nested same-origin iframe actions are covered when page-state returns a frame-aware `elementRef`
 - Native pointer actions in cross-origin, sandboxed opaque-origin, or inaccessible frames return `unsupported_cross_origin_frame` when top-document coordinate translation is not possible
 - Stale frame ids on frame-aware refs are re-resolved by encoded frame URL/title plus selector when possible. Invalid frame ids without enough metadata, or unresolved frame refs, return `target_frame_not_found`.
-- `target.locator` now has native DOM resolution for direct/workflow actions and compact page-state semantics for server-side diagnostics. It supports chained structured filters, explicit descendant relations, and regex matching, but it is not yet a full Playwright/Cypress locator engine for ancestor relations, closed shadow DOM, coordinate targeting, or arbitrary selector state.
-- Native actions inspect target actionability before dispatch and return structured failures for hidden, disabled, readonly input, non-editable input, unstable, outside-viewport, pointer-events none, and hit-target mismatch cases
+- `target.locator` now has native DOM resolution for direct/workflow actions and compact page-state semantics for server-side diagnostics. It supports chained structured filters, ancestor/descendant relations, regex matching, and same-origin frame selector paths, but it is not yet a full Playwright/Cypress locator engine for closed shadow DOM, coordinate targeting, or arbitrary selector state.
+- Native actions inspect target actionability before dispatch and return structured failures for hidden, disabled, readonly input, non-editable input, unstable, outside-viewport, pointer-events none, hit-target mismatch, and detached-target cases. Offscreen targets now scroll into view before native pointer dispatch and return pre/post scroll diagnostics.
 - Page-state assertions and waits can match `visible: true` or `visible: false`, role/name fields, and frame URL/title filters on structured buttons, links, inputs, modals, and focused refs
 - Only one action should be driven at a time per session
 - Live automation still respects extension allowlist, pause/disconnect state, and sensitive-field opt-in policy
@@ -277,11 +278,14 @@ These waits are available as standalone tools and as `run_ui_steps` `kind: "wait
 | --- | --- |
 | `wait_for_url` | Wait for `exactUrl`, `urlContains`, or `urlRegex`. |
 | `wait_for_navigation` | Wait for a persisted navigation event by destination URL, source URL, trigger, or tab. |
+| `wait_for_navigation_lifecycle` | Wait for live navigation lifecycle states such as `commit`, `same_document`, `domcontentloaded`, `load`, or `network_idle`. |
 | `wait_for_load_state` | Wait for the live document readiness to reach `domcontentloaded` or `load`, optionally scoped by URL predicates. |
 | `wait_for_selector_state` | Wait for a selector to become `attached`, `detached`, `visible`, or `hidden`. |
 | `wait_for_console` | Wait for a live console log matching `levels` and/or `contains`. |
 | `wait_for_dialog` | Wait for a native JavaScript `alert`, `confirm`, `prompt`, or `beforeunload` dialog and optionally accept or dismiss it. |
 | `wait_for_stable_layout` | Wait until the page or a selector's layout snapshot stays unchanged for `stableMs`. |
+| `wait_for_download` | Wait for a download to start or complete, filtered by URL or filename. |
+| `wait_for_popup` | Wait for a popup tab/window opened by the bound session tab. |
 | `wait_for_network_quiet` | Wait for persisted network activity to stay quiet for `quietMs`. |
 | `wait_for_request` | Wait for a persisted request by URL, method, trace id, initiator, content type, or tab. |
 | `wait_for_response` | Wait for a persisted response by request filters plus status, response content type, or error type. |
@@ -405,7 +409,7 @@ Milestone 4 scope:
   - `fast`: smaller page-state captures, cached state reuse between steps, and lighter summaries
 - step kinds: `action`, `waitFor`, `wait`, `assert`
 - `waitFor` polls compact page-state matchers
-- `wait` runs first-class waits with `waitKind: "url" | "navigation" | "load_state" | "selector_state" | "console" | "dialog" | "stable_layout" | "network_quiet" | "request" | "response"`
+- `wait` runs first-class waits with `waitKind: "url" | "navigation" | "navigation_lifecycle" | "load_state" | "selector_state" | "console" | "dialog" | "stable_layout" | "download" | "popup" | "network_quiet" | "request" | "response"`
 - action target matchers:
   - `elementRef`
   - `selector`
