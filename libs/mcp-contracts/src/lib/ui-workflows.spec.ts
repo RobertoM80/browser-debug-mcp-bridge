@@ -142,6 +142,15 @@ describe('ui-workflows', () => {
         },
         {
           kind: 'wait',
+          id: 'wait-layout',
+          wait: {
+            waitKind: 'stable_layout',
+            selector: '#ready',
+            stableMs: 300,
+          },
+        },
+        {
+          kind: 'wait',
           id: 'wait-api-request',
           wait: {
             waitKind: 'request',
@@ -164,7 +173,7 @@ describe('ui-workflows', () => {
       ],
     });
 
-    expect(parsed.steps.map((step) => step.kind)).toEqual(['wait', 'wait', 'wait', 'wait', 'wait', 'wait']);
+    expect(parsed.steps.map((step) => step.kind)).toEqual(['wait', 'wait', 'wait', 'wait', 'wait', 'wait', 'wait']);
     const selectorStep = parsed.steps[2];
     expect(selectorStep.kind).toBe('wait');
     if (selectorStep.kind === 'wait') {
@@ -177,6 +186,11 @@ describe('ui-workflows', () => {
     expect(dialogStep.kind).toBe('wait');
     if (dialogStep.kind === 'wait') {
       expect(dialogStep.wait.waitKind).toBe('dialog');
+    }
+    const layoutStep = parsed.steps[4];
+    expect(layoutStep.kind).toBe('wait');
+    if (layoutStep.kind === 'wait') {
+      expect(layoutStep.wait.waitKind).toBe('stable_layout');
     }
   });
 

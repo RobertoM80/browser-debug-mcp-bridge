@@ -185,6 +185,14 @@ function buildAutomationFixtureHtml(): string {
           }
           #hidden-action { display: none; }
           #no-pointer-action { pointer-events: none; }
+          #layout-target {
+            background: #dbeafe;
+            height: 24px;
+            margin: 12px 0;
+            transition: transform 600ms linear;
+            width: 120px;
+          }
+          #layout-target.moving { transform: translateX(96px); }
         </style>
       </head>
       <body>
@@ -226,6 +234,8 @@ function buildAutomationFixtureHtml(): string {
           <button id="emit-console-error" data-testid="emit-console-error">Emit console error</button>
           <output id="console-output"></output>
           <button id="open-native-dialog" data-testid="open-native-dialog">Open native dialog</button>
+          <button id="start-layout-shift" data-testid="start-layout-shift">Start layout shift</button>
+          <div id="layout-target"></div>
           <div id="scroll-box">
             <div id="scroll-content">Scrollable content</div>
           </div>
@@ -310,6 +320,12 @@ function buildAutomationFixtureHtml(): string {
             setTimeout(() => {
               alert('Automation native dialog');
             }, 1500);
+          });
+          document.querySelector('#start-layout-shift').addEventListener('click', () => {
+            const target = document.querySelector('#layout-target');
+            target.classList.remove('moving');
+            void target.getBoundingClientRect().width;
+            target.classList.add('moving');
           });
           document.querySelector('#scroll-box').addEventListener('scroll', (event) => {
             document.querySelector('#scroll-output').textContent = String(event.target.scrollTop);
@@ -855,6 +871,31 @@ test.describe('@full live automation through MCP and extension session', () => {
       type: 'alert',
       message: 'Automation native dialog',
       action: 'accept',
+    });
+
+    const layoutShiftClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        selector: '#start-layout-shift',
+        tabId,
+      },
+    });
+    expect(layoutShiftClick.status).toBe('succeeded');
+
+    const stableLayoutWait = await callToolJson<WaitToolResponse>(mcp.client, 'wait_for_stable_layout', {
+      sessionId,
+      selector: '#layout-target',
+      stableMs: 300,
+      tabId,
+      timeoutMs: 5_000,
+      pollIntervalMs: 50,
+    });
+    expect(stableLayoutWait.matched).toBe(true);
+    expect(stableLayoutWait.waitKind).toBe('stable_layout');
+    expect(stableLayoutWait.evidence?.layout).toMatchObject({
+      selector: '#layout-target',
+      matched: true,
     });
 
     const networkSince = Date.now();

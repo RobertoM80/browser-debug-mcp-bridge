@@ -1082,7 +1082,11 @@ function buildCaptureOffsets(totalSize: number, viewportSize: number): number[] 
   return Array.from(new Set(offsets));
 }
 
-async function executeScriptInTab<T>(tabId: number, func: (...args: unknown[]) => T, args: unknown[] = []): Promise<T> {
+async function executeScriptInTab<T>(
+  tabId: number,
+  func: (...args: unknown[]) => T | Promise<T>,
+  args: unknown[] = [],
+): Promise<T> {
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     func,
@@ -1689,6 +1693,27 @@ function normalizeDialogWaitPromptText(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }
 
+function normalizeStableLayoutWaitTimeoutMs(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 5_000;
+  }
+  return Math.min(Math.max(Math.floor(value), 100), 120_000);
+}
+
+function normalizeStableLayoutWaitStableMs(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 500;
+  }
+  return Math.min(Math.max(Math.floor(value), 100), 10_000);
+}
+
+function normalizeStableLayoutWaitPollIntervalMs(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 100;
+  }
+  return Math.min(Math.max(Math.floor(value), 50), 5_000);
+}
+
 function dialogMatchesWaitPayload(
   dialog: CdpJavascriptDialogOpeningPayload,
   payload: Record<string, unknown>,
@@ -1806,6 +1831,179 @@ async function waitForJavascriptDialogInTab(options: {
   } finally {
     await cleanup();
   }
+}
+
+async function waitForStableLayoutInTab(options: {
+  payload: Record<string, unknown>;
+  tab: chrome.tabs.Tab & { id: number };
+}): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  const { payload, tab } = options;
+  const selector = typeof payload.selector === 'string' ? payload.selector : undefined;
+  const stableMs = normalizeStableLayoutWaitStableMs(payload.stableMs);
+  const timeoutMs = normalizeStableLayoutWaitTimeoutMs(payload.timeoutMs);
+  const pollIntervalMs = normalizeStableLayoutWaitPollIntervalMs(payload.pollIntervalMs);
+  const result = await executeScriptInTab<Record<string, unknown>>(
+    tab.id,
+    (selectorArg, stableMsArg, timeoutMsArg, pollIntervalMsArg) => {
+      const selectorValue = typeof selectorArg === 'string' ? selectorArg : undefined;
+      const stableWindowMs = typeof stableMsArg === 'number' ? stableMsArg : 500;
+      const timeoutWindowMs = typeof timeoutMsArg === 'number' ? timeoutMsArg : 5_000;
+      const pollWindowMs = typeof pollIntervalMsArg === 'number' ? pollIntervalMsArg : 100;
+
+      return new Promise<Record<string, unknown>>((resolve) => {
+        const startedAt = Date.now();
+        const deadline = startedAt + timeoutWindowMs;
+        let lastChangedAt = startedAt;
+        let lastReason = 'initial';
+        let lastFingerprint = '';
+        let lastSnapshot: Record<string, unknown> = {};
+        let attempts = 0;
+        let layoutShiftCount = 0;
+        let layoutShiftScore = 0;
+        let intervalId: ReturnType<typeof setInterval> | undefined;
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
+        let mutationObserver: MutationObserver | undefined;
+        let performanceObserver: PerformanceObserver | undefined;
+
+        const cleanup = (): void => {
+          if (intervalId) {
+            clearInterval(intervalId);
+            intervalId = undefined;
+          }
+          if (timeoutId) {
+            clearTimeout(timeoutId);
+            timeoutId = undefined;
+          }
+          mutationObserver?.disconnect();
+          performanceObserver?.disconnect();
+        };
+
+        const captureSnapshot = (): Record<string, unknown> => {
+          const root = document.documentElement;
+          const body = document.body;
+          const target = selectorValue ? document.querySelector(selectorValue) : undefined;
+          const targetRect = target instanceof Element ? target.getBoundingClientRect() : undefined;
+          return {
+            url: window.location.href,
+            readyState: document.readyState,
+            viewport: {
+              width: window.innerWidth,
+              height: window.innerHeight,
+              scrollX: Math.round(window.scrollX),
+              scrollY: Math.round(window.scrollY),
+            },
+            document: {
+              scrollWidth: root?.scrollWidth ?? body?.scrollWidth ?? 0,
+              scrollHeight: root?.scrollHeight ?? body?.scrollHeight ?? 0,
+              bodyWidth: body?.getBoundingClientRect().width ?? 0,
+              bodyHeight: body?.getBoundingClientRect().height ?? 0,
+            },
+            target: selectorValue
+              ? {
+                  selector: selectorValue,
+                  found: target instanceof Element,
+                  rect: targetRect
+                    ? {
+                        x: Number(targetRect.x.toFixed(2)),
+                        y: Number(targetRect.y.toFixed(2)),
+                        width: Number(targetRect.width.toFixed(2)),
+                        height: Number(targetRect.height.toFixed(2)),
+                      }
+                    : undefined,
+                }
+              : undefined,
+          };
+        };
+
+        const finish = (matched: boolean): void => {
+          cleanup();
+          resolve({
+            matched,
+            selector: selectorValue,
+            stableMs: stableWindowMs,
+            timeoutMs: timeoutWindowMs,
+            pollIntervalMs: pollWindowMs,
+            waitedMs: Date.now() - startedAt,
+            attempts,
+            lastChangedAt,
+            quietForMs: Math.max(0, Date.now() - lastChangedAt),
+            lastReason,
+            layoutShiftCount,
+            layoutShiftScore: Number(layoutShiftScore.toFixed(4)),
+            snapshot: lastSnapshot,
+          });
+        };
+
+        const sample = (): void => {
+          requestAnimationFrame(() => {
+            attempts += 1;
+            lastSnapshot = captureSnapshot();
+            const target = lastSnapshot.target as { found?: boolean } | undefined;
+            const fingerprint = JSON.stringify(lastSnapshot);
+            if (selectorValue && target?.found !== true) {
+              lastChangedAt = Date.now();
+              lastReason = 'target_not_found';
+            } else if (fingerprint !== lastFingerprint) {
+              lastChangedAt = Date.now();
+              lastReason = 'layout_snapshot_changed';
+              lastFingerprint = fingerprint;
+            }
+
+            if (Date.now() - lastChangedAt >= stableWindowMs) {
+              finish(true);
+            } else if (Date.now() >= deadline) {
+              finish(false);
+            }
+          });
+        };
+
+        mutationObserver = new MutationObserver(() => {
+          lastChangedAt = Date.now();
+          lastReason = 'dom_mutation';
+        });
+        mutationObserver.observe(document.documentElement, {
+          attributes: true,
+          childList: true,
+          characterData: true,
+          subtree: true,
+        });
+
+        if (typeof PerformanceObserver === 'function') {
+          try {
+            performanceObserver = new PerformanceObserver((list) => {
+              for (const entry of list.getEntries()) {
+                const layoutEntry = entry as PerformanceEntry & { value?: number; hadRecentInput?: boolean };
+                if (layoutEntry.hadRecentInput === true) {
+                  continue;
+                }
+                layoutShiftCount += 1;
+                layoutShiftScore += typeof layoutEntry.value === 'number' ? layoutEntry.value : 0;
+                lastChangedAt = Date.now();
+                lastReason = 'layout_shift';
+              }
+            });
+            performanceObserver.observe({ type: 'layout-shift', buffered: true });
+          } catch {
+            performanceObserver = undefined;
+          }
+        }
+
+        sample();
+        intervalId = setInterval(sample, pollWindowMs);
+        timeoutId = setTimeout(() => finish(false), timeoutWindowMs);
+      });
+    },
+    [selector, stableMs, timeoutMs, pollIntervalMs],
+  );
+
+  return {
+    payload: {
+      tabId: tab.id,
+      url: tab.url,
+      ...result,
+    },
+    truncated: false,
+  };
 }
 
 async function observeOverrideAssetsInTab(tabId: number, includePerformance = true): Promise<ObservedOverrideAssetsResult> {
@@ -3290,6 +3488,33 @@ async function executeCaptureCommand(
 
     rememberCaptureTabForSession(context.sessionId, tab);
     return waitForJavascriptDialogInTab({
+      payload,
+      tab: tab as chrome.tabs.Tab & { id: number },
+    });
+  }
+
+  if (command === 'CAPTURE_WAIT_FOR_STABLE_LAYOUT') {
+    const requestedTabId = resolveLiveConsoleTabId(payload.tabId);
+    const sessionScope = getSessionTabScope(context.sessionId);
+    if (requestedTabId !== undefined && sessionScope && !sessionScope.allowedTabIds.has(requestedTabId)) {
+      throw new Error(`tabId ${requestedTabId} is not bound to this session`);
+    }
+
+    const tab = requestedTabId !== undefined
+      ? await chrome.tabs.get(requestedTabId).catch(() => undefined)
+      : await resolveCaptureTab(context.sessionId);
+    if (!tab || typeof tab.id !== 'number') {
+      throw new Error('No capture tab is available for stable layout wait.');
+    }
+    if (!isTabAllowedForSession(context.sessionId, tab.id)) {
+      throw new Error(`tabId ${tab.id} is not bound to this session`);
+    }
+    if (!isUrlAllowed(tab.url ?? '', captureConfig.allowlist)) {
+      throw new Error('Stable layout waits are blocked because the target tab is no longer allowlisted.');
+    }
+
+    rememberCaptureTabForSession(context.sessionId, tab);
+    return waitForStableLayoutInTab({
       payload,
       tab: tab as chrome.tabs.Tab & { id: number },
     });

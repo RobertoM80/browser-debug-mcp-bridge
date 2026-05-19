@@ -322,6 +322,13 @@ export const AutomationWaitDialogSchema = AutomationWaitBaseSchema.extend({
   tabId: z.number().int().min(0).optional(),
 });
 
+export const AutomationWaitStableLayoutSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('stable_layout'),
+  selector: z.string().min(1).optional(),
+  stableMs: z.number().int().min(100).max(10000).default(500),
+  tabId: z.number().int().min(0).optional(),
+});
+
 export const AutomationWaitNetworkQuietSchema = AutomationWaitBaseSchema.extend({
   waitKind: z.literal('network_quiet'),
   quietMs: z.number().int().min(100).max(10000).default(500),
@@ -386,6 +393,7 @@ export const AutomationWaitSpecSchema = z.discriminatedUnion('waitKind', [
   AutomationWaitSelectorStateSchema,
   AutomationWaitConsoleSchema,
   AutomationWaitDialogSchema,
+  AutomationWaitStableLayoutSchema,
   AutomationWaitNetworkQuietSchema,
   AutomationWaitRequestSchema,
   AutomationWaitResponseSchema,

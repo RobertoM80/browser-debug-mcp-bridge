@@ -572,6 +572,13 @@ const AutomationWaitDialogSchema = AutomationWaitBaseSchema.extend({
   tabId: z.number().int().min(0).optional(),
 });
 
+const AutomationWaitStableLayoutSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('stable_layout'),
+  selector: z.string().min(1).optional(),
+  stableMs: z.number().int().min(100).max(10000).default(500),
+  tabId: z.number().int().min(0).optional(),
+});
+
 const AutomationWaitNetworkQuietSchema = AutomationWaitBaseSchema.extend({
   waitKind: z.literal('network_quiet'),
   quietMs: z.number().int().min(100).max(10000).default(500),
@@ -636,6 +643,7 @@ const AutomationWaitSpecSchema = z.discriminatedUnion('waitKind', [
   AutomationWaitSelectorStateSchema,
   AutomationWaitConsoleSchema,
   AutomationWaitDialogSchema,
+  AutomationWaitStableLayoutSchema,
   AutomationWaitNetworkQuietSchema,
   AutomationWaitRequestSchema,
   AutomationWaitResponseSchema,
@@ -721,7 +729,7 @@ const AUTOMATION_WAIT_TOOL_SCHEMA = {
   type: 'object',
   required: ['waitKind'],
   properties: {
-    waitKind: { type: 'string', enum: ['url', 'navigation', 'load_state', 'selector_state', 'console', 'dialog', 'network_quiet', 'request', 'response'] },
+    waitKind: { type: 'string', enum: ['url', 'navigation', 'load_state', 'selector_state', 'console', 'dialog', 'stable_layout', 'network_quiet', 'request', 'response'] },
     timeoutMs: { type: 'number' },
     pollIntervalMs: { type: 'number' },
     urlContains: { type: 'string' },
@@ -739,6 +747,7 @@ const AUTOMATION_WAIT_TOOL_SCHEMA = {
     includeRuntimeErrors: { type: 'boolean' },
     action: { type: 'string', enum: ['none', 'accept', 'dismiss'] },
     promptText: { type: 'string' },
+    stableMs: { type: 'number' },
     quietMs: { type: 'number' },
     method: { type: 'string' },
     traceId: { type: 'string' },
@@ -1152,6 +1161,18 @@ const TOOL_SCHEMAS: Record<string, object> = {
       urlContains: { type: 'string' },
       action: { type: 'string', enum: ['none', 'accept', 'dismiss'] },
       promptText: { type: 'string' },
+      tabId: { type: 'number' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_stable_layout: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      selector: { type: 'string' },
+      stableMs: { type: 'number' },
       tabId: { type: 'number' },
       timeoutMs: { type: 'number' },
       pollIntervalMs: { type: 'number' },
@@ -1798,6 +1819,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   wait_for_selector_state: 'Poll a selector until it is attached, detached, visible, or hidden',
   wait_for_console: 'Poll live console logs until a matching message appears',
   wait_for_dialog: 'Wait for a native JavaScript dialog and optionally accept or dismiss it',
+  wait_for_stable_layout: 'Wait until the page or selector layout stays unchanged for a stable window',
   wait_for_network_quiet: 'Wait until persisted network activity is quiet for a bounded window',
   wait_for_request: 'Poll persisted network activity until a matching request is observed',
   wait_for_response: 'Poll persisted network activity until a matching response is observed',
@@ -2091,6 +2113,7 @@ type CaptureCommandName =
   | 'CAPTURE_UI_SNAPSHOT'
   | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
   | 'CAPTURE_WAIT_FOR_DIALOG'
+  | 'CAPTURE_WAIT_FOR_STABLE_LAYOUT'
   | 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
   | 'CAPTURE_OVERRIDE_RESPONSE_BODY'
   | 'CAPTURE_OVERRIDE_POC_GET_STATUS'
@@ -5020,6 +5043,55 @@ async function waitForDialogCondition(
       : {
           code: 'dialog_wait_timeout',
           message: 'Timed out waiting for a matching JavaScript dialog.',
+      },
+  };
+}
+
+async function waitForStableLayoutCondition(
+  sessionId: string,
+  wait: z.infer<typeof AutomationWaitStableLayoutSchema>,
+  captureClient: CaptureCommandClient,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, 5_000, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const stableMs = wait.stableMs;
+  const pollIntervalMs = resolveDurationMs(wait.pollIntervalMs, 100, 5_000);
+  const startedAt = Date.now();
+  const capture = await executeLiveCapture(
+    captureClient,
+    sessionId,
+    'CAPTURE_WAIT_FOR_STABLE_LAYOUT',
+    {
+      selector: wait.selector,
+      stableMs,
+      tabId: wait.tabId,
+      timeoutMs,
+      pollIntervalMs,
+    },
+    timeoutMs + 2_000,
+  );
+  const payload = ensureCaptureSuccess(capture, sessionId);
+  const matched = payload.matched === true;
+
+  return {
+    waitKind: 'stable_layout',
+    matched,
+    waitedMs: Date.now() - startedAt,
+    attempts: 1,
+    timeoutMs,
+    pollIntervalMs,
+    evidence: {
+      filters: {
+        selector: wait.selector,
+        stableMs,
+        tabId: wait.tabId,
+      },
+      layout: payload,
+    },
+    error: matched
+      ? undefined
+      : {
+          code: 'stable_layout_wait_timeout',
+          message: 'Timed out waiting for layout to stay stable.',
         },
   };
 }
@@ -5453,6 +5525,8 @@ async function runAutomationWait(options: {
       return waitForConsoleCondition(options.sessionId, options.wait, options.captureClient);
     case 'dialog':
       return waitForDialogCondition(options.sessionId, options.wait, options.captureClient);
+    case 'stable_layout':
+      return waitForStableLayoutCondition(options.sessionId, options.wait, options.captureClient);
     case 'network_quiet': {
       const db = options.getDb?.();
       if (!db) {
@@ -9893,6 +9967,24 @@ export function createV2ToolHandlers(
 
       const wait = AutomationWaitDialogSchema.parse({ ...input, waitKind: 'dialog' });
       const waited = await waitForDialogCondition(sessionId, wait, captureClient);
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
+    wait_for_stable_layout: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const wait = AutomationWaitStableLayoutSchema.parse({ ...input, waitKind: 'stable_layout' });
+      const waited = await waitForStableLayoutCondition(sessionId, wait, captureClient);
       return {
         ...createBaseResponse(sessionId),
         limitsApplied: {

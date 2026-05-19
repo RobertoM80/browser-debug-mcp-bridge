@@ -70,6 +70,7 @@ export const AUTOMATION_TOOLS = {
   WAIT_FOR_SELECTOR_STATE: 'wait_for_selector_state',
   WAIT_FOR_CONSOLE: 'wait_for_console',
   WAIT_FOR_DIALOG: 'wait_for_dialog',
+  WAIT_FOR_STABLE_LAYOUT: 'wait_for_stable_layout',
   WAIT_FOR_NETWORK_QUIET: 'wait_for_network_quiet',
   WAIT_FOR_REQUEST: 'wait_for_request',
   WAIT_FOR_RESPONSE: 'wait_for_response',

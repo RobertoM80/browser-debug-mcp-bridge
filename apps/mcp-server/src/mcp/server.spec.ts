@@ -4585,6 +4585,64 @@ describe('mcp/server V2 capture tools', () => {
     });
   });
 
+  it('waits for a stable layout window through the live extension session', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload, timeoutMs) => {
+          expect(command).toBe('CAPTURE_WAIT_FOR_STABLE_LAYOUT');
+          expect(timeoutMs).toBe(2500);
+          expect(payload).toMatchObject({
+            selector: '#panel',
+            stableMs: 300,
+            tabId: 7,
+            timeoutMs: 500,
+            pollIntervalMs: 50,
+          });
+          return {
+            ok: true,
+            payload: {
+              matched: true,
+              selector: '#panel',
+              stableMs: 300,
+              quietForMs: 325,
+              tabId: 7,
+              snapshot: {
+                target: {
+                  found: true,
+                  rect: { x: 10, y: 20, width: 200, height: 40 },
+                },
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_stable_layout', {
+      sessionId: 'session-v2',
+      selector: '#panel',
+      stableMs: 300,
+      tabId: 7,
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('stable_layout');
+    expect(response.evidence).toMatchObject({
+      filters: {
+        selector: '#panel',
+        stableMs: 300,
+        tabId: 7,
+      },
+      layout: {
+        matched: true,
+        quietForMs: 325,
+      },
+    });
+  });
+
   it('waits for a bounded network quiet window from persisted network activity', async () => {
     const db = new Database(':memory:');
     initializeDatabase(db);

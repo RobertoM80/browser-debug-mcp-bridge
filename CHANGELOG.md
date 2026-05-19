@@ -6,6 +6,7 @@
 
 * **automation:** add live document load-state waits for MCP workflows
 * **automation:** add native JavaScript dialog waits
+* **automation:** add stable layout waits
 * **automation:** persist native action diagnostics in automation history
 * **automation:** support explicit descendant relations in native locator chains
 
