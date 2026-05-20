@@ -136,6 +136,7 @@ describe('native automation backend', () => {
   it('dispatches coordinate click targets directly in the top document', async () => {
     const chromeMock = installChromeMock({
       url: 'https://example.com/settings',
+      frameId: 0,
       inViewport: true,
       point: {
         x: 88,
@@ -194,8 +195,54 @@ describe('native automation backend', () => {
     );
   });
 
-  it('rejects coordinate targets for non-top-document frames', async () => {
-    const chromeMock = installChromeMock();
+  it('translates frame-local coordinate click targets before dispatch', async () => {
+    const chromeMock = installChromeMock([
+      {
+        url: 'https://example.com/frame',
+        frameId: 4,
+        frameSelector: '#child-frame',
+        framePolicy: {
+          frameId: 4,
+          url: 'https://example.com/frame',
+          title: 'Frame',
+          origin: 'https://example.com',
+          topAccessible: false,
+          parentAccessible: false,
+          sameOriginWithTop: false,
+          isOpaqueOrigin: false,
+          pointerActionsSupported: false,
+          unsupportedReason: 'cross_origin_with_top',
+        },
+        inViewport: true,
+        point: {
+          x: 88,
+          y: 44,
+        },
+        viewportRect: {
+          x: 0,
+          y: 0,
+          width: 320,
+          height: 120,
+        },
+        hitTargetSelector: '#frame-save',
+        hitTargetTagName: 'button',
+        hitTargetTextPreview: 'Frame save',
+      },
+      {
+        resolved: true,
+        frameSelector: '#child-frame',
+        localFramePoint: {
+          x: 88,
+          y: 44,
+        },
+        translatedPoint: {
+          x: 142,
+          y: 224,
+        },
+        matchedSegments: ['#child-frame'],
+        frameElementRects: [],
+      },
+    ]);
     const request: Extract<LiveUIActionRequest, { action: 'click' }> = {
       action: 'click',
       traceId: 'trace-click-coordinate-frame',
@@ -219,10 +266,32 @@ describe('native automation backend', () => {
       traceId: 'trace-click-coordinate-frame',
     });
 
-    expect(result.status).toBe('rejected');
-    expect(result.failureReason?.code).toBe('coordinate_frame_unsupported');
-    expect(chromeMock.executeScript).not.toHaveBeenCalled();
-    expect(chromeMock.sendCommand).not.toHaveBeenCalled();
+    expect(result.status).toBe('succeeded');
+    expect(result.result).toMatchObject({
+      backend: nativeAutomationBackend,
+      point: {
+        x: 142,
+        y: 224,
+      },
+      pointCoordinateSpace: 'translated-frame',
+      coordinateTarget: true,
+      frameCoordinateTranslation: {
+        resolved: true,
+        frameSelector: '#child-frame',
+      },
+      actionability: {
+        frameCoordinateResolved: true,
+      },
+    });
+    expect(chromeMock.sendCommand).toHaveBeenCalledWith(
+      { tabId: 7 },
+      'Input.dispatchMouseEvent',
+      expect.objectContaining({
+        type: 'mousePressed',
+        x: 142,
+        y: 224,
+      }),
+    );
   });
 
   it('resolves locator targets in the native page context before dispatch', async () => {
@@ -1238,6 +1307,108 @@ describe('native automation backend', () => {
     });
     expect(chromeMock.attach).not.toHaveBeenCalled();
     expect(chromeMock.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('translates inspectable cross-origin frame coordinates into top-document clicks', async () => {
+    const chromeMock = installChromeMock([
+      {
+        ...targetSnapshot,
+        frameId: 4,
+        frameSelector: '#cross-origin-frame',
+        url: 'https://third.example/frame',
+        framePolicy: {
+          frameId: 4,
+          url: 'https://third.example/frame',
+          origin: 'https://third.example',
+          topAccessible: false,
+          sameOriginWithTop: false,
+          isOpaqueOrigin: false,
+          pointerActionsSupported: false,
+          unsupportedReason: 'cross_origin_with_top',
+        },
+        actionability: {
+          ...targetSnapshot.actionability,
+          frameCoordinateResolved: false,
+        },
+      },
+      {
+        resolved: true,
+        frameSelector: '#cross-origin-frame',
+        localFramePoint: {
+          x: 42,
+          y: 24,
+        },
+        translatedPoint: {
+          x: 142,
+          y: 224,
+        },
+        matchedSegments: ['#cross-origin-frame'],
+        frameElementRects: [
+          {
+            frameSelector: '#cross-origin-frame',
+            x: 100,
+            y: 200,
+            width: 320,
+            height: 120,
+            clientLeft: 0,
+            clientTop: 0,
+          },
+        ],
+      },
+    ]);
+    const request: Extract<LiveUIActionRequest, { action: 'click' }> = {
+      action: 'click',
+      traceId: 'trace-click-cross-origin-translated',
+      target: {
+        selector: '#save',
+        tabId: 7,
+        frameId: 4,
+      },
+    };
+
+    const result = await executeNativeClickAction({
+      request,
+      tab: {
+        id: 7,
+        url: 'https://example.com/settings',
+      } as chrome.tabs.Tab & { id: number },
+      startedAt: 1000,
+      traceId: 'trace-click-cross-origin-translated',
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(result.result).toMatchObject({
+      backend: nativeAutomationBackend,
+      point: {
+        x: 142,
+        y: 224,
+      },
+      pointCoordinateSpace: 'translated-frame',
+      framePolicy: {
+        pointerActionsSupported: true,
+        unsupportedReason: undefined,
+      },
+      actionability: {
+        frameCoordinateResolved: true,
+      },
+      frameCoordinateTranslation: {
+        resolved: true,
+        frameSelector: '#cross-origin-frame',
+        translatedPoint: {
+          x: 142,
+          y: 224,
+        },
+      },
+    });
+    expect(chromeMock.sendCommand).toHaveBeenCalledWith(
+      { tabId: 7 },
+      'Input.dispatchMouseEvent',
+      expect.objectContaining({
+        type: 'mousePressed',
+        x: 142,
+        y: 224,
+      }),
+    );
   });
 
   it('uses native text insertion for input actions', async () => {

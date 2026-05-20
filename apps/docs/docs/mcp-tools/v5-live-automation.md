@@ -150,14 +150,14 @@ When this happens, do not retry the same action. Inspect page state, refresh ref
 
 ### Operational limits
 
-- Native automation supports the top document and same-origin iframe targets in the currently bound tab
+- Native automation supports the top document, same-origin iframe targets, and translated pointer actions for cross-origin or sandboxed iframe targets when the frame-local point can be mapped into top-document coordinates
 - `get_page_state` and `get_interactive_elements` merge frame buttons/links/inputs/modals and return frame-aware refs with `frameId`/`frameUrl`/`frameTitle` plus frame automation policy metadata
 - Open shadow roots are traversed for page-state discovery and native actions. Closed shadow roots are not inspectable.
-- Top-document `target.coordinates` are supported for native click/hover actions. Cross-frame coordinate targets still require future translation support.
+- `target.coordinates` support native click/hover in the top document and in frame-local coordinate spaces when the current frame can be translated through its selector chain.
 - Nested same-origin iframe actions are covered when page-state returns a frame-aware `elementRef`
-- Native pointer actions in cross-origin, sandboxed opaque-origin, or inaccessible frames return `unsupported_cross_origin_frame` when top-document coordinate translation is not possible
+- Native pointer actions in cross-origin, sandboxed opaque-origin, or inaccessible frames return `unsupported_cross_origin_frame` or `coordinate_frame_translation_failed` when top-document coordinate translation is not possible
 - Stale frame ids on frame-aware refs are re-resolved by encoded frame URL/title plus selector when possible. Invalid frame ids without enough metadata, or unresolved frame refs, return `target_frame_not_found`.
-- `target.locator` now has native DOM resolution for direct/workflow actions and compact page-state semantics for server-side diagnostics. It supports chained structured filters, ancestor/descendant relations, regex matching, and same-origin frame selector paths, but it is not yet a full Playwright/Cypress locator engine for closed shadow DOM internals or arbitrary selector state.
+- `target.locator` now has native DOM resolution for direct/workflow actions and compact page-state semantics for server-side diagnostics. It supports chained structured filters, ancestor/descendant relations, regex matching, same-origin frame selector paths, and state filters for `visible`, `enabled`, `disabled`, `editable`, `checked`, `selected`, `pressed`, `expanded`, `readOnly`, and `requiredField`.
 - Closed shadow-root selectors fail explicitly with `closed_shadow_root_unsupported`.
 - Native actions inspect target actionability before dispatch and return structured failures for hidden, disabled, readonly input, non-editable input, unstable, outside-viewport, zero-size geometry, pointer-events none, hit-target mismatch, and detached-target cases. Offscreen targets now scroll into view before native pointer dispatch and return pre/post scroll diagnostics.
 - Page-state assertions and waits can match `visible: true` or `visible: false`, role/name fields, and frame URL/title filters on structured buttons, links, inputs, modals, and focused refs
@@ -421,7 +421,7 @@ Milestone 4 scope:
   - `scope + labelContains`
   - `scope + titleContains`
   - `scope + role/name`
-  - optional refinements: `locator`, `exact`, `nth`, `first`, `last`, `strict`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`, `tagName`, `type`, `disabled`, `selected`, `pressed`, `expanded`, `readOnly`, `requiredField`
+  - optional refinements: `locator`, `exact`, `nth`, `first`, `last`, `strict`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`, `tagName`, `type`, `visible`, `enabled`, `disabled`, `editable`, `checked`, `selected`, `pressed`, `expanded`, `readOnly`, `requiredField`
 - stop on first failure by default
 - optional per-step `onFailure.strategy`: `stop`, `continue`, `retry_once`
 - optional per-step `onFailure.capture`: collect failure evidence using UI snapshot settings

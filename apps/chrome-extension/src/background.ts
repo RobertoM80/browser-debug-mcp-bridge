@@ -3391,19 +3391,34 @@ function mergeFrameElementMetadata(
 
   const childFrames = frames.filter((frame) => frame.frameId !== 0);
   const srcdocFrames = childFrames.filter((frame) => frame.url === 'about:srcdoc');
+  const sameSandboxFlags = (left: string[] | undefined, right: string[] | undefined): boolean => {
+    if (left === undefined || right === undefined) {
+      return false;
+    }
+    if (left.length !== right.length) {
+      return false;
+    }
+    return left.every((flag, index) => flag === right[index]);
+  };
 
   return frames.map((frame) => {
-    if (frame.frameId === 0 || frame.sandboxFlags !== undefined) {
+    if (frame.frameId === 0) {
       return withFrameAutomationPolicy(frame);
     }
 
     const exactUrlMatch = elements.find((element) => {
       return Boolean(element.resolvedUrl && frame.url && element.resolvedUrl === frame.url && (!frame.title || !element.title || element.title === frame.title));
     });
+    const sandboxMatch = frame.sandboxFlags !== undefined
+      ? elements.find((element) => {
+          return sameSandboxFlags(frame.sandboxFlags, element.sandboxFlags)
+            && (!frame.title || !element.title || element.title === frame.title);
+        })
+      : undefined;
     const srcdocMatch = frame.url === 'about:srcdoc' && srcdocFrames.length === elements.filter((element) => element.hasSrcdoc).length
       ? elements.filter((element) => element.hasSrcdoc)[srcdocFrames.findIndex((entry) => entry.frameId === frame.frameId)]
       : undefined;
-    const matchedElement = exactUrlMatch ?? srcdocMatch;
+    const matchedElement = exactUrlMatch ?? sandboxMatch ?? srcdocMatch;
     if (!matchedElement) {
       return withFrameAutomationPolicy(frame);
     }
@@ -3411,7 +3426,7 @@ function mergeFrameElementMetadata(
     return withFrameAutomationPolicy({
       ...frame,
       frameSelector: matchedElement.selectorPath,
-      sandboxFlags: matchedElement.sandboxFlags,
+      sandboxFlags: frame.sandboxFlags ?? matchedElement.sandboxFlags,
       title: frame.title || matchedElement.title,
     });
   });
@@ -3428,7 +3443,24 @@ async function listTabFrames(tabId: number): Promise<FrameCaptureMetadata[]> {
         let parentAccessible = false;
         let parentUrl: string | undefined;
         let topAccessible = false;
-        let sameOriginWithTop = false;
+        const isInspectableFromTop = (): boolean => {
+          if (window === window.top) {
+            return true;
+          }
+
+          try {
+            let currentWindow: Window | null = window;
+            while (currentWindow && currentWindow !== currentWindow.top) {
+              const parentWindow: Window = currentWindow.parent;
+              void parentWindow.document;
+              currentWindow = parentWindow;
+            }
+            return true;
+          } catch {
+            return false;
+          }
+        };
+        const sameOriginWithTop = isInspectableFromTop();
         let sandboxFlags: string[] | undefined;
 
         try {
@@ -3440,7 +3472,6 @@ async function listTabFrames(tabId: number): Promise<FrameCaptureMetadata[]> {
 
         try {
           if (window.top) {
-            sameOriginWithTop = window.location.origin === window.top.location.origin;
             topAccessible = true;
           }
         } catch {
@@ -3466,7 +3497,7 @@ async function listTabFrames(tabId: number): Promise<FrameCaptureMetadata[]> {
           url: window.location.href,
           title: document.title,
           origin: window.location.origin,
-          isOpaqueOrigin: window.location.origin === 'null',
+          isOpaqueOrigin: window.location.origin === 'null' && !sameOriginWithTop,
           parentAccessible,
           parentUrl,
           topAccessible,

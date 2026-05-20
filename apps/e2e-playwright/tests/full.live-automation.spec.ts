@@ -251,10 +251,14 @@ function buildAutomationFixtureHtml(crossOriginFrameUrl: string): string {
           <button id="zero-size-action">Zero size action</button>
           <output id="count" aria-live="polite">0</output>
           <label for="displayName">Display name</label>
-          <input id="displayName" />
+          <input id="displayName" required />
+          <label for="secondary-input">Secondary input</label>
+          <input id="secondary-input" />
           <label for="readonly-input">Readonly input</label>
           <input id="readonly-input" readonly value="Locked" />
           <output id="name-output" aria-live="polite"></output>
+          <div id="rich-editor" contenteditable="true" role="textbox" aria-label="Rich editor"></div>
+          <output id="editor-output" aria-live="polite"></output>
           <form id="native-form">
             <button id="submit-form" type="submit">Submit form</button>
           </form>
@@ -350,6 +354,9 @@ function buildAutomationFixtureHtml(crossOriginFrameUrl: string): string {
           });
           document.querySelector('#displayName').addEventListener('input', (event) => {
             document.querySelector('#name-output').textContent = event.target.value;
+          });
+          document.querySelector('#rich-editor').addEventListener('input', (event) => {
+            document.querySelector('#editor-output').textContent = event.target.textContent || '';
           });
           document.querySelector('#open-dialog').addEventListener('click', () => {
             document.querySelector('#dialog').hidden = false;
@@ -831,6 +838,20 @@ test.describe('@full live automation through MCP and extension session', () => {
     expect(input.actionResult?.result?.valueLength).toBe('Ada Lovelace'.length);
     await expect(targetPage.locator('#name-output')).toHaveText('Ada Lovelace');
 
+    const contenteditableInput = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'input',
+      target: { selector: '#rich-editor', tabId },
+      input: { value: 'Rich editor value' },
+    });
+    expect(contenteditableInput.status).toBe('succeeded');
+    expect(contenteditableInput.actionResult?.result).toMatchObject({
+      backend: 'cdp-native-v2',
+      fieldType: 'contenteditable',
+      valueLength: 'Rich editor value'.length,
+    });
+    await expect(targetPage.locator('#editor-output')).toHaveText('Rich editor value');
+
     await targetPage.evaluate(() => {
       window.scrollTo(0, 0);
     });
@@ -953,6 +974,49 @@ test.describe('@full live automation through MCP and extension session', () => {
     expect(key.actionResult?.result?.backend).toBe('cdp-native-v2');
     await expect(targetPage.locator('#name-output')).toHaveText('Ada Lovelace!');
 
+    const tabForward = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'press_key',
+      target: {
+        selector: '#displayName',
+        tabId,
+      },
+      input: {
+        key: 'Tab',
+      },
+    });
+    expect(tabForward.status).toBe('succeeded');
+    expect(tabForward.actionResult?.result).toMatchObject({
+      backend: 'cdp-native-v2',
+      key: 'Tab',
+      modifiers: {
+        shiftKey: false,
+      },
+    });
+    await expect(targetPage.locator('#secondary-input')).toBeFocused();
+
+    const tabBackward = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'press_key',
+      target: {
+        selector: '#secondary-input',
+        tabId,
+      },
+      input: {
+        key: 'Tab',
+        shiftKey: true,
+      },
+    });
+    expect(tabBackward.status).toBe('succeeded');
+    expect(tabBackward.actionResult?.result).toMatchObject({
+      backend: 'cdp-native-v2',
+      key: 'Tab',
+      modifiers: {
+        shiftKey: true,
+      },
+    });
+    await expect(targetPage.locator('#displayName')).toBeFocused();
+
     const focus = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
       action: 'focus',
@@ -961,6 +1025,56 @@ test.describe('@full live automation through MCP and extension session', () => {
     expect(focus.status).toBe('succeeded');
     expect(focus.actionResult?.result?.backend).toBe('cdp-native-v2');
     await expect(targetPage.locator('#displayName')).toBeFocused();
+
+    const requiredLocatorFocus = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'focus',
+      target: {
+        tabId,
+        locator: {
+          steps: [
+            {
+              kind: 'role',
+              role: 'textbox',
+            },
+          ],
+        },
+        requiredField: true,
+      },
+    });
+    expect(requiredLocatorFocus.status).toBe('succeeded');
+    expect(requiredLocatorFocus.targetResolution).toMatchObject({
+      strategy: 'native_locator',
+      matched: {
+        selector: '#displayName',
+      },
+    });
+    await expect(targetPage.locator('#displayName')).toBeFocused();
+
+    const readOnlyLocatorFocus = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'focus',
+      target: {
+        tabId,
+        locator: {
+          steps: [
+            {
+              kind: 'role',
+              role: 'textbox',
+            },
+          ],
+        },
+        readOnly: true,
+      },
+    });
+    expect(readOnlyLocatorFocus.status).toBe('succeeded');
+    expect(readOnlyLocatorFocus.targetResolution).toMatchObject({
+      strategy: 'native_locator',
+      matched: {
+        selector: '#readonly-input',
+      },
+    });
+    await expect(targetPage.locator('#readonly-input')).toBeFocused();
 
     const blur = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
@@ -1662,12 +1776,56 @@ test.describe('@full live automation through MCP and extension session', () => {
         tabId,
       },
     });
-    expect(crossOriginAttempt.status).toBe('rejected');
-    expect(crossOriginAttempt.failureDetails?.code).toBe('unsupported_cross_origin_frame');
+    expect(crossOriginAttempt.status).toBe('succeeded');
+    expect(crossOriginAttempt.actionResult?.result?.backend).toBe('cdp-native-v2');
     expect(crossOriginAttempt.actionResult?.result?.framePolicy).toMatchObject({
-      pointerActionsSupported: false,
+      pointerActionsSupported: true,
       sameOriginWithTop: false,
     });
+    expect(crossOriginAttempt.actionResult?.result).toMatchObject({
+      pointCoordinateSpace: 'translated-frame',
+      frameCoordinateTranslation: {
+        resolved: true,
+        frameSelector: '#cross-origin-frame',
+      },
+    });
+    await expect(targetPage.frameLocator('#cross-origin-frame').locator('#cross-origin-count')).toHaveText('1');
+    const crossOriginCoordinatePoint = await targetPage.frameLocator('#cross-origin-frame').locator('#cross-origin-action').evaluate((element) => {
+      if (!(element instanceof HTMLElement)) {
+        return null;
+      }
+      const rect = element.getBoundingClientRect();
+      return {
+        x: Math.round(rect.left + (rect.width / 2)),
+        y: Math.round(rect.top + (rect.height / 2)),
+      };
+    });
+    if (!crossOriginCoordinatePoint || typeof crossOriginAttempt.target?.frameId !== 'number') {
+      throw new Error('Cross-origin frame coordinate point was not available');
+    }
+    const crossOriginCoordinateAttempt = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        tabId,
+        coordinates: {
+          x: crossOriginCoordinatePoint.x,
+          y: crossOriginCoordinatePoint.y,
+          frameId: crossOriginAttempt.target.frameId,
+        },
+      },
+    });
+    expect(crossOriginCoordinateAttempt.status).toBe('succeeded');
+    expect(crossOriginCoordinateAttempt.actionResult?.result).toMatchObject({
+      backend: 'cdp-native-v2',
+      coordinateTarget: true,
+      pointCoordinateSpace: 'translated-frame',
+      frameCoordinateTranslation: {
+        resolved: true,
+        frameSelector: '#cross-origin-frame',
+      },
+    });
+    await expect(targetPage.frameLocator('#cross-origin-frame').locator('#cross-origin-count')).toHaveText('2');
 
     const sandboxAttempt = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
@@ -1677,12 +1835,56 @@ test.describe('@full live automation through MCP and extension session', () => {
         tabId,
       },
     });
-    expect(sandboxAttempt.status).toBe('rejected');
-    expect(sandboxAttempt.failureDetails?.code).toBe('unsupported_cross_origin_frame');
+    expect(sandboxAttempt.status).toBe('succeeded');
+    expect(sandboxAttempt.actionResult?.result?.backend).toBe('cdp-native-v2');
     expect(sandboxAttempt.actionResult?.result?.framePolicy).toMatchObject({
-      pointerActionsSupported: false,
+      pointerActionsSupported: true,
       isOpaqueOrigin: true,
     });
+    expect(sandboxAttempt.actionResult?.result).toMatchObject({
+      pointCoordinateSpace: 'translated-frame',
+      frameCoordinateTranslation: {
+        resolved: true,
+        frameSelector: '#sandbox-frame',
+      },
+    });
+    await expect(targetPage.frameLocator('#sandbox-frame').locator('#sandbox-count')).toHaveText('1');
+    const sandboxCoordinatePoint = await targetPage.frameLocator('#sandbox-frame').locator('#sandbox-action').evaluate((element) => {
+      if (!(element instanceof HTMLElement)) {
+        return null;
+      }
+      const rect = element.getBoundingClientRect();
+      return {
+        x: Math.round(rect.left + (rect.width / 2)),
+        y: Math.round(rect.top + (rect.height / 2)),
+      };
+    });
+    if (!sandboxCoordinatePoint || typeof sandboxAttempt.target?.frameId !== 'number') {
+      throw new Error('Sandbox frame coordinate point was not available');
+    }
+    const sandboxCoordinateAttempt = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        tabId,
+        coordinates: {
+          x: sandboxCoordinatePoint.x,
+          y: sandboxCoordinatePoint.y,
+          frameId: sandboxAttempt.target.frameId,
+        },
+      },
+    });
+    expect(sandboxCoordinateAttempt.status).toBe('succeeded');
+    expect(sandboxCoordinateAttempt.actionResult?.result).toMatchObject({
+      backend: 'cdp-native-v2',
+      coordinateTarget: true,
+      pointCoordinateSpace: 'translated-frame',
+      frameCoordinateTranslation: {
+        resolved: true,
+        frameSelector: '#sandbox-frame',
+      },
+    });
+    await expect(targetPage.frameLocator('#sandbox-frame').locator('#sandbox-count')).toHaveText('2');
 
     const iframeAttempt = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,

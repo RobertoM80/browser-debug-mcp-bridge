@@ -748,13 +748,13 @@ Combined action + wait example:
 
 Important limits and safeguards:
 
-- Native automation supports the top document and same-origin iframe targets in the currently bound tab
+- Native automation supports the top document, same-origin iframe targets, and translated pointer actions for cross-origin or sandboxed iframe targets when the frame-local point can be mapped into top-document coordinates
 - Native actions and page-state discovery support open shadow roots with `host >> target` selectors. Closed shadow roots are not inspectable.
-- Top-document `target.coordinates` are supported for native click/hover actions. Cross-frame coordinate targets still require future translation support.
+- `target.coordinates` support native click/hover in the top document and in frame-local coordinate spaces when the current frame can be translated through its selector chain.
 - Nested same-origin iframe actions are covered when page-state returns a frame-aware `elementRef`
-- Native pointer actions in cross-origin, sandboxed opaque-origin, or inaccessible frames return `unsupported_cross_origin_frame` when top-document coordinate translation is not possible. The response includes `actionResult.result.framePolicy` and `actionability.frameCoordinateResolved`.
+- Native pointer actions in cross-origin, sandboxed opaque-origin, or inaccessible frames return `unsupported_cross_origin_frame` or `coordinate_frame_translation_failed` when top-document coordinate translation is not possible. The response includes `actionResult.result.framePolicy` and `actionability.frameCoordinateResolved`.
 - Stale frame ids on frame-aware refs are re-resolved by encoded frame URL/title and selector context when possible, including iframe reload/replacement cases. `actionResult.result.frameResolution` reports the frame matcher, candidate counts, sampled frames, and whether recovery selected the frame by direct frame context or selector narrowing. Invalid frame ids without enough metadata, or unresolved frame refs, return `target_frame_not_found`.
-- `target.locator` now has native DOM resolution for direct/workflow actions and compact page-state semantics for server-side diagnostics. It supports chained structured filters, ancestor/descendant relations, regex matching, and same-origin frame selector paths, but it is not yet a full Playwright/Cypress locator engine for closed shadow DOM internals or arbitrary selector state.
+- `target.locator` now has native DOM resolution for direct/workflow actions and compact page-state semantics for server-side diagnostics. It supports chained structured filters, ancestor/descendant relations, regex matching, same-origin frame selector paths, and state filters for `visible`, `enabled`, `disabled`, `editable`, `checked`, `selected`, `pressed`, `expanded`, `readOnly`, and `requiredField`.
 - `actionResult.result.backend` identifies the execution backend (`cdp-native-v2` for migrated native actions)
 - Native actions perform target inspection/actionability checks before dispatch, including visibility, disabled state, readonly/editable state for input, stable layout, pointer-events, viewport intersection, offscreen scroll-into-view, detached-target retry, zero-size geometry, and hit-target mismatch diagnostics
 - Page-state assertions and waits support `visible: true/false`, `role`, `name`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`, and `exact` for structured refs where available
@@ -817,7 +817,7 @@ Runs a small generic UI workflow locally in the bridge using sequential action, 
   - action targets can use:
       - direct handles: `elementRef`, `selector`
       - semantic matchers: `testId`, `scope`, `locator`, `textContains`, `labelContains`, `titleContains`, `role`, `name`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`
-      - optional refinements: `exact`, `nth`, `first`, `last`, `strict`, `tagName`, `type`, `disabled`, `selected`, `pressed`, `expanded`, `readOnly`, `requiredField`
+      - optional refinements: `exact`, `nth`, `first`, `last`, `strict`, `tagName`, `type`, `visible`, `enabled`, `disabled`, `editable`, `checked`, `selected`, `pressed`, `expanded`, `readOnly`, `requiredField`
   - the workflow stops on first failure by default and marks remaining steps as `skipped`
   - each step can set `onFailure.strategy` to `stop`, `continue`, or `retry_once`
   - each step can set `onFailure.capture` to collect a failure snapshot using the same snapshot options as `execute_ui_action.captureOnFailure`
