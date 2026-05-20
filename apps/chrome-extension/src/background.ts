@@ -31,6 +31,16 @@ import {
 } from './snapshot-capture';
 import { OverridePocController, type OverridePocStatus } from './override-poc';
 import { redactSnapshotRecord } from '../../../libs/redaction/src';
+import {
+  executeNativeBlurAction,
+  executeNativeClickAction,
+  executeNativeFocusAction,
+  executeNativeHoverAction,
+  executeNativeInputAction,
+  executeNativePressKeyAction,
+  executeNativeScrollAction,
+  executeNativeSubmitAction,
+} from './automation-native';
 
 type RuntimeRequest =
   | { type: 'SESSION_GET_STATE' }
@@ -350,6 +360,23 @@ function resolveLiveConsoleTabId(value: unknown): number | undefined {
   return tabId;
 }
 
+function resolveCaptureFrameId(value: unknown): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error('frameId must be an integer');
+  }
+
+  const frameId = Math.floor(value);
+  if (!Number.isInteger(frameId) || frameId < 0) {
+    throw new Error('frameId must be an integer');
+  }
+
+  return frameId;
+}
+
 function resolveLiveConsoleSinceTs(value: unknown): number | undefined {
   if (value === undefined) {
     return undefined;
@@ -555,6 +582,27 @@ function setSessionTabScope(sessionId: string, baseUrl: string, tabId?: number):
     allowedTabIds,
   });
   void persistSessionBindings(chrome.storage.local);
+}
+
+function addTabToSessionScope(sessionId: string, tab: chrome.tabs.Tab): void {
+  if (typeof tab.id !== 'number') {
+    return;
+  }
+
+  const existing = getSessionTabScope(sessionId);
+  const allowedTabIds = new Set<number>(existing?.allowedTabIds ?? []);
+  allowedTabIds.add(tab.id);
+  const baseOrigin = normalizeHttpOrigin(tab.url ?? '') ?? existing?.baseOrigin;
+  sessionTabScopeBySession.set(sessionId, {
+    baseOrigin,
+    allowedTabIds,
+  });
+  sessionManager.setSessionScope({
+    baseOrigin,
+    allowedTabIds: Array.from(allowedTabIds),
+  });
+  void persistSessionBindings(chrome.storage.local);
+  void syncCaptureConfigToSessionTabs(sessionId);
 }
 
 function getSessionTabScope(sessionId: string): SessionTabScope | undefined {
@@ -1055,7 +1103,11 @@ function buildCaptureOffsets(totalSize: number, viewportSize: number): number[] 
   return Array.from(new Set(offsets));
 }
 
-async function executeScriptInTab<T>(tabId: number, func: (...args: unknown[]) => T, args: unknown[] = []): Promise<T> {
+async function executeScriptInTab<T>(
+  tabId: number,
+  func: (...args: unknown[]) => T | Promise<T>,
+  args: unknown[] = [],
+): Promise<T> {
   const results = await chrome.scripting.executeScript({
     target: { tabId },
     func,
@@ -1105,6 +1157,60 @@ interface CdpResponseRequestPausedPayload {
 interface CdpGetResponseBodyResult {
   body?: string;
   base64Encoded?: boolean;
+}
+
+interface CdpJavascriptDialogOpeningPayload {
+  url?: string;
+  frameId?: string;
+  message?: string;
+  type?: 'alert' | 'confirm' | 'prompt' | 'beforeunload';
+  defaultPrompt?: string;
+}
+
+interface CdpFrameNavigatedPayload {
+  frame?: {
+    id?: string;
+    parentId?: string;
+    url?: string;
+    loaderId?: string;
+  };
+}
+
+interface CdpNavigatedWithinDocumentPayload {
+  frameId?: string;
+  url?: string;
+  navigationType?: string;
+}
+
+interface CdpLifecycleEventPayload {
+  frameId?: string;
+  loaderId?: string;
+  name?: string;
+  timestamp?: number;
+}
+
+interface CdpFrameTreeResult {
+  frameTree?: {
+    frame?: {
+      id?: string;
+      parentId?: string;
+      url?: string;
+    };
+  };
+}
+
+interface CdpDownloadWillBeginPayload {
+  frameId?: string;
+  guid?: string;
+  url?: string;
+  suggestedFilename?: string;
+}
+
+interface CdpDownloadProgressPayload {
+  guid?: string;
+  totalBytes?: number;
+  receivedBytes?: number;
+  state?: 'inProgress' | 'completed' | 'canceled';
 }
 
 function normalizeOverrideResponseCaptureBytes(value: unknown): number {
@@ -1639,6 +1745,933 @@ async function captureOverrideResponseBodyWithCdp(options: {
   }
 }
 
+function normalizeDialogWaitTimeoutMs(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 5_000;
+  }
+  return Math.min(Math.max(Math.floor(value), 100), 120_000);
+}
+
+function normalizeWaitRegex(value: unknown, fieldName: string): RegExp | undefined {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return undefined;
+  }
+
+  try {
+    return new RegExp(value);
+  } catch {
+    throw new Error(`${fieldName} must be a valid regular expression`);
+  }
+}
+
+function matchesWaitUrl(url: string | undefined, payload: Record<string, unknown>): boolean {
+  const candidate = typeof url === 'string' ? url : '';
+  if (typeof payload.exactUrl === 'string' && candidate !== payload.exactUrl) {
+    return false;
+  }
+  if (typeof payload.urlContains === 'string' && !candidate.includes(payload.urlContains)) {
+    return false;
+  }
+  const urlRegex = normalizeWaitRegex(payload.urlRegex, 'urlRegex');
+  if (urlRegex && !urlRegex.test(candidate)) {
+    return false;
+  }
+  return true;
+}
+
+function matchesWaitFilename(filename: string | undefined, payload: Record<string, unknown>): boolean {
+  const candidate = typeof filename === 'string' ? filename : '';
+  if (typeof payload.filenameContains === 'string' && !candidate.includes(payload.filenameContains)) {
+    return false;
+  }
+  const filenameRegex = normalizeWaitRegex(payload.filenameRegex, 'filenameRegex');
+  if (filenameRegex && !filenameRegex.test(candidate)) {
+    return false;
+  }
+  return true;
+}
+
+function normalizeNavigationLifecycleWaitState(
+  value: unknown,
+): 'commit' | 'same_document' | 'domcontentloaded' | 'load' | 'network_idle' {
+  if (
+    value === 'commit'
+    || value === 'same_document'
+    || value === 'domcontentloaded'
+    || value === 'load'
+    || value === 'network_idle'
+  ) {
+    return value;
+  }
+  return 'load';
+}
+
+function normalizeDownloadWaitState(value: unknown): 'started' | 'completed' {
+  return value === 'completed' ? 'completed' : 'started';
+}
+
+function normalizeDialogWaitAction(value: unknown): 'none' | 'accept' | 'dismiss' {
+  return value === 'accept' || value === 'dismiss' ? value : 'none';
+}
+
+function normalizeDialogWaitPromptText(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+function normalizeStableLayoutWaitTimeoutMs(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 5_000;
+  }
+  return Math.min(Math.max(Math.floor(value), 100), 120_000);
+}
+
+function normalizeStableLayoutWaitStableMs(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 500;
+  }
+  return Math.min(Math.max(Math.floor(value), 100), 10_000);
+}
+
+function normalizeStableLayoutWaitPollIntervalMs(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 100;
+  }
+  return Math.min(Math.max(Math.floor(value), 50), 5_000);
+}
+
+function isRetryableStableLayoutFrameError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('Frame with ID 0 was removed')
+    || /No frame with id/i.test(message)
+    || /frame.*removed/i.test(message);
+}
+
+function dialogMatchesWaitPayload(
+  dialog: CdpJavascriptDialogOpeningPayload,
+  payload: Record<string, unknown>,
+): boolean {
+  if (typeof payload.type === 'string' && dialog.type !== payload.type) {
+    return false;
+  }
+  if (typeof payload.messageContains === 'string' && !String(dialog.message ?? '').includes(payload.messageContains)) {
+    return false;
+  }
+  if (typeof payload.urlContains === 'string' && !String(dialog.url ?? '').includes(payload.urlContains)) {
+    return false;
+  }
+  return true;
+}
+
+function describeDialogWaitObservation(
+  dialog: CdpJavascriptDialogOpeningPayload,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  const mismatchReasons: string[] = [];
+  if (typeof payload.type === 'string' && dialog.type !== payload.type) {
+    mismatchReasons.push('type');
+  }
+  if (typeof payload.messageContains === 'string' && !String(dialog.message ?? '').includes(payload.messageContains)) {
+    mismatchReasons.push('messageContains');
+  }
+  if (typeof payload.urlContains === 'string' && !String(dialog.url ?? '').includes(payload.urlContains)) {
+    mismatchReasons.push('urlContains');
+  }
+  return {
+    type: dialog.type,
+    message: dialog.message,
+    url: dialog.url,
+    frameId: dialog.frameId,
+    defaultPrompt: dialog.defaultPrompt,
+    matched: mismatchReasons.length === 0,
+    mismatchReasons,
+  };
+}
+
+async function waitForJavascriptDialogInTab(options: {
+  payload: Record<string, unknown>;
+  tab: chrome.tabs.Tab & { id: number };
+}): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  const { payload, tab } = options;
+  const tabId = tab.id;
+  const timeoutMs = normalizeDialogWaitTimeoutMs(payload.timeoutMs);
+  const action = normalizeDialogWaitAction(payload.action);
+  const promptText = normalizeDialogWaitPromptText(payload.promptText);
+  const debuggee: chrome.debugger.Debuggee = { tabId };
+  let attached = false;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let listener: ((source: chrome.debugger.Debuggee, method: string, params?: unknown) => void) | undefined;
+  let lastObserved: Record<string, unknown> | undefined;
+  let observedCount = 0;
+
+  const cleanup = async (): Promise<void> => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = undefined;
+    }
+    if (listener) {
+      chrome.debugger.onEvent.removeListener(listener);
+      listener = undefined;
+    }
+    if (!attached) {
+      return;
+    }
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Page.disable').catch(() => undefined);
+    await chrome.debugger.detach(debuggee).catch(() => undefined);
+    attached = false;
+  };
+
+  const resultPromise = new Promise<Record<string, unknown>>((resolve, reject) => {
+    const fail = (error: unknown): void => {
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+
+    timeoutId = setTimeout(() => {
+      resolve({
+        matched: false,
+        timeoutMs,
+        tabId,
+        url: tab.url,
+        observedCount,
+        expected: {
+          type: payload.type,
+          messageContains: payload.messageContains,
+          urlContains: payload.urlContains,
+        },
+        lastObserved,
+      });
+    }, timeoutMs);
+
+    listener = (source, method, params) => {
+      if (source.tabId !== tabId || method !== 'Page.javascriptDialogOpening') {
+        return;
+      }
+
+      const dialog = params as CdpJavascriptDialogOpeningPayload | undefined;
+      if (!dialog) {
+        return;
+      }
+      observedCount += 1;
+      lastObserved = describeDialogWaitObservation(dialog, payload);
+      if (!dialogMatchesWaitPayload(dialog, payload)) {
+        return;
+      }
+
+      void (async () => {
+        if (action !== 'none') {
+          await sendResponseCaptureDebuggerCommand(debuggee, 'Page.handleJavaScriptDialog', {
+            accept: action === 'accept',
+            promptText,
+          }).catch((error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            if (!message.includes('No dialog is showing')) {
+              throw error;
+            }
+          });
+        }
+
+        resolve({
+          matched: true,
+          timeoutMs,
+          tabId,
+          url: dialog.url ?? tab.url,
+          frameId: dialog.frameId,
+          type: dialog.type,
+          message: dialog.message,
+          defaultPrompt: dialog.defaultPrompt,
+          action,
+        });
+      })().catch(fail);
+    };
+
+    chrome.debugger.onEvent.addListener(listener);
+  });
+
+  try {
+    await chrome.debugger.attach(debuggee, '1.3');
+    attached = true;
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Page.enable');
+    return {
+      payload: await resultPromise,
+      truncated: false,
+    };
+  } finally {
+    await cleanup();
+  }
+}
+
+async function waitForStableLayoutInTab(options: {
+  payload: Record<string, unknown>;
+  tab: chrome.tabs.Tab & { id: number };
+}): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  const { payload, tab } = options;
+  const selector = typeof payload.selector === 'string' ? payload.selector : undefined;
+  const stableMs = normalizeStableLayoutWaitStableMs(payload.stableMs);
+  const timeoutMs = normalizeStableLayoutWaitTimeoutMs(payload.timeoutMs);
+  const pollIntervalMs = normalizeStableLayoutWaitPollIntervalMs(payload.pollIntervalMs);
+  const runStableLayoutProbe = (): Promise<Record<string, unknown>> => executeScriptInTab<Record<string, unknown>>(
+    tab.id,
+    (selectorArg, stableMsArg, timeoutMsArg, pollIntervalMsArg) => {
+      const selectorValue = typeof selectorArg === 'string' ? selectorArg : undefined;
+      const stableWindowMs = typeof stableMsArg === 'number' ? stableMsArg : 500;
+      const timeoutWindowMs = typeof timeoutMsArg === 'number' ? timeoutMsArg : 5_000;
+      const pollWindowMs = typeof pollIntervalMsArg === 'number' ? pollIntervalMsArg : 100;
+
+      return new Promise<Record<string, unknown>>((resolve) => {
+        const startedAt = Date.now();
+        const deadline = startedAt + timeoutWindowMs;
+        let lastChangedAt = startedAt;
+        let lastReason = 'initial';
+        let lastFingerprint = '';
+        let lastSnapshot: Record<string, unknown> = {};
+        let attempts = 0;
+        let layoutShiftCount = 0;
+        let layoutShiftScore = 0;
+        let intervalId: ReturnType<typeof setInterval> | undefined;
+        let timeoutId: ReturnType<typeof setTimeout> | undefined;
+        let mutationObserver: MutationObserver | undefined;
+        let performanceObserver: PerformanceObserver | undefined;
+
+        const cleanup = (): void => {
+          if (intervalId) {
+            clearInterval(intervalId);
+            intervalId = undefined;
+          }
+          if (timeoutId) {
+            clearTimeout(timeoutId);
+            timeoutId = undefined;
+          }
+          mutationObserver?.disconnect();
+          performanceObserver?.disconnect();
+        };
+
+        const captureSnapshot = (): Record<string, unknown> => {
+          const root = document.documentElement;
+          const body = document.body;
+          const target = selectorValue ? document.querySelector(selectorValue) : undefined;
+          const targetRect = target instanceof Element ? target.getBoundingClientRect() : undefined;
+          return {
+            url: window.location.href,
+            readyState: document.readyState,
+            viewport: {
+              width: window.innerWidth,
+              height: window.innerHeight,
+              scrollX: Math.round(window.scrollX),
+              scrollY: Math.round(window.scrollY),
+            },
+            document: {
+              scrollWidth: root?.scrollWidth ?? body?.scrollWidth ?? 0,
+              scrollHeight: root?.scrollHeight ?? body?.scrollHeight ?? 0,
+              bodyWidth: body?.getBoundingClientRect().width ?? 0,
+              bodyHeight: body?.getBoundingClientRect().height ?? 0,
+            },
+            target: selectorValue
+              ? {
+                  selector: selectorValue,
+                  found: target instanceof Element,
+                  rect: targetRect
+                    ? {
+                        x: Number(targetRect.x.toFixed(2)),
+                        y: Number(targetRect.y.toFixed(2)),
+                        width: Number(targetRect.width.toFixed(2)),
+                        height: Number(targetRect.height.toFixed(2)),
+                      }
+                    : undefined,
+                }
+              : undefined,
+          };
+        };
+
+        const finish = (matched: boolean): void => {
+          cleanup();
+          resolve({
+            matched,
+            selector: selectorValue,
+            stableMs: stableWindowMs,
+            timeoutMs: timeoutWindowMs,
+            pollIntervalMs: pollWindowMs,
+            waitedMs: Date.now() - startedAt,
+            attempts,
+            lastChangedAt,
+            quietForMs: Math.max(0, Date.now() - lastChangedAt),
+            lastReason,
+            layoutShiftCount,
+            layoutShiftScore: Number(layoutShiftScore.toFixed(4)),
+            snapshot: lastSnapshot,
+          });
+        };
+
+        const sample = (): void => {
+          requestAnimationFrame(() => {
+            attempts += 1;
+            lastSnapshot = captureSnapshot();
+            const target = lastSnapshot.target as { found?: boolean } | undefined;
+            const fingerprint = JSON.stringify(lastSnapshot);
+            if (selectorValue && target?.found !== true) {
+              lastChangedAt = Date.now();
+              lastReason = 'target_not_found';
+            } else if (fingerprint !== lastFingerprint) {
+              lastChangedAt = Date.now();
+              lastReason = 'layout_snapshot_changed';
+              lastFingerprint = fingerprint;
+            }
+
+            if (Date.now() - lastChangedAt >= stableWindowMs) {
+              finish(true);
+            } else if (Date.now() >= deadline) {
+              finish(false);
+            }
+          });
+        };
+
+        mutationObserver = new MutationObserver(() => {
+          lastChangedAt = Date.now();
+          lastReason = 'dom_mutation';
+        });
+        mutationObserver.observe(document.documentElement, {
+          attributes: true,
+          childList: true,
+          characterData: true,
+          subtree: true,
+        });
+
+        if (typeof PerformanceObserver === 'function') {
+          try {
+            performanceObserver = new PerformanceObserver((list) => {
+              for (const entry of list.getEntries()) {
+                const layoutEntry = entry as PerformanceEntry & { value?: number; hadRecentInput?: boolean };
+                if (layoutEntry.hadRecentInput === true) {
+                  continue;
+                }
+                layoutShiftCount += 1;
+                layoutShiftScore += typeof layoutEntry.value === 'number' ? layoutEntry.value : 0;
+                lastChangedAt = Date.now();
+                lastReason = 'layout_shift';
+              }
+            });
+            performanceObserver.observe({ type: 'layout-shift', buffered: true });
+          } catch {
+            performanceObserver = undefined;
+          }
+        }
+
+        sample();
+        intervalId = setInterval(sample, pollWindowMs);
+        timeoutId = setTimeout(() => finish(false), timeoutWindowMs);
+      });
+    },
+    [selector, stableMs, timeoutMs, pollIntervalMs],
+  );
+  let result: Record<string, unknown>;
+  try {
+    result = await runStableLayoutProbe();
+  } catch (error) {
+    if (!isRetryableStableLayoutFrameError(error)) {
+      throw error;
+    }
+    await sleep(100);
+    result = await runStableLayoutProbe();
+  }
+
+  return {
+    payload: {
+      tabId: tab.id,
+      url: tab.url,
+      ...result,
+    },
+    truncated: false,
+  };
+}
+
+async function waitForNavigationLifecycleInTab(options: {
+  payload: Record<string, unknown>;
+  tab: chrome.tabs.Tab & { id: number };
+}): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  const { payload, tab } = options;
+  normalizeWaitRegex(payload.urlRegex, 'urlRegex');
+  const tabId = tab.id;
+  const timeoutMs = normalizeDialogWaitTimeoutMs(payload.timeoutMs);
+  const state = normalizeNavigationLifecycleWaitState(payload.state);
+  const debuggee: chrome.debugger.Debuggee = { tabId };
+  let attached = false;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let listener: ((source: chrome.debugger.Debuggee, method: string, params?: unknown) => void) | undefined;
+  let mainFrameId: string | undefined;
+  let lastObserved: Record<string, unknown> | undefined;
+  let observedEventCount = 0;
+
+  const cleanup = async (): Promise<void> => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = undefined;
+    }
+    if (listener) {
+      chrome.debugger.onEvent.removeListener(listener);
+      listener = undefined;
+    }
+    if (!attached) {
+      return;
+    }
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Page.disable').catch(() => undefined);
+    await chrome.debugger.detach(debuggee).catch(() => undefined);
+    attached = false;
+  };
+
+  const resolveMatch = async (
+    resolve: (value: Record<string, unknown>) => void,
+    event: Record<string, unknown>,
+  ): Promise<void> => {
+    const liveTab = await chrome.tabs.get(tabId).catch(() => undefined);
+    const resolvedUrl = typeof event.url === 'string'
+      ? event.url
+      : liveTab?.pendingUrl ?? liveTab?.url ?? tab.url;
+    lastObserved = {
+      ...event,
+      url: resolvedUrl,
+      matched: matchesWaitUrl(resolvedUrl, payload),
+    };
+    if (!matchesWaitUrl(resolvedUrl, payload)) {
+      return;
+    }
+
+    resolve({
+      matched: true,
+      state,
+      timeoutMs,
+      tabId,
+      url: resolvedUrl,
+      ...event,
+    });
+  };
+
+  const resultPromise = new Promise<Record<string, unknown>>((resolve, reject) => {
+    const fail = (error: unknown): void => {
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+
+    timeoutId = setTimeout(() => {
+      resolve({
+        matched: false,
+        state,
+        timeoutMs,
+        tabId,
+        url: tab.url,
+        observedEventCount,
+        expected: {
+          state,
+          urlContains: payload.urlContains,
+          urlRegex: payload.urlRegex,
+          exactUrl: payload.exactUrl,
+        },
+        lastObserved,
+      });
+    }, timeoutMs);
+
+    listener = (source, method, params) => {
+      if (source.tabId !== tabId) {
+        return;
+      }
+
+      void (async () => {
+        if (state === 'commit' && method === 'Page.frameNavigated') {
+          const event = params as CdpFrameNavigatedPayload | undefined;
+          const frame = event?.frame;
+          if (!frame || frame.parentId) {
+            return;
+          }
+          observedEventCount += 1;
+          mainFrameId = frame.id ?? mainFrameId;
+          await resolveMatch(resolve, {
+            state,
+            frameId: frame.id,
+            loaderId: frame.loaderId,
+            eventMethod: method,
+            url: frame.url,
+          });
+          return;
+        }
+
+        if (state === 'same_document' && method === 'Page.navigatedWithinDocument') {
+          const event = params as CdpNavigatedWithinDocumentPayload | undefined;
+          if (!event) {
+            return;
+          }
+          observedEventCount += 1;
+          if (mainFrameId && event.frameId && event.frameId !== mainFrameId) {
+            lastObserved = {
+              state,
+              frameId: event.frameId,
+              navigationType: event.navigationType,
+              eventMethod: method,
+              url: event.url,
+              matched: false,
+              mismatchReasons: ['mainFrameId'],
+            };
+            return;
+          }
+          await resolveMatch(resolve, {
+            state,
+            frameId: event.frameId,
+            navigationType: event.navigationType,
+            eventMethod: method,
+            url: event.url,
+          });
+          return;
+        }
+
+        if (state === 'domcontentloaded' && method === 'Page.domContentEventFired') {
+          observedEventCount += 1;
+          await resolveMatch(resolve, {
+            state,
+            eventMethod: method,
+          });
+          return;
+        }
+
+        if (state === 'load' && method === 'Page.loadEventFired') {
+          observedEventCount += 1;
+          await resolveMatch(resolve, {
+            state,
+            eventMethod: method,
+          });
+          return;
+        }
+
+        if (state === 'network_idle' && method === 'Page.lifecycleEvent') {
+          const event = params as CdpLifecycleEventPayload | undefined;
+          if (!event || event.name !== 'networkIdle') {
+            return;
+          }
+          observedEventCount += 1;
+          if (mainFrameId && event.frameId && event.frameId !== mainFrameId) {
+            lastObserved = {
+              state,
+              frameId: event.frameId,
+              loaderId: event.loaderId,
+              lifecycleName: event.name,
+              timestamp: event.timestamp,
+              eventMethod: method,
+              matched: false,
+              mismatchReasons: ['mainFrameId'],
+            };
+            return;
+          }
+          await resolveMatch(resolve, {
+            state,
+            frameId: event.frameId,
+            loaderId: event.loaderId,
+            lifecycleName: event.name,
+            timestamp: event.timestamp,
+            eventMethod: method,
+          });
+        }
+      })().catch(fail);
+    };
+
+    chrome.debugger.onEvent.addListener(listener);
+  });
+
+  try {
+    await chrome.debugger.attach(debuggee, '1.3');
+    attached = true;
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Page.enable');
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Page.setLifecycleEventsEnabled', { enabled: true }).catch(() => undefined);
+    const frameTree = await sendResponseCaptureDebuggerCommand<CdpFrameTreeResult>(debuggee, 'Page.getFrameTree').catch(() => undefined);
+    mainFrameId = frameTree?.frameTree?.frame?.id;
+    return {
+      payload: await resultPromise,
+      truncated: false,
+    };
+  } finally {
+    await cleanup();
+  }
+}
+
+async function waitForDownloadInTab(options: {
+  payload: Record<string, unknown>;
+  tab: chrome.tabs.Tab & { id: number };
+}): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  const { payload, tab } = options;
+  normalizeWaitRegex(payload.urlRegex, 'urlRegex');
+  normalizeWaitRegex(payload.filenameRegex, 'filenameRegex');
+  const tabId = tab.id;
+  const timeoutMs = normalizeDialogWaitTimeoutMs(payload.timeoutMs);
+  const state = normalizeDownloadWaitState(payload.state);
+  const debuggee: chrome.debugger.Debuggee = { tabId };
+  let attached = false;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let listener: ((source: chrome.debugger.Debuggee, method: string, params?: unknown) => void) | undefined;
+  let matchedDownload: Record<string, unknown> | undefined;
+  let lastObserved: Record<string, unknown> | undefined;
+  let observedEventCount = 0;
+
+  const cleanup = async (): Promise<void> => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = undefined;
+    }
+    if (listener) {
+      chrome.debugger.onEvent.removeListener(listener);
+      listener = undefined;
+    }
+    if (!attached) {
+      return;
+    }
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Page.disable').catch(() => undefined);
+    await chrome.debugger.detach(debuggee).catch(() => undefined);
+    attached = false;
+  };
+
+  const resultPromise = new Promise<Record<string, unknown>>((resolve, reject) => {
+    const fail = (error: unknown): void => {
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+
+    timeoutId = setTimeout(() => {
+      resolve({
+        matched: false,
+        state,
+        timeoutMs,
+        tabId,
+        url: tab.url,
+        observedEventCount,
+        expected: {
+          state,
+          urlContains: payload.urlContains,
+          urlRegex: payload.urlRegex,
+          exactUrl: payload.exactUrl,
+          filenameContains: payload.filenameContains,
+          filenameRegex: payload.filenameRegex,
+        },
+        lastObserved,
+        lastMatchedDownload: matchedDownload,
+      });
+    }, timeoutMs);
+
+    listener = (source, method, params) => {
+      if (source.tabId !== tabId) {
+        return;
+      }
+
+      void (async () => {
+        if (method === 'Page.downloadWillBegin') {
+          const event = params as CdpDownloadWillBeginPayload | undefined;
+          if (!event) {
+            return;
+          }
+          observedEventCount += 1;
+          const urlMatched = matchesWaitUrl(event.url, payload);
+          const filenameMatched = matchesWaitFilename(event.suggestedFilename, payload);
+          lastObserved = {
+            eventMethod: method,
+            guid: event.guid,
+            frameId: event.frameId,
+            url: event.url,
+            suggestedFilename: event.suggestedFilename,
+            state: 'started',
+            matched: urlMatched && filenameMatched,
+            mismatchReasons: [
+              ...(urlMatched ? [] : ['url']),
+              ...(filenameMatched ? [] : ['filename']),
+            ],
+          };
+          if (!urlMatched || !filenameMatched) {
+            return;
+          }
+
+          matchedDownload = {
+            guid: event.guid,
+            frameId: event.frameId,
+            url: event.url,
+            suggestedFilename: event.suggestedFilename,
+            state: 'started',
+          };
+
+          if (state === 'started') {
+            resolve({
+              matched: true,
+              timeoutMs,
+              tabId,
+              ...matchedDownload,
+            });
+          }
+          return;
+        }
+
+        if (method === 'Page.downloadProgress') {
+          const event = params as CdpDownloadProgressPayload | undefined;
+          if (!event || !matchedDownload || event.guid !== matchedDownload.guid || state !== 'completed') {
+            return;
+          }
+          observedEventCount += 1;
+          lastObserved = {
+            eventMethod: method,
+            guid: event.guid,
+            state: event.state,
+            totalBytes: event.totalBytes,
+            receivedBytes: event.receivedBytes,
+            matched: event.state === 'completed',
+          };
+
+          if (event.state === 'completed') {
+            resolve({
+              matched: true,
+              timeoutMs,
+              tabId,
+              ...matchedDownload,
+              state: 'completed',
+              totalBytes: event.totalBytes,
+              receivedBytes: event.receivedBytes,
+            });
+          }
+        }
+      })().catch(fail);
+    };
+
+    chrome.debugger.onEvent.addListener(listener);
+  });
+
+  try {
+    await chrome.debugger.attach(debuggee, '1.3');
+    attached = true;
+    await sendResponseCaptureDebuggerCommand(debuggee, 'Page.enable');
+    return {
+      payload: await resultPromise,
+      truncated: false,
+    };
+  } finally {
+    await cleanup();
+  }
+}
+
+async function waitForPopupFromTab(options: {
+  payload: Record<string, unknown>;
+  sessionId: string;
+  tab: chrome.tabs.Tab & { id: number };
+}): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  const { payload, sessionId, tab } = options;
+  normalizeWaitRegex(payload.urlRegex, 'urlRegex');
+  const openerTabId = typeof payload.openerTabId === 'number' ? payload.openerTabId : tab.id;
+  const timeoutMs = normalizeDialogWaitTimeoutMs(payload.timeoutMs);
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let createdListener: ((createdTab: chrome.tabs.Tab) => void) | undefined;
+  let updatedListener: ((tabId: number, changeInfo: chrome.tabs.OnUpdatedInfo, updatedTab: chrome.tabs.Tab) => void) | undefined;
+  const pendingTabs = new Set<number>();
+  let lastObserved: Record<string, unknown> | undefined;
+  let observedPopupCount = 0;
+
+  const cleanup = (): void => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      timeoutId = undefined;
+    }
+    if (createdListener) {
+      chrome.tabs.onCreated.removeListener(createdListener);
+      createdListener = undefined;
+    }
+    if (updatedListener) {
+      chrome.tabs.onUpdated.removeListener(updatedListener);
+      updatedListener = undefined;
+    }
+  };
+
+  const matchPopup = (resolve: (value: Record<string, unknown>) => void, popupTab: chrome.tabs.Tab): boolean => {
+    if (popupTab.openerTabId !== openerTabId) {
+      lastObserved = {
+        tabId: popupTab.id,
+        openerTabId: popupTab.openerTabId,
+        windowId: popupTab.windowId,
+        url: popupTab.pendingUrl ?? popupTab.url,
+        matched: false,
+        mismatchReasons: ['openerTabId'],
+      };
+      return false;
+    }
+
+    const url = popupTab.pendingUrl ?? popupTab.url;
+    const hasUrlPredicate = typeof payload.exactUrl === 'string'
+      || typeof payload.urlContains === 'string'
+      || typeof payload.urlRegex === 'string';
+    if (hasUrlPredicate && !matchesWaitUrl(url, payload)) {
+      lastObserved = {
+        tabId: popupTab.id,
+        openerTabId,
+        windowId: popupTab.windowId,
+        url,
+        matched: false,
+        mismatchReasons: ['url'],
+      };
+      return false;
+    }
+
+    addTabToSessionScope(sessionId, popupTab);
+    rememberCaptureTabForSession(sessionId, popupTab);
+    resolve({
+      matched: true,
+      timeoutMs,
+      tabId: popupTab.id,
+      openerTabId,
+      windowId: popupTab.windowId,
+      url,
+    });
+    return true;
+  };
+
+  const resultPromise = new Promise<Record<string, unknown>>((resolve) => {
+    timeoutId = setTimeout(() => {
+      resolve({
+        matched: false,
+        timeoutMs,
+        openerTabId,
+        observedPopupCount,
+        pendingTabIds: Array.from(pendingTabs),
+        expected: {
+          urlContains: payload.urlContains,
+          urlRegex: payload.urlRegex,
+          exactUrl: payload.exactUrl,
+          openerTabId,
+        },
+        lastObserved,
+      });
+    }, timeoutMs);
+
+    createdListener = (createdTab) => {
+      if (createdTab.openerTabId !== openerTabId || typeof createdTab.id !== 'number') {
+        return;
+      }
+      observedPopupCount += 1;
+
+      if (matchPopup(resolve, createdTab)) {
+        return;
+      }
+
+      pendingTabs.add(createdTab.id);
+    };
+
+    updatedListener = (updatedTabId, _changeInfo, updatedTab) => {
+      if (!pendingTabs.has(updatedTabId) && updatedTab.openerTabId !== openerTabId) {
+        return;
+      }
+      observedPopupCount += 1;
+
+      if (matchPopup(resolve, updatedTab)) {
+        pendingTabs.delete(updatedTabId);
+      }
+    };
+
+    chrome.tabs.onCreated.addListener(createdListener);
+    chrome.tabs.onUpdated.addListener(updatedListener);
+  });
+
+  try {
+    return {
+      payload: await resultPromise,
+      truncated: false,
+    };
+  } finally {
+    cleanup();
+  }
+}
+
 async function observeOverrideAssetsInTab(tabId: number, includePerformance = true): Promise<ObservedOverrideAssetsResult> {
   return executeScriptInTab<ObservedOverrideAssetsResult>(tabId, (includePerformanceArg) => {
     const shouldIncludePerformance = includePerformanceArg !== false;
@@ -2068,6 +3101,7 @@ async function sendCaptureCommandToTab(
   command: CaptureCommandType,
   payload: Record<string, unknown>,
   allowRetry: boolean = true,
+  frameId?: number,
 ): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
   const attempt = async (): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> => {
     return new Promise((resolve, reject) => {
@@ -2078,6 +3112,7 @@ async function sendCaptureCommandToTab(
           command,
           payload,
         },
+        typeof frameId === 'number' ? { frameId } : undefined,
         (response?: CaptureTabResponse) => {
           const runtimeError = chrome.runtime.lastError;
           if (runtimeError) {
@@ -2118,6 +3153,555 @@ async function sendCaptureCommandToTab(
 
     return attempt();
   }
+}
+
+interface FrameCaptureMetadata {
+  frameId: number;
+  url?: string;
+  title?: string;
+  frameSelector?: string;
+  origin?: string;
+  isOpaqueOrigin?: boolean;
+  parentAccessible?: boolean;
+  parentUrl?: string;
+  topAccessible?: boolean;
+  sameOriginWithTop?: boolean;
+  sandboxFlags?: string[];
+  automationSupport?: 'native' | 'diagnostic-only';
+  automationUnsupportedReason?: string;
+}
+
+interface FrameElementMetadata {
+  index: number;
+  src?: string;
+  resolvedUrl?: string;
+  title?: string;
+  name?: string;
+  id?: string;
+  selectorPath?: string;
+  sandboxFlags?: string[];
+  hasSrcdoc?: boolean;
+}
+
+function isFrameElementMetadata(value: unknown): value is FrameElementMetadata {
+  return typeof value === 'object'
+    && value !== null
+    && typeof (value as { index?: unknown }).index === 'number';
+}
+
+function asRecordArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is Record<string, unknown> => {
+        return Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry);
+      })
+    : [];
+}
+
+function resolveFrameMetadataUrl(frame: FrameCaptureMetadata | undefined, fallback?: unknown): string | undefined {
+  if (typeof frame?.url === 'string' && frame.url.length > 0) {
+    return frame.url;
+  }
+  return typeof fallback === 'string' && fallback.length > 0 ? fallback : undefined;
+}
+
+function resolveFrameAutomationPolicy(frame: FrameCaptureMetadata): Pick<FrameCaptureMetadata, 'automationSupport' | 'automationUnsupportedReason'> {
+  if (frame.frameId === 0) {
+    return {
+      automationSupport: 'native',
+    };
+  }
+
+  const sandboxWithoutSameOrigin = frame.sandboxFlags !== undefined && !frame.sandboxFlags.includes('allow-same-origin');
+  if (frame.isOpaqueOrigin === true || sandboxWithoutSameOrigin) {
+    return {
+      automationSupport: 'diagnostic-only',
+      automationUnsupportedReason: 'sandboxed_opaque_origin',
+    };
+  }
+
+  if (frame.sameOriginWithTop === false || frame.topAccessible === false) {
+    return {
+      automationSupport: 'diagnostic-only',
+      automationUnsupportedReason: 'cross_origin_with_top',
+    };
+  }
+
+  return {
+    automationSupport: 'native',
+  };
+}
+
+function withFrameAutomationPolicy(frame: FrameCaptureMetadata): FrameCaptureMetadata {
+  return {
+    ...frame,
+    ...resolveFrameAutomationPolicy(frame),
+  };
+}
+
+function decodeElementRefPayload(elementRef: unknown): Record<string, unknown> | undefined {
+  if (typeof elementRef !== 'string' || !elementRef.startsWith('ref:')) {
+    return undefined;
+  }
+
+  try {
+    const decoded = JSON.parse(atob(elementRef.slice(4))) as unknown;
+    return decoded && typeof decoded === 'object' && !Array.isArray(decoded)
+      ? decoded as Record<string, unknown>
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveAutomationTargetSelector(target: LiveUIActionRequest['target']): string | undefined {
+  if (typeof target?.selector === 'string' && target.selector.length > 0) {
+    return target.selector;
+  }
+
+  const decoded = decodeElementRefPayload(target?.elementRef);
+  return typeof decoded?.selector === 'string' && decoded.selector.length > 0 ? decoded.selector : undefined;
+}
+
+function augmentElementRef(elementRef: unknown, frame: FrameCaptureMetadata): string | undefined {
+  if (typeof elementRef !== 'string' || !elementRef.startsWith('ref:')) {
+    return typeof elementRef === 'string' ? elementRef : undefined;
+  }
+
+  try {
+    const decoded = decodeElementRefPayload(elementRef);
+    if (!decoded) {
+      return elementRef;
+    }
+    return `ref:${btoa(JSON.stringify({
+      ...decoded,
+      frameId: frame.frameId,
+      frameUrl: frame.url,
+      frameTitle: frame.title,
+      frameSelector: frame.frameSelector,
+      frameSameOriginWithTop: frame.sameOriginWithTop,
+      frameAutomationSupport: frame.automationSupport,
+      frameAutomationUnsupportedReason: frame.automationUnsupportedReason,
+    }))}`;
+  } catch {
+    return elementRef;
+  }
+}
+
+function enrichFrameScopedItem(item: Record<string, unknown>, frame: FrameCaptureMetadata): Record<string, unknown> {
+  return {
+    ...item,
+    frameId: frame.frameId,
+    frameUrl: frame.url,
+    frameTitle: frame.title,
+    frameSelector: frame.frameSelector,
+    frameSameOriginWithTop: frame.sameOriginWithTop,
+    frameAutomationSupport: frame.automationSupport,
+    frameAutomationUnsupportedReason: frame.automationUnsupportedReason,
+    elementRef: augmentElementRef(item.elementRef, frame),
+  };
+}
+
+async function listTopFrameElements(tabId: number): Promise<FrameElementMetadata[]> {
+  const results = await chrome.scripting.executeScript({
+    target: {
+      tabId,
+    },
+    func: () => {
+      const cssEscapeFallback = (value: string): string => {
+        const cssApi = (globalThis as { CSS?: { escape?: (input: string) => string } }).CSS;
+        if (cssApi?.escape) {
+          return cssApi.escape(value);
+        }
+        return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+      };
+      const elementSelectorPath = (element: Element): string => {
+        if (element.id) {
+          return `#${cssEscapeFallback(element.id)}`;
+        }
+        const testId = element.getAttribute('data-testid');
+        if (testId) {
+          return `[data-testid="${cssEscapeFallback(testId)}"]`;
+        }
+        const name = element.getAttribute('name');
+        if (name) {
+          return `${element.tagName.toLowerCase()}[name="${cssEscapeFallback(name)}"]`;
+        }
+        const siblings = element.parentElement
+          ? Array.from(element.parentElement.children).filter((child) => child.tagName === element.tagName)
+          : [element];
+        const index = Math.max(0, siblings.indexOf(element)) + 1;
+        return `${element.tagName.toLowerCase()}:nth-of-type(${index})`;
+      };
+      let frameIndex = 0;
+      const entries: Array<Record<string, unknown>> = [];
+      const visitWindow = (rootWindow: Window, parentPath?: string): void => {
+        const frameElements = Array.from(rootWindow.document.querySelectorAll('iframe, frame')) as HTMLIFrameElement[];
+        for (const frameElement of frameElements) {
+          const sandbox = frameElement instanceof HTMLIFrameElement ? frameElement.getAttribute('sandbox') : null;
+          const sandboxFlags = sandbox === null
+            ? undefined
+            : sandbox
+              .split(/\s+/)
+              .map((flag) => flag.trim())
+              .filter((flag) => flag.length > 0);
+          const selectorPath = parentPath
+            ? `${parentPath} => ${elementSelectorPath(frameElement)}`
+            : elementSelectorPath(frameElement);
+          entries.push({
+            index: frameIndex,
+            src: frameElement.getAttribute('src') ?? undefined,
+            resolvedUrl: frameElement.src || undefined,
+            title: frameElement.getAttribute('title') ?? undefined,
+            name: frameElement.getAttribute('name') ?? undefined,
+            id: frameElement.id || undefined,
+            selectorPath,
+            sandboxFlags,
+            hasSrcdoc: frameElement instanceof HTMLIFrameElement && frameElement.getAttribute('srcdoc') !== null,
+          });
+          frameIndex += 1;
+          try {
+            const childWindow = frameElement.contentWindow;
+            const childDocument = frameElement.contentDocument;
+            if (childWindow && childDocument) {
+              visitWindow(childWindow, selectorPath);
+            }
+          } catch {
+            // Cross-origin descendants cannot be traversed from the top document.
+          }
+        }
+      };
+      visitWindow(window);
+      return entries;
+    },
+  });
+
+  const firstResult = results[0]?.result;
+  return Array.isArray(firstResult)
+    ? firstResult.flatMap((entry) => isFrameElementMetadata(entry) ? [entry] : [])
+    : [];
+}
+
+function mergeFrameElementMetadata(
+  frames: FrameCaptureMetadata[],
+  elements: FrameElementMetadata[],
+): FrameCaptureMetadata[] {
+  if (elements.length === 0) {
+    return frames.map(withFrameAutomationPolicy);
+  }
+
+  const childFrames = frames.filter((frame) => frame.frameId !== 0);
+  const srcdocFrames = childFrames.filter((frame) => frame.url === 'about:srcdoc');
+  const sameSandboxFlags = (left: string[] | undefined, right: string[] | undefined): boolean => {
+    if (left === undefined || right === undefined) {
+      return false;
+    }
+    if (left.length !== right.length) {
+      return false;
+    }
+    return left.every((flag, index) => flag === right[index]);
+  };
+
+  return frames.map((frame) => {
+    if (frame.frameId === 0) {
+      return withFrameAutomationPolicy(frame);
+    }
+
+    const exactUrlMatch = elements.find((element) => {
+      return Boolean(element.resolvedUrl && frame.url && element.resolvedUrl === frame.url && (!frame.title || !element.title || element.title === frame.title));
+    });
+    const sandboxMatch = frame.sandboxFlags !== undefined
+      ? elements.find((element) => {
+          return sameSandboxFlags(frame.sandboxFlags, element.sandboxFlags)
+            && (!frame.title || !element.title || element.title === frame.title);
+        })
+      : undefined;
+    const srcdocMatch = frame.url === 'about:srcdoc' && srcdocFrames.length === elements.filter((element) => element.hasSrcdoc).length
+      ? elements.filter((element) => element.hasSrcdoc)[srcdocFrames.findIndex((entry) => entry.frameId === frame.frameId)]
+      : undefined;
+    const matchedElement = exactUrlMatch ?? sandboxMatch ?? srcdocMatch;
+    if (!matchedElement) {
+      return withFrameAutomationPolicy(frame);
+    }
+
+    return withFrameAutomationPolicy({
+      ...frame,
+      frameSelector: matchedElement.selectorPath,
+      sandboxFlags: frame.sandboxFlags ?? matchedElement.sandboxFlags,
+      title: frame.title || matchedElement.title,
+    });
+  });
+}
+
+async function listTabFrames(tabId: number): Promise<FrameCaptureMetadata[]> {
+  const [results, frameElements] = await Promise.all([
+    chrome.scripting.executeScript({
+      target: {
+        tabId,
+        allFrames: true,
+      },
+      func: () => {
+        let parentAccessible = false;
+        let parentUrl: string | undefined;
+        let topAccessible = false;
+        const isInspectableFromTop = (): boolean => {
+          if (window === window.top) {
+            return true;
+          }
+
+          try {
+            let currentWindow: Window | null = window;
+            while (currentWindow && currentWindow !== currentWindow.top) {
+              const parentWindow: Window = currentWindow.parent;
+              void parentWindow.document;
+              currentWindow = parentWindow;
+            }
+            return true;
+          } catch {
+            return false;
+          }
+        };
+        const sameOriginWithTop = isInspectableFromTop();
+        let sandboxFlags: string[] | undefined;
+
+        try {
+          parentUrl = window.parent.location.href;
+          parentAccessible = true;
+        } catch {
+          parentAccessible = false;
+        }
+
+        try {
+          if (window.top) {
+            topAccessible = true;
+          }
+        } catch {
+          topAccessible = false;
+        }
+
+        try {
+          const frameElement = window.frameElement;
+          if (frameElement instanceof HTMLIFrameElement) {
+            const sandbox = frameElement.getAttribute('sandbox');
+            sandboxFlags = sandbox === null
+              ? undefined
+              : sandbox
+                .split(/\s+/)
+                .map((flag) => flag.trim())
+                .filter((flag) => flag.length > 0);
+          }
+        } catch {
+          sandboxFlags = undefined;
+        }
+
+        return {
+          url: window.location.href,
+          title: document.title,
+          origin: window.location.origin,
+          isOpaqueOrigin: window.location.origin === 'null' && !sameOriginWithTop,
+          parentAccessible,
+          parentUrl,
+          topAccessible,
+          sameOriginWithTop,
+          sandboxFlags,
+        };
+      },
+    }),
+    listTopFrameElements(tabId).catch(() => []),
+  ]);
+
+  const frames = results
+    .filter((entry) => typeof entry.frameId === 'number' && Boolean(entry.result))
+    .map((entry) => ({
+      frameId: entry.frameId ?? 0,
+      url: entry.result?.url,
+      title: entry.result?.title,
+      origin: entry.result?.origin,
+      isOpaqueOrigin: entry.result?.isOpaqueOrigin,
+      parentAccessible: entry.result?.parentAccessible,
+      parentUrl: entry.result?.parentUrl,
+      topAccessible: entry.result?.topAccessible,
+      sameOriginWithTop: entry.result?.sameOriginWithTop,
+      sandboxFlags: entry.result?.sandboxFlags,
+    }))
+    .sort((a, b) => a.frameId - b.frameId);
+
+  return mergeFrameElementMetadata(frames, frameElements);
+}
+
+function mergeFramePageStates(
+  captures: Array<{ frame: FrameCaptureMetadata; payload: Record<string, unknown>; truncated?: boolean }>,
+  maxItems: number,
+): { payload: Record<string, unknown>; truncated: boolean } {
+  const topCapture = captures.find((entry) => entry.frame.frameId === 0) ?? captures[0];
+  const topPayload = topCapture?.payload ?? {};
+  const buttons: Array<Record<string, unknown>> = [];
+  const links: Array<Record<string, unknown>> = [];
+  const inputs: Array<Record<string, unknown>> = [];
+  const modals: Array<Record<string, unknown>> = [];
+  const frames: Array<Record<string, unknown>> = [];
+  let totalButtons = 0;
+  let totalLinks = 0;
+  let totalInputs = 0;
+  let totalModals = 0;
+  let truncated = captures.some((entry) => entry.truncated === true);
+  let focused: Record<string, unknown> | undefined;
+
+  for (const capture of captures) {
+    const frame = capture.frame;
+    const payload = capture.payload;
+    const frameButtons = asRecordArray(payload.buttons).map((item) => enrichFrameScopedItem(item, frame));
+    const frameLinks = asRecordArray(payload.links).map((item) => enrichFrameScopedItem(item, frame));
+    const frameInputs = asRecordArray(payload.inputs).map((item) => enrichFrameScopedItem(item, frame));
+    const frameModals = asRecordArray(payload.modals).map((item) => enrichFrameScopedItem(item, frame));
+    totalButtons += typeof (payload.summary as { buttons?: unknown } | undefined)?.buttons === 'number'
+      ? (payload.summary as { buttons: number }).buttons
+      : frameButtons.length;
+    totalLinks += typeof (payload.summary as { links?: unknown } | undefined)?.links === 'number'
+      ? (payload.summary as { links: number }).links
+      : frameLinks.length;
+    totalInputs += typeof (payload.summary as { inputs?: unknown } | undefined)?.inputs === 'number'
+      ? (payload.summary as { inputs: number }).inputs
+      : frameInputs.length;
+    totalModals += typeof (payload.summary as { modals?: unknown } | undefined)?.modals === 'number'
+      ? (payload.summary as { modals: number }).modals
+      : frameModals.length;
+
+    buttons.push(...frameButtons);
+    links.push(...frameLinks);
+    inputs.push(...frameInputs);
+    modals.push(...frameModals);
+
+    const frameFocused = payload.focused && typeof payload.focused === 'object' && !Array.isArray(payload.focused)
+      ? enrichFrameScopedItem(payload.focused as Record<string, unknown>, frame)
+      : undefined;
+    if (!focused && frameFocused?.elementRef) {
+      focused = frameFocused;
+    }
+
+    frames.push({
+      frameId: frame.frameId,
+      url: frame.url,
+      title: frame.title,
+      origin: frame.origin,
+      isOpaqueOrigin: frame.isOpaqueOrigin,
+      parentUrl: frame.parentUrl,
+      parentAccessible: frame.parentAccessible,
+      topAccessible: frame.topAccessible,
+      sameOriginWithTop: frame.sameOriginWithTop,
+      sandboxFlags: frame.sandboxFlags,
+      automationSupport: frame.automationSupport,
+      automationUnsupportedReason: frame.automationUnsupportedReason,
+      frameCaptureError: payload.frameCaptureError,
+      frameCaptureErrorCode: payload.frameCaptureErrorCode,
+      summary: payload.summary,
+      viewport: payload.viewport,
+      truncation: payload.truncation,
+    });
+  }
+
+  const slicedButtons = buttons.slice(0, maxItems);
+  const slicedLinks = links.slice(0, maxItems);
+  const slicedInputs = inputs.slice(0, maxItems);
+  const slicedModals = modals.slice(0, maxItems);
+  truncated = truncated
+    || slicedButtons.length < buttons.length
+    || slicedLinks.length < links.length
+    || slicedInputs.length < inputs.length
+    || slicedModals.length < modals.length;
+
+  return {
+    truncated,
+    payload: {
+      ...topPayload,
+      focused,
+      frames,
+      summary: {
+        buttons: totalButtons,
+        links: totalLinks,
+        inputs: totalInputs,
+        modals: totalModals,
+        frames: captures.length,
+      },
+      buttons: Array.isArray(topPayload.buttons) ? slicedButtons : undefined,
+      links: Array.isArray(topPayload.links) ? slicedLinks : undefined,
+      inputs: Array.isArray(topPayload.inputs) ? slicedInputs : undefined,
+      modals: Array.isArray(topPayload.modals) ? slicedModals : undefined,
+      truncation: {
+        ...(topPayload.truncation && typeof topPayload.truncation === 'object' ? topPayload.truncation : {}),
+        buttons: slicedButtons.length < buttons.length,
+        links: slicedLinks.length < links.length,
+        inputs: slicedInputs.length < inputs.length,
+        modals: slicedModals.length < modals.length,
+        frames: false,
+      },
+    },
+  };
+}
+
+function classifyFrameCaptureError(frame: FrameCaptureMetadata, error: unknown): string {
+  if (frame.automationUnsupportedReason === 'sandboxed_opaque_origin') {
+    return 'sandboxed_frame_inaccessible';
+  }
+
+  if (frame.automationUnsupportedReason === 'cross_origin_with_top') {
+    return 'cross_origin_frame_inaccessible';
+  }
+
+  const message = error instanceof Error ? error.message : String(error);
+  if (/receiving end|message port|content script/i.test(message)) {
+    return 'content_script_unavailable';
+  }
+
+  return 'frame_capture_failed';
+}
+
+async function capturePageStateAcrossFrames(
+  tabId: number,
+  payload: Record<string, unknown>,
+): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  const frames = await listTabFrames(tabId);
+  const maxItems = typeof payload.maxItems === 'number' && Number.isFinite(payload.maxItems)
+    ? Math.max(1, Math.floor(payload.maxItems))
+    : 40;
+  const captures: Array<{ frame: FrameCaptureMetadata; payload: Record<string, unknown>; truncated?: boolean }> = [];
+
+  if (frames.some((frame) => frame.frameId !== 0)) {
+    await injectContentScriptFallback(tabId).catch(() => false);
+  }
+
+  for (const frame of frames) {
+    try {
+      const captured = await sendCaptureCommandToTab(tabId, 'CAPTURE_PAGE_STATE', payload, true, frame.frameId);
+      captures.push({
+        frame,
+        payload: captured.payload,
+        truncated: captured.truncated,
+      });
+    } catch (error) {
+      captures.push({
+        frame,
+        payload: {
+          url: resolveFrameMetadataUrl(frame),
+          title: frame.title,
+          summary: {
+            buttons: 0,
+            links: 0,
+            inputs: 0,
+            modals: 0,
+          },
+          frameCaptureError: true,
+          frameCaptureErrorCode: classifyFrameCaptureError(frame, error),
+        },
+        truncated: false,
+      });
+    }
+  }
+
+  if (captures.length === 0) {
+    return sendCaptureCommandToTab(tabId, 'CAPTURE_PAGE_STATE', payload);
+  }
+
+  return mergeFramePageStates(captures, maxItems);
 }
 
 function buildCaptureConfigUpdatePayload(sessionId?: string): CaptureConfigUpdatePayload {
@@ -2231,7 +3815,10 @@ async function executeCaptureCommand(
     }
 
     if (!captureConfig.automation.allowSensitiveFields
-      && requiresSensitiveAutomationOptIn({ selector: request.target?.selector, action: request.action })) {
+      && requiresSensitiveAutomationOptIn({
+        selector: resolveAutomationTargetSelector(request.target),
+        action: request.action,
+      })) {
       queueAutomationEvent('automation_requested', request, { startedAt });
       const rejectedResult = buildRejectedLiveActionResult(
         request,
@@ -2337,7 +3924,7 @@ async function executeCaptureCommand(
       target: {
         ...request.target,
         tabId: resolvedTab.id,
-        frameId: request.target?.frameId ?? 0,
+        frameId: request.target?.frameId,
         url: resolvedTab.url ?? request.target?.url,
       },
     };
@@ -2441,6 +4028,89 @@ async function executeCaptureCommand(
         startedAt,
         tab: resolvedTab,
       });
+      if (
+        requestWithResolvedTarget.action === 'click'
+        || requestWithResolvedTarget.action === 'hover'
+        || requestWithResolvedTarget.action === 'input'
+        || requestWithResolvedTarget.action === 'press_key'
+        || requestWithResolvedTarget.action === 'focus'
+        || requestWithResolvedTarget.action === 'blur'
+        || requestWithResolvedTarget.action === 'scroll'
+        || requestWithResolvedTarget.action === 'submit'
+      ) {
+        let nativeResult: LiveUIActionResult;
+        if (requestWithResolvedTarget.action === 'click') {
+          nativeResult = await executeNativeClickAction({
+            request: requestWithResolvedTarget,
+            tab: resolvedTab,
+            startedAt,
+            traceId: String(actionPayload.traceId),
+          });
+        } else if (requestWithResolvedTarget.action === 'hover') {
+          nativeResult = await executeNativeHoverAction({
+            request: requestWithResolvedTarget,
+            tab: resolvedTab,
+            startedAt,
+            traceId: String(actionPayload.traceId),
+          });
+        } else if (requestWithResolvedTarget.action === 'input') {
+          nativeResult = await executeNativeInputAction({
+            request: requestWithResolvedTarget,
+            tab: resolvedTab,
+            startedAt,
+            traceId: String(actionPayload.traceId),
+          });
+        } else if (requestWithResolvedTarget.action === 'press_key') {
+          nativeResult = await executeNativePressKeyAction({
+            request: requestWithResolvedTarget,
+            tab: resolvedTab,
+            startedAt,
+            traceId: String(actionPayload.traceId),
+          });
+        } else if (requestWithResolvedTarget.action === 'focus') {
+          nativeResult = await executeNativeFocusAction({
+            request: requestWithResolvedTarget,
+            tab: resolvedTab,
+            startedAt,
+            traceId: String(actionPayload.traceId),
+          });
+        } else if (requestWithResolvedTarget.action === 'blur') {
+          nativeResult = await executeNativeBlurAction({
+            request: requestWithResolvedTarget,
+            tab: resolvedTab,
+            startedAt,
+            traceId: String(actionPayload.traceId),
+          });
+        } else if (requestWithResolvedTarget.action === 'scroll') {
+          nativeResult = await executeNativeScrollAction({
+            request: requestWithResolvedTarget,
+            tab: resolvedTab,
+            startedAt,
+            traceId: String(actionPayload.traceId),
+          });
+        } else {
+          nativeResult = await executeNativeSubmitAction({
+            request: requestWithResolvedTarget,
+            tab: resolvedTab,
+            startedAt,
+            traceId: String(actionPayload.traceId),
+          });
+        }
+        queueAutomationEvent(
+          nativeResult.status === 'succeeded' ? 'automation_succeeded' : 'automation_failed',
+          requestWithResolvedTarget,
+          {
+            startedAt,
+            result: nativeResult,
+            tab: resolvedTab,
+          },
+        );
+        return {
+          payload: nativeResult as unknown as Record<string, unknown>,
+          truncated: false,
+        };
+      }
+
       const actionResult = await sendCaptureCommandToTab(resolvedTab.id, 'EXECUTE_UI_ACTION', actionPayload);
       const liveResult = withLiveActionTabContext(actionResult.payload, request, resolvedTab) as LiveUIActionResult;
       queueAutomationEvent(
@@ -2544,6 +4214,142 @@ async function executeCaptureCommand(
       },
       truncated: queryResult.truncated,
     };
+  }
+
+  if (command === 'CAPTURE_WAIT_FOR_NAVIGATION_LIFECYCLE') {
+    const requestedTabId = resolveLiveConsoleTabId(payload.tabId);
+    const sessionScope = getSessionTabScope(context.sessionId);
+    if (requestedTabId !== undefined && sessionScope && !sessionScope.allowedTabIds.has(requestedTabId)) {
+      throw new Error(`tabId ${requestedTabId} is not bound to this session`);
+    }
+
+    const tab = requestedTabId !== undefined
+      ? await chrome.tabs.get(requestedTabId).catch(() => undefined)
+      : await resolveCaptureTab(context.sessionId);
+    if (!tab || typeof tab.id !== 'number') {
+      throw new Error('No capture tab is available for navigation lifecycle wait.');
+    }
+    if (!isTabAllowedForSession(context.sessionId, tab.id)) {
+      throw new Error(`tabId ${tab.id} is not bound to this session`);
+    }
+    if (!isUrlAllowed(tab.url ?? '', captureConfig.allowlist)) {
+      throw new Error('Navigation lifecycle waits are blocked because the target tab is no longer allowlisted.');
+    }
+
+    rememberCaptureTabForSession(context.sessionId, tab);
+    return waitForNavigationLifecycleInTab({
+      payload,
+      tab: tab as chrome.tabs.Tab & { id: number },
+    });
+  }
+
+  if (command === 'CAPTURE_WAIT_FOR_DIALOG') {
+    const requestedTabId = resolveLiveConsoleTabId(payload.tabId);
+    const sessionScope = getSessionTabScope(context.sessionId);
+    if (requestedTabId !== undefined && sessionScope && !sessionScope.allowedTabIds.has(requestedTabId)) {
+      throw new Error(`tabId ${requestedTabId} is not bound to this session`);
+    }
+
+    const tab = requestedTabId !== undefined
+      ? await chrome.tabs.get(requestedTabId).catch(() => undefined)
+      : await resolveCaptureTab(context.sessionId);
+    if (!tab || typeof tab.id !== 'number') {
+      throw new Error('No capture tab is available for dialog wait.');
+    }
+    if (!isTabAllowedForSession(context.sessionId, tab.id)) {
+      throw new Error(`tabId ${tab.id} is not bound to this session`);
+    }
+    if (!isUrlAllowed(tab.url ?? '', captureConfig.allowlist)) {
+      throw new Error('Dialog waits are blocked because the target tab is no longer allowlisted.');
+    }
+
+    rememberCaptureTabForSession(context.sessionId, tab);
+    return waitForJavascriptDialogInTab({
+      payload,
+      tab: tab as chrome.tabs.Tab & { id: number },
+    });
+  }
+
+  if (command === 'CAPTURE_WAIT_FOR_STABLE_LAYOUT') {
+    const requestedTabId = resolveLiveConsoleTabId(payload.tabId);
+    const sessionScope = getSessionTabScope(context.sessionId);
+    if (requestedTabId !== undefined && sessionScope && !sessionScope.allowedTabIds.has(requestedTabId)) {
+      throw new Error(`tabId ${requestedTabId} is not bound to this session`);
+    }
+
+    const tab = requestedTabId !== undefined
+      ? await chrome.tabs.get(requestedTabId).catch(() => undefined)
+      : await resolveCaptureTab(context.sessionId);
+    if (!tab || typeof tab.id !== 'number') {
+      throw new Error('No capture tab is available for stable layout wait.');
+    }
+    if (!isTabAllowedForSession(context.sessionId, tab.id)) {
+      throw new Error(`tabId ${tab.id} is not bound to this session`);
+    }
+    if (!isUrlAllowed(tab.url ?? '', captureConfig.allowlist)) {
+      throw new Error('Stable layout waits are blocked because the target tab is no longer allowlisted.');
+    }
+
+    rememberCaptureTabForSession(context.sessionId, tab);
+    return waitForStableLayoutInTab({
+      payload,
+      tab: tab as chrome.tabs.Tab & { id: number },
+    });
+  }
+
+  if (command === 'CAPTURE_WAIT_FOR_DOWNLOAD') {
+    const requestedTabId = resolveLiveConsoleTabId(payload.tabId);
+    const sessionScope = getSessionTabScope(context.sessionId);
+    if (requestedTabId !== undefined && sessionScope && !sessionScope.allowedTabIds.has(requestedTabId)) {
+      throw new Error(`tabId ${requestedTabId} is not bound to this session`);
+    }
+
+    const tab = requestedTabId !== undefined
+      ? await chrome.tabs.get(requestedTabId).catch(() => undefined)
+      : await resolveCaptureTab(context.sessionId);
+    if (!tab || typeof tab.id !== 'number') {
+      throw new Error('No capture tab is available for download wait.');
+    }
+    if (!isTabAllowedForSession(context.sessionId, tab.id)) {
+      throw new Error(`tabId ${tab.id} is not bound to this session`);
+    }
+    if (!isUrlAllowed(tab.url ?? '', captureConfig.allowlist)) {
+      throw new Error('Download waits are blocked because the target tab is no longer allowlisted.');
+    }
+
+    rememberCaptureTabForSession(context.sessionId, tab);
+    return waitForDownloadInTab({
+      payload,
+      tab: tab as chrome.tabs.Tab & { id: number },
+    });
+  }
+
+  if (command === 'CAPTURE_WAIT_FOR_POPUP') {
+    const requestedTabId = resolveLiveConsoleTabId(payload.openerTabId);
+    const sessionScope = getSessionTabScope(context.sessionId);
+    if (requestedTabId !== undefined && sessionScope && !sessionScope.allowedTabIds.has(requestedTabId)) {
+      throw new Error(`tabId ${requestedTabId} is not bound to this session`);
+    }
+
+    const tab = requestedTabId !== undefined
+      ? await chrome.tabs.get(requestedTabId).catch(() => undefined)
+      : await resolveCaptureTab(context.sessionId);
+    if (!tab || typeof tab.id !== 'number') {
+      throw new Error('No capture tab is available for popup wait.');
+    }
+    if (!isTabAllowedForSession(context.sessionId, tab.id)) {
+      throw new Error(`tabId ${tab.id} is not bound to this session`);
+    }
+    if (!isUrlAllowed(tab.url ?? '', captureConfig.allowlist)) {
+      throw new Error('Popup waits are blocked because the opener tab is no longer allowlisted.');
+    }
+
+    rememberCaptureTabForSession(context.sessionId, tab);
+    return waitForPopupFromTab({
+      payload,
+      sessionId: context.sessionId,
+      tab: tab as chrome.tabs.Tab & { id: number },
+    });
   }
 
   if (command === 'CAPTURE_OVERRIDE_OBSERVE_ASSETS') {
@@ -2678,6 +4484,10 @@ async function executeCaptureCommand(
       },
       truncated: metrics.truncated,
     };
+  }
+
+  if (command === 'CAPTURE_PAGE_STATE') {
+    return capturePageStateAcrossFrames(tabId, payload);
   }
 
   if (command === 'CAPTURE_UI_SNAPSHOT') {
@@ -2833,7 +4643,7 @@ async function executeCaptureCommand(
     };
   }
 
-  return sendCaptureCommandToTab(tabId, command, payload);
+  return sendCaptureCommandToTab(tabId, command, payload, true, resolveCaptureFrameId(payload.frameId));
 }
 
 const sessionManager = new SessionManager({

@@ -29,6 +29,7 @@ export interface AutomationRunRow {
   completed_at: number | null;
   stop_reason: string | null;
   target_summary_json: string | null;
+  diagnostics_json: string | null;
   failure_json: string | null;
   redaction_json: string | null;
   created_at: number;
@@ -49,6 +50,7 @@ export interface AutomationStepRow {
   duration_ms: number | null;
   tab_id: number | null;
   target_summary_json: string | null;
+  diagnostics_json: string | null;
   redaction_json: string | null;
   failure_json: string | null;
   input_metadata_json: string | null;
@@ -84,11 +86,12 @@ export class AutomationRepository {
         completed_at,
         stop_reason,
         target_summary_json,
+        diagnostics_json,
         failure_json,
         redaction_json,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(run_id) DO UPDATE SET
         trace_id = COALESCE(excluded.trace_id, automation_runs.trace_id),
         action = COALESCE(excluded.action, automation_runs.action),
@@ -99,6 +102,7 @@ export class AutomationRepository {
         completed_at = COALESCE(excluded.completed_at, automation_runs.completed_at),
         stop_reason = COALESCE(excluded.stop_reason, automation_runs.stop_reason),
         target_summary_json = COALESCE(excluded.target_summary_json, automation_runs.target_summary_json),
+        diagnostics_json = COALESCE(excluded.diagnostics_json, automation_runs.diagnostics_json),
         failure_json = COALESCE(excluded.failure_json, automation_runs.failure_json),
         redaction_json = COALESCE(excluded.redaction_json, automation_runs.redaction_json),
         updated_at = excluded.updated_at
@@ -119,6 +123,7 @@ export class AutomationRepository {
         duration_ms,
         tab_id,
         target_summary_json,
+        diagnostics_json,
         redaction_json,
         failure_json,
         input_metadata_json,
@@ -126,7 +131,7 @@ export class AutomationRepository {
         event_id,
         created_at,
         updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(run_id, step_order) DO UPDATE SET
         trace_id = COALESCE(excluded.trace_id, automation_steps.trace_id),
         action = COALESCE(excluded.action, automation_steps.action),
@@ -137,6 +142,7 @@ export class AutomationRepository {
         duration_ms = COALESCE(excluded.duration_ms, automation_steps.duration_ms),
         tab_id = COALESCE(excluded.tab_id, automation_steps.tab_id),
         target_summary_json = COALESCE(excluded.target_summary_json, automation_steps.target_summary_json),
+        diagnostics_json = COALESCE(excluded.diagnostics_json, automation_steps.diagnostics_json),
         redaction_json = COALESCE(excluded.redaction_json, automation_steps.redaction_json),
         failure_json = COALESCE(excluded.failure_json, automation_steps.failure_json),
         input_metadata_json = COALESCE(excluded.input_metadata_json, automation_steps.input_metadata_json),
@@ -157,6 +163,7 @@ export class AutomationRepository {
       normalized.completedAt,
       normalized.stopReason,
       normalized.targetSummaryJson,
+      normalized.diagnosticsJson,
       normalized.failureJson,
       normalized.redactionJson,
       normalized.createdAt,
@@ -177,6 +184,7 @@ export class AutomationRepository {
       normalized.durationMs,
       normalized.tabId,
       normalized.targetSummaryJson,
+      normalized.diagnosticsJson,
       normalized.redactionJson,
       normalized.failureJson,
       normalized.inputMetadataJson,
@@ -241,6 +249,7 @@ function normalizeLifecycleEvent(input: AutomationLifecycleEventInput) {
     durationMs,
     stopReason,
     targetSummaryJson: stringifyJson(target),
+    diagnosticsJson: stringifyJson(asRecord(input.payload.diagnostics)),
     failureJson: stringifyJson(asRecord(input.payload.failureReason)),
     redactionJson: stringifyJson(asRecord(input.payload.redaction)),
     inputMetadataJson: stringifyJson(asRecord(input.payload.input)),

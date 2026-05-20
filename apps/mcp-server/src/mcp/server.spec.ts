@@ -12,6 +12,7 @@ import {
   routeToolCall,
   type ToolHandler,
 } from './server.js';
+import { createToolLoopGuard } from './tool-loop-guard.js';
 import { persistObservedOverrideAssets } from '../override-observed-assets.js';
 
 describe('mcp/server foundation', () => {
@@ -53,6 +54,126 @@ describe('mcp/server foundation', () => {
     expect(response.sessionId).toBe('s-1');
     expect(response.limitsApplied.maxResults).toBe(25);
     expect(response.redactionSummary.redactedFields).toBe(1);
+  });
+
+  it('warns and then blocks repeated same failing tool attempts before side effects', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    let callCount = 0;
+    const failingEnable: ToolHandler = async (input) => {
+      callCount += 1;
+      return {
+        sessionId: typeof input.sessionId === 'string' ? input.sessionId : undefined,
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        redactionSummary: {
+          totalFields: 0,
+          redactedFields: 0,
+          rulesApplied: [],
+        },
+        preflight: {
+          ready: false,
+          issues: [{ code: 'CONFIG_DISABLED', severity: 'error' }],
+        },
+        nextActions: [{ code: 'ENABLE_CONFIG', message: 'Enable config first.' }],
+      };
+    };
+    const tools = createToolRegistry({ enable_overrides: failingEnable });
+    const loopGuard = createToolLoopGuard({ getDb: () => db });
+    const input = { sessionId: 'loop-session', tabId: 7 };
+
+    const first = await routeToolCall(tools, 'enable_overrides', input, { loopGuard });
+    const second = await routeToolCall(tools, 'enable_overrides', input, { loopGuard });
+    const third = await routeToolCall(tools, 'enable_overrides', input, { loopGuard });
+    const fourth = await routeToolCall(tools, 'enable_overrides', input, { loopGuard });
+
+    expect(callCount).toBe(3);
+    expect(first.loopGuard).toBeUndefined();
+    expect((second.loopGuard as { status?: string } | undefined)?.status).toBe('warning');
+    expect((third.loopGuard as { status?: string } | undefined)?.status).toBe('blocked_next_attempt');
+    expect(fourth.blocked).toBe(true);
+    expect((fourth.loopGuard as { status?: string; rootCauseCode?: string })).toMatchObject({
+      status: 'blocked',
+      rootCauseCode: 'CONFIG_DISABLED',
+    });
+
+    const invocationCount = db.prepare('SELECT COUNT(*) AS count FROM mcp_tool_invocations').get() as { count: number };
+    const incident = db.prepare('SELECT * FROM mcp_loop_incidents WHERE status = ?').get('open') as {
+      root_cause_code: string;
+      severity: string;
+    };
+    expect(invocationCount.count).toBe(4);
+    expect(incident).toMatchObject({ root_cause_code: 'CONFIG_DISABLED', severity: 'blocked' });
+    db.close();
+  });
+
+  it('does not block when repeated tool attempts change input state', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    let callCount = 0;
+    const failingEnable: ToolHandler = async (input) => {
+      callCount += 1;
+      return {
+        sessionId: typeof input.sessionId === 'string' ? input.sessionId : undefined,
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        redactionSummary: {
+          totalFields: 0,
+          redactedFields: 0,
+          rulesApplied: [],
+        },
+        ready: false,
+        issues: [{ code: 'TARGET_ASSET_NOT_OBSERVED', severity: 'error' }],
+      };
+    };
+    const tools = createToolRegistry({ enable_overrides: failingEnable });
+    const loopGuard = createToolLoopGuard({ getDb: () => db });
+
+    await routeToolCall(tools, 'enable_overrides', { sessionId: 'loop-session', tabId: 1 }, { loopGuard });
+    await routeToolCall(tools, 'enable_overrides', { sessionId: 'loop-session', tabId: 2 }, { loopGuard });
+    await routeToolCall(tools, 'enable_overrides', { sessionId: 'loop-session', tabId: 3 }, { loopGuard });
+    await routeToolCall(tools, 'enable_overrides', { sessionId: 'loop-session', tabId: 4 }, { loopGuard });
+
+    expect(callCount).toBe(4);
+    db.close();
+  });
+
+  it('can disable loop guarding for controlled diagnostics', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    let callCount = 0;
+    const failingEnable: ToolHandler = async (input) => {
+      callCount += 1;
+      return {
+        sessionId: typeof input.sessionId === 'string' ? input.sessionId : undefined,
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        redactionSummary: {
+          totalFields: 0,
+          redactedFields: 0,
+          rulesApplied: [],
+        },
+        ready: false,
+        issues: [{ code: 'TARGET_ASSET_NOT_OBSERVED', severity: 'error' }],
+      };
+    };
+    const tools = createToolRegistry({ enable_overrides: failingEnable });
+    const loopGuard = createToolLoopGuard({ getDb: () => db, enabled: false });
+
+    for (let index = 0; index < 5; index += 1) {
+      await routeToolCall(tools, 'enable_overrides', { sessionId: 'loop-session', tabId: 1 }, { loopGuard });
+    }
+
+    const invocationCount = db.prepare('SELECT COUNT(*) AS count FROM mcp_tool_invocations').get() as { count: number };
+    expect(callCount).toBe(5);
+    expect(invocationCount.count).toBe(0);
+    db.close();
   });
 
   it('returns default response contract for unimplemented tools', async () => {
@@ -2358,12 +2479,12 @@ describe('mcp/server V1 query tools', () => {
       `
         INSERT INTO automation_runs (
           run_id, session_id, trace_id, action, tab_id, selector, status, started_at, completed_at,
-          stop_reason, target_summary_json, failure_json, redaction_json, created_at, updated_at
+          stop_reason, target_summary_json, diagnostics_json, failure_json, redaction_json, created_at, updated_at
         ) VALUES
           ('run-new', 'session-automation', 'trace-new', 'click', 7, '#checkout', 'succeeded', 3000, 3050,
-           NULL, '{"resolvedSelector":"#checkout"}', NULL, '{"fields":0}', 3000, 3050),
+           NULL, '{"resolvedSelector":"#checkout"}', '{"backend":"cdp-native-v2"}', NULL, '{"fields":0}', 3000, 3050),
           ('run-old', 'session-automation', 'trace-old', 'input', 7, '#email', 'failed', 2000, 2100,
-           'field_blocked', '{"resolvedSelector":"#email"}', '{"code":"blocked"}', '{"fields":1}', 2000, 2100)
+           'field_blocked', '{"resolvedSelector":"#email"}', '{"actionability":{"visible":true,"editable":false}}', '{"code":"blocked"}', '{"fields":1}', 2000, 2100)
       `
     ).run();
 
@@ -2371,14 +2492,14 @@ describe('mcp/server V1 query tools', () => {
       `
         INSERT INTO automation_steps (
           step_id, run_id, session_id, step_order, trace_id, action, selector, status, started_at,
-          finished_at, duration_ms, tab_id, target_summary_json, redaction_json, failure_json,
+          finished_at, duration_ms, tab_id, target_summary_json, diagnostics_json, redaction_json, failure_json,
           input_metadata_json, event_type, event_id, created_at, updated_at
         ) VALUES
           ('run-new:1', 'run-new', 'session-automation', 1, 'trace-new', 'click', '#checkout', 'succeeded', 3000,
-           3050, 50, 7, '{"resolvedSelector":"#checkout"}', '{"fields":0}', NULL,
+           3050, 50, 7, '{"resolvedSelector":"#checkout"}', '{"backend":"cdp-native-v2"}', '{"fields":0}', NULL,
            NULL, 'automation_succeeded', NULL, 3000, 3050),
           ('run-old:1', 'run-old', 'session-automation', 1, 'trace-old', 'input', '#email', 'failed', 2000,
-           2100, 100, 7, '{"resolvedSelector":"#email"}', '{"fields":1}', '{"code":"blocked"}',
+           2100, 100, 7, '{"resolvedSelector":"#email"}', '{"actionability":{"visible":true,"editable":false}}', '{"fields":1}', '{"code":"blocked"}',
            '{"valueLength":12}', 'automation_failed', NULL, 2000, 2100)
       `
     ).run();
@@ -2397,6 +2518,11 @@ describe('mcp/server V1 query tools', () => {
       runId: 'run-old',
       status: 'failed',
       action: 'input',
+      diagnostics: {
+        actionability: {
+          editable: false,
+        },
+      },
       stepCount: 1,
       source: 'automation_runs',
     });
@@ -2418,10 +2544,10 @@ describe('mcp/server V1 query tools', () => {
       `
         INSERT INTO automation_runs (
           run_id, session_id, trace_id, action, tab_id, selector, status, started_at, completed_at,
-          stop_reason, target_summary_json, failure_json, redaction_json, created_at, updated_at
+          stop_reason, target_summary_json, diagnostics_json, failure_json, redaction_json, created_at, updated_at
         ) VALUES (
           'run-detail', 'session-automation-detail', 'trace-detail', 'click', 9, '#submit', 'failed', 4000, 4200,
-          'action_failed', '{"resolvedSelector":"#submit"}', '{"code":"action_failed"}', '{"fields":1}', 4000, 4200
+          'action_failed', '{"resolvedSelector":"#submit"}', '{"backend":"cdp-native-v2","actionability":{"hitTargetMatches":false}}', '{"code":"action_failed"}', '{"fields":1}', 4000, 4200
         )
       `
     ).run();
@@ -2430,14 +2556,14 @@ describe('mcp/server V1 query tools', () => {
       `
         INSERT INTO automation_steps (
           step_id, run_id, session_id, step_order, trace_id, action, selector, status, started_at,
-          finished_at, duration_ms, tab_id, target_summary_json, redaction_json, failure_json,
+          finished_at, duration_ms, tab_id, target_summary_json, diagnostics_json, redaction_json, failure_json,
           input_metadata_json, event_type, event_id, created_at, updated_at
         ) VALUES
           ('run-detail:1', 'run-detail', 'session-automation-detail', 1, 'trace-detail', 'click', '#submit', 'started', 4000,
-           NULL, NULL, 9, '{"resolvedSelector":"#submit"}', '{"fields":0}', NULL,
+           NULL, NULL, 9, '{"resolvedSelector":"#submit"}', NULL, '{"fields":0}', NULL,
            NULL, 'automation_started', NULL, 4000, 4000),
           ('run-detail:2', 'run-detail', 'session-automation-detail', 2, 'trace-detail', 'click', '#submit', 'failed', 4100,
-           4200, 100, 9, '{"resolvedSelector":"#submit"}', '{"fields":1}', '{"code":"action_failed"}',
+           4200, 100, 9, '{"resolvedSelector":"#submit"}', '{"backend":"cdp-native-v2","actionability":{"hitTargetMatches":false}}', '{"fields":1}', '{"code":"action_failed"}',
            '{"valueLength":0}', 'automation_failed', NULL, 4100, 4200)
       `
     ).run();
@@ -2454,6 +2580,11 @@ describe('mcp/server V1 query tools', () => {
     expect((response.run as Record<string, unknown>)).toMatchObject({
       runId: 'run-detail',
       status: 'failed',
+      diagnostics: {
+        actionability: {
+          hitTargetMatches: false,
+        },
+      },
       stepCount: 2,
       source: 'automation_runs',
     });
@@ -2462,6 +2593,12 @@ describe('mcp/server V1 query tools', () => {
       stepId: 'run-detail:2',
       stepOrder: 2,
       status: 'failed',
+      diagnostics: {
+        backend: 'cdp-native-v2',
+        actionability: {
+          hitTargetMatches: false,
+        },
+      },
       eventType: 'automation_failed',
       source: 'automation_steps',
     });
@@ -3593,6 +3730,10 @@ describe('mcp/server V2 capture tools', () => {
 
       const tools = createToolRegistry(createV1ToolHandlers(() => db));
       const listed = await routeToolCall(tools, 'list_observed_override_assets', { sessionId: 'session-persisted' });
+      const fullListed = await routeToolCall(tools, 'list_observed_override_assets', {
+        sessionId: 'session-persisted',
+        responseProfile: 'full',
+      });
       const mapped = await routeToolCall(tools, 'map_next_override_assets', {
         sessionId: 'session-persisted',
         projectRoot: fixtureRoot,
@@ -3600,6 +3741,10 @@ describe('mcp/server V2 capture tools', () => {
       });
 
       expect((listed.assets as unknown[])).toHaveLength(1);
+      expect(listed.responseProfile).toBe('compact');
+      expect((listed.assets as Array<Record<string, unknown>>)[0]?.sessionId).toBeUndefined();
+      expect(fullListed.responseProfile).toBe('full');
+      expect((fullListed.assets as Array<Record<string, unknown>>)[0]).toMatchObject({ sessionId: 'session-persisted' });
       expect(mapped.observedFromPersisted).toMatchObject({ sessionId: 'session-persisted', assetCount: 1 });
       expect((mapped.candidates as Array<{ confidence: string; matchedSourcePaths: string[] }>)[0]).toMatchObject({
         confidence: 'high',
@@ -3847,6 +3992,1244 @@ describe('mcp/server V2 capture tools', () => {
     expect(response.matched).toBe(true);
     expect(response.attempts).toBeGreaterThanOrEqual(2);
     expect(response.waitedMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it('preflights production-like automation flows with session, page, and risk diagnostics', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const now = Date.now();
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, tab_id, url_start, url_last)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      'session-v2',
+      now - 1000,
+      now - 500,
+      0,
+      7,
+      'https://app.example.com/account',
+      'https://app.example.com/account',
+    );
+
+    const tools = createToolRegistry(
+      createV2ToolHandlers(
+        {
+          execute: async (_sessionId, command) => {
+            expect(command).toBe('CAPTURE_PAGE_STATE');
+            return {
+              ok: true,
+              payload: {
+                url: 'https://app.example.com/account',
+                title: 'Account',
+                language: 'en',
+                viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+                summary: { buttons: 2, links: 1, inputs: 2, modals: 0, frames: 1 },
+                inputs: [
+                  {
+                    label: 'Email address',
+                    selector: '#email',
+                    type: 'email',
+                  },
+                  {
+                    label: 'Password',
+                    selector: '#password',
+                    type: 'password',
+                  },
+                ],
+                frames: [
+                  {
+                    frameId: 22,
+                    url: 'https://payments.example/frame',
+                    title: 'Payment',
+                    sameOrigin: false,
+                    accessible: false,
+                  },
+                ],
+              },
+              truncated: false,
+            };
+          },
+        },
+        () => db,
+        () => ({
+          connected: true,
+          connectedAt: now - 900,
+          lastHeartbeatAt: now - 10,
+        }),
+      ),
+    );
+
+    const response = await routeToolCall(tools, 'preflight_automation_flow', {
+      sessionId: 'session-v2',
+      expectedUrlContains: '/account',
+      plannedActions: ['click', 'input'],
+      requireSensitiveAutomation: true,
+    });
+
+    expect(response.ready).toBe(true);
+    expect(response.blockers).toEqual([]);
+    expect((response.warnings as Array<Record<string, unknown>>).map((warning) => warning.code)).toEqual(
+      expect.arrayContaining([
+        'PRODUCTION_OR_REMOTE_ORIGIN',
+        'SENSITIVE_FIELD_AUTOMATION_RISK',
+        'CROSS_ORIGIN_FRAME_PRESENT',
+      ]),
+    );
+    expect(response.checks).toMatchObject({
+      sessionFound: true,
+      liveConnected: true,
+      expectedUrlMatched: true,
+      pageStateCaptured: true,
+      remoteOrProductionLike: true,
+      sensitiveInputCount: 2,
+      crossOriginFrameCount: 1,
+    });
+    expect(response.page).toMatchObject({
+      url: 'https://app.example.com/account',
+      title: 'Account',
+    });
+    db.close();
+  });
+
+  it('preflights disconnected or missing sessions as blockers before page capture', async () => {
+    let captureAttempted = false;
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const tools = createToolRegistry(
+      createV2ToolHandlers(
+        {
+          execute: async () => {
+            captureAttempted = true;
+            return { ok: true, payload: {}, truncated: false };
+          },
+        },
+        () => db,
+        () => undefined,
+      ),
+    );
+
+    const response = await routeToolCall(tools, 'preflight_automation_flow', {
+      sessionId: 'missing-session',
+      expectedUrlContains: '/dashboard',
+    });
+
+    expect(response.ready).toBe(false);
+    expect(captureAttempted).toBe(false);
+    expect((response.blockers as Array<Record<string, unknown>>).map((blocker) => blocker.code)).toEqual(
+      expect.arrayContaining(['SESSION_NOT_FOUND', 'LIVE_SESSION_DISCONNECTED']),
+    );
+    expect(response.nextActions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'SESSION_NOT_FOUND' }),
+        expect.objectContaining({ code: 'LIVE_SESSION_DISCONNECTED' }),
+      ]),
+    );
+    db.close();
+  });
+
+  it('waits for URL predicates with exact, contains, or regex matching', async () => {
+    let attempt = 0;
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command) => {
+          expect(command).toBe('CAPTURE_PAGE_STATE');
+          attempt += 1;
+          return {
+            ok: true,
+            payload: {
+              url: attempt >= 2 ? 'https://app.example.com/dashboard?tab=weekly' : 'https://app.example.com/loading',
+              title: attempt >= 2 ? 'Dashboard' : 'Loading',
+              language: 'en',
+              viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+              summary: { buttons: 0, links: 0, inputs: 0, modals: 0 },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_url', {
+      sessionId: 'session-v2',
+      urlContains: '/dashboard',
+      urlRegex: 'tab=week',
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('url');
+    expect(response.attempts).toBeGreaterThanOrEqual(2);
+    expect(response.evidence).toMatchObject({
+      page: {
+        url: 'https://app.example.com/dashboard?tab=weekly',
+      },
+    });
+  });
+
+  it('waits for live document load state with optional URL predicates', async () => {
+    let attempt = 0;
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command) => {
+          expect(command).toBe('CAPTURE_PAGE_STATE');
+          attempt += 1;
+          return {
+            ok: true,
+            payload: {
+              url: attempt >= 2 ? 'https://app.example.com/dashboard' : 'https://app.example.com/loading',
+              title: attempt >= 2 ? 'Dashboard' : 'Loading',
+              readyState: attempt >= 2 ? 'interactive' : 'loading',
+              language: 'en',
+              viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+              summary: { buttons: 0, links: 0, inputs: 0, modals: 0 },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_load_state', {
+      sessionId: 'session-v2',
+      state: 'domcontentloaded',
+      urlContains: '/dashboard',
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('load_state');
+    expect(response.attempts).toBeGreaterThanOrEqual(2);
+    expect(response.evidence).toMatchObject({
+      state: 'domcontentloaded',
+      page: {
+        url: 'https://app.example.com/dashboard',
+        readyState: 'interactive',
+      },
+    });
+  });
+
+  it('waits for persisted navigation events with URL, from-URL, trigger, and tab filters', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const now = Date.now();
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, tab_id, url_start, url_last)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      'session-v2',
+      now - 2000,
+      now - 100,
+      0,
+      7,
+      'https://app.example.com/cart',
+      'https://app.example.com/checkout?step=shipping',
+    );
+    db.prepare(
+      `
+        INSERT INTO events (event_id, session_id, ts, type, payload_json, tab_id, origin)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      'evt-nav-checkout',
+      'session-v2',
+      now - 100,
+      'nav',
+      JSON.stringify({
+        from: 'https://app.example.com/cart',
+        to: 'https://app.example.com/checkout?step=shipping',
+        trigger: 'pushState',
+      }),
+      7,
+      'https://app.example.com',
+    );
+    const tools = createToolRegistry(
+      createV2ToolHandlers(
+        {
+          execute: async () => {
+            throw new Error('navigation waits should not call the live capture client');
+          },
+        },
+        () => db,
+      ),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_navigation', {
+      sessionId: 'session-v2',
+      urlContains: '/checkout',
+      fromUrlContains: '/cart',
+      trigger: 'pushState',
+      tabId: 7,
+      sinceTs: now - 1000,
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('navigation');
+    expect(response.evidence).toMatchObject({
+      navigation: {
+        eventId: 'evt-nav-checkout',
+        url: 'https://app.example.com/checkout?step=shipping',
+        from: 'https://app.example.com/cart',
+        trigger: 'pushState',
+      },
+    });
+    db.close();
+  });
+
+  it('waits for selector state using live style and layout captures', async () => {
+    let styleAttempt = 0;
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          expect(payload.selector).toBe('#ready');
+          expect(payload.frameId).toBe(0);
+          if (command === 'CAPTURE_COMPUTED_STYLES') {
+            styleAttempt += 1;
+            return {
+              ok: true,
+              payload: {
+                selector: '#ready',
+                properties: {
+                  display: 'block',
+                  visibility: styleAttempt >= 2 ? 'visible' : 'hidden',
+                  opacity: '1',
+                },
+              },
+              truncated: false,
+            };
+          }
+
+          if (command === 'CAPTURE_LAYOUT_METRICS') {
+            return {
+              ok: true,
+              payload: {
+                selector: '#ready',
+                viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+                element: { x: 10, y: 10, width: 120, height: 40, top: 10, right: 130, bottom: 50, left: 10 },
+              },
+              truncated: false,
+            };
+          }
+
+          throw new Error(`Unexpected command ${command}`);
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_selector_state', {
+      sessionId: 'session-v2',
+      selector: '#ready',
+      state: 'visible',
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('selector_state');
+    expect(response.attempts).toBeGreaterThanOrEqual(2);
+    expect(response.evidence).toMatchObject({
+      selector: '#ready',
+      state: 'visible',
+      selectorState: {
+        attached: true,
+        visible: true,
+      },
+    });
+  });
+
+  it('waits for persisted request predicates with method, trace, and content-type filters', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const now = Date.now();
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode)
+        VALUES (?, ?, ?, ?)
+      `,
+    ).run('session-v2', now - 2000, now - 100, 0);
+    db.prepare(
+      `
+        INSERT INTO network (
+          request_id, session_id, trace_id, tab_id, ts_start, duration_ms, method, url, origin,
+          status, initiator, request_content_type, response_content_type
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      'req-checkout',
+      'session-v2',
+      'trace-checkout',
+      7,
+      now - 100,
+      42,
+      'POST',
+      'https://app.example.com/api/checkout',
+      'https://app.example.com',
+      202,
+      'fetch',
+      'application/json',
+      'application/json',
+    );
+    const tools = createToolRegistry(
+      createV2ToolHandlers(
+        {
+          execute: async () => {
+            throw new Error('request waits should not call the live capture client');
+          },
+        },
+        () => db,
+      ),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_request', {
+      sessionId: 'session-v2',
+      urlContains: '/api/checkout',
+      method: 'post',
+      traceId: 'trace-checkout',
+      requestContentType: 'json',
+      sinceTs: now - 1000,
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('request');
+    expect(response.evidence).toMatchObject({
+      call: {
+        requestId: 'req-checkout',
+        method: 'POST',
+        url: 'https://app.example.com/api/checkout',
+        request: {
+          contentType: 'application/json',
+        },
+      },
+    });
+    db.close();
+  });
+
+  it('waits for persisted response predicates with status and content-type filters', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const now = Date.now();
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode)
+        VALUES (?, ?, ?, ?)
+      `,
+    ).run('session-v2', now - 2000, now - 100, 0);
+    db.prepare(
+      `
+        INSERT INTO network (
+          request_id, session_id, tab_id, ts_start, duration_ms, method, url, origin,
+          status, initiator, response_content_type
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run(
+      'req-checkout-created',
+      'session-v2',
+      7,
+      now - 100,
+      64,
+      'POST',
+      'https://app.example.com/api/checkout',
+      'https://app.example.com',
+      201,
+      'fetch',
+      'application/json; charset=utf-8',
+    );
+    const tools = createToolRegistry(
+      createV2ToolHandlers(
+        {
+          execute: async () => {
+            throw new Error('response waits should not call the live capture client');
+          },
+        },
+        () => db,
+      ),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_response', {
+      sessionId: 'session-v2',
+      urlRegex: '/api/check',
+      method: 'POST',
+      statusIn: [201],
+      statusGte: 200,
+      statusLt: 300,
+      responseContentType: 'json',
+      sinceTs: now - 1000,
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('response');
+    expect(response.evidence).toMatchObject({
+      call: {
+        requestId: 'req-checkout-created',
+        status: 201,
+        response: {
+          contentType: 'application/json; charset=utf-8',
+        },
+      },
+    });
+    db.close();
+  });
+
+  it('waits for matching live console messages', async () => {
+    let attempt = 0;
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          expect(command).toBe('CAPTURE_GET_LIVE_CONSOLE_LOGS');
+          expect(payload).toMatchObject({
+            levels: ['error'],
+            contains: 'checkout',
+            includeRuntimeErrors: true,
+          });
+          attempt += 1;
+          return {
+            ok: true,
+            payload: {
+              logs:
+                attempt >= 2
+                  ? [
+                      {
+                        timestamp: Date.now(),
+                        level: 'error',
+                        message: 'checkout failed',
+                        url: 'https://app.example.com/checkout',
+                      },
+                    ]
+                  : [],
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_console', {
+      sessionId: 'session-v2',
+      levels: ['error'],
+      contains: 'checkout',
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('console');
+    expect(response.attempts).toBeGreaterThanOrEqual(2);
+    expect(response.evidence).toMatchObject({
+      logs: [expect.objectContaining({ level: 'error', message: 'checkout failed' })],
+    });
+  });
+
+  it('waits for a native JavaScript dialog through the live extension session', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload, timeoutMs) => {
+          expect(command).toBe('CAPTURE_WAIT_FOR_DIALOG');
+          expect(timeoutMs).toBe(2500);
+          expect(payload).toMatchObject({
+            type: 'alert',
+            messageContains: 'Saved',
+            action: 'accept',
+            tabId: 7,
+            timeoutMs: 500,
+          });
+          return {
+            ok: true,
+            payload: {
+              matched: true,
+              type: 'alert',
+              message: 'Saved successfully',
+              action: 'accept',
+              tabId: 7,
+              url: 'https://app.example.com/settings',
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_dialog', {
+      sessionId: 'session-v2',
+      type: 'alert',
+      messageContains: 'Saved',
+      action: 'accept',
+      tabId: 7,
+      timeoutMs: 500,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('dialog');
+    expect(response.evidence).toMatchObject({
+      filters: {
+        type: 'alert',
+        messageContains: 'Saved',
+        action: 'accept',
+        tabId: 7,
+      },
+      dialog: {
+        message: 'Saved successfully',
+      },
+    });
+  });
+
+  it('keeps last observed dialog timeout diagnostics through the live extension session', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async () => ({
+          ok: true,
+          payload: {
+            matched: false,
+            tabId: 7,
+            timeoutMs: 500,
+            observedCount: 1,
+            expected: {
+              type: 'alert',
+              messageContains: 'Saved',
+            },
+            lastObserved: {
+              type: 'confirm',
+              message: 'Leave page?',
+              url: 'https://app.example.com/settings',
+              matched: false,
+              mismatchReasons: ['type', 'messageContains'],
+            },
+          },
+          truncated: false,
+        }),
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_dialog', {
+      sessionId: 'session-v2',
+      type: 'alert',
+      messageContains: 'Saved',
+      tabId: 7,
+      timeoutMs: 500,
+    });
+
+    expect(response.matched).toBe(false);
+    expect(response.error).toMatchObject({
+      code: 'dialog_wait_timeout',
+    });
+    expect(response.evidence).toMatchObject({
+      timeoutDiagnostics: {
+        matcherSummary: {
+          type: 'alert',
+          messageContains: 'Saved',
+          tabId: 7,
+        },
+        candidateCount: 1,
+        lastObserved: {
+          type: 'confirm',
+          mismatchReasons: ['type', 'messageContains'],
+        },
+      },
+    });
+  });
+
+  it('waits for a stable layout window through the live extension session', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload, timeoutMs) => {
+          expect(command).toBe('CAPTURE_WAIT_FOR_STABLE_LAYOUT');
+          expect(timeoutMs).toBe(2500);
+          expect(payload).toMatchObject({
+            selector: '#panel',
+            stableMs: 300,
+            tabId: 7,
+            timeoutMs: 500,
+            pollIntervalMs: 50,
+          });
+          return {
+            ok: true,
+            payload: {
+              matched: true,
+              selector: '#panel',
+              stableMs: 300,
+              quietForMs: 325,
+              tabId: 7,
+              snapshot: {
+                target: {
+                  found: true,
+                  rect: { x: 10, y: 20, width: 200, height: 40 },
+                },
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_stable_layout', {
+      sessionId: 'session-v2',
+      selector: '#panel',
+      stableMs: 300,
+      tabId: 7,
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('stable_layout');
+    expect(response.evidence).toMatchObject({
+      filters: {
+        selector: '#panel',
+        stableMs: 300,
+        tabId: 7,
+      },
+      layout: {
+        matched: true,
+        quietForMs: 325,
+      },
+    });
+  });
+
+  it('waits for a navigation lifecycle event through the live extension session', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload, timeoutMs) => {
+          expect(command).toBe('CAPTURE_WAIT_FOR_NAVIGATION_LIFECYCLE');
+          expect(timeoutMs).toBe(2500);
+          expect(payload).toMatchObject({
+            state: 'load',
+            urlContains: '/checkout/complete',
+            tabId: 7,
+            timeoutMs: 500,
+          });
+          return {
+            ok: true,
+            payload: {
+              matched: true,
+              state: 'load',
+              eventMethod: 'Page.loadEventFired',
+              tabId: 7,
+              url: 'https://app.example.com/checkout/complete',
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_navigation_lifecycle', {
+      sessionId: 'session-v2',
+      state: 'load',
+      urlContains: '/checkout/complete',
+      tabId: 7,
+      timeoutMs: 500,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('navigation_lifecycle');
+    expect(response.evidence).toMatchObject({
+      filters: {
+        state: 'load',
+        urlContains: '/checkout/complete',
+        tabId: 7,
+      },
+      lifecycle: {
+        eventMethod: 'Page.loadEventFired',
+      },
+    });
+  });
+
+  it('keeps navigation lifecycle timeout diagnostics through the live extension session', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async () => ({
+          ok: true,
+          payload: {
+            matched: false,
+            state: 'load',
+            timeoutMs: 500,
+            tabId: 7,
+            observedEventCount: 2,
+            expected: {
+              state: 'load',
+              urlContains: '/checkout/complete',
+            },
+            lastObserved: {
+              state: 'load',
+              eventMethod: 'Page.loadEventFired',
+              url: 'https://app.example.com/cart',
+              matched: false,
+            },
+          },
+          truncated: false,
+        }),
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_navigation_lifecycle', {
+      sessionId: 'session-v2',
+      state: 'load',
+      urlContains: '/checkout/complete',
+      tabId: 7,
+      timeoutMs: 500,
+    });
+
+    expect(response.matched).toBe(false);
+    expect(response.error).toMatchObject({
+      code: 'navigation_lifecycle_wait_timeout',
+    });
+    expect(response.evidence).toMatchObject({
+      timeoutDiagnostics: {
+        matcherSummary: {
+          state: 'load',
+          urlContains: '/checkout/complete',
+          tabId: 7,
+        },
+        candidateCount: 2,
+        lastObserved: {
+          eventMethod: 'Page.loadEventFired',
+          url: 'https://app.example.com/cart',
+        },
+      },
+    });
+  });
+
+  it('waits for a download through the live extension session', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload, timeoutMs) => {
+          expect(command).toBe('CAPTURE_WAIT_FOR_DOWNLOAD');
+          expect(timeoutMs).toBe(2500);
+          expect(payload).toMatchObject({
+            filenameContains: 'report',
+            state: 'completed',
+            tabId: 7,
+            timeoutMs: 500,
+          });
+          return {
+            ok: true,
+            payload: {
+              matched: true,
+              state: 'completed',
+              tabId: 7,
+              url: 'https://app.example.com/export/report.csv',
+              suggestedFilename: 'report.csv',
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_download', {
+      sessionId: 'session-v2',
+      filenameContains: 'report',
+      state: 'completed',
+      tabId: 7,
+      timeoutMs: 500,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('download');
+    expect(response.evidence).toMatchObject({
+      filters: {
+        filenameContains: 'report',
+        state: 'completed',
+        tabId: 7,
+      },
+      download: {
+        suggestedFilename: 'report.csv',
+      },
+    });
+  });
+
+  it('keeps download timeout diagnostics through the live extension session', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async () => ({
+          ok: true,
+          payload: {
+            matched: false,
+            state: 'completed',
+            timeoutMs: 500,
+            tabId: 7,
+            observedEventCount: 2,
+            expected: {
+              filenameContains: 'report',
+              state: 'completed',
+            },
+            lastObserved: {
+              eventMethod: 'Page.downloadProgress',
+              guid: 'download-1',
+              state: 'inProgress',
+              receivedBytes: 120,
+              totalBytes: 240,
+              matched: false,
+            },
+            lastMatchedDownload: {
+              guid: 'download-1',
+              url: 'https://app.example.com/export/report.csv',
+              suggestedFilename: 'report.csv',
+              state: 'started',
+            },
+          },
+          truncated: false,
+        }),
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_download', {
+      sessionId: 'session-v2',
+      filenameContains: 'report',
+      state: 'completed',
+      tabId: 7,
+      timeoutMs: 500,
+    });
+
+    expect(response.matched).toBe(false);
+    expect(response.error).toMatchObject({
+      code: 'download_wait_timeout',
+    });
+    expect(response.evidence).toMatchObject({
+      timeoutDiagnostics: {
+        matcherSummary: {
+          filenameContains: 'report',
+          state: 'completed',
+          tabId: 7,
+        },
+        candidateCount: 2,
+        lastObserved: {
+          eventMethod: 'Page.downloadProgress',
+          state: 'inProgress',
+        },
+      },
+    });
+  });
+
+  it('waits for a popup through the live extension session', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload, timeoutMs) => {
+          expect(command).toBe('CAPTURE_WAIT_FOR_POPUP');
+          expect(timeoutMs).toBe(2500);
+          expect(payload).toMatchObject({
+            urlContains: '/oauth/callback',
+            openerTabId: 7,
+            timeoutMs: 500,
+          });
+          return {
+            ok: true,
+            payload: {
+              matched: true,
+              tabId: 11,
+              openerTabId: 7,
+              windowId: 4,
+              url: 'https://app.example.com/oauth/callback',
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_popup', {
+      sessionId: 'session-v2',
+      urlContains: '/oauth/callback',
+      openerTabId: 7,
+      timeoutMs: 500,
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('popup');
+    expect(response.evidence).toMatchObject({
+      filters: {
+        urlContains: '/oauth/callback',
+        openerTabId: 7,
+      },
+      popup: {
+        tabId: 11,
+      },
+    });
+  });
+
+  it('keeps popup timeout diagnostics through the live extension session', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async () => ({
+          ok: true,
+          payload: {
+            matched: false,
+            timeoutMs: 500,
+            openerTabId: 7,
+            observedPopupCount: 2,
+            pendingTabIds: [11],
+            expected: {
+              urlContains: '/oauth/callback',
+              openerTabId: 7,
+            },
+            lastObserved: {
+              tabId: 11,
+              openerTabId: 7,
+              url: 'https://app.example.com/oauth/start',
+              matched: false,
+              mismatchReasons: ['url'],
+            },
+          },
+          truncated: false,
+        }),
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_popup', {
+      sessionId: 'session-v2',
+      urlContains: '/oauth/callback',
+      openerTabId: 7,
+      timeoutMs: 500,
+    });
+
+    expect(response.matched).toBe(false);
+    expect(response.error).toMatchObject({
+      code: 'popup_wait_timeout',
+    });
+    expect(response.evidence).toMatchObject({
+      timeoutDiagnostics: {
+        matcherSummary: {
+          urlContains: '/oauth/callback',
+          openerTabId: 7,
+        },
+        candidateCount: 2,
+        sampledCandidates: [11],
+        lastObserved: {
+          tabId: 11,
+          mismatchReasons: ['url'],
+        },
+      },
+    });
+  });
+
+  it('waits for a bounded network quiet window from persisted network activity', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const tools = createToolRegistry(
+      createV2ToolHandlers(
+        {
+          execute: async () => {
+            throw new Error('network quiet waits should not call the live capture client');
+          },
+        },
+        () => db,
+      ),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_network_quiet', {
+      sessionId: 'session-v2',
+      quietMs: 100,
+      timeoutMs: 500,
+      pollIntervalMs: 50,
+      urlContains: '/api',
+      method: 'GET',
+    });
+
+    expect(response.matched).toBe(true);
+    expect(response.waitKind).toBe('network_quiet');
+    expect(response.waitedMs).toBeGreaterThanOrEqual(100);
+    expect(response.evidence).toMatchObject({
+      quietMs: 100,
+      filters: {
+        urlContains: '/api',
+        method: 'GET',
+      },
+      sampledCalls: [],
+    });
+    db.close();
+  });
+
+  it('runs generic workflow wait steps for response predicates', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const now = Date.now();
+    db.prepare(
+      `
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode)
+        VALUES (?, ?, ?, ?)
+      `,
+    ).run('session-v2', now - 2000, now - 100, 0);
+    db.prepare(
+      `
+        INSERT INTO network (request_id, session_id, ts_start, duration_ms, method, url, status, initiator)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `,
+    ).run('req-workflow-response', 'session-v2', now - 100, 30, 'GET', 'https://app.example.com/api/ready', 200, 'fetch');
+    const tools = createToolRegistry(
+      createV2ToolHandlers(
+        {
+          execute: async () => {
+            throw new Error('workflow response waits should not call the live capture client');
+          },
+        },
+        () => db,
+      ),
+    );
+
+    const response = await routeToolCall(tools, 'run_ui_steps', {
+      sessionId: 'session-v2',
+      steps: [
+        {
+          kind: 'wait',
+          id: 'wait-api-ready',
+          wait: {
+            waitKind: 'response',
+            urlContains: '/api/ready',
+            statusIn: [200],
+            sinceTs: now - 1000,
+            timeoutMs: 500,
+            pollIntervalMs: 50,
+          },
+        },
+      ],
+    });
+
+    expect(response.status).toBe('succeeded');
+    expect((response.steps as Array<Record<string, unknown>>)[0]).toMatchObject({
+      id: 'wait-api-ready',
+      kind: 'wait',
+      status: 'succeeded',
+      wait: {
+        waitKind: 'response',
+        matched: true,
+      },
+      target: {
+        call: {
+          requestId: 'req-workflow-response',
+          status: 200,
+        },
+      },
+    });
+    db.close();
+  });
+
+  it('runs generic workflow wait steps for URL predicates', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command) => {
+          expect(command).toBe('CAPTURE_PAGE_STATE');
+          return {
+            ok: true,
+            payload: {
+              url: 'https://app.example.com/dashboard',
+              title: 'Dashboard',
+              language: 'en',
+              viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+              summary: { buttons: 1, links: 0, inputs: 0, modals: 0 },
+              buttons: [{ text: 'Refresh', selector: '#refresh', elementRef: 'ref:refresh' }],
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'run_ui_steps', {
+      sessionId: 'session-v2',
+      steps: [
+        {
+          kind: 'wait',
+          id: 'wait-dashboard-url',
+          wait: {
+            waitKind: 'url',
+            urlContains: '/dashboard',
+            timeoutMs: 250,
+            pollIntervalMs: 50,
+          },
+        },
+      ],
+    });
+
+    expect(response.status).toBe('succeeded');
+    expect(response.completedStepCount).toBe(1);
+    expect((response.steps as Array<Record<string, unknown>>)[0]).toMatchObject({
+      id: 'wait-dashboard-url',
+      kind: 'wait',
+      status: 'succeeded',
+      wait: {
+        waitKind: 'url',
+        matched: true,
+      },
+    });
+    expect(response.finalPage).toMatchObject({
+      url: 'https://app.example.com/dashboard',
+      title: 'Dashboard',
+    });
+  });
+
+  it('runs generic workflow load-state wait steps', async () => {
+    let attempt = 0;
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command) => {
+          expect(command).toBe('CAPTURE_PAGE_STATE');
+          attempt += 1;
+          return {
+            ok: true,
+            payload: {
+              url: 'https://app.example.com/dashboard',
+              title: 'Dashboard',
+              readyState: attempt >= 2 ? 'complete' : 'interactive',
+              language: 'en',
+              viewport: { width: 1440, height: 900, scrollX: 0, scrollY: 0 },
+              summary: { buttons: 0, links: 0, inputs: 0, modals: 0 },
+              buttons: [],
+              links: [],
+              inputs: [],
+              modals: [],
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'run_ui_steps', {
+      sessionId: 'session-v2',
+      steps: [
+        {
+          kind: 'wait',
+          id: 'wait-dashboard-load',
+          wait: {
+            waitKind: 'load_state',
+            state: 'load',
+            urlContains: '/dashboard',
+            timeoutMs: 500,
+            pollIntervalMs: 50,
+          },
+        },
+      ],
+    });
+
+    expect(response.status).toBe('succeeded');
+    expect((response.steps as Array<Record<string, unknown>>)[0]).toMatchObject({
+      id: 'wait-dashboard-load',
+      kind: 'wait',
+      status: 'succeeded',
+      wait: {
+        waitKind: 'load_state',
+        matched: true,
+      },
+      target: {
+        state: 'load',
+        page: {
+          readyState: 'complete',
+        },
+      },
+    });
   });
 
   it('runs a generic safe UI workflow with action, wait, and assert steps', async () => {
@@ -5030,7 +6413,7 @@ describe('mcp/server V2 capture tools', () => {
     });
     expect(response.supportedScopes).toEqual({
       executionScope: 'top-document-v1',
-      topDocumentOnly: true,
+      topDocumentOnly: false,
       opensNewBrowserSession: false,
     });
   });
@@ -5088,6 +6471,486 @@ describe('mcp/server V2 capture tools', () => {
       },
     });
     expect(response.status).toBe('succeeded');
+  });
+
+  it('passes coordinate targets through the live ui action path', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          return {
+            ok: true,
+            payload: {
+              action: 'click',
+              traceId: 'trace-live-coordinate-1',
+              status: 'succeeded',
+              executionScope: 'top-document-v1',
+              startedAt: 1700000000000,
+              finishedAt: 1700000000020,
+              target: {
+                matched: true,
+                selector: '#submit',
+                resolvedSelector: '#submit',
+                tagName: 'button',
+                tabId: 9,
+                frameId: 0,
+                url: 'http://localhost:3000/checkout',
+              },
+              result: {
+                backend: 'cdp-native-v2',
+                point: {
+                  x: 180,
+                  y: 120,
+                },
+                pointCoordinateSpace: 'top-document',
+                coordinateTarget: true,
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'execute_ui_action', {
+      sessionId: 'session-v2',
+      action: 'click',
+      target: {
+        tabId: 9,
+        coordinates: {
+          x: 180,
+          y: 120,
+        },
+      },
+    });
+
+    expect(captureCalls[0]).toMatchObject({
+      command: 'EXECUTE_UI_ACTION',
+      payload: {
+        action: 'click',
+        target: {
+          tabId: 9,
+          coordinates: {
+            x: 180,
+            y: 120,
+          },
+        },
+      },
+    });
+    expect(response.status).toBe('succeeded');
+    expect(response.actionResult).toMatchObject({
+      result: {
+        coordinateTarget: true,
+        pointCoordinateSpace: 'top-document',
+      },
+    });
+  });
+
+  it('resolves semantic execute_ui_action targets through page-state refs', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          if (command === 'CAPTURE_PAGE_STATE') {
+            return {
+              ok: true,
+              payload: {
+                buttons: [
+                  {
+                    text: 'Confirm dialog',
+                    selector: '#confirm-dialog',
+                    elementRef: 'ref:confirm-dialog',
+                    frameId: 12,
+                    frameUrl: 'http://localhost:3000/frame',
+                    tagName: 'button',
+                  },
+                ],
+                summary: {
+                  buttons: 1,
+                  inputs: 0,
+                  modals: 0,
+                  frames: 2,
+                },
+              },
+              truncated: false,
+            };
+          }
+
+          return {
+            ok: true,
+            payload: {
+              action: 'click',
+              traceId: 'trace-live-semantic-1',
+              status: 'succeeded',
+              executionScope: 'top-document-v1',
+              startedAt: 1700000000000,
+              finishedAt: 1700000000020,
+              target: {
+                matched: true,
+                selector: '#confirm-dialog',
+                resolvedSelector: '#confirm-dialog',
+                tagName: 'button',
+                tabId: 9,
+                frameId: 12,
+                url: 'http://localhost:3000/frame',
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'execute_ui_action', {
+      sessionId: 'session-v2',
+      action: 'click',
+      target: {
+        scope: 'buttons',
+        textContains: 'Confirm dialog',
+        tabId: 9,
+      },
+    });
+
+    expect(captureCalls.map((call) => call.command)).toEqual(['CAPTURE_PAGE_STATE', 'EXECUTE_UI_ACTION']);
+    expect(captureCalls[1]).toMatchObject({
+      command: 'EXECUTE_UI_ACTION',
+      payload: {
+        action: 'click',
+        target: {
+          elementRef: 'ref:confirm-dialog',
+          selector: '#confirm-dialog',
+          frameId: 12,
+          tabId: 9,
+        },
+      },
+    });
+    expect(response.status).toBe('succeeded');
+    expect(response.targetResolution).toMatchObject({
+      strategy: 'semantic_elementRef',
+      matched: {
+        selector: '#confirm-dialog',
+        frameId: 12,
+      },
+    });
+  });
+
+  it('resolves semantic hover targets by role name and nth link candidate', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          if (command === 'CAPTURE_PAGE_STATE') {
+            return {
+              ok: true,
+              payload: {
+                links: [
+                  {
+                    text: 'Docs',
+                    name: 'Docs',
+                    role: 'link',
+                    selector: '#docs-a',
+                    elementRef: 'ref:docs-a',
+                    frameId: 0,
+                  },
+                  {
+                    text: 'Docs',
+                    name: 'Docs',
+                    role: 'link',
+                    selector: '#docs-b',
+                    elementRef: 'ref:docs-b',
+                    frameId: 0,
+                  },
+                ],
+                summary: {
+                  buttons: 0,
+                  links: 2,
+                  inputs: 0,
+                  modals: 0,
+                },
+              },
+              truncated: false,
+            };
+          }
+
+          return {
+            ok: true,
+            payload: {
+              action: 'hover',
+              traceId: 'trace-live-hover-1',
+              status: 'succeeded',
+              executionScope: 'top-document-v1',
+              startedAt: 1700000000000,
+              finishedAt: 1700000000020,
+              target: {
+                matched: true,
+                selector: '#docs-b',
+                resolvedSelector: '#docs-b',
+                tagName: 'a',
+                tabId: 9,
+                frameId: 0,
+                url: 'http://localhost:3000',
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'execute_ui_action', {
+      sessionId: 'session-v2',
+      action: 'hover',
+      target: {
+        scope: 'links',
+        role: 'link',
+        name: 'Docs',
+        exact: true,
+        nth: 1,
+        tabId: 9,
+      },
+    });
+
+    expect(captureCalls[0]).toMatchObject({
+      command: 'CAPTURE_PAGE_STATE',
+      payload: {
+        includeButtons: false,
+        includeLinks: true,
+        includeInputs: false,
+        includeModals: false,
+      },
+    });
+    expect(captureCalls[1]).toMatchObject({
+      command: 'EXECUTE_UI_ACTION',
+      payload: {
+        action: 'hover',
+        target: {
+          elementRef: 'ref:docs-b',
+          selector: '#docs-b',
+          tabId: 9,
+        },
+      },
+    });
+    expect(response.status).toBe('succeeded');
+    expect(response.targetResolution).toMatchObject({
+      strategy: 'semantic_elementRef',
+      matchedCandidateCount: 2,
+      selectedIndex: 1,
+      matched: {
+        selector: '#docs-b',
+        role: 'link',
+        name: 'Docs',
+      },
+    });
+  });
+
+  it('passes chained locator execute_ui_action targets to native extension resolution', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          return {
+            ok: true,
+            payload: {
+              action: 'click',
+              traceId: 'trace-live-locator-1',
+              status: 'succeeded',
+              executionScope: 'top-document-v1',
+              startedAt: 1700000000000,
+              finishedAt: 1700000000020,
+              target: {
+                matched: true,
+                selector: '#save-account',
+                resolvedSelector: '#save-account',
+                tagName: 'button',
+                tabId: 9,
+                frameId: 22,
+                url: 'http://localhost:3000/account-frame',
+              },
+              result: {
+                backend: 'cdp-native-v2',
+                locatorResolution: {
+                  strategy: 'native_locator',
+                  matchedCandidateCount: 1,
+                  selectionStrategy: 'strict-single',
+                  matched: {
+                    selector: '#save-account',
+                    frameTitle: 'Account iframe',
+                  },
+                },
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'execute_ui_action', {
+      sessionId: 'session-v2',
+      action: 'click',
+      target: {
+        tabId: 9,
+        locator: {
+          scope: 'buttons',
+          frame: {
+            titleContains: 'Account',
+          },
+          steps: [
+            {
+              kind: 'role',
+              role: 'button',
+              name: {
+                pattern: '^save',
+                flags: 'i',
+              },
+            },
+            {
+              kind: 'text',
+              value: 'Save changes',
+              exact: true,
+              relation: 'descendant',
+            },
+          ],
+        },
+      },
+    });
+
+    expect(captureCalls).toHaveLength(1);
+    expect(captureCalls[0]).toMatchObject({
+      command: 'EXECUTE_UI_ACTION',
+      payload: {
+        action: 'click',
+        target: {
+          tabId: 9,
+          locator: {
+            scope: 'buttons',
+            frame: {
+              titleContains: 'Account',
+            },
+            steps: expect.arrayContaining([
+              expect.objectContaining({
+                kind: 'text',
+                relation: 'descendant',
+              }),
+            ]),
+          },
+        },
+      },
+    });
+    expect(response.status).toBe('succeeded');
+    expect(response.targetResolution).toMatchObject({
+      strategy: 'native_locator',
+      matchedCandidateCount: 1,
+      matched: {
+        selector: '#save-account',
+        frameTitle: 'Account iframe',
+      },
+    });
+  });
+
+  it('resolves semantic targets with first/last/strict and frame metadata filters', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          if (command === 'CAPTURE_PAGE_STATE') {
+            return {
+              ok: true,
+              payload: {
+                buttons: [
+                  {
+                    text: 'Continue',
+                    selector: '#top-continue',
+                    elementRef: 'ref:top-continue',
+                    frameId: 0,
+                    frameUrl: 'http://localhost:3000/top',
+                    frameTitle: 'Top',
+                  },
+                  {
+                    text: 'Continue',
+                    selector: '#frame-continue',
+                    elementRef: 'ref:frame-continue',
+                    frameId: 15,
+                    frameUrl: 'http://localhost:3000/account-frame',
+                    frameTitle: 'Account iframe',
+                  },
+                ],
+                summary: {
+                  buttons: 2,
+                  links: 0,
+                  inputs: 0,
+                  modals: 0,
+                  frames: 2,
+                },
+              },
+              truncated: false,
+            };
+          }
+
+          return {
+            ok: true,
+            payload: {
+              action: 'click',
+              traceId: 'trace-live-frame-filter',
+              status: 'succeeded',
+              executionScope: 'top-document-v1',
+              startedAt: 1700000000000,
+              finishedAt: 1700000000020,
+              target: {
+                matched: true,
+                selector: '#frame-continue',
+                resolvedSelector: '#frame-continue',
+                tagName: 'button',
+                tabId: 9,
+                frameId: 15,
+                url: 'http://localhost:3000/account-frame',
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'execute_ui_action', {
+      sessionId: 'session-v2',
+      action: 'click',
+      target: {
+        scope: 'buttons',
+        textContains: 'Continue',
+        frameTitleContains: 'Account',
+        first: true,
+        strict: false,
+        tabId: 9,
+      },
+    });
+
+    expect(captureCalls[1]).toMatchObject({
+      command: 'EXECUTE_UI_ACTION',
+      payload: {
+        target: {
+          elementRef: 'ref:frame-continue',
+          selector: '#frame-continue',
+          frameId: 15,
+          tabId: 9,
+        },
+      },
+    });
+    expect(response.status).toBe('succeeded');
+    expect(response.targetResolution).toMatchObject({
+      matchedCandidateCount: 1,
+      selectedIndex: 0,
+      selectionStrategy: 'first',
+      matched: {
+        frameTitle: 'Account iframe',
+        frameId: 15,
+      },
+    });
   });
 
   it('captures snapshot evidence when a live ui action fails', async () => {

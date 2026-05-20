@@ -2,7 +2,7 @@ export const BRIDGE_SOURCE = 'browser-debug-mcp-bridge';
 export const BRIDGE_KIND = 'bridge-event';
 export const BRIDGE_CONTROL_KIND = 'bridge-control';
 
-type LiveUIAction = 'click' | 'input' | 'focus' | 'blur' | 'scroll' | 'press_key' | 'submit' | 'reload';
+type LiveUIAction = 'click' | 'hover' | 'input' | 'focus' | 'blur' | 'scroll' | 'press_key' | 'submit' | 'reload';
 
 interface LiveUIActionTarget {
   selector?: string;
@@ -25,6 +25,10 @@ type LiveUIActionRequest =
         button?: 'left' | 'middle' | 'right';
         clickCount?: number;
       };
+    })
+  | (LiveUIActionBaseRequest & {
+      action: 'hover';
+      input?: Record<string, never>;
     })
   | (LiveUIActionBaseRequest & {
       action: 'input';
@@ -149,6 +153,10 @@ interface LiveElementRefPayload {
   text?: string;
   label?: string;
   title?: string;
+  role?: string;
+  name?: string;
+  placeholder?: string;
+  altText?: string;
   tagName?: string;
   type?: string;
 }
@@ -179,6 +187,18 @@ function decodeElementRef(value: string): LiveElementRefPayload | undefined {
     }
     if (typeof decoded.title === 'string' && decoded.title.length > 0) {
       result.title = decoded.title;
+    }
+    if (typeof decoded.role === 'string' && decoded.role.length > 0) {
+      result.role = decoded.role.toLowerCase();
+    }
+    if (typeof decoded.name === 'string' && decoded.name.length > 0) {
+      result.name = decoded.name;
+    }
+    if (typeof decoded.placeholder === 'string' && decoded.placeholder.length > 0) {
+      result.placeholder = decoded.placeholder;
+    }
+    if (typeof decoded.altText === 'string' && decoded.altText.length > 0) {
+      result.altText = decoded.altText;
     }
     if (typeof decoded.tagName === 'string' && decoded.tagName.length > 0) {
       result.tagName = decoded.tagName.toLowerCase();
@@ -216,6 +236,8 @@ function parseLiveUIActionRequest(payload: unknown): { success: true; data: Live
       }
       return { success: true, data: { action: 'click', ...base, input: payload.input ? { button, clickCount } : undefined } };
     }
+    case 'hover':
+      return { success: true, data: { action: 'hover', ...base } };
     case 'input': {
       if (!isRecord(payload.input) || typeof payload.input.value !== 'string') {
         return { success: false, error: 'input action requires input.value' };
@@ -379,7 +401,9 @@ function cssEscape(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
 }
 
-function getClickSelector(target: Element): string | null {
+const SHADOW_SELECTOR_SEPARATOR = ' >> ';
+
+function getLocalElementSelector(target: Element): string | null {
   if (target.id) {
     return `#${cssEscape(target.id)}`;
   }
@@ -399,7 +423,51 @@ function getClickSelector(target: Element): string | null {
 }
 
 function getElementSelector(target: Element): string {
-  return getClickSelector(target) ?? target.tagName.toLowerCase();
+  const localSelector = getLocalElementSelector(target) ?? target.tagName.toLowerCase();
+  const root = target.getRootNode();
+  if (root instanceof ShadowRoot) {
+    return `${getElementSelector(root.host)}${SHADOW_SELECTOR_SEPARATOR}${localSelector}`;
+  }
+
+  return localSelector;
+}
+
+function getClickSelector(target: Element): string | null {
+  return getElementSelector(target);
+}
+
+function queryElementInRoot(root: Document | ShadowRoot, selector: string): Element | null {
+  const parts = selector
+    .split(SHADOW_SELECTOR_SEPARATOR)
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0);
+
+  if (parts.length === 0) {
+    return null;
+  }
+
+  let currentRoot: Document | ShadowRoot = root;
+  let currentElement: Element | null = null;
+  for (const [index, part] of parts.entries()) {
+    currentElement = currentRoot.querySelector(part);
+    if (!currentElement) {
+      return null;
+    }
+    if (index < parts.length - 1) {
+      const shadowRoot = currentElement.shadowRoot;
+      if (!shadowRoot) {
+        return null;
+      }
+      currentRoot = shadowRoot;
+    }
+  }
+
+  return currentElement;
+}
+
+function getRootForElement(target: Element): Document | ShadowRoot {
+  const root = target.getRootNode();
+  return root instanceof ShadowRoot ? root : target.ownerDocument;
 }
 
 function getElementTextPreview(target: Element | null): string | undefined {
@@ -465,6 +533,110 @@ function getAriaBoolean(target: Element, attribute: 'aria-pressed' | 'aria-selec
   return undefined;
 }
 
+function getNativeRole(target: Element): string | undefined {
+  const explicitRole = truncatePreview(target.getAttribute('role'), 32);
+  if (explicitRole) {
+    return explicitRole.toLowerCase();
+  }
+
+  const tagName = target.tagName.toLowerCase();
+  if (tagName === 'button') {
+    return 'button';
+  }
+  if ((tagName === 'a' || tagName === 'area') && target.hasAttribute('href')) {
+    return 'link';
+  }
+  if (tagName === 'textarea') {
+    return 'textbox';
+  }
+  if (tagName === 'select') {
+    return 'combobox';
+  }
+  if (target instanceof HTMLInputElement) {
+    if (target.type === 'button' || target.type === 'submit' || target.type === 'reset') {
+      return 'button';
+    }
+    if (target.type === 'checkbox' || target.type === 'radio') {
+      return target.type;
+    }
+    if (target.type === 'range') {
+      return 'slider';
+    }
+    return 'textbox';
+  }
+  if (tagName === 'img') {
+    return 'img';
+  }
+  if (target.getAttribute('aria-modal') === 'true') {
+    return 'dialog';
+  }
+  return undefined;
+}
+
+function getElementAltText(target: Element, maxTextLength: number): string | undefined {
+  if (target instanceof HTMLImageElement || target instanceof HTMLAreaElement || target instanceof HTMLInputElement) {
+    return truncatePreview(target.getAttribute('alt'), maxTextLength);
+  }
+  return undefined;
+}
+
+function resolveAriaLabelledBy(target: Element, maxTextLength: number): string | undefined {
+  const labelledBy = target.getAttribute('aria-labelledby');
+  if (!labelledBy) {
+    return undefined;
+  }
+
+  const parts = labelledBy
+    .split(/\s+/)
+    .map((id) => {
+      const root = getRootForElement(target);
+      if (root instanceof Document) {
+        return root.getElementById(id);
+      }
+      return root.getElementById(id);
+    })
+    .filter((element): element is HTMLElement => Boolean(element))
+    .map((element) => truncatePreview(element.textContent, maxTextLength))
+    .filter((value): value is string => Boolean(value));
+  return truncatePreview(parts.join(' '), maxTextLength);
+}
+
+function getElementAccessibleName(target: Element, maxTextLength: number): string | undefined {
+  const ariaLabel = truncatePreview(target.getAttribute('aria-label'), maxTextLength);
+  if (ariaLabel) {
+    return ariaLabel;
+  }
+
+  const labelledBy = resolveAriaLabelledBy(target, maxTextLength);
+  if (labelledBy) {
+    return labelledBy;
+  }
+
+  const altText = getElementAltText(target, maxTextLength);
+  if (altText) {
+    return altText;
+  }
+
+  const label = resolveInputLabel(target, maxTextLength);
+  if (label) {
+    return label;
+  }
+
+  if (target instanceof HTMLInputElement && ['button', 'submit', 'reset'].includes(target.type)) {
+    const valueName = truncatePreview(target.value || target.getAttribute('value'), maxTextLength);
+    if (valueName) {
+      return valueName;
+    }
+  }
+
+  const text = truncatePreview(target.textContent, maxTextLength);
+  if (text) {
+    return text;
+  }
+
+  return truncatePreview(target.getAttribute('title'), maxTextLength);
+}
+
 function isElementDisabled(target: Element): boolean {
   if (target instanceof HTMLButtonElement || target instanceof HTMLInputElement || target instanceof HTMLSelectElement || target instanceof HTMLTextAreaElement) {
     return target.disabled;
@@ -472,6 +644,21 @@ function isElementDisabled(target: Element): boolean {
 
   const ariaDisabled = target.getAttribute('aria-disabled');
   return ariaDisabled === 'true';
+}
+
+function isElementVisibleForSummary(target: Element): boolean {
+  if (!(target instanceof HTMLElement) && !(target instanceof SVGElement)) {
+    return false;
+  }
+
+  const rect = target.getBoundingClientRect();
+  const style = getComputedStyle(target);
+  return rect.width > 0
+    && rect.height > 0
+    && style.display !== 'none'
+    && style.visibility !== 'hidden'
+    && Number(style.opacity || '1') > 0
+    && target.getAttribute('aria-hidden') !== 'true';
 }
 
 function resolveInputLabel(target: Element, maxTextLength: number): string | undefined {
@@ -485,7 +672,7 @@ function resolveInputLabel(target: Element, maxTextLength: number): string | und
     }
 
     if (target.id) {
-      const explicit = target.ownerDocument.querySelector(`label[for="${cssEscape(target.id)}"]`);
+      const explicit = getRootForElement(target).querySelector(`label[for="${cssEscape(target.id)}"]`);
       if (explicit) {
         const text = truncatePreview(explicit.textContent, maxTextLength);
         if (text) {
@@ -507,18 +694,28 @@ function resolveInputLabel(target: Element, maxTextLength: number): string | und
   return undefined;
 }
 
-function collectUniqueElements(selectors: string[]): Element[] {
+function collectUniqueElements(selectors: string[], root: Document | ShadowRoot = document): Element[] {
   const seen = new Set<Element>();
   const elements: Element[] = [];
-  for (const selector of selectors) {
-    for (const element of Array.from(document.querySelectorAll(selector))) {
-      if (seen.has(element)) {
-        continue;
+  const visitRoot = (currentRoot: Document | ShadowRoot): void => {
+    for (const selector of selectors) {
+      for (const element of Array.from(currentRoot.querySelectorAll(selector))) {
+        if (seen.has(element)) {
+          continue;
+        }
+        seen.add(element);
+        elements.push(element);
       }
-      seen.add(element);
-      elements.push(element);
     }
-  }
+
+    for (const element of Array.from(currentRoot.querySelectorAll('*'))) {
+      if (element.shadowRoot) {
+        visitRoot(element.shadowRoot);
+      }
+    }
+  };
+
+  visitRoot(root);
   return elements;
 }
 
@@ -529,22 +726,57 @@ function summarizeButtonElement(target: Element, maxTextLength: number): Record<
   );
   const selector = getElementSelector(target);
   const testId = getElementTestId(target);
+  const role = getNativeRole(target);
+  const name = getElementAccessibleName(target, maxTextLength);
   return {
     text,
+    name,
     selector,
     testId,
     elementRef: encodeElementRef({
       selector,
       testId,
       text,
+      name,
+      role,
       tagName: target.tagName.toLowerCase(),
       type: target instanceof HTMLInputElement ? resolveFieldType(target) : undefined,
     }),
     disabled: isElementDisabled(target),
+    visible: isElementVisibleForSummary(target),
     pressed: getAriaBoolean(target, 'aria-pressed'),
     selected: getAriaBoolean(target, 'aria-selected'),
     expanded: getAriaBoolean(target, 'aria-expanded'),
-    role: truncatePreview(target.getAttribute('role'), 32),
+    role,
+    tagName: target.tagName.toLowerCase(),
+  };
+}
+
+function summarizeLinkElement(target: Element, maxTextLength: number): Record<string, unknown> {
+  const text = truncatePreview(target.textContent, maxTextLength);
+  const selector = getElementSelector(target);
+  const testId = getElementTestId(target);
+  const role = getNativeRole(target);
+  const name = getElementAccessibleName(target, maxTextLength);
+  return {
+    text,
+    name,
+    selector,
+    testId,
+    href: target instanceof HTMLAnchorElement || target instanceof HTMLAreaElement
+      ? truncatePreview(target.href, maxTextLength)
+      : undefined,
+    elementRef: encodeElementRef({
+      selector,
+      testId,
+      text,
+      name,
+      role,
+      tagName: target.tagName.toLowerCase(),
+    }),
+    disabled: isElementDisabled(target),
+    visible: isElementVisibleForSummary(target),
+    role,
     tagName: target.tagName.toLowerCase(),
   };
 }
@@ -557,23 +789,31 @@ function summarizeInputElement(target: Element, maxTextLength: number): Record<s
   const selector = getElementSelector(target);
   const testId = getElementTestId(target);
   const type = formField ? resolveFieldType(target as FormFieldElement) : (target instanceof HTMLElement && target.isContentEditable ? 'contenteditable' : target.tagName.toLowerCase());
+  const role = getNativeRole(target);
+  const placeholder = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
+    ? truncatePreview(target.placeholder, maxTextLength)
+    : undefined;
+  const name = getElementAccessibleName(target, maxTextLength);
   return {
     label,
+    name,
     selector,
     testId,
     elementRef: encodeElementRef({
       selector,
       testId,
       label,
+      name,
+      placeholder,
+      role,
       tagName: target.tagName.toLowerCase(),
       type,
     }),
     type,
-    placeholder:
-      target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
-        ? truncatePreview(target.placeholder, maxTextLength)
-        : undefined,
+    placeholder,
+    role,
     disabled: isElementDisabled(target),
+    visible: isElementVisibleForSummary(target),
     readOnly:
       target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
         ? target.readOnly
@@ -593,17 +833,23 @@ function summarizeModalElement(target: Element, maxTextLength: number): Record<s
   const title = truncatePreview(heading?.textContent ?? target.getAttribute('aria-label') ?? target.getAttribute('data-testid'), maxTextLength);
   const selector = getElementSelector(target);
   const testId = getElementTestId(target);
+  const role = getNativeRole(target);
+  const name = getElementAccessibleName(target, maxTextLength);
   return {
     title,
+    name,
     selector,
     testId,
     elementRef: encodeElementRef({
       selector,
       testId,
       title,
+      name,
+      role,
       tagName: target.tagName.toLowerCase(),
     }),
-    role: truncatePreview(target.getAttribute('role'), 32),
+    role,
+    visible: isElementVisibleForSummary(target),
     buttonCount: target.querySelectorAll('button, [role="button"]').length,
     fieldCount,
     primaryAction: truncatePreview(firstButton?.textContent, maxTextLength),
@@ -639,12 +885,29 @@ function resolveElementFromRef(win: Window, elementRef: string): Element | null 
         return false;
       }
     }
+    if (ref.role && getNativeRole(target) !== ref.role) {
+      return false;
+    }
+    if (ref.name && !getElementAccessibleName(target, 200)?.toLowerCase().includes(ref.name.toLowerCase())) {
+      return false;
+    }
+    if (ref.placeholder) {
+      const placeholder = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
+        ? truncatePreview(target.placeholder, 200)
+        : undefined;
+      if (!placeholder?.toLowerCase().includes(ref.placeholder.toLowerCase())) {
+        return false;
+      }
+    }
+    if (ref.altText && !getElementAltText(target, 200)?.toLowerCase().includes(ref.altText.toLowerCase())) {
+      return false;
+    }
     return true;
   };
 
   if (ref.testId) {
     const selector = `[data-testid="${cssEscape(ref.testId)}"]`;
-    for (const target of Array.from(win.document.querySelectorAll(selector))) {
+    for (const target of collectUniqueElements([selector], win.document)) {
       if (matches(target)) {
         return target;
       }
@@ -652,7 +915,7 @@ function resolveElementFromRef(win: Window, elementRef: string): Element | null 
   }
 
   if (ref.selector) {
-    const target = win.document.querySelector(ref.selector);
+    const target = queryElementInRoot(win.document, ref.selector);
     if (target && matches(target)) {
       return target;
     }
@@ -661,6 +924,9 @@ function resolveElementFromRef(win: Window, elementRef: string): Element | null 
   const candidates = collectUniqueElements([
     'button',
     '[role="button"]',
+    'a[href]',
+    'area[href]',
+    '[role="link"]',
     'input',
     'textarea',
     'select',
@@ -673,10 +939,19 @@ function resolveElementFromRef(win: Window, elementRef: string): Element | null 
   return candidates.find((target) => matches(target)) ?? null;
 }
 
+function getDeepActiveElement(root: Document | ShadowRoot): Element | null {
+  let activeElement = root.activeElement;
+  while (activeElement?.shadowRoot?.activeElement) {
+    activeElement = activeElement.shadowRoot.activeElement;
+  }
+  return activeElement;
+}
+
 function capturePageState(win: Window, payload: Record<string, unknown>): { result: Record<string, unknown>; truncated: boolean } {
   const maxItems = clampPageStateItems(payload.maxItems);
   const maxTextLength = clampPageStateTextLength(payload.maxTextLength);
   const includeButtons = payload.includeButtons !== false;
+  const includeLinks = payload.includeLinks !== false;
   const includeInputs = payload.includeInputs !== false;
   const includeModals = payload.includeModals !== false;
 
@@ -687,6 +962,13 @@ function capturePageState(win: Window, payload: Record<string, unknown>): { resu
         'input[type="button"]',
         'input[type="submit"]',
         'input[type="reset"]',
+      ])
+    : [];
+  const linkElements = includeLinks
+    ? collectUniqueElements([
+        'a[href]',
+        'area[href]',
+        '[role="link"]',
       ])
     : [];
   const inputElements = includeInputs
@@ -708,30 +990,38 @@ function capturePageState(win: Window, payload: Record<string, unknown>): { resu
     : [];
 
   const buttons = buttonElements.slice(0, maxItems).map((element) => summarizeButtonElement(element, maxTextLength));
+  const links = linkElements.slice(0, maxItems).map((element) => summarizeLinkElement(element, maxTextLength));
   const inputs = inputElements.slice(0, maxItems).map((element) => summarizeInputElement(element, maxTextLength));
   const modals = modalElements.slice(0, maxItems).map((element) => summarizeModalElement(element, maxTextLength));
-  const focused = win.document.activeElement instanceof Element
+  const activeElement = getDeepActiveElement(win.document);
+  const focused = activeElement instanceof Element
     ? {
-        selector: getElementSelector(win.document.activeElement),
-        testId: getElementTestId(win.document.activeElement),
+        selector: getElementSelector(activeElement),
+        testId: getElementTestId(activeElement),
         elementRef: encodeElementRef({
-          selector: getElementSelector(win.document.activeElement),
-          testId: getElementTestId(win.document.activeElement),
-          text: truncatePreview(win.document.activeElement.textContent, maxTextLength),
-          tagName: win.document.activeElement.tagName.toLowerCase(),
+          selector: getElementSelector(activeElement),
+          testId: getElementTestId(activeElement),
+          text: truncatePreview(activeElement.textContent, maxTextLength),
+          name: getElementAccessibleName(activeElement, maxTextLength),
+          role: getNativeRole(activeElement),
+          tagName: activeElement.tagName.toLowerCase(),
         }),
-        tagName: win.document.activeElement.tagName.toLowerCase(),
-        text: truncatePreview(win.document.activeElement.textContent, maxTextLength),
+        tagName: activeElement.tagName.toLowerCase(),
+        text: truncatePreview(activeElement.textContent, maxTextLength),
+        name: getElementAccessibleName(activeElement, maxTextLength),
+        role: getNativeRole(activeElement),
+        visible: isElementVisibleForSummary(activeElement),
       }
     : undefined;
 
-  const truncated = buttonElements.length > buttons.length || inputElements.length > inputs.length || modalElements.length > modals.length;
+  const truncated = buttonElements.length > buttons.length || linkElements.length > links.length || inputElements.length > inputs.length || modalElements.length > modals.length;
 
   return {
     truncated,
     result: {
       url: win.location.href,
       title: truncatePreview(win.document.title, maxTextLength),
+      readyState: win.document.readyState,
       language: truncatePreview(win.document.documentElement.lang || navigator.language, 32),
       viewport: {
         width: win.innerWidth,
@@ -742,14 +1032,17 @@ function capturePageState(win: Window, payload: Record<string, unknown>): { resu
       focused,
       summary: {
         buttons: buttonElements.length,
+        links: linkElements.length,
         inputs: inputElements.length,
         modals: modalElements.length,
       },
       buttons: includeButtons ? buttons : undefined,
+      links: includeLinks ? links : undefined,
       inputs: includeInputs ? inputs : undefined,
       modals: includeModals ? modals : undefined,
       truncation: {
         buttons: buttonElements.length > buttons.length,
+        links: linkElements.length > links.length,
         inputs: inputElements.length > inputs.length,
         modals: modalElements.length > modals.length,
       },
@@ -909,6 +1202,19 @@ function dispatchMouseClick(target: Element, button: 'left' | 'middle' | 'right'
   if (clickCount >= 2) {
     dispatchBubbledEvent(target, new MouseEvent('dblclick', { bubbles: true, cancelable: true, button: buttonCode, detail: clickCount }));
   }
+}
+
+function dispatchMouseHover(target: Element): void {
+  const rect = target.getBoundingClientRect();
+  const eventInit: MouseEventInit = {
+    bubbles: true,
+    cancelable: true,
+    clientX: rect.left + rect.width / 2,
+    clientY: rect.top + rect.height / 2,
+  };
+  dispatchBubbledEvent(target, new MouseEvent('mouseover', eventInit));
+  dispatchBubbledEvent(target, new MouseEvent('mouseenter', { ...eventInit, bubbles: false }));
+  dispatchBubbledEvent(target, new MouseEvent('mousemove', eventInit));
 }
 
 function dispatchInputValue(target: EditableActionTarget, value: string): { fieldType: string; valueLength: number } {
@@ -1078,6 +1384,17 @@ function executeLiveUiAction(win: Window, request: LiveUIActionRequest, startedA
       return buildSucceededLiveActionResult(request, target, startedAt, {
         clickCount: request.input?.clickCount ?? 1,
         button: request.input?.button ?? 'left',
+      });
+    }
+
+    if (request.action === 'hover') {
+      if (!target) {
+        return buildRejectedLiveActionResult(request, null, startedAt, 'target_not_found', 'No matching top-document element was found for this live UI action.');
+      }
+
+      dispatchMouseHover(target);
+      return buildSucceededLiveActionResult(request, target, startedAt, {
+        hovered: true,
       });
     }
 
@@ -1564,7 +1881,7 @@ export function executeCaptureCommand(
       throw new Error('selector is required');
     }
 
-    const target = win.document.querySelector(selector);
+    const target = queryElementInRoot(win.document, selector);
     if (!target) {
       throw new Error(`No element found for selector: ${selector}`);
     }
@@ -1633,7 +1950,7 @@ export function executeCaptureCommand(
       throw new Error('selector is required');
     }
 
-    const target = win.document.querySelector(selector);
+    const target = queryElementInRoot(win.document, selector);
     if (!target) {
       throw new Error(`No element found for selector: ${selector}`);
     }
@@ -1672,7 +1989,7 @@ export function executeCaptureCommand(
 
   if (command === 'CAPTURE_LAYOUT_METRICS') {
     const selector = typeof payload.selector === 'string' ? payload.selector : undefined;
-    const target = selector ? win.document.querySelector(selector) : win.document.documentElement;
+    const target = selector ? queryElementInRoot(win.document, selector) : win.document.documentElement;
 
     if (!target) {
       throw new Error(`No element found for selector: ${selector}`);
@@ -1718,8 +2035,8 @@ export function executeCaptureCommand(
     const includeStyles = payload.includeStyles !== false;
     const maxAncestors = clampMaxAncestors(payload.maxAncestors);
 
-    const selectedElement = selector ? win.document.querySelector(selector) : null;
-    const target = selectedElement ?? (win.document.activeElement instanceof Element ? win.document.activeElement : null)
+    const selectedElement = selector ? queryElementInRoot(win.document, selector) : null;
+    const target = selectedElement ?? getDeepActiveElement(win.document)
       ?? win.document.body
       ?? win.document.documentElement;
 
@@ -1795,8 +2112,8 @@ export function executeCaptureCommand(
     const target = request.target?.elementRef
       ? resolveElementFromRef(win, request.target.elementRef)
       : selector
-        ? win.document.querySelector(selector)
-        : (win.document.activeElement instanceof Element ? win.document.activeElement : null)
+        ? queryElementInRoot(win.document, selector)
+        : getDeepActiveElement(win.document)
           ?? win.document.body
           ?? win.document.documentElement;
 

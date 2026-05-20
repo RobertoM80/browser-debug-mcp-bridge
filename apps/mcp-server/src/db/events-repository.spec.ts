@@ -140,6 +140,12 @@ describe('EventsRepository automation persistence', () => {
             inputValueRedacted: false,
             sensitiveTarget: false,
           },
+          diagnostics: {
+            backend: 'cdp-native-v2',
+            actionability: {
+              visible: true,
+            },
+          },
           target: {
             matched: true,
             resolvedSelector: '#submit',
@@ -152,7 +158,7 @@ describe('EventsRepository automation persistence', () => {
     ]);
 
     const run = db.prepare(`
-      SELECT trace_id, action, tab_id, selector, status, started_at, completed_at
+      SELECT trace_id, action, tab_id, selector, status, started_at, completed_at, diagnostics_json
       FROM automation_runs
       WHERE session_id = ?
     `).get('automation-session') as {
@@ -163,6 +169,7 @@ describe('EventsRepository automation persistence', () => {
       status: string;
       started_at: number;
       completed_at: number;
+      diagnostics_json: string | null;
     };
     const step = db.prepare(`
       SELECT trace_id, action, status, duration_ms, event_type, tab_id, input_metadata_json
@@ -186,6 +193,12 @@ describe('EventsRepository automation persistence', () => {
       status: 'succeeded',
       started_at: 2000,
       completed_at: 2075,
+    });
+    expect(JSON.parse(run.diagnostics_json ?? '{}')).toMatchObject({
+      backend: 'cdp-native-v2',
+      actionability: {
+        visible: true,
+      },
     });
     expect(step).toMatchObject({
       trace_id: 'trace-dual-write',

@@ -48,6 +48,134 @@ describe('live-actions', () => {
     expect(parsed.target.matched).toBe(false);
   });
 
+  it('parses semantic live UI action targets', () => {
+    const parsed = LiveUIActionRequestSchema.parse({
+      action: 'hover',
+      target: {
+        scope: 'links',
+        role: 'link',
+        name: 'Docs',
+        exact: true,
+        last: true,
+        strict: false,
+        frameUrlContains: '/embedded',
+      },
+    });
+
+    expect(parsed.action).toBe('hover');
+    expect(parsed.target?.scope).toBe('links');
+    expect(parsed.target?.name).toBe('Docs');
+    expect(parsed.target?.last).toBe(true);
+    expect(parsed.target?.strict).toBe(false);
+    expect(parsed.target?.frameUrlContains).toBe('/embedded');
+  });
+
+  it('parses coordinate live UI action targets', () => {
+    const parsed = LiveUIActionRequestSchema.parse({
+      action: 'click',
+      target: {
+        coordinates: {
+          x: 128.5,
+          y: 64,
+        },
+        tabId: 7,
+      },
+    });
+
+    expect(parsed.target?.coordinates).toEqual({
+      x: 128.5,
+      y: 64,
+    });
+    expect(parsed.target?.tabId).toBe(7);
+  });
+
+  it('parses chained locator live UI action targets', () => {
+    const parsed = LiveUIActionRequestSchema.parse({
+      action: 'click',
+      target: {
+        locator: {
+          scope: 'buttons',
+          frame: {
+            selector: '#account-frame',
+            titleContains: 'Account',
+          },
+          steps: [
+            {
+              kind: 'role',
+              role: 'button',
+              name: {
+                pattern: '^Save',
+                flags: 'i',
+              },
+            },
+            {
+              kind: 'text',
+              value: 'Save changes',
+              exact: true,
+              relation: 'descendant',
+            },
+          ],
+        },
+      },
+    });
+
+    expect(parsed.target?.locator?.scope).toBe('buttons');
+    expect(parsed.target?.locator?.frame?.selector).toBe('#account-frame');
+    expect(parsed.target?.locator?.steps).toHaveLength(2);
+    expect(parsed.target?.locator?.steps[0]?.kind).toBe('role');
+    expect(parsed.target?.locator?.steps[1]?.relation).toBe('descendant');
+  });
+
+  it('parses ancestor locator relations in live UI action targets', () => {
+    const parsed = LiveUIActionRequestSchema.parse({
+      action: 'click',
+      target: {
+        locator: {
+          steps: [
+            {
+              kind: 'role',
+              role: 'button',
+              name: 'Apply',
+            },
+            {
+              kind: 'testId',
+              value: 'billing-panel',
+              relation: 'ancestor',
+            },
+          ],
+        },
+      },
+    });
+
+    expect(parsed.target?.locator?.steps[1]?.relation).toBe('ancestor');
+  });
+
+  it('rejects incomplete locator steps', () => {
+    expect(() => LiveUIActionRequestSchema.parse({
+      action: 'click',
+      target: {
+        locator: {
+          steps: [
+            {
+              kind: 'text',
+            },
+          ],
+        },
+      },
+    })).toThrow('text locator step requires value');
+  });
+
+  it('rejects conflicting target position helpers', () => {
+    expect(() => LiveUIActionRequestSchema.parse({
+      action: 'click',
+      target: {
+        scope: 'buttons',
+        nth: 0,
+        first: true,
+      },
+    })).toThrow('target can use only one of nth, first, or last');
+  });
+
   it('creates readable trace ids', () => {
     expect(createLiveUIActionTraceId()).toMatch(/^uiaction-\d+-[a-z0-9]+$/);
   });

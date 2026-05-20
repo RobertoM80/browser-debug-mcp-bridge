@@ -274,6 +274,46 @@ describe('SessionManager', () => {
     expect(sent.data.sensitiveNumber).toBe('[SENSITIVE_NUMBER]');
   });
 
+  it('preserves correlation ids while redacting event payload values', () => {
+    const ws = new MockWebSocket();
+    const manager = new SessionManager({
+      createSessionId: () => 'session-correlation',
+      createWebSocket: () => ws,
+      now: () => 1700000000000,
+    });
+
+    manager.startSession({ url: 'https://example.com' });
+    ws.open();
+    ws.sentMessages.length = 0;
+
+    manager.queueEvent('automation_succeeded', {
+      traceId: 'uiaction-1778923764319-7kyfkx2m',
+      runId: 'session-correlation:uiaction-1778923764319-7kyfkx2m',
+      nested: {
+        requestId: 'network-1778923764319',
+        sensitiveNumber: '4111 1111 1111 1111',
+      },
+    });
+
+    const sent = JSON.parse(ws.sentMessages[0]) as {
+      sessionId: string;
+      data: {
+        traceId: string;
+        runId: string;
+        nested: {
+          requestId: string;
+          sensitiveNumber: string;
+        };
+      };
+    };
+
+    expect(sent.sessionId).toBe('session-correlation');
+    expect(sent.data.traceId).toBe('uiaction-1778923764319-7kyfkx2m');
+    expect(sent.data.runId).toBe('session-correlation:uiaction-1778923764319-7kyfkx2m');
+    expect(sent.data.nested.requestId).toBe('network-1778923764319');
+    expect(sent.data.nested.sensitiveNumber).toBe('[SENSITIVE_NUMBER]');
+  });
+
   it('handles capture commands received from server', async () => {
     const ws = new MockWebSocket();
     const manager = new SessionManager({

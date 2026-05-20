@@ -6,6 +6,14 @@ import { createHash, randomUUID } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { z } from 'zod';
+import {
+  WorkflowTargetResolutionError,
+  hasSemanticActionTargetMatcher,
+  resolveWorkflowActionTarget,
+  summarizeWorkflowTargetMatcher,
+  type PageStateCaptureResult,
+  type UIWorkflowActionTarget,
+} from './target-resolution.js';
 import { getConnection } from '../db/connection.js';
 import {
   diagnoseOverridePoc,
@@ -30,6 +38,7 @@ import { mapNextOverrideAssetsWithDrift } from '../next-asset-mapper.js';
 import { planNextSourceOverride, type NextSourceOverridePlanResult, type PlannedNextOverrideRule } from '../next-source-override-planner.js';
 import { listObservedOverrideAssets, persistObservedOverrideAssets } from '../override-observed-assets.js';
 import { planOverrideResponsePatch, type OverrideResponsePatchPlanResult } from '../override-response-planner.js';
+import { createToolLoopGuard, type ToolLoopGuard } from './tool-loop-guard.js';
 
 type ToolInput = Record<string, unknown>;
 
@@ -78,6 +87,7 @@ export interface MCPServerOptions {
   captureClient?: CaptureCommandClient;
   logger?: MCPLogger;
   getSessionConnectionState?: (sessionId: string) => SessionConnectionLookupResult | undefined;
+  loopGuard?: ToolLoopGuard | false;
 }
 
 export interface MCPLogger {
@@ -104,12 +114,99 @@ function createDefaultMcpLogger(): MCPLogger {
   };
 }
 
+const UIActionTargetScopeSchema = z.enum(['buttons', 'links', 'inputs', 'modals', 'focused']);
+
+const UIActionLocatorMatcherSchema = z.union([
+  z.string().min(1),
+  z.object({
+    pattern: z.string().min(1),
+    flags: z.string().regex(/^[imsu]*$/).optional(),
+  }),
+]);
+
+const UIActionLocatorStepSchema = z.object({
+  kind: z.enum(['css', 'role', 'text', 'label', 'testId', 'placeholder', 'altText']),
+  value: UIActionLocatorMatcherSchema.optional(),
+  role: z.string().min(1).optional(),
+  name: UIActionLocatorMatcherSchema.optional(),
+  exact: z.boolean().optional(),
+  relation: z.enum(['filter', 'descendant', 'ancestor']).optional(),
+}).superRefine((value, ctx) => {
+  if (value.kind === 'role' && !value.role && !value.value) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'role locator step requires role or value',
+      path: ['role'],
+    });
+  }
+
+  if (value.kind !== 'role' && !value.value) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `${value.kind} locator step requires value`,
+      path: ['value'],
+    });
+  }
+});
+
+const UIActionLocatorSchema = z.object({
+  scope: UIActionTargetScopeSchema.optional(),
+  frame: z.object({
+    selector: z.string().min(1).optional(),
+    urlContains: z.string().min(1).optional(),
+    titleContains: z.string().min(1).optional(),
+  }).optional(),
+  steps: z.array(UIActionLocatorStepSchema).min(1).max(8),
+});
+
+const UIActionCoordinateTargetSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+  frameId: z.number().int().min(0).optional(),
+});
+
 const LiveUIActionTargetSchema = z.object({
   selector: z.string().min(1).optional(),
   elementRef: z.string().min(1).optional(),
+  coordinates: UIActionCoordinateTargetSchema.optional(),
   tabId: z.number().int().min(0).optional(),
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
+  locator: UIActionLocatorSchema.optional(),
+  frameUrlContains: z.string().min(1).optional(),
+  frameTitleContains: z.string().min(1).optional(),
+  testId: z.string().min(1).optional(),
+  scope: UIActionTargetScopeSchema.optional(),
+  textContains: z.string().min(1).optional(),
+  labelContains: z.string().min(1).optional(),
+  titleContains: z.string().min(1).optional(),
+  role: z.string().min(1).optional(),
+  name: z.string().min(1).optional(),
+  placeholder: z.string().min(1).optional(),
+  altText: z.string().min(1).optional(),
+  tagName: z.string().min(1).optional(),
+  type: z.string().min(1).optional(),
+  exact: z.boolean().optional(),
+  nth: z.number().int().min(0).optional(),
+  first: z.boolean().optional(),
+  last: z.boolean().optional(),
+  strict: z.boolean().optional(),
+  visible: z.boolean().optional(),
+  disabled: z.boolean().optional(),
+  selected: z.boolean().optional(),
+  pressed: z.boolean().optional(),
+  expanded: z.boolean().optional(),
+  readOnly: z.boolean().optional(),
+  requiredField: z.boolean().optional(),
+}).superRefine((value, ctx) => {
+  const positionFields = [value.nth !== undefined, value.first === true, value.last === true].filter(Boolean).length;
+  if (positionFields > 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'target can use only one of nth, first, or last',
+      path: ['target'],
+    });
+  }
 });
 
 const LiveUIActionBaseSchema = z.object({
@@ -124,6 +221,10 @@ const LiveUIActionRequestSchema = z.discriminatedUnion('action', [
       button: z.enum(['left', 'middle', 'right']).optional(),
       clickCount: z.number().int().min(1).max(3).optional(),
     }).optional(),
+  }),
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('hover'),
+    input: z.object({}).optional(),
   }),
   LiveUIActionBaseSchema.extend({
     action: z.literal('input'),
@@ -196,21 +297,35 @@ type LiveUIActionResult = {
 
 const UIWorkflowModeSchema = z.enum(['safe', 'fast']);
 const UIWorkflowFailureStrategySchema = z.enum(['stop', 'continue', 'retry_once']);
-const UIWorkflowActionTargetScopeSchema = z.enum(['buttons', 'inputs', 'modals', 'focused']);
+const UIWorkflowActionTargetScopeSchema = UIActionTargetScopeSchema;
 
 const UIWorkflowActionTargetSchema = z.object({
   selector: z.string().min(1).optional(),
   elementRef: z.string().min(1).optional(),
+  coordinates: UIActionCoordinateTargetSchema.optional(),
   tabId: z.number().int().min(0).optional(),
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
+  locator: UIActionLocatorSchema.optional(),
+  frameUrlContains: z.string().min(1).optional(),
+  frameTitleContains: z.string().min(1).optional(),
   testId: z.string().min(1).optional(),
   scope: UIWorkflowActionTargetScopeSchema.optional(),
   textContains: z.string().min(1).optional(),
   labelContains: z.string().min(1).optional(),
   titleContains: z.string().min(1).optional(),
+  role: z.string().min(1).optional(),
+  name: z.string().min(1).optional(),
+  placeholder: z.string().min(1).optional(),
+  altText: z.string().min(1).optional(),
   tagName: z.string().min(1).optional(),
   type: z.string().min(1).optional(),
+  exact: z.boolean().optional(),
+  nth: z.number().int().min(0).optional(),
+  first: z.boolean().optional(),
+  last: z.boolean().optional(),
+  strict: z.boolean().optional(),
+  visible: z.boolean().optional(),
   disabled: z.boolean().optional(),
   selected: z.boolean().optional(),
   pressed: z.boolean().optional(),
@@ -221,14 +336,29 @@ const UIWorkflowActionTargetSchema = z.object({
   if (
     !value.selector
     && !value.elementRef
+    && !value.coordinates
+    && !value.locator
+    && !value.scope
     && !value.testId
     && !value.textContains
     && !value.labelContains
     && !value.titleContains
+    && !value.role
+    && !value.name
+    && !value.placeholder
+    && !value.altText
   ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'target requires selector, elementRef, testId, textContains, labelContains, or titleContains',
+      message: 'target requires selector, elementRef, coordinates, locator, scope, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText',
+      path: ['target'],
+    });
+  }
+  const positionFields = [value.nth !== undefined, value.first === true, value.last === true].filter(Boolean).length;
+  if (positionFields > 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'target can use only one of nth, first, or last',
       path: ['target'],
     });
   }
@@ -271,6 +401,10 @@ const UIWorkflowActionStepSchema = z.discriminatedUnion('action', [
       button: z.enum(['left', 'middle', 'right']).optional(),
       clickCount: z.number().int().min(1).max(3).optional(),
     }).optional(),
+  }),
+  UIWorkflowActionBaseSchema.extend({
+    action: z.literal('hover'),
+    input: z.object({}).optional(),
   }),
   UIWorkflowActionBaseSchema.extend({
     action: z.literal('input'),
@@ -317,14 +451,22 @@ const UIWorkflowActionStepSchema = z.discriminatedUnion('action', [
 ]);
 
 const UIWorkflowPageStateMatcherSchema = z.object({
-  scope: z.enum(['buttons', 'inputs', 'modals', 'focused', 'page']),
+  scope: z.enum(['buttons', 'links', 'inputs', 'modals', 'focused', 'page']),
   selector: z.string().optional(),
   testId: z.string().optional(),
   textContains: z.string().optional(),
   labelContains: z.string().optional(),
   titleContains: z.string().optional(),
+  role: z.string().optional(),
+  name: z.string().optional(),
+  placeholder: z.string().optional(),
+  altText: z.string().optional(),
+  exact: z.boolean().optional(),
+  frameUrlContains: z.string().optional(),
+  frameTitleContains: z.string().optional(),
   urlContains: z.string().optional(),
   language: z.string().optional(),
+  visible: z.boolean().optional(),
   disabled: z.boolean().optional(),
   selected: z.boolean().optional(),
   pressed: z.boolean().optional(),
@@ -360,10 +502,220 @@ const UIWorkflowAssertStepSchema = UIWorkflowStepBaseSchema.extend({
   matcher: UIWorkflowPageStateMatcherSchema,
 });
 
+const AutomationWaitBaseSchema = z.object({
+  timeoutMs: z.number().int().min(100).max(120000).optional(),
+  pollIntervalMs: z.number().int().min(50).max(5000).optional(),
+});
+
+const AutomationWaitUrlSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('url'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'url wait requires urlContains, urlRegex, or exactUrl',
+      path: ['wait'],
+    });
+  }
+});
+
+const AutomationWaitNavigationSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('navigation'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  fromUrlContains: z.string().min(1).optional(),
+  fromUrlRegex: z.string().min(1).optional(),
+  trigger: z.string().min(1).optional(),
+  sinceTs: z.number().int().min(0).optional(),
+  tabId: z.number().int().min(0).optional(),
+}).superRefine((value, ctx) => {
+  if (
+    !value.urlContains
+    && !value.urlRegex
+    && !value.exactUrl
+    && !value.fromUrlContains
+    && !value.fromUrlRegex
+    && !value.trigger
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'navigation wait requires a URL, from-URL, or trigger predicate',
+      path: ['wait'],
+    });
+  }
+});
+
+const AutomationWaitNavigationLifecycleSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('navigation_lifecycle'),
+  state: z.enum(['commit', 'same_document', 'domcontentloaded', 'load', 'network_idle']).default('load'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  tabId: z.number().int().min(0).optional(),
+});
+
+const AutomationWaitLoadStateSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('load_state'),
+  state: z.enum(['domcontentloaded', 'load']).default('load'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+});
+
+const AutomationWaitSelectorStateSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('selector_state'),
+  selector: z.string().min(1),
+  state: z.enum(['attached', 'detached', 'visible', 'hidden']).default('visible'),
+  frameId: z.number().int().min(0).default(0),
+});
+
+const AutomationWaitConsoleSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('console'),
+  levels: z.array(z.string().min(1)).optional(),
+  contains: z.string().min(1).optional(),
+  sinceTs: z.number().int().min(0).optional(),
+  includeRuntimeErrors: z.boolean().optional(),
+});
+
+const AutomationWaitDialogSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('dialog'),
+  type: z.enum(['alert', 'confirm', 'prompt', 'beforeunload']).optional(),
+  messageContains: z.string().min(1).optional(),
+  urlContains: z.string().min(1).optional(),
+  action: z.enum(['none', 'accept', 'dismiss']).default('none'),
+  promptText: z.string().optional(),
+  tabId: z.number().int().min(0).optional(),
+});
+
+const AutomationWaitStableLayoutSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('stable_layout'),
+  selector: z.string().min(1).optional(),
+  stableMs: z.number().int().min(100).max(10000).default(500),
+  tabId: z.number().int().min(0).optional(),
+});
+
+const AutomationWaitDownloadSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('download'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  filenameContains: z.string().min(1).optional(),
+  filenameRegex: z.string().min(1).optional(),
+  state: z.enum(['started', 'completed']).default('started'),
+  tabId: z.number().int().min(0).optional(),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl && !value.filenameContains && !value.filenameRegex) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'download wait requires a URL or filename predicate',
+      path: ['wait'],
+    });
+  }
+});
+
+const AutomationWaitPopupSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('popup'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  openerTabId: z.number().int().min(0).optional(),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl && value.openerTabId === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'popup wait requires a URL predicate or openerTabId',
+      path: ['wait'],
+    });
+  }
+});
+
+const AutomationWaitNetworkQuietSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('network_quiet'),
+  quietMs: z.number().int().min(100).max(10000).default(500),
+  urlContains: z.string().min(1).optional(),
+  method: z.string().min(1).optional(),
+  tabId: z.number().int().min(0).optional(),
+});
+
+const AutomationWaitNetworkBaseSchema = AutomationWaitBaseSchema.extend({
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  method: z.string().min(1).optional(),
+  traceId: z.string().min(1).optional(),
+  initiator: z.enum(['fetch', 'xhr', 'img', 'script', 'other']).optional(),
+  requestContentType: z.string().min(1).optional(),
+  sinceTs: z.number().int().min(0).optional(),
+  tabId: z.number().int().min(0).optional(),
+  includeBodies: z.boolean().optional(),
+});
+
+const AutomationWaitRequestSchema = AutomationWaitNetworkBaseSchema.extend({
+  waitKind: z.literal('request'),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl && !value.traceId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'request wait requires urlContains, urlRegex, exactUrl, or traceId',
+      path: ['wait'],
+    });
+  }
+});
+
+const AutomationWaitResponseSchema = AutomationWaitNetworkBaseSchema.extend({
+  waitKind: z.literal('response'),
+  statusIn: z.array(z.number().int().min(100).max(599)).optional(),
+  statusGte: z.number().int().min(100).max(599).optional(),
+  statusLt: z.number().int().min(100).max(600).optional(),
+  responseContentType: z.string().min(1).optional(),
+  errorType: z.string().min(1).optional(),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl && !value.traceId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'response wait requires urlContains, urlRegex, exactUrl, or traceId',
+      path: ['wait'],
+    });
+  }
+  if (value.statusGte !== undefined && value.statusLt !== undefined && value.statusGte >= value.statusLt) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'statusGte must be less than statusLt',
+      path: ['statusGte'],
+    });
+  }
+});
+
+const AutomationWaitSpecSchema = z.discriminatedUnion('waitKind', [
+  AutomationWaitUrlSchema,
+  AutomationWaitNavigationSchema,
+  AutomationWaitNavigationLifecycleSchema,
+  AutomationWaitLoadStateSchema,
+  AutomationWaitSelectorStateSchema,
+  AutomationWaitConsoleSchema,
+  AutomationWaitDialogSchema,
+  AutomationWaitStableLayoutSchema,
+  AutomationWaitDownloadSchema,
+  AutomationWaitPopupSchema,
+  AutomationWaitNetworkQuietSchema,
+  AutomationWaitRequestSchema,
+  AutomationWaitResponseSchema,
+]);
+
+const UIWorkflowGenericWaitStepSchema = UIWorkflowStepBaseSchema.extend({
+  kind: z.literal('wait'),
+  wait: AutomationWaitSpecSchema,
+});
+
 const UIWorkflowStepSchema = z.discriminatedUnion('kind', [
   UIWorkflowActionStepSchema,
   UIWorkflowWaitForStepSchema,
   UIWorkflowAssertStepSchema,
+  UIWorkflowGenericWaitStepSchema,
 ]);
 
 const RunUIStepsSchema = z.object({
@@ -375,14 +727,102 @@ const RunUIStepsSchema = z.object({
   steps: z.array(UIWorkflowStepSchema).min(1).max(50),
 });
 
-type UIWorkflowActionTarget = z.infer<typeof UIWorkflowActionTargetSchema>;
 type UIWorkflowActionStep = z.infer<typeof UIWorkflowActionStepSchema>;
 type UIWorkflowStep = z.infer<typeof UIWorkflowStepSchema>;
 type RunUIStepsRequest = z.infer<typeof RunUIStepsSchema>;
+type AutomationWaitSpec = z.infer<typeof AutomationWaitSpecSchema>;
 
 function createUIWorkflowTraceId(): string {
   return `uiworkflow-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
+
+const LOCATOR_MATCHER_TOOL_SCHEMA = {
+  anyOf: [
+    { type: 'string' },
+    {
+      type: 'object',
+      required: ['pattern'],
+      properties: {
+        pattern: { type: 'string' },
+        flags: { type: 'string' },
+      },
+    },
+  ],
+};
+
+const ACTION_LOCATOR_TOOL_SCHEMA = {
+  type: 'object',
+  required: ['steps'],
+  properties: {
+    scope: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused'] },
+    frame: {
+      type: 'object',
+      properties: {
+        selector: { type: 'string' },
+        urlContains: { type: 'string' },
+        titleContains: { type: 'string' },
+      },
+    },
+    steps: {
+      type: 'array',
+      minItems: 1,
+      maxItems: 8,
+      items: {
+        type: 'object',
+        required: ['kind'],
+        properties: {
+          kind: { type: 'string', enum: ['css', 'role', 'text', 'label', 'testId', 'placeholder', 'altText'] },
+          value: LOCATOR_MATCHER_TOOL_SCHEMA,
+          role: { type: 'string' },
+          name: LOCATOR_MATCHER_TOOL_SCHEMA,
+          exact: { type: 'boolean' },
+          relation: { type: 'string', enum: ['filter', 'descendant', 'ancestor'] },
+        },
+      },
+    },
+  },
+};
+
+const AUTOMATION_WAIT_TOOL_SCHEMA = {
+  type: 'object',
+  required: ['waitKind'],
+  properties: {
+    waitKind: { type: 'string', enum: ['url', 'navigation', 'navigation_lifecycle', 'load_state', 'selector_state', 'console', 'dialog', 'stable_layout', 'download', 'popup', 'network_quiet', 'request', 'response'] },
+    timeoutMs: { type: 'number' },
+    pollIntervalMs: { type: 'number' },
+    urlContains: { type: 'string' },
+    urlRegex: { type: 'string' },
+    exactUrl: { type: 'string' },
+    fromUrlContains: { type: 'string' },
+    fromUrlRegex: { type: 'string' },
+    trigger: { type: 'string' },
+    state: { type: 'string', enum: ['commit', 'same_document', 'domcontentloaded', 'load', 'network_idle', 'attached', 'detached', 'visible', 'hidden', 'started', 'completed'] },
+    selector: { type: 'string' },
+    frameId: { type: 'number' },
+    levels: { type: 'array', items: { type: 'string' } },
+    contains: { type: 'string' },
+    sinceTs: { type: 'number' },
+    includeRuntimeErrors: { type: 'boolean' },
+    action: { type: 'string', enum: ['none', 'accept', 'dismiss'] },
+    promptText: { type: 'string' },
+    stableMs: { type: 'number' },
+    filenameContains: { type: 'string' },
+    filenameRegex: { type: 'string' },
+    openerTabId: { type: 'number' },
+    quietMs: { type: 'number' },
+    method: { type: 'string' },
+    traceId: { type: 'string' },
+    initiator: { type: 'string', enum: ['fetch', 'xhr', 'img', 'script', 'other'] },
+    requestContentType: { type: 'string' },
+    responseContentType: { type: 'string' },
+    statusIn: { type: 'array', items: { type: 'number' } },
+    statusGte: { type: 'number' },
+    statusLt: { type: 'number' },
+    errorType: { type: 'string' },
+    includeBodies: { type: 'boolean' },
+    tabId: { type: 'number' },
+  },
+};
 
 const TOOL_SCHEMAS: Record<string, object> = {
   list_sessions: {
@@ -572,6 +1012,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       selector: { type: 'string' },
+      frameId: { type: 'number' },
       properties: { type: 'array', items: { type: 'string' } },
     },
   },
@@ -581,6 +1022,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       selector: { type: 'string' },
+      frameId: { type: 'number' },
     },
   },
   get_page_state: {
@@ -591,6 +1033,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       maxItems: { type: 'number' },
       maxTextLength: { type: 'number' },
       includeButtons: { type: 'boolean' },
+      includeLinks: { type: 'boolean' },
       includeInputs: { type: 'boolean' },
       includeModals: { type: 'boolean' },
     },
@@ -602,7 +1045,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       sessionId: { type: 'string' },
       kinds: {
         type: 'array',
-        items: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused'] },
+        items: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused'] },
       },
       maxItems: { type: 'number' },
       maxTextLength: { type: 'number' },
@@ -622,14 +1065,22 @@ const TOOL_SCHEMAS: Record<string, object> = {
     required: ['sessionId', 'scope'],
     properties: {
       sessionId: { type: 'string' },
-      scope: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused', 'page'] },
+      scope: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused', 'page'] },
       selector: { type: 'string' },
       testId: { type: 'string' },
       textContains: { type: 'string' },
       labelContains: { type: 'string' },
       titleContains: { type: 'string' },
+      role: { type: 'string' },
+      name: { type: 'string' },
+      placeholder: { type: 'string' },
+      altText: { type: 'string' },
+      exact: { type: 'boolean' },
+      frameUrlContains: { type: 'string' },
+      frameTitleContains: { type: 'string' },
       urlContains: { type: 'string' },
       language: { type: 'string' },
+      visible: { type: 'boolean' },
       disabled: { type: 'boolean' },
       selected: { type: 'boolean' },
       pressed: { type: 'boolean' },
@@ -649,14 +1100,22 @@ const TOOL_SCHEMAS: Record<string, object> = {
     required: ['sessionId', 'scope'],
     properties: {
       sessionId: { type: 'string' },
-      scope: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused', 'page'] },
+      scope: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused', 'page'] },
       selector: { type: 'string' },
       testId: { type: 'string' },
       textContains: { type: 'string' },
       labelContains: { type: 'string' },
       titleContains: { type: 'string' },
+      role: { type: 'string' },
+      name: { type: 'string' },
+      placeholder: { type: 'string' },
+      altText: { type: 'string' },
+      exact: { type: 'boolean' },
+      frameUrlContains: { type: 'string' },
+      frameTitleContains: { type: 'string' },
       urlContains: { type: 'string' },
       language: { type: 'string' },
+      visible: { type: 'boolean' },
       disabled: { type: 'boolean' },
       selected: { type: 'boolean' },
       pressed: { type: 'boolean' },
@@ -669,6 +1128,212 @@ const TOOL_SCHEMAS: Record<string, object> = {
       countAtLeast: { type: 'number' },
       maxItems: { type: 'number' },
       maxTextLength: { type: 'number' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  preflight_automation_flow: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      expectedUrlContains: { type: 'string' },
+      requireSensitiveAutomation: { type: 'boolean' },
+      plannedActions: { type: 'array', items: { type: 'string' } },
+      includePageState: { type: 'boolean' },
+      maxItems: { type: 'number' },
+      maxTextLength: { type: 'number' },
+    },
+  },
+  wait_for_url: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      urlContains: { type: 'string' },
+      urlRegex: { type: 'string' },
+      exactUrl: { type: 'string' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_navigation: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      urlContains: { type: 'string' },
+      urlRegex: { type: 'string' },
+      exactUrl: { type: 'string' },
+      fromUrlContains: { type: 'string' },
+      fromUrlRegex: { type: 'string' },
+      trigger: { type: 'string' },
+      sinceTs: { type: 'number' },
+      tabId: { type: 'number' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_navigation_lifecycle: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      state: { type: 'string', enum: ['commit', 'same_document', 'domcontentloaded', 'load', 'network_idle'] },
+      urlContains: { type: 'string' },
+      urlRegex: { type: 'string' },
+      exactUrl: { type: 'string' },
+      tabId: { type: 'number' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_load_state: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      state: { type: 'string', enum: ['domcontentloaded', 'load'] },
+      urlContains: { type: 'string' },
+      urlRegex: { type: 'string' },
+      exactUrl: { type: 'string' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_selector_state: {
+    type: 'object',
+    required: ['sessionId', 'selector'],
+    properties: {
+      sessionId: { type: 'string' },
+      selector: { type: 'string' },
+      state: { type: 'string', enum: ['attached', 'detached', 'visible', 'hidden'] },
+      frameId: { type: 'number' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_console: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      levels: { type: 'array', items: { type: 'string' } },
+      contains: { type: 'string' },
+      sinceTs: { type: 'number' },
+      includeRuntimeErrors: { type: 'boolean' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_dialog: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      type: { type: 'string', enum: ['alert', 'confirm', 'prompt', 'beforeunload'] },
+      messageContains: { type: 'string' },
+      urlContains: { type: 'string' },
+      action: { type: 'string', enum: ['none', 'accept', 'dismiss'] },
+      promptText: { type: 'string' },
+      tabId: { type: 'number' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_stable_layout: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      selector: { type: 'string' },
+      stableMs: { type: 'number' },
+      tabId: { type: 'number' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_download: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      urlContains: { type: 'string' },
+      urlRegex: { type: 'string' },
+      exactUrl: { type: 'string' },
+      filenameContains: { type: 'string' },
+      filenameRegex: { type: 'string' },
+      state: { type: 'string', enum: ['started', 'completed'] },
+      tabId: { type: 'number' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_popup: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      urlContains: { type: 'string' },
+      urlRegex: { type: 'string' },
+      exactUrl: { type: 'string' },
+      openerTabId: { type: 'number' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_request: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      urlContains: { type: 'string' },
+      urlRegex: { type: 'string' },
+      exactUrl: { type: 'string' },
+      method: { type: 'string' },
+      traceId: { type: 'string' },
+      initiator: { type: 'string', enum: ['fetch', 'xhr', 'img', 'script', 'other'] },
+      requestContentType: { type: 'string' },
+      sinceTs: { type: 'number' },
+      tabId: { type: 'number' },
+      includeBodies: { type: 'boolean' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_response: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      urlContains: { type: 'string' },
+      urlRegex: { type: 'string' },
+      exactUrl: { type: 'string' },
+      method: { type: 'string' },
+      traceId: { type: 'string' },
+      initiator: { type: 'string', enum: ['fetch', 'xhr', 'img', 'script', 'other'] },
+      requestContentType: { type: 'string' },
+      responseContentType: { type: 'string' },
+      statusIn: { type: 'array', items: { type: 'number' } },
+      statusGte: { type: 'number' },
+      statusLt: { type: 'number' },
+      errorType: { type: 'string' },
+      sinceTs: { type: 'number' },
+      tabId: { type: 'number' },
+      includeBodies: { type: 'boolean' },
+      timeoutMs: { type: 'number' },
+      pollIntervalMs: { type: 'number' },
+    },
+  },
+  wait_for_network_quiet: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      quietMs: { type: 'number' },
+      urlContains: { type: 'string' },
+      method: { type: 'string' },
+      tabId: { type: 'number' },
       timeoutMs: { type: 'number' },
       pollIntervalMs: { type: 'number' },
     },
@@ -710,7 +1375,9 @@ const TOOL_SCHEMAS: Record<string, object> = {
   },
   list_override_profiles: {
     type: 'object',
-    properties: {},
+    properties: {
+      responseProfile: { type: 'string', enum: ['compact', 'full'] },
+    },
   },
   create_override_profile: {
     type: 'object',
@@ -734,12 +1401,15 @@ const TOOL_SCHEMAS: Record<string, object> = {
       maxRules: { type: 'number' },
       writeConfig: { type: 'boolean' },
       overwrite: { type: 'boolean' },
+      responseProfile: { type: 'string', enum: ['compact', 'full'] },
+      includeConfigJson: { type: 'boolean' },
     },
   },
   validate_override_profile: {
     type: 'object',
     properties: {
       profileId: { type: 'string' },
+      responseProfile: { type: 'string', enum: ['compact', 'full'] },
     },
   },
   preflight_overrides: {
@@ -785,6 +1455,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       sessionId: { type: 'string' },
       limit: { type: 'number' },
       sinceTimestamp: { type: 'number' },
+      responseProfile: { type: 'string', enum: ['compact', 'full'] },
     },
   },
   map_next_override_assets: {
@@ -983,7 +1654,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       status: { type: 'string', enum: ['requested', 'started', 'succeeded', 'failed', 'rejected', 'stopped'] },
-      action: { type: 'string', enum: ['click', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload'] },
+      action: { type: 'string', enum: ['click', 'hover', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload'] },
       traceId: { type: 'string' },
       limit: { type: 'number' },
       offset: { type: 'number' },
@@ -1006,16 +1677,53 @@ const TOOL_SCHEMAS: Record<string, object> = {
     required: ['sessionId', 'action'],
     properties: {
       sessionId: { type: 'string' },
-      action: { type: 'string', enum: ['click', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload'] },
+      action: { type: 'string', enum: ['click', 'hover', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload'] },
       traceId: { type: 'string' },
       target: {
         type: 'object',
         properties: {
           selector: { type: 'string' },
           elementRef: { type: 'string' },
+          coordinates: {
+            type: 'object',
+            properties: {
+              x: { type: 'number' },
+              y: { type: 'number' },
+              frameId: { type: 'number' },
+            },
+          },
           tabId: { type: 'number' },
           frameId: { type: 'number' },
           url: { type: 'string' },
+          locator: ACTION_LOCATOR_TOOL_SCHEMA,
+          frameUrlContains: { type: 'string' },
+          frameTitleContains: { type: 'string' },
+          testId: { type: 'string' },
+          scope: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused'] },
+          textContains: { type: 'string' },
+          labelContains: { type: 'string' },
+          titleContains: { type: 'string' },
+          role: { type: 'string' },
+          name: { type: 'string' },
+          placeholder: { type: 'string' },
+          altText: { type: 'string' },
+          exact: { type: 'boolean' },
+          nth: { type: 'number' },
+          first: { type: 'boolean' },
+          last: { type: 'boolean' },
+          strict: { type: 'boolean' },
+          tagName: { type: 'string' },
+          type: { type: 'string' },
+          visible: { type: 'boolean' },
+          enabled: { type: 'boolean' },
+          disabled: { type: 'boolean' },
+          editable: { type: 'boolean' },
+          checked: { type: 'boolean' },
+          selected: { type: 'boolean' },
+          pressed: { type: 'boolean' },
+          expanded: { type: 'boolean' },
+          readOnly: { type: 'boolean' },
+          requiredField: { type: 'boolean' },
         },
       },
       input: { type: 'object' },
@@ -1038,14 +1746,22 @@ const TOOL_SCHEMAS: Record<string, object> = {
         type: 'object',
         required: ['scope'],
         properties: {
-          scope: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused', 'page'] },
+          scope: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused', 'page'] },
           selector: { type: 'string' },
           testId: { type: 'string' },
           textContains: { type: 'string' },
           labelContains: { type: 'string' },
           titleContains: { type: 'string' },
+          role: { type: 'string' },
+          name: { type: 'string' },
+          placeholder: { type: 'string' },
+          altText: { type: 'string' },
+          exact: { type: 'boolean' },
+          frameUrlContains: { type: 'string' },
+          frameTitleContains: { type: 'string' },
           urlContains: { type: 'string' },
           language: { type: 'string' },
+          visible: { type: 'boolean' },
           disabled: { type: 'boolean' },
           selected: { type: 'boolean' },
           pressed: { type: 'boolean' },
@@ -1082,7 +1798,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
           properties: {
             id: { type: 'string' },
             note: { type: 'string' },
-            kind: { type: 'string', enum: ['action', 'waitFor', 'assert'] },
+            kind: { type: 'string', enum: ['action', 'waitFor', 'assert', 'wait'] },
             action: { type: 'string' },
             traceId: { type: 'string' },
             target: {
@@ -1090,16 +1806,37 @@ const TOOL_SCHEMAS: Record<string, object> = {
               properties: {
                 selector: { type: 'string' },
                 elementRef: { type: 'string' },
+                coordinates: {
+                  type: 'object',
+                  properties: {
+                    x: { type: 'number' },
+                    y: { type: 'number' },
+                    frameId: { type: 'number' },
+                  },
+                },
                 tabId: { type: 'number' },
                 frameId: { type: 'number' },
                 url: { type: 'string' },
+                locator: ACTION_LOCATOR_TOOL_SCHEMA,
+                frameUrlContains: { type: 'string' },
+                frameTitleContains: { type: 'string' },
                 testId: { type: 'string' },
-                scope: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused'] },
+                scope: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused'] },
                 textContains: { type: 'string' },
                 labelContains: { type: 'string' },
                 titleContains: { type: 'string' },
+                role: { type: 'string' },
+                name: { type: 'string' },
+                placeholder: { type: 'string' },
+                altText: { type: 'string' },
+                exact: { type: 'boolean' },
+                nth: { type: 'number' },
+                first: { type: 'boolean' },
+                last: { type: 'boolean' },
+                strict: { type: 'boolean' },
                 tagName: { type: 'string' },
                 type: { type: 'string' },
+                visible: { type: 'boolean' },
                 disabled: { type: 'boolean' },
                 selected: { type: 'boolean' },
                 pressed: { type: 'boolean' },
@@ -1133,14 +1870,22 @@ const TOOL_SCHEMAS: Record<string, object> = {
             matcher: {
               type: 'object',
               properties: {
-                scope: { type: 'string', enum: ['buttons', 'inputs', 'modals', 'focused', 'page'] },
+                scope: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused', 'page'] },
                 selector: { type: 'string' },
                 testId: { type: 'string' },
                 textContains: { type: 'string' },
                 labelContains: { type: 'string' },
                 titleContains: { type: 'string' },
+                role: { type: 'string' },
+                name: { type: 'string' },
+                placeholder: { type: 'string' },
+                altText: { type: 'string' },
+                exact: { type: 'boolean' },
+                frameUrlContains: { type: 'string' },
+                frameTitleContains: { type: 'string' },
                 urlContains: { type: 'string' },
                 language: { type: 'string' },
+                visible: { type: 'boolean' },
                 disabled: { type: 'boolean' },
                 selected: { type: 'boolean' },
                 pressed: { type: 'boolean' },
@@ -1157,6 +1902,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
                 pollIntervalMs: { type: 'number' },
               },
             },
+            wait: AUTOMATION_WAIT_TOOL_SCHEMA,
           },
         },
       },
@@ -1184,11 +1930,25 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_computed_styles: 'Read computed CSS styles for an element',
   get_layout_metrics: 'Read viewport and element layout metrics',
   get_page_state: 'Read a compact structured page model for forms, buttons, modals, and viewport state',
-  get_interactive_elements: 'Read compact live element references for buttons, inputs, modals, and focused elements',
+  get_interactive_elements: 'Read compact live element references for buttons, links, inputs, modals, and focused elements',
   get_live_session_health: 'Read live transport health and session binding details for one session',
   set_viewport: 'Resize the live browser window for a session and return the resulting viewport metrics',
   assert_page_state: 'Assert compact page-state conditions without pulling raw DOM payloads',
   wait_for_page_state: 'Poll compact page state until a structured assertion becomes true',
+  preflight_automation_flow: 'Check live-session readiness and production risks before running an automation flow',
+  wait_for_url: 'Poll the live page URL until it matches an exact, contains, or regex condition',
+  wait_for_navigation: 'Poll persisted navigation events until a matching URL or trigger is observed',
+  wait_for_navigation_lifecycle: 'Wait for a live navigation lifecycle milestone such as commit, load, or network idle',
+  wait_for_load_state: 'Poll the live page document readiness until domcontentloaded or load is reached',
+  wait_for_selector_state: 'Poll a selector until it is attached, detached, visible, or hidden',
+  wait_for_console: 'Poll live console logs until a matching message appears',
+  wait_for_dialog: 'Wait for a native JavaScript dialog and optionally accept or dismiss it',
+  wait_for_stable_layout: 'Wait until the page or selector layout stays unchanged for a stable window',
+  wait_for_download: 'Wait for a download started by the bound tab and optionally until completion',
+  wait_for_popup: 'Wait for a popup tab or window opened from the bound session tab',
+  wait_for_network_quiet: 'Wait until persisted network activity is quiet for a bounded window',
+  wait_for_request: 'Poll persisted network activity until a matching request is observed',
+  wait_for_response: 'Poll persisted network activity until a matching response is observed',
   capture_ui_snapshot: 'Capture redacted UI snapshot (DOM/styles/optional PNG) and persist it',
   get_live_console_logs: 'Read in-memory live console logs for a connected session',
   list_override_profiles: 'List configured browser override profiles',
@@ -1238,6 +1998,7 @@ const MAX_BODY_CHUNK_BYTES = 256 * 1024;
 const DEFAULT_NETWORK_POLL_TIMEOUT_MS = 15_000;
 const MAX_NETWORK_POLL_TIMEOUT_MS = 120_000;
 const DEFAULT_NETWORK_POLL_INTERVAL_MS = 250;
+const DEFAULT_AUTOMATION_WAIT_LOOKBACK_MS = 5_000;
 const LIVE_SESSION_DISCONNECTED_CODE = 'LIVE_SESSION_DISCONNECTED';
 const OVERRIDE_LIVE_COMMAND_TIMEOUT_CODE = 'OVERRIDE_LIVE_COMMAND_TIMEOUT';
 const OVERRIDE_LIVE_COMMAND_FAILED_CODE = 'OVERRIDE_LIVE_COMMAND_FAILED';
@@ -1411,6 +2172,7 @@ interface AutomationRunRow {
   completed_at: number | null;
   stop_reason: string | null;
   target_summary_json: string | null;
+  diagnostics_json: string | null;
   failure_json: string | null;
   redaction_json: string | null;
   created_at: number;
@@ -1433,6 +2195,7 @@ interface AutomationStepRow {
   duration_ms: number | null;
   tab_id: number | null;
   target_summary_json: string | null;
+  diagnostics_json: string | null;
   redaction_json: string | null;
   failure_json: string | null;
   input_metadata_json: string | null;
@@ -1475,6 +2238,11 @@ type CaptureCommandName =
   | 'CAPTURE_PAGE_STATE'
   | 'CAPTURE_UI_SNAPSHOT'
   | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+  | 'CAPTURE_WAIT_FOR_NAVIGATION_LIFECYCLE'
+  | 'CAPTURE_WAIT_FOR_DIALOG'
+  | 'CAPTURE_WAIT_FOR_STABLE_LAYOUT'
+  | 'CAPTURE_WAIT_FOR_DOWNLOAD'
+  | 'CAPTURE_WAIT_FOR_POPUP'
   | 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
   | 'CAPTURE_OVERRIDE_RESPONSE_BODY'
   | 'CAPTURE_OVERRIDE_POC_GET_STATUS'
@@ -1831,6 +2599,77 @@ function resolveOverrideProfileRecord(value: unknown): Record<string, unknown> {
   }
 
   return profile;
+}
+
+function resolveOverrideResponseProfile(value: unknown): 'compact' | 'full' {
+  return value === 'full' ? 'full' : 'compact';
+}
+
+function compactOverrideRule(rule: unknown): Record<string, unknown> {
+  if (!isRecord(rule)) {
+    return {};
+  }
+  return {
+    ruleId: rule.ruleId,
+    enabled: rule.enabled,
+    ruleType: rule.ruleType,
+    requestMethod: rule.requestMethod,
+    matchMode: rule.matchMode,
+    targetAssetUrl: rule.targetAssetUrl,
+    localFilePath: rule.localFilePath,
+    contentType: rule.contentType,
+    fileExists: rule.fileExists,
+    integrity: rule.integrity,
+  };
+}
+
+function compactOverrideProfile(profile: Record<string, unknown>, ruleLimit = 10): Record<string, unknown> {
+  const rules = Array.isArray(profile.rules) ? profile.rules : [];
+  return {
+    profileId: profile.profileId,
+    name: profile.name,
+    active: profile.active,
+    configEnabled: profile.configEnabled,
+    enabled: profile.enabled,
+    effectiveEnabled: profile.effectiveEnabled,
+    autoReload: profile.autoReload,
+    configPath: profile.configPath,
+    fileExists: profile.fileExists,
+    ruleCount: profile.ruleCount,
+    enabledRuleCount: profile.enabledRuleCount,
+    rules: rules.slice(0, ruleLimit).map(compactOverrideRule),
+    rulesOmitted: Math.max(0, rules.length - ruleLimit),
+  };
+}
+
+function serializeOverrideProfile(profile: Record<string, unknown>, responseProfile: 'compact' | 'full'): Record<string, unknown> {
+  return responseProfile === 'full' ? profile : compactOverrideProfile(profile);
+}
+
+function compactObservedOverrideAsset(asset: unknown): Record<string, unknown> {
+  if (!isRecord(asset)) {
+    return {};
+  }
+  return {
+    observedAssetId: asset.observedAssetId,
+    lastSeenAt: asset.lastSeenAt,
+    tabId: asset.tabId,
+    url: asset.url,
+    ruleType: asset.ruleType,
+    requestMethod: asset.requestMethod,
+    resourceType: asset.resourceType,
+    contentType: asset.contentType,
+    statusCode: asset.statusCode,
+    pathname: asset.pathname,
+    assetPath: asset.assetPath,
+    kind: asset.kind,
+    integrity: asset.integrity,
+    fromDom: asset.fromDom,
+    fromPerformance: asset.fromPerformance,
+    fromNavigation: asset.fromNavigation,
+    fromFetch: asset.fromFetch,
+    serviceWorkerControlled: asset.serviceWorkerControlled,
+  };
 }
 
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/;
@@ -3161,6 +4000,7 @@ function mapAutomationRunRecord(row: AutomationRunRow): Record<string, unknown> 
         : undefined,
     stopReason: row.stop_reason ?? undefined,
     target: parseJsonOrUndefined(row.target_summary_json),
+    diagnostics: parseJsonOrUndefined(row.diagnostics_json),
     failure: parseJsonOrUndefined(row.failure_json),
     redaction: parseJsonOrUndefined(row.redaction_json),
     stepCount: row.step_count,
@@ -3186,6 +4026,7 @@ function mapAutomationStepRecord(row: AutomationStepRow): Record<string, unknown
     durationMs: row.duration_ms ?? undefined,
     tabId: row.tab_id ?? undefined,
     target: parseJsonOrUndefined(row.target_summary_json),
+    diagnostics: parseJsonOrUndefined(row.diagnostics_json),
     redaction: parseJsonOrUndefined(row.redaction_json),
     failure: parseJsonOrUndefined(row.failure_json),
     inputMetadata: parseJsonOrUndefined(row.input_metadata_json),
@@ -3195,6 +4036,158 @@ function mapAutomationStepRecord(row: AutomationStepRow): Record<string, unknown
     updatedAt: row.updated_at,
     source: 'automation_steps',
   };
+}
+
+function asRecordOrUndefined(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function buildFailureEvidenceSummary(
+  failureEvidence: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (!failureEvidence) {
+    return undefined;
+  }
+
+  const snapshot = asRecordOrUndefined(failureEvidence.snapshot);
+  const snapshotRoot = asRecordOrUndefined(snapshot?.snapshot);
+  return {
+    captured: failureEvidence.captured === true,
+    error: typeof failureEvidence.error === 'string' ? failureEvidence.error : undefined,
+    limitsApplied: asRecordOrUndefined(failureEvidence.limitsApplied),
+    snapshot: snapshot
+      ? {
+          timestamp: typeof snapshot.timestamp === 'number' ? snapshot.timestamp : undefined,
+          trigger: typeof snapshot.trigger === 'string' ? snapshot.trigger : undefined,
+          selector: typeof snapshot.selector === 'string' ? snapshot.selector : undefined,
+          url: typeof snapshot.url === 'string' ? snapshot.url : undefined,
+          mode: snapshot.mode,
+          hasDom: Boolean(snapshotRoot && 'dom' in snapshotRoot),
+          hasStyles: Boolean(snapshotRoot && 'styles' in snapshotRoot),
+          hasPng: Boolean(snapshot.png),
+        }
+      : undefined,
+  };
+}
+
+function findRelatedFailureSnapshot(
+  db: Database,
+  sessionId: string,
+  failureEvidence: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  const snapshotSummary = asRecordOrUndefined(buildFailureEvidenceSummary(failureEvidence)?.snapshot);
+  if (!snapshotSummary) {
+    return undefined;
+  }
+
+  const timestamp = typeof snapshotSummary.timestamp === 'number' ? snapshotSummary.timestamp : undefined;
+  const selector = typeof snapshotSummary.selector === 'string' ? snapshotSummary.selector : undefined;
+  const url = typeof snapshotSummary.url === 'string' ? snapshotSummary.url : undefined;
+  const where: string[] = ['session_id = ?'];
+  const params: unknown[] = [sessionId];
+
+  if (selector) {
+    where.push('selector = ?');
+    params.push(selector);
+  }
+  if (url) {
+    where.push('url = ?');
+    params.push(url);
+  }
+  if (timestamp !== undefined) {
+    where.push('ts BETWEEN ? AND ?');
+    params.push(timestamp - 10_000, timestamp + 10_000);
+  }
+
+  const row = db.prepare(
+    `SELECT snapshot_id, trigger_event_id, ts, selector, url
+     FROM snapshots
+     WHERE ${where.join(' AND ')}
+     ORDER BY ${timestamp !== undefined ? 'ABS(ts - ?) ASC,' : ''} ts DESC
+     LIMIT 1`
+  ).get(...params, ...(timestamp !== undefined ? [timestamp] : [])) as {
+    snapshot_id: string;
+    trigger_event_id: string | null;
+    ts: number;
+    selector: string | null;
+    url: string | null;
+  } | undefined;
+
+  if (!row) {
+    return undefined;
+  }
+
+  return {
+    snapshotId: row.snapshot_id,
+    triggerEventId: row.trigger_event_id ?? undefined,
+    timestamp: row.ts,
+    selector: row.selector ?? undefined,
+    url: row.url ?? undefined,
+  };
+}
+
+function mergeAutomationDiagnosticsEvidence(
+  db: Database,
+  options: {
+    sessionId: string;
+    traceId: string;
+    failureEvidence?: Record<string, unknown>;
+    cdpFailure?: Record<string, unknown>;
+  },
+): void {
+  if (!options.traceId) {
+    return;
+  }
+
+  const failureEvidence = buildFailureEvidenceSummary(options.failureEvidence);
+  const linkedSnapshot = findRelatedFailureSnapshot(db, options.sessionId, options.failureEvidence);
+  if (!failureEvidence && !linkedSnapshot && !options.cdpFailure) {
+    return;
+  }
+
+  const updateDiagnosticsJson = (
+    tableName: 'automation_runs' | 'automation_steps',
+    keyColumn: 'run_id' | 'step_id',
+    keyValue: string,
+    existingJson: string | null,
+  ): void => {
+    const existing = asRecordOrUndefined(parseJsonOrUndefined(existingJson)) ?? {};
+    const merged = {
+      ...existing,
+      ...(options.cdpFailure ? { cdpFailure: options.cdpFailure } : {}),
+      ...(failureEvidence ? { failureEvidence } : {}),
+      ...(linkedSnapshot ? { linkedSnapshot } : {}),
+    };
+    db.prepare(`UPDATE ${tableName} SET diagnostics_json = ?, updated_at = ? WHERE ${keyColumn} = ?`).run(
+      JSON.stringify(merged),
+      Date.now(),
+      keyValue,
+    );
+  };
+
+  const runRow = db.prepare(
+    `SELECT run_id, diagnostics_json
+     FROM automation_runs
+     WHERE session_id = ? AND trace_id = ?
+     ORDER BY started_at DESC, updated_at DESC
+     LIMIT 1`
+  ).get(options.sessionId, options.traceId) as { run_id: string; diagnostics_json: string | null } | undefined;
+  if (runRow) {
+    updateDiagnosticsJson('automation_runs', 'run_id', runRow.run_id, runRow.diagnostics_json);
+  }
+
+  const stepRow = db.prepare(
+    `SELECT step_id, diagnostics_json
+     FROM automation_steps
+     WHERE session_id = ? AND trace_id = ?
+     ORDER BY step_order DESC, updated_at DESC
+     LIMIT 1`
+  ).get(options.sessionId, options.traceId) as { step_id: string; diagnostics_json: string | null } | undefined;
+  if (stepRow) {
+    updateDiagnosticsJson('automation_steps', 'step_id', stepRow.step_id, stepRow.diagnostics_json);
+  }
 }
 
 function formatUrlPath(url: string): string {
@@ -3358,7 +4351,7 @@ function resolveViewportDimension(value: unknown, axis: 'width' | 'height'): num
   return floored;
 }
 
-type PageStateScope = 'buttons' | 'inputs' | 'modals' | 'focused' | 'page';
+type PageStateScope = 'buttons' | 'links' | 'inputs' | 'modals' | 'focused' | 'page';
 
 interface PageStateMatcher {
   scope: PageStateScope;
@@ -3367,6 +4360,13 @@ interface PageStateMatcher {
   textContains?: string;
   labelContains?: string;
   titleContains?: string;
+  role?: string;
+  name?: string;
+  placeholder?: string;
+  altText?: string;
+  exact?: boolean;
+  frameUrlContains?: string;
+  frameTitleContains?: string;
   urlContains?: string;
   language?: string;
   disabled?: boolean;
@@ -3377,6 +4377,7 @@ interface PageStateMatcher {
   requiredField?: boolean;
   tagName?: string;
   type?: string;
+  visible?: boolean;
   countExactly?: number;
   countAtLeast?: number;
 }
@@ -3412,6 +4413,7 @@ interface UIWorkflowStepResult {
   traceId?: string;
   target?: Record<string, unknown>;
   matcher?: Record<string, unknown>;
+  wait?: Record<string, unknown>;
   matchCount?: number;
   waitedMs?: number;
   attempts?: number;
@@ -3434,25 +4436,53 @@ interface UIWorkflowResolvedFailurePolicy {
   captureOptions?: FailureEvidenceCaptureOptions;
 }
 
-type PageStateCaptureResult = {
-  limitsApplied: { maxResults: number; truncated: boolean };
-  payload: Record<string, unknown>;
-};
-
 interface DetailedPageStateWaitResult extends PageStateWaitResult {
   lastCapture?: PageStateCaptureResult;
 }
 
-class WorkflowTargetResolutionError extends Error {
-  readonly code: string;
-  readonly details: Record<string, unknown>;
+interface AutomationWaitResult {
+  waitKind: AutomationWaitSpec['waitKind'];
+  matched: boolean;
+  waitedMs: number;
+  attempts: number;
+  timeoutMs: number;
+  pollIntervalMs: number;
+  evidence?: Record<string, unknown>;
+  error?: {
+    code: string;
+    message: string;
+  };
+}
 
-  constructor(code: string, message: string, details: Record<string, unknown>) {
-    super(message);
-    this.name = 'WorkflowTargetResolutionError';
-    this.code = code;
-    this.details = details;
+function buildWaitTimeoutDiagnostics(options: {
+  waitKind: AutomationWaitSpec['waitKind'];
+  timeoutMs: number;
+  waitedMs: number;
+  attempts: number;
+  pollIntervalMs: number;
+  matcherSummary: Record<string, unknown>;
+  lastObserved?: unknown;
+  candidateCount?: number;
+  sampledCandidates?: unknown[];
+}): Record<string, unknown> {
+  const diagnostics: Record<string, unknown> = {
+    waitKind: options.waitKind,
+    timeoutMs: options.timeoutMs,
+    waitedMs: options.waitedMs,
+    attempts: options.attempts,
+    pollIntervalMs: options.pollIntervalMs,
+    matcherSummary: options.matcherSummary,
+  };
+  if (options.lastObserved !== undefined) {
+    diagnostics.lastObserved = options.lastObserved;
   }
+  if (typeof options.candidateCount === 'number') {
+    diagnostics.candidateCount = options.candidateCount;
+  }
+  if (Array.isArray(options.sampledCandidates) && options.sampledCandidates.length > 0) {
+    diagnostics.sampledCandidates = options.sampledCandidates;
+  }
+  return diagnostics;
 }
 
 function resolveOptionalMatcherString(value: unknown): string | undefined {
@@ -3482,11 +4512,11 @@ function resolveOptionalMatcherCount(value: unknown, field: 'countExactly' | 'co
 }
 
 function resolvePageStateScope(value: unknown): PageStateScope {
-  if (value === 'buttons' || value === 'inputs' || value === 'modals' || value === 'focused' || value === 'page') {
+  if (value === 'buttons' || value === 'links' || value === 'inputs' || value === 'modals' || value === 'focused' || value === 'page') {
     return value;
   }
 
-  throw new Error('scope must be one of buttons, inputs, modals, focused, or page');
+  throw new Error('scope must be one of buttons, links, inputs, modals, focused, or page');
 }
 
 function resolvePageStateMatcher(input: ToolInput): PageStateMatcher {
@@ -3497,6 +4527,13 @@ function resolvePageStateMatcher(input: ToolInput): PageStateMatcher {
     textContains: resolveOptionalMatcherString(input.textContains),
     labelContains: resolveOptionalMatcherString(input.labelContains),
     titleContains: resolveOptionalMatcherString(input.titleContains),
+    role: resolveOptionalMatcherString(input.role)?.toLowerCase(),
+    name: resolveOptionalMatcherString(input.name),
+    placeholder: resolveOptionalMatcherString(input.placeholder),
+    altText: resolveOptionalMatcherString(input.altText),
+    exact: resolveOptionalMatcherBoolean(input.exact),
+    frameUrlContains: resolveOptionalMatcherString(input.frameUrlContains),
+    frameTitleContains: resolveOptionalMatcherString(input.frameTitleContains),
     urlContains: resolveOptionalMatcherString(input.urlContains),
     language: resolveOptionalMatcherString(input.language),
     disabled: resolveOptionalMatcherBoolean(input.disabled),
@@ -3507,6 +4544,7 @@ function resolvePageStateMatcher(input: ToolInput): PageStateMatcher {
     requiredField: resolveOptionalMatcherBoolean(input.requiredField),
     tagName: resolveOptionalMatcherString(input.tagName)?.toLowerCase(),
     type: resolveOptionalMatcherString(input.type)?.toLowerCase(),
+    visible: resolveOptionalMatcherBoolean(input.visible),
     countExactly: resolveOptionalMatcherCount(input.countExactly, 'countExactly'),
     countAtLeast: resolveOptionalMatcherCount(input.countAtLeast, 'countAtLeast'),
   };
@@ -3526,6 +4564,21 @@ function includesNormalized(value: unknown, needle: string | undefined): boolean
   return typeof value === 'string' && value.toLowerCase().includes(needle.toLowerCase());
 }
 
+function matchesTextValue(value: unknown, expected: string | undefined, exact: boolean | undefined): boolean {
+  if (!expected) {
+    return true;
+  }
+  if (typeof value !== 'string') {
+    return false;
+  }
+
+  const normalizedValue = value.trim().toLowerCase();
+  const normalizedExpected = expected.trim().toLowerCase();
+  return exact === true
+    ? normalizedValue === normalizedExpected
+    : normalizedValue.includes(normalizedExpected);
+}
+
 function equalsNormalized(value: unknown, expected: string | undefined): boolean {
   if (!expected) {
     return true;
@@ -3543,7 +4596,7 @@ function equalsOptionalBoolean(value: unknown, expected: boolean | undefined): b
 }
 
 function pickPageStateScopeItems(payload: Record<string, unknown>, scope: PageStateScope): Record<string, unknown>[] {
-  if (scope === 'buttons' || scope === 'inputs' || scope === 'modals') {
+  if (scope === 'buttons' || scope === 'links' || scope === 'inputs' || scope === 'modals') {
     const value = payload[scope];
     return asRecordArray(value);
   }
@@ -3560,13 +4613,20 @@ function matchesPageStateItem(item: Record<string, unknown>, matcher: PageStateM
   return (
     includesNormalized(item.selector, matcher.selector)
     && equalsNormalized(item.testId, matcher.testId)
-    && includesNormalized(item.text, matcher.textContains)
-    && includesNormalized(item.label, matcher.labelContains)
-    && includesNormalized(item.title, matcher.titleContains)
+    && matchesTextValue(item.text, matcher.textContains, matcher.exact)
+    && matchesTextValue(item.label, matcher.labelContains, matcher.exact)
+    && matchesTextValue(item.title, matcher.titleContains, matcher.exact)
+    && equalsNormalized(item.role, matcher.role)
+    && matchesTextValue(item.name, matcher.name, matcher.exact)
+    && matchesTextValue(item.placeholder, matcher.placeholder, matcher.exact)
+    && matchesTextValue(item.altText, matcher.altText, matcher.exact)
+    && includesNormalized(item.frameUrl, matcher.frameUrlContains)
+    && includesNormalized(item.frameTitle, matcher.frameTitleContains)
     && includesNormalized(item.url, matcher.urlContains)
     && equalsNormalized(item.language, matcher.language)
     && equalsNormalized(item.tagName, matcher.tagName)
     && equalsNormalized(item.type, matcher.type)
+    && equalsOptionalBoolean(item.visible, matcher.visible)
     && equalsOptionalBoolean(item.disabled, matcher.disabled)
     && equalsOptionalBoolean(item.selected, matcher.selected)
     && equalsOptionalBoolean(item.pressed, matcher.pressed)
@@ -3655,7 +4715,7 @@ function createPageChangeSummary(
   const currentSummary = current.summary;
   const summaryDelta: Record<string, { previous?: number; current?: number }> = {};
 
-  for (const key of ['buttons', 'inputs', 'modals']) {
+  for (const key of ['buttons', 'links', 'inputs', 'modals']) {
     const previousValue = typeof previousSummary?.[key] === 'number' ? previousSummary[key] as number : undefined;
     const currentValue = typeof currentSummary?.[key] === 'number' ? currentSummary[key] as number : undefined;
     if (previousValue !== currentValue && currentValue !== undefined) {
@@ -3685,22 +4745,24 @@ function createPageChangeSummary(
   };
 }
 
-function resolveInteractiveKinds(value: unknown): Array<'buttons' | 'inputs' | 'modals' | 'focused'> {
+type InteractiveElementKind = 'buttons' | 'links' | 'inputs' | 'modals' | 'focused';
+
+function resolveInteractiveKinds(value: unknown): InteractiveElementKind[] {
   if (!Array.isArray(value) || value.length === 0) {
-    return ['buttons', 'inputs', 'modals', 'focused'];
+    return ['buttons', 'links', 'inputs', 'modals', 'focused'];
   }
 
-  const allowed = new Set(['buttons', 'inputs', 'modals', 'focused']);
+  const allowed = new Set(['buttons', 'links', 'inputs', 'modals', 'focused']);
   const kinds = value
     .filter((entry): entry is string => typeof entry === 'string' && allowed.has(entry))
-    .map((entry) => entry as 'buttons' | 'inputs' | 'modals' | 'focused');
+    .map((entry) => entry as InteractiveElementKind);
 
-  return kinds.length > 0 ? Array.from(new Set(kinds)) : ['buttons', 'inputs', 'modals', 'focused'];
+  return kinds.length > 0 ? Array.from(new Set(kinds)) : ['buttons', 'links', 'inputs', 'modals', 'focused'];
 }
 
 function collectInteractiveElementRefs(
   payload: Record<string, unknown>,
-  kinds: Array<'buttons' | 'inputs' | 'modals' | 'focused'>,
+  kinds: InteractiveElementKind[],
   maxItems: number,
 ): Array<Record<string, unknown>> {
   const refs: Array<Record<string, unknown>> = [];
@@ -3846,172 +4908,1578 @@ async function waitForPageStateCondition(
   return waited;
 }
 
-function candidateTextForWorkflowTarget(item: Record<string, unknown>): string {
-  return [item.text, item.label, item.title]
-    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
-    .join(' ')
-    .trim();
-}
-
-function describeWorkflowTargetCandidate(item: Record<string, unknown>): Record<string, unknown> {
-  return {
-    text: candidateTextForWorkflowTarget(item) || undefined,
-    testId: typeof item.testId === 'string' ? item.testId : undefined,
-    selector: typeof item.selector === 'string' ? item.selector : undefined,
-    tagName: typeof item.tagName === 'string' ? item.tagName : undefined,
-    type: typeof item.type === 'string' ? item.type : undefined,
-    disabled: typeof item.disabled === 'boolean' ? item.disabled : undefined,
-    selected: typeof item.selected === 'boolean' ? item.selected : undefined,
-  };
-}
-
-function pickWorkflowTargetItems(
-  payload: Record<string, unknown>,
-  scope: UIWorkflowActionTarget['scope'],
-): Record<string, unknown>[] {
-  if (scope) {
-    return pickPageStateScopeItems(payload, scope);
+function compileWaitRegex(value: string | undefined, fieldName: string): RegExp | undefined {
+  if (!value) {
+    return undefined;
   }
 
-  return [
-    ...pickPageStateScopeItems(payload, 'buttons'),
-    ...pickPageStateScopeItems(payload, 'inputs'),
-    ...pickPageStateScopeItems(payload, 'modals'),
-    ...pickPageStateScopeItems(payload, 'focused'),
-  ];
+  try {
+    return new RegExp(value);
+  } catch {
+    throw new Error(`${fieldName} must be a valid regular expression`);
+  }
 }
 
-function matchesWorkflowActionTarget(
-  item: Record<string, unknown>,
-  target: UIWorkflowActionTarget,
+function matchesUrlWait(url: unknown, wait: z.infer<typeof AutomationWaitUrlSchema>): boolean {
+  return matchesUrlPredicates(url, {
+    exactUrl: wait.exactUrl,
+    urlContains: wait.urlContains,
+    urlRegex: wait.urlRegex,
+  });
+}
+
+function matchesUrlPredicates(
+  url: unknown,
+  predicates: { exactUrl?: string; urlContains?: string; urlRegex?: string; regexFieldName?: string },
 ): boolean {
-  return (
-    equalsNormalized(item.testId, target.testId)
-    && includesNormalized(item.text, target.textContains)
-    && includesNormalized(item.label, target.labelContains)
-    && includesNormalized(item.title, target.titleContains)
-    && equalsNormalized(item.tagName, target.tagName)
-    && equalsNormalized(item.type, target.type)
-    && equalsOptionalBoolean(item.disabled, target.disabled)
-    && equalsOptionalBoolean(item.selected, target.selected)
-    && equalsOptionalBoolean(item.pressed, target.pressed)
-    && equalsOptionalBoolean(item.expanded, target.expanded)
-    && equalsOptionalBoolean(item.readOnly, target.readOnly)
-    && equalsOptionalBoolean(item.required, target.requiredField)
-    && (typeof item.elementRef === 'string' || typeof item.selector === 'string')
-  );
+  if (typeof url !== 'string') {
+    return false;
+  }
+  if (predicates.exactUrl && url !== predicates.exactUrl) {
+    return false;
+  }
+  if (predicates.urlContains && !url.includes(predicates.urlContains)) {
+    return false;
+  }
+  const regex = compileWaitRegex(predicates.urlRegex, predicates.regexFieldName ?? 'urlRegex');
+  if (regex && !regex.test(url)) {
+    return false;
+  }
+  return true;
 }
 
-function summarizeWorkflowTargetMatcher(target: UIWorkflowActionTarget): Record<string, unknown> {
-  return {
-    scope: target.scope,
-    selector: target.selector,
-    elementRef: target.elementRef,
-    testId: target.testId,
-    textContains: target.textContains,
-    labelContains: target.labelContains,
-    titleContains: target.titleContains,
-    tagName: target.tagName,
-    type: target.type,
-    disabled: target.disabled,
-    selected: target.selected,
-    pressed: target.pressed,
-    expanded: target.expanded,
-    readOnly: target.readOnly,
-    requiredField: target.requiredField,
-  };
+function resolveAutomationWaitSinceTs(value: unknown): number {
+  return resolveOptionalTimestamp(value) ?? Math.max(0, Date.now() - DEFAULT_AUTOMATION_WAIT_LOOKBACK_MS);
 }
 
-async function resolveWorkflowActionTarget(
+function isElementMissingError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /no element found for selector/i.test(message);
+}
+
+async function captureSelectorState(
+  captureClient: CaptureCommandClient,
   sessionId: string,
-  target: UIWorkflowActionTarget | undefined,
+  selector: string,
+  frameId: number = 0,
+): Promise<Record<string, unknown>> {
+  try {
+    const [styleCapture, layoutCapture] = await Promise.all([
+      executeLiveCapture(
+        captureClient,
+        sessionId,
+        'CAPTURE_COMPUTED_STYLES',
+        { selector, frameId, properties: ['display', 'visibility', 'opacity'] },
+        3_000,
+      ),
+      executeLiveCapture(
+        captureClient,
+        sessionId,
+        'CAPTURE_LAYOUT_METRICS',
+        { selector, frameId },
+        3_000,
+      ),
+    ]);
+    const stylePayload = ensureCaptureSuccess(styleCapture, sessionId);
+    const layoutPayload = ensureCaptureSuccess(layoutCapture, sessionId);
+    const properties = isRecord(stylePayload.properties) ? stylePayload.properties : {};
+    const element = isRecord(layoutPayload.element) ? layoutPayload.element : {};
+    const width = typeof element.width === 'number' ? element.width : 0;
+    const height = typeof element.height === 'number' ? element.height : 0;
+    const display = typeof properties.display === 'string' ? properties.display : undefined;
+    const visibility = typeof properties.visibility === 'string' ? properties.visibility : undefined;
+    const opacityText = typeof properties.opacity === 'string' ? properties.opacity : undefined;
+    const opacity = opacityText !== undefined ? Number.parseFloat(opacityText) : undefined;
+    const visible = display !== 'none'
+      && visibility !== 'hidden'
+      && visibility !== 'collapse'
+      && opacity !== 0
+      && width > 0
+      && height > 0;
+
+    return {
+      selector,
+      frameId,
+      attached: true,
+      visible,
+      styles: properties,
+      element,
+      viewport: layoutPayload.viewport,
+    };
+  } catch (error) {
+    if (isElementMissingError(error)) {
+      return {
+        selector,
+        frameId,
+        attached: false,
+        visible: false,
+        missing: true,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+    throw error;
+  }
+}
+
+function selectorStateMatches(state: Record<string, unknown>, expectedState: 'attached' | 'detached' | 'visible' | 'hidden'): boolean {
+  const attached = state.attached === true;
+  const visible = state.visible === true;
+  switch (expectedState) {
+    case 'attached':
+      return attached;
+    case 'detached':
+      return !attached;
+    case 'visible':
+      return attached && visible;
+    case 'hidden':
+      return !attached || !visible;
+  }
+}
+
+async function waitForUrlCondition(
+  sessionId: string,
+  wait: z.infer<typeof AutomationWaitUrlSchema>,
   capturePageState: (
     sessionId: string,
     input: ToolInput,
   ) => Promise<PageStateCaptureResult>,
-  existingCapture?: PageStateCaptureResult,
-): Promise<{
-  target?: z.infer<typeof LiveUIActionTargetSchema>;
-  resolution: Record<string, unknown>;
-  pageCapture?: PageStateCaptureResult;
-}> {
-  if (!target) {
-    return {
-      resolution: {
-        strategy: 'none',
-      },
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, 5_000, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const pollIntervalMs = resolveDurationMs(wait.pollIntervalMs, 100, 5_000);
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let attempts = 0;
+  let lastPage: Record<string, unknown> | undefined;
+
+  while (Date.now() <= deadline) {
+    attempts += 1;
+    const capture = await capturePageState(sessionId, {
+      includeButtons: false,
+      includeLinks: false,
+      includeInputs: false,
+      includeModals: false,
+      maxItems: 1,
+      maxTextLength: 40,
+    });
+    lastPage = {
+      url: capture.payload.url,
+      title: capture.payload.title,
+      language: capture.payload.language,
+      viewport: capture.payload.viewport,
     };
+    if (matchesUrlWait(capture.payload.url, wait)) {
+      return {
+        waitKind: 'url',
+        matched: true,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        timeoutMs,
+        pollIntervalMs,
+        evidence: { page: lastPage },
+      };
+    }
+    await sleep(pollIntervalMs);
   }
 
-  if (target.elementRef || target.selector) {
-    return {
-      target: {
-        elementRef: target.elementRef,
-        selector: target.selector,
-        tabId: target.tabId,
-        frameId: target.frameId,
-        url: target.url,
-      },
-      resolution: {
-        strategy: target.elementRef ? 'elementRef' : 'selector',
-        matcher: summarizeWorkflowTargetMatcher(target),
-      },
-    };
-  }
-
-  const capture = existingCapture ?? await capturePageState(sessionId, {
-    includeButtons: target.scope ? target.scope === 'buttons' : true,
-    includeInputs: target.scope ? target.scope === 'inputs' : true,
-    includeModals: target.scope ? target.scope === 'modals' : true,
-    maxItems: 100,
-    maxTextLength: 120,
-  });
-  const candidates = pickWorkflowTargetItems(capture.payload, target.scope)
-    .filter((item) => matchesWorkflowActionTarget(item, target));
-
-  if (candidates.length === 0) {
-    throw new WorkflowTargetResolutionError(
-      'workflow_target_not_found',
-      'No interactive element matched the workflow target.',
-      {
-        matcher: summarizeWorkflowTargetMatcher(target),
-        searchedScope: target.scope ?? 'all-interactive',
-        sampledCandidates: pickWorkflowTargetItems(capture.payload, target.scope)
-          .slice(0, 5)
-          .map((item) => describeWorkflowTargetCandidate(item)),
-      },
-    );
-  }
-
-  if (candidates.length > 1) {
-    throw new WorkflowTargetResolutionError(
-      'workflow_target_ambiguous',
-      `Workflow target matched ${candidates.length} elements; refine the matcher.`,
-      {
-        matcher: summarizeWorkflowTargetMatcher(target),
-        matchedCandidateCount: candidates.length,
-        sampledCandidates: candidates.slice(0, 5).map((item) => describeWorkflowTargetCandidate(item)),
-      },
-    );
-  }
-
-  const candidate = candidates[0];
-    return {
-      target: {
-        elementRef: typeof candidate.elementRef === 'string' ? candidate.elementRef : undefined,
-      selector: typeof candidate.selector === 'string' ? candidate.selector : undefined,
-      tabId: target.tabId,
-      frameId: target.frameId,
-      url: target.url,
+  return {
+    waitKind: 'url',
+    matched: false,
+    waitedMs: Date.now() - startedAt,
+    attempts,
+    timeoutMs,
+    pollIntervalMs,
+    evidence: {
+      page: lastPage,
+      expected: wait,
+      timeoutDiagnostics: buildWaitTimeoutDiagnostics({
+        waitKind: 'url',
+        timeoutMs,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        pollIntervalMs,
+        matcherSummary: {
+          exactUrl: wait.exactUrl,
+          urlContains: wait.urlContains,
+          urlRegex: wait.urlRegex,
+        },
+        lastObserved: lastPage,
+      }),
     },
-      resolution: {
-        strategy: typeof candidate.elementRef === 'string' ? 'semantic_elementRef' : 'semantic_selector',
-        matcher: summarizeWorkflowTargetMatcher(target),
-        matchedCandidateCount: candidates.length,
-        matched: describeWorkflowTargetCandidate(candidate),
-      },
-      pageCapture: capture,
+    error: {
+      code: 'url_wait_timeout',
+      message: 'Timed out waiting for the page URL to match the requested condition.',
+    },
+  };
+}
+
+function pageReadyStateMatches(
+  readyState: unknown,
+  expectedState: z.infer<typeof AutomationWaitLoadStateSchema>['state'],
+): boolean {
+  if (readyState !== 'loading' && readyState !== 'interactive' && readyState !== 'complete') {
+    return false;
+  }
+  if (expectedState === 'domcontentloaded') {
+    return readyState === 'interactive' || readyState === 'complete';
+  }
+  return readyState === 'complete';
+}
+
+async function waitForLoadStateCondition(
+  sessionId: string,
+  wait: z.infer<typeof AutomationWaitLoadStateSchema>,
+  capturePageState: (
+    sessionId: string,
+    input: ToolInput,
+  ) => Promise<PageStateCaptureResult>,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, 5_000, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const pollIntervalMs = resolveDurationMs(wait.pollIntervalMs, 100, 5_000);
+  const expectedState = wait.state ?? 'load';
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let attempts = 0;
+  let lastPage: Record<string, unknown> | undefined;
+
+  while (Date.now() <= deadline) {
+    attempts += 1;
+    const capture = await capturePageState(sessionId, {
+      includeButtons: false,
+      includeLinks: false,
+      includeInputs: false,
+      includeModals: false,
+      maxItems: 1,
+      maxTextLength: 40,
+    });
+    lastPage = {
+      url: capture.payload.url,
+      title: capture.payload.title,
+      readyState: capture.payload.readyState,
+      language: capture.payload.language,
+      viewport: capture.payload.viewport,
     };
+    const urlMatches = matchesUrlPredicates(
+      typeof capture.payload.url === 'string' ? capture.payload.url : undefined,
+      {
+        exactUrl: wait.exactUrl,
+        urlContains: wait.urlContains,
+        urlRegex: wait.urlRegex,
+      },
+    );
+    if (urlMatches && pageReadyStateMatches(capture.payload.readyState, expectedState)) {
+      return {
+        waitKind: 'load_state',
+        matched: true,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        timeoutMs,
+        pollIntervalMs,
+        evidence: {
+          state: expectedState,
+          page: lastPage,
+        },
+      };
+    }
+    await sleep(pollIntervalMs);
+  }
+
+  return {
+    waitKind: 'load_state',
+    matched: false,
+    waitedMs: Date.now() - startedAt,
+    attempts,
+    timeoutMs,
+    pollIntervalMs,
+    evidence: {
+      state: expectedState,
+      page: lastPage,
+      expected: wait,
+      timeoutDiagnostics: buildWaitTimeoutDiagnostics({
+        waitKind: 'load_state',
+        timeoutMs,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        pollIntervalMs,
+        matcherSummary: {
+          state: expectedState,
+          exactUrl: wait.exactUrl,
+          urlContains: wait.urlContains,
+          urlRegex: wait.urlRegex,
+        },
+        lastObserved: lastPage,
+      }),
+    },
+    error: {
+      code: 'load_state_wait_timeout',
+      message: `Timed out waiting for page load state "${expectedState}".`,
+    },
+  };
+}
+
+async function waitForSelectorStateCondition(
+  sessionId: string,
+  wait: z.infer<typeof AutomationWaitSelectorStateSchema>,
+  captureClient: CaptureCommandClient,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, 5_000, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const pollIntervalMs = resolveDurationMs(wait.pollIntervalMs, 100, 5_000);
+  const expectedState = wait.state ?? 'visible';
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let attempts = 0;
+  let lastState: Record<string, unknown> | undefined;
+
+  while (Date.now() <= deadline) {
+    attempts += 1;
+    lastState = await captureSelectorState(captureClient, sessionId, wait.selector, wait.frameId);
+    if (selectorStateMatches(lastState, expectedState)) {
+      return {
+        waitKind: 'selector_state',
+        matched: true,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        timeoutMs,
+        pollIntervalMs,
+        evidence: {
+          selector: wait.selector,
+          state: expectedState,
+          selectorState: lastState,
+        },
+      };
+    }
+    await sleep(pollIntervalMs);
+  }
+
+  return {
+    waitKind: 'selector_state',
+    matched: false,
+    waitedMs: Date.now() - startedAt,
+    attempts,
+    timeoutMs,
+    pollIntervalMs,
+    evidence: {
+      selector: wait.selector,
+      state: expectedState,
+      selectorState: lastState,
+      timeoutDiagnostics: buildWaitTimeoutDiagnostics({
+        waitKind: 'selector_state',
+        timeoutMs,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        pollIntervalMs,
+        matcherSummary: {
+          selector: wait.selector,
+          state: expectedState,
+          frameId: wait.frameId,
+        },
+        lastObserved: lastState,
+      }),
+    },
+    error: {
+      code: 'selector_state_wait_timeout',
+      message: `Timed out waiting for selector "${wait.selector}" to become ${expectedState}.`,
+    },
+  };
+}
+
+async function waitForConsoleCondition(
+  sessionId: string,
+  wait: z.infer<typeof AutomationWaitConsoleSchema>,
+  captureClient: CaptureCommandClient,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, 5_000, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const pollIntervalMs = resolveDurationMs(wait.pollIntervalMs, 100, 5_000);
+  const levels = resolveLiveConsoleLevels(wait.levels);
+  const contains = normalizeOptionalString(wait.contains);
+  const sinceTs = resolveAutomationWaitSinceTs(wait.sinceTs);
+  const includeRuntimeErrors = wait.includeRuntimeErrors !== false;
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let attempts = 0;
+  let lastLogs: Record<string, unknown>[] = [];
+
+  while (Date.now() <= deadline) {
+    attempts += 1;
+    const capture = await executeLiveCapture(
+      captureClient,
+      sessionId,
+      'CAPTURE_GET_LIVE_CONSOLE_LOGS',
+      {
+        levels,
+        contains,
+        sinceTs,
+        includeRuntimeErrors,
+        limit: 10,
+      },
+      3_000,
+    );
+    const payload = ensureCaptureSuccess(capture, sessionId);
+    lastLogs = asRecordArray(payload.logs);
+    if (lastLogs.length > 0) {
+      return {
+        waitKind: 'console',
+        matched: true,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        timeoutMs,
+        pollIntervalMs,
+        evidence: {
+          filters: { levels, contains, sinceTs, includeRuntimeErrors },
+          logs: lastLogs.slice(0, 5).map((log) => mapLiveConsoleLogRecord(log, 'compact')),
+        },
+      };
+    }
+    await sleep(pollIntervalMs);
+  }
+
+  return {
+    waitKind: 'console',
+    matched: false,
+    waitedMs: Date.now() - startedAt,
+    attempts,
+    timeoutMs,
+    pollIntervalMs,
+    evidence: {
+      filters: { levels, contains, sinceTs, includeRuntimeErrors },
+      sampledLogs: lastLogs.slice(0, 5).map((log) => mapLiveConsoleLogRecord(log, 'compact')),
+      timeoutDiagnostics: buildWaitTimeoutDiagnostics({
+        waitKind: 'console',
+        timeoutMs,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        pollIntervalMs,
+        matcherSummary: { levels, contains, sinceTs, includeRuntimeErrors },
+        lastObserved: lastLogs[0],
+        candidateCount: lastLogs.length,
+        sampledCandidates: lastLogs.slice(0, 5).map((log) => mapLiveConsoleLogRecord(log, 'compact')),
+      }),
+    },
+    error: {
+      code: 'console_wait_timeout',
+      message: 'Timed out waiting for a matching live console log.',
+    },
+  };
+}
+
+async function waitForDialogCondition(
+  sessionId: string,
+  wait: z.infer<typeof AutomationWaitDialogSchema>,
+  captureClient: CaptureCommandClient,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, 5_000, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const startedAt = Date.now();
+  const capture = await executeLiveCapture(
+    captureClient,
+    sessionId,
+    'CAPTURE_WAIT_FOR_DIALOG',
+    {
+      type: wait.type,
+      messageContains: wait.messageContains,
+      urlContains: wait.urlContains,
+      action: wait.action,
+      promptText: wait.promptText,
+      tabId: wait.tabId,
+      timeoutMs,
+    },
+    timeoutMs + 2_000,
+  );
+  const payload = ensureCaptureSuccess(capture, sessionId);
+  const matched = payload.matched === true;
+
+  return {
+    waitKind: 'dialog',
+    matched,
+    waitedMs: Date.now() - startedAt,
+    attempts: 1,
+    timeoutMs,
+    pollIntervalMs: timeoutMs,
+    evidence: {
+      filters: {
+        type: wait.type,
+        messageContains: wait.messageContains,
+        urlContains: wait.urlContains,
+        action: wait.action,
+        tabId: wait.tabId,
+      },
+      dialog: matched ? payload : undefined,
+      expected: matched ? undefined : payload.expected ?? wait,
+      timeoutDiagnostics: matched
+        ? undefined
+        : buildWaitTimeoutDiagnostics({
+            waitKind: 'dialog',
+            timeoutMs,
+            waitedMs: Date.now() - startedAt,
+            attempts: 1,
+            pollIntervalMs: timeoutMs,
+            matcherSummary: {
+              type: wait.type,
+              messageContains: wait.messageContains,
+              urlContains: wait.urlContains,
+              action: wait.action,
+              tabId: wait.tabId,
+            },
+            lastObserved: payload.lastObserved,
+            candidateCount: typeof payload.observedCount === 'number' ? payload.observedCount : undefined,
+          }),
+    },
+    error: matched
+      ? undefined
+      : {
+          code: 'dialog_wait_timeout',
+          message: 'Timed out waiting for a matching JavaScript dialog.',
+      },
+  };
+}
+
+async function waitForStableLayoutCondition(
+  sessionId: string,
+  wait: z.infer<typeof AutomationWaitStableLayoutSchema>,
+  captureClient: CaptureCommandClient,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, 5_000, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const stableMs = wait.stableMs;
+  const pollIntervalMs = resolveDurationMs(wait.pollIntervalMs, 100, 5_000);
+  const startedAt = Date.now();
+  const capture = await executeLiveCapture(
+    captureClient,
+    sessionId,
+    'CAPTURE_WAIT_FOR_STABLE_LAYOUT',
+    {
+      selector: wait.selector,
+      stableMs,
+      tabId: wait.tabId,
+      timeoutMs,
+      pollIntervalMs,
+    },
+    timeoutMs + 2_000,
+  );
+  const payload = ensureCaptureSuccess(capture, sessionId);
+  const matched = payload.matched === true;
+
+  return {
+    waitKind: 'stable_layout',
+    matched,
+    waitedMs: Date.now() - startedAt,
+    attempts: 1,
+    timeoutMs,
+    pollIntervalMs,
+    evidence: {
+      filters: {
+        selector: wait.selector,
+        stableMs,
+        tabId: wait.tabId,
+      },
+      layout: payload,
+      timeoutDiagnostics: matched
+        ? undefined
+        : buildWaitTimeoutDiagnostics({
+            waitKind: 'stable_layout',
+            timeoutMs,
+            waitedMs: Date.now() - startedAt,
+            attempts: typeof payload.attempts === 'number' ? payload.attempts : 1,
+            pollIntervalMs,
+            matcherSummary: {
+              selector: wait.selector,
+              stableMs,
+              tabId: wait.tabId,
+            },
+            lastObserved: payload.snapshot,
+          }),
+    },
+    error: matched
+      ? undefined
+      : {
+          code: 'stable_layout_wait_timeout',
+          message: 'Timed out waiting for layout to stay stable.',
+        },
+  };
+}
+
+function mapNavigationWaitEvent(row: EventRow): Record<string, unknown> {
+  const payload = readJsonPayload(row.payload_json);
+  return {
+    eventId: row.event_id,
+    sessionId: row.session_id,
+    timestamp: row.ts,
+    tabId: row.tab_id ?? undefined,
+    origin: row.origin ?? undefined,
+    url: resolveLastUrl(payload),
+    from: typeof payload.from === 'string' ? payload.from : undefined,
+    trigger: typeof payload.trigger === 'string' ? payload.trigger : undefined,
+    payload,
+  };
+}
+
+function navigationEventMatches(row: EventRow, wait: z.infer<typeof AutomationWaitNavigationSchema>): boolean {
+  const payload = readJsonPayload(row.payload_json);
+  const toUrl = resolveLastUrl(payload);
+  const fromUrl = typeof payload.from === 'string' ? payload.from : undefined;
+  const trigger = typeof payload.trigger === 'string' ? payload.trigger : undefined;
+
+  if (!matchesUrlPredicates(toUrl, {
+    exactUrl: wait.exactUrl,
+    urlContains: wait.urlContains,
+    urlRegex: wait.urlRegex,
+  })) {
+    return false;
+  }
+
+  if (wait.fromUrlContains || wait.fromUrlRegex) {
+    if (!matchesUrlPredicates(fromUrl, {
+      urlContains: wait.fromUrlContains,
+      urlRegex: wait.fromUrlRegex,
+      regexFieldName: 'fromUrlRegex',
+    })) {
+      return false;
+    }
+  }
+
+  if (wait.trigger && trigger !== wait.trigger) {
+    return false;
+  }
+
+  return true;
+}
+
+function queryNavigationWaitCandidates(
+  db: Database,
+  options: {
+    sessionId: string;
+    sinceTs: number;
+    tabId?: number;
+  },
+): EventRow[] {
+  const where: string[] = ['session_id = ?', "type = 'nav'", 'ts >= ?'];
+  const params: unknown[] = [options.sessionId, options.sinceTs];
+  if (options.tabId !== undefined) {
+    where.push('tab_id = ?');
+    params.push(options.tabId);
+  }
+
+  return db.prepare(
+    `SELECT event_id, session_id, ts, type, payload_json, tab_id, origin
+     FROM events
+     WHERE ${where.join(' AND ')}
+     ORDER BY ts ASC
+     LIMIT 200`
+  ).all(...params) as EventRow[];
+}
+
+async function waitForNavigationCondition(
+  sessionId: string,
+  wait: z.infer<typeof AutomationWaitNavigationSchema>,
+  db: Database,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, 5_000, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const pollIntervalMs = resolveDurationMs(wait.pollIntervalMs, 100, 5_000);
+  const sinceTs = resolveAutomationWaitSinceTs(wait.sinceTs);
+  const tabId = resolveOptionalTabId(wait.tabId);
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let attempts = 0;
+  let lastEvents: EventRow[] = [];
+
+  while (Date.now() <= deadline) {
+    attempts += 1;
+    lastEvents = queryNavigationWaitCandidates(db, { sessionId, sinceTs, tabId });
+    const matched = lastEvents.find((row) => navigationEventMatches(row, wait));
+    if (matched) {
+      return {
+        waitKind: 'navigation',
+        matched: true,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        timeoutMs,
+        pollIntervalMs,
+        evidence: {
+          filters: {
+            urlContains: wait.urlContains,
+            urlRegex: wait.urlRegex,
+            exactUrl: wait.exactUrl,
+            fromUrlContains: wait.fromUrlContains,
+            fromUrlRegex: wait.fromUrlRegex,
+            trigger: wait.trigger,
+            sinceTs,
+            tabId,
+          },
+          navigation: mapNavigationWaitEvent(matched),
+        },
+      };
+    }
+    await sleep(pollIntervalMs);
+  }
+
+  return {
+    waitKind: 'navigation',
+    matched: false,
+    waitedMs: Date.now() - startedAt,
+    attempts,
+    timeoutMs,
+    pollIntervalMs,
+    evidence: {
+      filters: {
+        urlContains: wait.urlContains,
+        urlRegex: wait.urlRegex,
+        exactUrl: wait.exactUrl,
+        fromUrlContains: wait.fromUrlContains,
+        fromUrlRegex: wait.fromUrlRegex,
+        trigger: wait.trigger,
+        sinceTs,
+        tabId,
+      },
+      sampledEvents: lastEvents.slice(0, 5).map((row) => mapNavigationWaitEvent(row)),
+      timeoutDiagnostics: buildWaitTimeoutDiagnostics({
+        waitKind: 'navigation',
+        timeoutMs,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        pollIntervalMs,
+        matcherSummary: {
+          urlContains: wait.urlContains,
+          urlRegex: wait.urlRegex,
+          exactUrl: wait.exactUrl,
+          fromUrlContains: wait.fromUrlContains,
+          fromUrlRegex: wait.fromUrlRegex,
+          trigger: wait.trigger,
+          sinceTs,
+          tabId,
+        },
+        lastObserved: lastEvents.length > 0 ? mapNavigationWaitEvent(lastEvents[lastEvents.length - 1] as EventRow) : undefined,
+        candidateCount: lastEvents.length,
+        sampledCandidates: lastEvents.slice(0, 5).map((row) => mapNavigationWaitEvent(row)),
+      }),
+    },
+    error: {
+      code: 'navigation_wait_timeout',
+      message: 'Timed out waiting for a matching navigation event.',
+    },
+  };
+}
+
+async function waitForNavigationLifecycleCondition(
+  sessionId: string,
+  wait: z.infer<typeof AutomationWaitNavigationLifecycleSchema>,
+  captureClient: CaptureCommandClient,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, 5_000, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const startedAt = Date.now();
+  const capture = await executeLiveCapture(
+    captureClient,
+    sessionId,
+    'CAPTURE_WAIT_FOR_NAVIGATION_LIFECYCLE',
+    {
+      state: wait.state,
+      urlContains: wait.urlContains,
+      urlRegex: wait.urlRegex,
+      exactUrl: wait.exactUrl,
+      tabId: wait.tabId,
+      timeoutMs,
+    },
+    timeoutMs + 2_000,
+  );
+  const payload = ensureCaptureSuccess(capture, sessionId);
+  const matched = payload.matched === true;
+
+  return {
+    waitKind: 'navigation_lifecycle',
+    matched,
+    waitedMs: Date.now() - startedAt,
+    attempts: 1,
+    timeoutMs,
+    pollIntervalMs: timeoutMs,
+    evidence: {
+      filters: {
+        state: wait.state,
+        urlContains: wait.urlContains,
+        urlRegex: wait.urlRegex,
+        exactUrl: wait.exactUrl,
+        tabId: wait.tabId,
+      },
+      lifecycle: matched ? payload : undefined,
+      expected: matched ? undefined : payload.expected ?? wait,
+      timeoutDiagnostics: matched
+        ? undefined
+        : buildWaitTimeoutDiagnostics({
+            waitKind: 'navigation_lifecycle',
+            timeoutMs,
+            waitedMs: Date.now() - startedAt,
+            attempts: 1,
+            pollIntervalMs: timeoutMs,
+            matcherSummary: {
+              state: wait.state,
+              urlContains: wait.urlContains,
+              urlRegex: wait.urlRegex,
+              exactUrl: wait.exactUrl,
+              tabId: wait.tabId,
+            },
+            lastObserved: payload.lastObserved,
+            candidateCount: typeof payload.observedEventCount === 'number' ? payload.observedEventCount : undefined,
+          }),
+    },
+    error: matched
+      ? undefined
+      : {
+          code: 'navigation_lifecycle_wait_timeout',
+          message: 'Timed out waiting for a matching navigation lifecycle event.',
+        },
+  };
+}
+
+async function waitForDownloadCondition(
+  sessionId: string,
+  wait: z.infer<typeof AutomationWaitDownloadSchema>,
+  captureClient: CaptureCommandClient,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, 5_000, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const startedAt = Date.now();
+  const capture = await executeLiveCapture(
+    captureClient,
+    sessionId,
+    'CAPTURE_WAIT_FOR_DOWNLOAD',
+    {
+      urlContains: wait.urlContains,
+      urlRegex: wait.urlRegex,
+      exactUrl: wait.exactUrl,
+      filenameContains: wait.filenameContains,
+      filenameRegex: wait.filenameRegex,
+      state: wait.state,
+      tabId: wait.tabId,
+      timeoutMs,
+    },
+    timeoutMs + 2_000,
+  );
+  const payload = ensureCaptureSuccess(capture, sessionId);
+  const matched = payload.matched === true;
+
+  return {
+    waitKind: 'download',
+    matched,
+    waitedMs: Date.now() - startedAt,
+    attempts: 1,
+    timeoutMs,
+    pollIntervalMs: timeoutMs,
+    evidence: {
+      filters: {
+        urlContains: wait.urlContains,
+        urlRegex: wait.urlRegex,
+        exactUrl: wait.exactUrl,
+        filenameContains: wait.filenameContains,
+        filenameRegex: wait.filenameRegex,
+        state: wait.state,
+        tabId: wait.tabId,
+      },
+      download: matched ? payload : undefined,
+      expected: matched ? undefined : payload.expected ?? wait,
+      timeoutDiagnostics: matched
+        ? undefined
+        : buildWaitTimeoutDiagnostics({
+            waitKind: 'download',
+            timeoutMs,
+            waitedMs: Date.now() - startedAt,
+            attempts: 1,
+            pollIntervalMs: timeoutMs,
+            matcherSummary: {
+              urlContains: wait.urlContains,
+              urlRegex: wait.urlRegex,
+              exactUrl: wait.exactUrl,
+              filenameContains: wait.filenameContains,
+              filenameRegex: wait.filenameRegex,
+              state: wait.state,
+              tabId: wait.tabId,
+            },
+            lastObserved: payload.lastObserved ?? payload.lastMatchedDownload,
+            candidateCount: typeof payload.observedEventCount === 'number' ? payload.observedEventCount : undefined,
+          }),
+    },
+    error: matched
+      ? undefined
+      : {
+          code: 'download_wait_timeout',
+          message: 'Timed out waiting for a matching download.',
+        },
+  };
+}
+
+async function waitForPopupCondition(
+  sessionId: string,
+  wait: z.infer<typeof AutomationWaitPopupSchema>,
+  captureClient: CaptureCommandClient,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, 5_000, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const startedAt = Date.now();
+  const capture = await executeLiveCapture(
+    captureClient,
+    sessionId,
+    'CAPTURE_WAIT_FOR_POPUP',
+    {
+      urlContains: wait.urlContains,
+      urlRegex: wait.urlRegex,
+      exactUrl: wait.exactUrl,
+      openerTabId: wait.openerTabId,
+      timeoutMs,
+    },
+    timeoutMs + 2_000,
+  );
+  const payload = ensureCaptureSuccess(capture, sessionId);
+  const matched = payload.matched === true;
+
+  return {
+    waitKind: 'popup',
+    matched,
+    waitedMs: Date.now() - startedAt,
+    attempts: 1,
+    timeoutMs,
+    pollIntervalMs: timeoutMs,
+    evidence: {
+      filters: {
+        urlContains: wait.urlContains,
+        urlRegex: wait.urlRegex,
+        exactUrl: wait.exactUrl,
+        openerTabId: wait.openerTabId,
+      },
+      popup: matched ? payload : undefined,
+      expected: matched ? undefined : payload.expected ?? wait,
+      timeoutDiagnostics: matched
+        ? undefined
+        : buildWaitTimeoutDiagnostics({
+            waitKind: 'popup',
+            timeoutMs,
+            waitedMs: Date.now() - startedAt,
+            attempts: 1,
+            pollIntervalMs: timeoutMs,
+            matcherSummary: {
+              urlContains: wait.urlContains,
+              urlRegex: wait.urlRegex,
+              exactUrl: wait.exactUrl,
+              openerTabId: wait.openerTabId,
+            },
+            lastObserved: payload.lastObserved,
+            candidateCount: typeof payload.observedPopupCount === 'number' ? payload.observedPopupCount : undefined,
+            sampledCandidates: Array.isArray(payload.pendingTabIds) ? payload.pendingTabIds : undefined,
+          }),
+    },
+    error: matched
+      ? undefined
+      : {
+          code: 'popup_wait_timeout',
+          message: 'Timed out waiting for a matching popup tab.',
+        },
+  };
+}
+
+type AutomationNetworkWaitSpec =
+  | z.infer<typeof AutomationWaitRequestSchema>
+  | z.infer<typeof AutomationWaitResponseSchema>;
+
+function normalizeNetworkWaitFilters(wait: AutomationNetworkWaitSpec): Record<string, unknown> {
+  const responseWait = wait.waitKind === 'response' ? wait as z.infer<typeof AutomationWaitResponseSchema> : undefined;
+  return {
+    urlContains: normalizeOptionalString(wait.urlContains),
+    urlRegex: normalizeOptionalString(wait.urlRegex),
+    exactUrl: normalizeOptionalString(wait.exactUrl),
+    method: normalizeHttpMethod(wait.method),
+    traceId: normalizeOptionalString(wait.traceId),
+    initiator: normalizeOptionalString(wait.initiator),
+    requestContentType: normalizeOptionalString(wait.requestContentType),
+    responseContentType: normalizeOptionalString(responseWait?.responseContentType),
+    statusIn: responseWait ? normalizeStatusIn(responseWait.statusIn) : [],
+    statusGte: responseWait?.statusGte,
+    statusLt: responseWait?.statusLt,
+    errorType: normalizeOptionalString(responseWait?.errorType),
+    sinceTs: resolveAutomationWaitSinceTs(wait.sinceTs),
+    tabId: resolveOptionalTabId(wait.tabId),
+    includeBodies: wait.includeBodies === true,
+  };
+}
+
+function queryNetworkWaitCandidates(
+  db: Database,
+  sessionId: string,
+  filters: Record<string, unknown>,
+): NetworkCallRow[] {
+  const where: string[] = ['session_id = ?', 'ts_start >= ?'];
+  const params: unknown[] = [sessionId, filters.sinceTs];
+  if (filters.exactUrl) {
+    where.push('url = ?');
+    params.push(filters.exactUrl);
+  } else if (filters.urlContains) {
+    where.push('url LIKE ?');
+    params.push(`%${filters.urlContains}%`);
+  }
+  if (filters.method) {
+    where.push('method = ?');
+    params.push(filters.method);
+  }
+  if (filters.traceId) {
+    where.push('trace_id = ?');
+    params.push(filters.traceId);
+  }
+  if (filters.initiator) {
+    where.push('initiator = ?');
+    params.push(filters.initiator);
+  }
+  if (filters.requestContentType) {
+    where.push('request_content_type LIKE ?');
+    params.push(`%${filters.requestContentType}%`);
+  }
+  if (filters.responseContentType) {
+    where.push('response_content_type LIKE ?');
+    params.push(`%${filters.responseContentType}%`);
+  }
+  const statusIn = Array.isArray(filters.statusIn) ? filters.statusIn : [];
+  if (statusIn.length > 0) {
+    where.push(`status IN (${statusIn.map(() => '?').join(', ')})`);
+    params.push(...statusIn);
+  }
+  if (typeof filters.statusGte === 'number') {
+    where.push('status >= ?');
+    params.push(filters.statusGte);
+  }
+  if (typeof filters.statusLt === 'number') {
+    where.push('status < ?');
+    params.push(filters.statusLt);
+  }
+  if (filters.tabId !== undefined) {
+    where.push('tab_id = ?');
+    params.push(filters.tabId);
+  }
+
+  return db.prepare(
+    `SELECT ${NETWORK_CALL_SELECT_COLUMNS}
+     FROM network
+     WHERE ${where.join(' AND ')}
+     ORDER BY ts_start ASC
+     LIMIT 200`
+  ).all(...params) as NetworkCallRow[];
+}
+
+function networkCallMatchesFilters(row: NetworkCallRow, filters: Record<string, unknown>): boolean {
+  if (!matchesUrlPredicates(row.url, {
+    exactUrl: typeof filters.exactUrl === 'string' ? filters.exactUrl : undefined,
+    urlContains: typeof filters.urlContains === 'string' ? filters.urlContains : undefined,
+    urlRegex: typeof filters.urlRegex === 'string' ? filters.urlRegex : undefined,
+  })) {
+    return false;
+  }
+
+  if (typeof filters.errorType === 'string' && classifyNetworkFailure(row.status, row.error_class) !== filters.errorType) {
+    return false;
+  }
+
+  return true;
+}
+
+async function waitForNetworkMatchCondition(
+  sessionId: string,
+  wait: AutomationNetworkWaitSpec,
+  db: Database,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, DEFAULT_NETWORK_POLL_TIMEOUT_MS, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const pollIntervalMs = resolveDurationMs(wait.pollIntervalMs, DEFAULT_NETWORK_POLL_INTERVAL_MS, 5_000);
+  const filters = normalizeNetworkWaitFilters(wait);
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let attempts = 0;
+  let lastCalls: NetworkCallRow[] = [];
+
+  while (Date.now() <= deadline) {
+    attempts += 1;
+    lastCalls = queryNetworkWaitCandidates(db, sessionId, filters);
+    const matched = lastCalls.find((row) => networkCallMatchesFilters(row, filters));
+    if (matched) {
+      return {
+        waitKind: wait.waitKind,
+        matched: true,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        timeoutMs,
+        pollIntervalMs,
+        evidence: {
+          filters,
+          call: mapNetworkCallRecord(matched, filters.includeBodies === true),
+        },
+      };
+    }
+
+    await sleep(pollIntervalMs);
+  }
+
+  return {
+    waitKind: wait.waitKind,
+    matched: false,
+    waitedMs: Date.now() - startedAt,
+    attempts,
+    timeoutMs,
+    pollIntervalMs,
+    evidence: {
+      filters,
+      sampledCalls: lastCalls.slice(0, 5).map((row) => mapNetworkCallRecord(row, false)),
+      timeoutDiagnostics: buildWaitTimeoutDiagnostics({
+        waitKind: wait.waitKind,
+        timeoutMs,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        pollIntervalMs,
+        matcherSummary: filters,
+        lastObserved: lastCalls.length > 0 ? mapNetworkCallRecord(lastCalls[lastCalls.length - 1] as NetworkCallRow, false) : undefined,
+        candidateCount: lastCalls.length,
+        sampledCandidates: lastCalls.slice(0, 5).map((row) => mapNetworkCallRecord(row, false)),
+      }),
+    },
+    error: {
+      code: wait.waitKind === 'request' ? 'request_wait_timeout' : 'response_wait_timeout',
+      message: `Timed out waiting for a matching ${wait.waitKind}.`,
+    },
+  };
+}
+
+function queryRecentNetworkActivity(
+  db: Database,
+  options: {
+    sessionId: string;
+    sinceTs: number;
+    urlContains?: string;
+    method?: string;
+    tabId?: number;
+  },
+): NetworkCallRow[] {
+  const where: string[] = ['session_id = ?', 'ts_start >= ?'];
+  const params: unknown[] = [options.sessionId, options.sinceTs];
+  if (options.urlContains) {
+    where.push('url LIKE ?');
+    params.push(`%${options.urlContains}%`);
+  }
+  if (options.method) {
+    where.push('method = ?');
+    params.push(options.method);
+  }
+  if (options.tabId !== undefined) {
+    where.push('tab_id = ?');
+    params.push(options.tabId);
+  }
+
+  return db.prepare(
+    `SELECT ${NETWORK_CALL_SELECT_COLUMNS}
+     FROM network
+     WHERE ${where.join(' AND ')}
+     ORDER BY ts_start DESC
+     LIMIT 10`
+  ).all(...params) as NetworkCallRow[];
+}
+
+async function waitForNetworkQuietCondition(
+  sessionId: string,
+  wait: z.infer<typeof AutomationWaitNetworkQuietSchema>,
+  db: Database,
+): Promise<AutomationWaitResult> {
+  const timeoutMs = resolveTimeoutMs(wait.timeoutMs, DEFAULT_NETWORK_POLL_TIMEOUT_MS, MAX_NETWORK_POLL_TIMEOUT_MS);
+  const pollIntervalMs = resolveDurationMs(wait.pollIntervalMs, DEFAULT_NETWORK_POLL_INTERVAL_MS, 5_000);
+  const quietMs = resolveDurationMs(wait.quietMs, 500, 10_000);
+  const urlContains = normalizeOptionalString(wait.urlContains);
+  const method = normalizeHttpMethod(wait.method);
+  const tabId = resolveOptionalTabId(wait.tabId);
+  const startedAt = Date.now();
+  const deadline = startedAt + timeoutMs;
+  let attempts = 0;
+  let lastActivityAt = startedAt;
+  let lastCalls: NetworkCallRow[] = [];
+
+  while (Date.now() <= deadline) {
+    attempts += 1;
+    const rows = queryRecentNetworkActivity(db, {
+      sessionId,
+      sinceTs: lastActivityAt + 1,
+      urlContains,
+      method,
+      tabId,
+    });
+    if (rows.length > 0) {
+      lastCalls = rows;
+      lastActivityAt = Math.max(...rows.map((row) => row.ts_start), Date.now());
+    }
+
+    if (Date.now() - lastActivityAt >= quietMs) {
+      return {
+        waitKind: 'network_quiet',
+        matched: true,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        timeoutMs,
+        pollIntervalMs,
+        evidence: {
+          quietMs,
+          filters: { urlContains, method, tabId },
+          lastActivityAt,
+          sampledCalls: lastCalls.slice(0, 5).map((row) => mapNetworkCallRecord(row, false)),
+        },
+      };
+    }
+
+    await sleep(pollIntervalMs);
+  }
+
+  return {
+    waitKind: 'network_quiet',
+    matched: false,
+    waitedMs: Date.now() - startedAt,
+    attempts,
+    timeoutMs,
+    pollIntervalMs,
+    evidence: {
+      quietMs,
+      filters: { urlContains, method, tabId },
+      lastActivityAt,
+      sampledCalls: lastCalls.slice(0, 5).map((row) => mapNetworkCallRecord(row, false)),
+      timeoutDiagnostics: buildWaitTimeoutDiagnostics({
+        waitKind: 'network_quiet',
+        timeoutMs,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        pollIntervalMs,
+        matcherSummary: { quietMs, urlContains, method, tabId },
+        lastObserved: lastCalls.length > 0 ? mapNetworkCallRecord(lastCalls[0] as NetworkCallRow, false) : undefined,
+        candidateCount: lastCalls.length,
+        sampledCandidates: lastCalls.slice(0, 5).map((row) => mapNetworkCallRecord(row, false)),
+      }),
+    },
+    error: {
+      code: 'network_quiet_timeout',
+      message: `Timed out waiting for ${quietMs}ms of quiet network activity.`,
+    },
+  };
+}
+
+async function runAutomationWait(options: {
+  sessionId: string;
+  wait: AutomationWaitSpec;
+  capturePageState: (
+    sessionId: string,
+    input: ToolInput,
+  ) => Promise<PageStateCaptureResult>;
+  captureClient: CaptureCommandClient;
+  getDb?: () => Database;
+}): Promise<AutomationWaitResult> {
+  switch (options.wait.waitKind) {
+    case 'url':
+      return waitForUrlCondition(options.sessionId, options.wait, options.capturePageState);
+    case 'navigation': {
+      const db = options.getDb?.();
+      if (!db) {
+        throw new Error('navigation waits require database access');
+      }
+      return waitForNavigationCondition(options.sessionId, options.wait, db);
+    }
+    case 'navigation_lifecycle':
+      return waitForNavigationLifecycleCondition(options.sessionId, options.wait, options.captureClient);
+    case 'load_state':
+      return waitForLoadStateCondition(options.sessionId, options.wait, options.capturePageState);
+    case 'selector_state':
+      return waitForSelectorStateCondition(options.sessionId, options.wait, options.captureClient);
+    case 'console':
+      return waitForConsoleCondition(options.sessionId, options.wait, options.captureClient);
+    case 'dialog':
+      return waitForDialogCondition(options.sessionId, options.wait, options.captureClient);
+    case 'stable_layout':
+      return waitForStableLayoutCondition(options.sessionId, options.wait, options.captureClient);
+    case 'download':
+      return waitForDownloadCondition(options.sessionId, options.wait, options.captureClient);
+    case 'popup':
+      return waitForPopupCondition(options.sessionId, options.wait, options.captureClient);
+    case 'network_quiet': {
+      const db = options.getDb?.();
+      if (!db) {
+        throw new Error('network_quiet waits require database access');
+      }
+      return waitForNetworkQuietCondition(options.sessionId, options.wait, db);
+    }
+    case 'request':
+    case 'response': {
+      const db = options.getDb?.();
+      if (!db) {
+        throw new Error(`${options.wait.waitKind} waits require database access`);
+      }
+      return waitForNetworkMatchCondition(options.sessionId, options.wait, db);
+    }
+  }
+}
+
+function getSessionRow(db: Database, sessionId: string): SessionRow | undefined {
+  return db.prepare(`
+    SELECT
+      session_id,
+      created_at,
+      last_seen_at,
+      paused_at,
+      ended_at,
+      tab_id,
+      window_id,
+      url_start,
+      url_last,
+      user_agent,
+      viewport_w,
+      viewport_h,
+      dpr,
+      safe_mode,
+      pinned
+    FROM sessions
+    WHERE session_id = ?
+    LIMIT 1
+  `).get(sessionId) as SessionRow | undefined;
+}
+
+function looksSensitiveText(value: unknown): boolean {
+  return typeof value === 'string'
+    && /(password|passwd|pwd|token|secret|auth|session|email|card|cvv|cvc|ssn|iban|payment|billing)/i.test(value);
+}
+
+function isSensitivePageInput(input: Record<string, unknown>): boolean {
+  const type = typeof input.type === 'string' ? input.type.toLowerCase() : '';
+  return type === 'password'
+    || looksSensitiveText(input.selector)
+    || looksSensitiveText(input.label)
+    || looksSensitiveText(input.name)
+    || looksSensitiveText(input.placeholder)
+    || looksSensitiveText(input.testId);
+}
+
+function collectAutomationPageRisks(payload: Record<string, unknown> | undefined): Record<string, unknown> {
+  if (!payload) {
+    return {
+      sensitiveInputs: [],
+      frameCount: 0,
+      crossOriginFrameCount: 0,
+    };
+  }
+
+  const inputs = asRecordArray(payload.inputs);
+  const frames = asRecordArray(payload.frames);
+  const sensitiveInputs = inputs
+    .filter(isSensitivePageInput)
+    .slice(0, 8)
+    .map((input) => ({
+      selector: input.selector,
+      type: input.type,
+      label: input.label,
+      name: input.name,
+      placeholder: input.placeholder,
+      frameId: input.frameId,
+      frameUrl: input.frameUrl,
+    }));
+  const crossOriginFrames = frames
+    .filter((frame) => frame.sameOrigin === false || frame.accessible === false || frame.crossOrigin === true)
+    .slice(0, 8)
+    .map((frame) => ({
+      frameId: frame.frameId,
+      url: frame.url ?? frame.frameUrl,
+      title: frame.title ?? frame.frameTitle,
+      sameOrigin: frame.sameOrigin,
+      accessible: frame.accessible,
+    }));
+
+  return {
+    sensitiveInputs,
+    sensitiveInputCount: sensitiveInputs.length,
+    frameCount: frames.length,
+    crossOriginFrameCount: crossOriginFrames.length,
+    crossOriginFrames,
+  };
+}
+
+async function buildAutomationFlowPreflight(options: {
+  sessionId: string;
+  input: ToolInput;
+  capturePageState: (
+    sessionId: string,
+    input: ToolInput,
+  ) => Promise<PageStateCaptureResult>;
+  getDb?: () => Database;
+  getSessionConnectionState?: (sessionId: string) => SessionConnectionLookupResult | undefined;
+}): Promise<Record<string, unknown>> {
+  const blockers: Array<Record<string, unknown>> = [];
+  const warnings: Array<Record<string, unknown>> = [];
+  const includePageState = options.input.includePageState !== false;
+  const expectedUrlContains = normalizeOptionalString(options.input.expectedUrlContains);
+  const requireSensitiveAutomation = options.input.requireSensitiveAutomation === true;
+  const plannedActions = Array.isArray(options.input.plannedActions)
+    ? options.input.plannedActions.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+    : [];
+  const db = options.getDb?.();
+  const session = db ? getSessionRow(db, options.sessionId) : undefined;
+  const sessionState = options.getSessionConnectionState?.(options.sessionId);
+  const hasLiveConnectionLookup = typeof options.getSessionConnectionState === 'function';
+  const scope = classifySessionUrl(session?.url_last ?? undefined);
+  const liveConnection = session
+    ? buildLiveConnectionRecord(session, scope, sessionState)
+    : {
+        connected: sessionState?.connected === true,
+        status: sessionState?.connected === true ? 'connected' : 'unknown',
+        recommendedForLiveCapture: false,
+      };
+
+  if (!db) {
+    warnings.push({
+      code: 'DB_UNAVAILABLE',
+      severity: 'warning',
+      source: 'server',
+      message: 'Database access was not available; session history checks were skipped.',
+    });
+  }
+
+  if (!session) {
+    blockers.push({
+      code: 'SESSION_NOT_FOUND',
+      severity: 'error',
+      source: 'session',
+      message: `Session not found: ${options.sessionId}`,
+    });
+  } else {
+    const status = getSessionStatus(session);
+    if (status === 'paused') {
+      blockers.push({
+        code: 'SESSION_PAUSED',
+        severity: 'error',
+        source: 'session',
+        message: 'Resume the session before running an automation flow.',
+      });
+    }
+    if (status === 'ended') {
+      blockers.push({
+        code: 'SESSION_ENDED',
+        severity: 'error',
+        source: 'session',
+        message: 'Start a new session before running an automation flow.',
+      });
+    }
+    if (scope.kind === 'likely_iframe_noise') {
+      blockers.push({
+        code: 'SESSION_SCOPE_NOISE',
+        severity: 'error',
+        source: 'session',
+        message: 'The selected session appears to be bound to iframe/ad traffic rather than the app surface.',
+      });
+    }
+    if (scope.kind === 'top_level_page' && scope.isLocalhost !== true) {
+      warnings.push({
+        code: 'PRODUCTION_OR_REMOTE_ORIGIN',
+        severity: 'warning',
+        source: 'session',
+        message: 'The current session URL is remote/production-like. Keep the flow scoped and avoid destructive actions.',
+        origin: scope.origin,
+      });
+    }
+    if (expectedUrlContains && !String(session.url_last ?? '').includes(expectedUrlContains)) {
+      blockers.push({
+        code: 'EXPECTED_URL_MISMATCH',
+        severity: 'error',
+        source: 'session',
+        message: `Current session URL does not include "${expectedUrlContains}".`,
+        currentUrl: session.url_last,
+      });
+    }
+  }
+
+  if (hasLiveConnectionLookup && (!sessionState || sessionState.connected !== true)) {
+    blockers.push({
+      code: LIVE_SESSION_DISCONNECTED_CODE,
+      severity: 'error',
+      source: 'connection',
+      message: 'The session is not currently connected to a live extension target.',
+      disconnectedAt: sessionState?.disconnectedAt,
+      disconnectReason: sessionState?.disconnectReason,
+    });
+  }
+
+  let pageCapture: PageStateCaptureResult | undefined;
+  if (includePageState && blockers.length === 0) {
+    try {
+      pageCapture = await options.capturePageState(options.sessionId, {
+        includeButtons: true,
+        includeLinks: true,
+        includeInputs: true,
+        includeModals: true,
+        maxItems: resolveLimit(options.input.maxItems, 40),
+        maxTextLength: resolveDurationMs(options.input.maxTextLength, 80, 200),
+      });
+    } catch (error) {
+      blockers.push({
+        code: isLiveSessionDisconnectedError(error) ? LIVE_SESSION_DISCONNECTED_CODE : 'PAGE_STATE_CAPTURE_FAILED',
+        severity: 'error',
+        source: 'page-state',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  const pageRisks = collectAutomationPageRisks(pageCapture?.payload);
+  const sensitiveInputs = Array.isArray(pageRisks.sensitiveInputs) ? pageRisks.sensitiveInputs : [];
+  const hasInputLikeAction = plannedActions.some((action) => ['input', 'type', 'clear', 'select_option', 'press_key'].includes(action));
+  if (sensitiveInputs.length > 0 && (requireSensitiveAutomation || hasInputLikeAction)) {
+    warnings.push({
+      code: 'SENSITIVE_FIELD_AUTOMATION_RISK',
+      severity: 'warning',
+      source: 'page-state',
+      message: 'Sensitive-looking fields are present. The extension sensitive-field opt-in may be required before input-like actions.',
+      count: sensitiveInputs.length,
+      sampledInputs: sensitiveInputs,
+    });
+  }
+  if (typeof pageRisks.crossOriginFrameCount === 'number' && pageRisks.crossOriginFrameCount > 0) {
+    warnings.push({
+      code: 'CROSS_ORIGIN_FRAME_PRESENT',
+      severity: 'warning',
+      source: 'page-state',
+      message: 'Cross-origin or inaccessible frames are present. Automation inside those frames may be diagnostic-only.',
+      count: pageRisks.crossOriginFrameCount,
+      frames: pageRisks.crossOriginFrames,
+    });
+  }
+
+  const ready = blockers.length === 0;
+  return {
+    ready,
+    blockers,
+    warnings,
+    checks: {
+      sessionFound: Boolean(session),
+      liveConnected: sessionState?.connected === true || (hasLiveConnectionLookup ? false : undefined),
+      recommendedForLiveCapture: liveConnection.recommendedForLiveCapture,
+      expectedUrlMatched: expectedUrlContains ? blockers.every((blocker) => blocker.code !== 'EXPECTED_URL_MISMATCH') : undefined,
+      pageStateCaptured: pageCapture !== undefined,
+      remoteOrProductionLike: scope.kind === 'top_level_page' && scope.isLocalhost !== true,
+      sensitiveInputCount: sensitiveInputs.length,
+      crossOriginFrameCount: pageRisks.crossOriginFrameCount,
+    },
+    session: session
+      ? {
+          sessionId: session.session_id,
+          status: getSessionStatus(session),
+          tabId: session.tab_id ?? undefined,
+          windowId: session.window_id ?? undefined,
+          urlStart: session.url_start ?? undefined,
+          urlLast: session.url_last ?? undefined,
+          lastSeenAt: resolveSessionLastSeenAt(session, sessionState),
+          safeMode: session.safe_mode === 1,
+        }
+      : undefined,
+    scope,
+    liveConnection,
+    page: pageCapture
+      ? {
+          url: pageCapture.payload.url,
+          title: pageCapture.payload.title,
+          language: pageCapture.payload.language,
+          viewport: pageCapture.payload.viewport,
+          summary: pageCapture.payload.summary,
+        }
+      : undefined,
+    detectedRisks: pageRisks,
+    nextActions: ready
+      ? [{ code: 'RUN_FLOW', message: 'Run the automation flow with bounded waits and failure capture enabled.' }]
+      : blockers.map((blocker) => ({
+          code: String(blocker.code ?? 'FIX_BLOCKER'),
+          message: String(blocker.message ?? 'Resolve this preflight blocker before running the flow.'),
+        })),
+  };
 }
 
 function createWorkflowStepId(step: UIWorkflowStep, index: number): string {
@@ -4030,6 +6498,7 @@ async function captureWorkflowPageState(
   const maxTextLength = mode === 'fast' ? 60 : 80;
   return capturePageState(sessionId, {
     includeButtons: true,
+    includeLinks: true,
     includeInputs: true,
     includeModals: true,
     maxItems,
@@ -4091,6 +6560,22 @@ function resolveWorkflowRecommendedAction(error: { code: string; message: string
   }
   if (error.code === 'page_state_not_matched' || error.code === 'page_state_assertion_failed') {
     return 'inspect_page_state';
+  }
+  if (error.code === 'url_wait_timeout' || error.code === 'navigation_wait_timeout') {
+    return 'inspect_navigation_state';
+  }
+  if (error.code === 'selector_state_wait_timeout') {
+    return 'inspect_selector_state';
+  }
+  if (error.code === 'console_wait_timeout') {
+    return 'inspect_live_console_logs';
+  }
+  if (
+    error.code === 'network_quiet_timeout'
+    || error.code === 'request_wait_timeout'
+    || error.code === 'response_wait_timeout'
+  ) {
+    return 'inspect_network_calls';
   }
 
   return undefined;
@@ -5035,8 +7520,9 @@ export function createV1ToolHandlers(
       };
     },
 
-    list_override_profiles: async () => {
+    list_override_profiles: async (input) => {
       const profiles = buildOverrideProfileRecords();
+      const responseProfile = resolveOverrideResponseProfile(input.responseProfile);
 
       return {
         ...createBaseResponse(),
@@ -5044,7 +7530,8 @@ export function createV1ToolHandlers(
           maxResults: profiles.length,
           truncated: false,
         },
-        profiles,
+        responseProfile,
+        profiles: profiles.map((profile) => serializeOverrideProfile(profile, responseProfile)),
         nextActions: profiles.length > 0
           ? [{ code: 'VALIDATE_PROFILE', message: 'Run validate_override_profile before enabling overrides.' }]
           : [{ code: 'CREATE_PROFILE', message: 'Run create_override_profile to generate a candidate profile.' }],
@@ -5086,6 +7573,8 @@ export function createV1ToolHandlers(
 
       const writeConfig = normalizeOptionalBooleanInput(input.writeConfig, 'writeConfig') ?? false;
       const overwrite = normalizeOptionalBooleanInput(input.overwrite, 'overwrite') ?? false;
+      const responseProfile = resolveOverrideResponseProfile(input.responseProfile);
+      const includeConfigJson = input.includeConfigJson === true || responseProfile === 'full';
       const write: Record<string, unknown> = {
         written: false,
         path: generated.suggestedConfigPath,
@@ -5134,15 +7623,24 @@ export function createV1ToolHandlers(
         warnings: generated.warnings,
         nextActions,
         write,
-        profile: generated.profile,
-        config: generated.config,
-        configJson: generated.configJson,
+        responseProfile,
+        profile: responseProfile === 'full' ? generated.profile : compactOverrideProfile(generated.profile as unknown as Record<string, unknown>),
+        config: responseProfile === 'full'
+          ? generated.config
+          : {
+              enabled: generated.config.enabled,
+              activeProfileId: generated.config.activeProfileId,
+              profileCount: generated.config.profiles.length,
+            },
+        configJson: includeConfigJson ? generated.configJson : undefined,
+        configJsonOmitted: !includeConfigJson,
       };
     },
 
     validate_override_profile: async (input) => {
       const profile = resolveOverrideProfileRecord(input.profileId);
       const issues = buildOverrideProfileIssues(profile);
+      const responseProfile = resolveOverrideResponseProfile(input.responseProfile);
 
       return {
         ...createBaseResponse(),
@@ -5150,7 +7648,8 @@ export function createV1ToolHandlers(
         valid: !issues.some((issue) => issue.severity === 'error'),
         issues,
         nextActions: buildOverrideProfileNextActions(profile, issues),
-        profile,
+        responseProfile,
+        profile: serializeOverrideProfile(profile, responseProfile),
       };
     },
 
@@ -5182,9 +7681,10 @@ export function createV1ToolHandlers(
 
       const assets = listObservedOverrideAssets(getDb(), {
         sessionId,
-        limit: typeof input.limit === 'number' ? input.limit : undefined,
+        limit: typeof input.limit === 'number' ? input.limit : 50,
         sinceTimestamp: typeof input.sinceTimestamp === 'number' ? input.sinceTimestamp : undefined,
       });
+      const responseProfile = resolveOverrideResponseProfile(input.responseProfile);
 
       return {
         ...createBaseResponse(sessionId),
@@ -5192,7 +7692,8 @@ export function createV1ToolHandlers(
           maxResults: assets.length,
           truncated: false,
         },
-        assets,
+        responseProfile,
+        assets: responseProfile === 'full' ? assets : assets.map(compactObservedOverrideAsset),
       };
     },
 
@@ -6849,9 +9350,10 @@ export function createV1ToolHandlers(
            r.status,
            r.started_at,
            r.completed_at,
-           r.stop_reason,
-           r.target_summary_json,
-           r.failure_json,
+            r.stop_reason,
+            r.target_summary_json,
+            r.diagnostics_json,
+            r.failure_json,
            r.redaction_json,
            r.created_at,
            r.updated_at,
@@ -6921,9 +9423,10 @@ export function createV1ToolHandlers(
            r.status,
            r.started_at,
            r.completed_at,
-           r.stop_reason,
-           r.target_summary_json,
-           r.failure_json,
+            r.stop_reason,
+            r.target_summary_json,
+            r.diagnostics_json,
+            r.failure_json,
            r.redaction_json,
            r.created_at,
            r.updated_at,
@@ -6959,9 +9462,10 @@ export function createV1ToolHandlers(
            started_at,
            finished_at,
            duration_ms,
-           tab_id,
-           target_summary_json,
-           redaction_json,
+            tab_id,
+            target_summary_json,
+            diagnostics_json,
+            redaction_json,
            failure_json,
            input_metadata_json,
            event_type,
@@ -7006,6 +9510,7 @@ export function createV2ToolHandlers(
     const maxItems = resolveStructuredMaxItems(input.maxItems, 40);
     const maxTextLength = resolveStructuredTextLength(input.maxTextLength, 80);
     const includeButtons = input.includeButtons !== false;
+    const includeLinks = input.includeLinks !== false;
     const includeInputs = input.includeInputs !== false;
     const includeModals = input.includeModals !== false;
     const capture = await executeLiveCapture(
@@ -7016,6 +9521,7 @@ export function createV2ToolHandlers(
         maxItems,
         maxTextLength,
         includeButtons,
+        includeLinks,
         includeInputs,
         includeModals,
       },
@@ -7780,11 +10286,14 @@ export function createV2ToolHandlers(
       }
 
       const properties = asStringArray(input.properties, 64);
+      const frameId = typeof input.frameId === 'number' && Number.isFinite(input.frameId)
+        ? Math.max(0, Math.floor(input.frameId))
+        : 0;
       const capture = await executeLiveCapture(
         captureClient,
         sessionId,
         'CAPTURE_COMPUTED_STYLES',
-        { selector, properties },
+        { selector, frameId, properties },
         3_000,
       );
 
@@ -7805,11 +10314,14 @@ export function createV2ToolHandlers(
       }
 
       const selector = typeof input.selector === 'string' ? input.selector : undefined;
+      const frameId = typeof input.frameId === 'number' && Number.isFinite(input.frameId)
+        ? Math.max(0, Math.floor(input.frameId))
+        : 0;
       const capture = await executeLiveCapture(
         captureClient,
         sessionId,
         'CAPTURE_LAYOUT_METRICS',
-        { selector },
+        { selector, frameId },
         3_000,
       );
 
@@ -7848,6 +10360,7 @@ export function createV2ToolHandlers(
       const normalizedInput: ToolInput = {
         ...input,
         includeButtons: kinds.includes('buttons'),
+        includeLinks: kinds.includes('links'),
         includeInputs: kinds.includes('inputs'),
         includeModals: kinds.includes('modals'),
       };
@@ -7945,6 +10458,276 @@ export function createV2ToolHandlers(
       };
     },
 
+    preflight_automation_flow: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const preflight = await buildAutomationFlowPreflight({
+        sessionId,
+        input,
+        capturePageState,
+        getDb,
+        getSessionConnectionState,
+      });
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        ...preflight,
+      };
+    },
+
+    wait_for_url: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const wait = AutomationWaitUrlSchema.parse({ ...input, waitKind: 'url' });
+      const waited = await waitForUrlCondition(sessionId, wait, capturePageState);
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
+    wait_for_navigation: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+      if (!getDb) {
+        throw new Error('wait_for_navigation requires database access');
+      }
+
+      const wait = AutomationWaitNavigationSchema.parse({ ...input, waitKind: 'navigation' });
+      const waited = await waitForNavigationCondition(sessionId, wait, getDb());
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 10,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
+    wait_for_navigation_lifecycle: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const wait = AutomationWaitNavigationLifecycleSchema.parse({ ...input, waitKind: 'navigation_lifecycle' });
+      const waited = await waitForNavigationLifecycleCondition(sessionId, wait, captureClient);
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
+    wait_for_load_state: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const wait = AutomationWaitLoadStateSchema.parse({ ...input, waitKind: 'load_state' });
+      const waited = await waitForLoadStateCondition(sessionId, wait, capturePageState);
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
+    wait_for_selector_state: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const wait = AutomationWaitSelectorStateSchema.parse({ ...input, waitKind: 'selector_state' });
+      const waited = await waitForSelectorStateCondition(sessionId, wait, captureClient);
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
+    wait_for_request: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+      if (!getDb) {
+        throw new Error('wait_for_request requires database access');
+      }
+
+      const wait = AutomationWaitRequestSchema.parse({ ...input, waitKind: 'request' });
+      const waited = await waitForNetworkMatchCondition(sessionId, wait, getDb());
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 10,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
+    wait_for_response: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+      if (!getDb) {
+        throw new Error('wait_for_response requires database access');
+      }
+
+      const wait = AutomationWaitResponseSchema.parse({ ...input, waitKind: 'response' });
+      const waited = await waitForNetworkMatchCondition(sessionId, wait, getDb());
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 10,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
+    wait_for_console: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const wait = AutomationWaitConsoleSchema.parse({ ...input, waitKind: 'console' });
+      const waited = await waitForConsoleCondition(sessionId, wait, captureClient);
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 10,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
+    wait_for_dialog: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const wait = AutomationWaitDialogSchema.parse({ ...input, waitKind: 'dialog' });
+      const waited = await waitForDialogCondition(sessionId, wait, captureClient);
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
+    wait_for_stable_layout: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const wait = AutomationWaitStableLayoutSchema.parse({ ...input, waitKind: 'stable_layout' });
+      const waited = await waitForStableLayoutCondition(sessionId, wait, captureClient);
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
+    wait_for_download: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const wait = AutomationWaitDownloadSchema.parse({ ...input, waitKind: 'download' });
+      const waited = await waitForDownloadCondition(sessionId, wait, captureClient);
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
+    wait_for_popup: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const wait = AutomationWaitPopupSchema.parse({ ...input, waitKind: 'popup' });
+      const waited = await waitForPopupCondition(sessionId, wait, captureClient);
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
+    wait_for_network_quiet: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+      if (!getDb) {
+        throw new Error('wait_for_network_quiet requires database access');
+      }
+
+      const wait = AutomationWaitNetworkQuietSchema.parse({ ...input, waitKind: 'network_quiet' });
+      const waited = await waitForNetworkQuietCondition(sessionId, wait, getDb());
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 10,
+          truncated: false,
+        },
+        ...waited,
+      };
+    },
+
     run_ui_steps: async (input) => {
       const request = RunUIStepsSchema.parse(input) as RunUIStepsRequest;
       const workflowTraceId = createUIWorkflowTraceId();
@@ -7975,12 +10758,21 @@ export function createV2ToolHandlers(
 
           try {
             if (step.kind === 'action') {
-              const resolvedTarget = await resolveWorkflowActionTarget(
-                request.sessionId,
-                step.target,
-                workflowCapturePageState,
-                request.mode === 'fast' ? lastPageCapture : undefined,
-              );
+              const resolvedTarget = step.target?.locator
+                ? {
+                    target: step.target,
+                    resolution: {
+                      strategy: 'native_locator_pending',
+                      matcher: summarizeWorkflowTargetMatcher(step.target),
+                    },
+                    pageCapture: undefined,
+                  }
+                : await resolveWorkflowActionTarget(
+                  request.sessionId,
+                  step.target,
+                  workflowCapturePageState,
+                  request.mode === 'fast' ? lastPageCapture : undefined,
+                );
               const liveRequest = LiveUIActionRequestSchema.parse({
                 action: step.action,
                 target: resolvedTarget.target,
@@ -7997,6 +10789,13 @@ export function createV2ToolHandlers(
               const payload = ensureCaptureSuccess(capture, request.sessionId);
               const actionResult = payload as LiveUIActionResult & Record<string, unknown>;
               const failed = actionResult.status === 'failed' || actionResult.status === 'rejected';
+              const actionResultPayload = typeof actionResult.result === 'object' && actionResult.result !== null
+                ? actionResult.result as Record<string, unknown>
+                : undefined;
+              const nativeLocatorResolution =
+                typeof actionResultPayload?.locatorResolution === 'object' && actionResultPayload.locatorResolution !== null
+                  ? actionResultPayload.locatorResolution as Record<string, unknown>
+                  : undefined;
               let currentCapture = resolvedTarget.pageCapture ?? lastPageCapture;
               if (!failed && request.mode === 'fast') {
                 await sleep(75);
@@ -8016,7 +10815,7 @@ export function createV2ToolHandlers(
                 action: step.action,
                 traceId: actionResult.traceId,
                 target: {
-                  resolution: resolvedTarget.resolution,
+                  resolution: nativeLocatorResolution ?? resolvedTarget.resolution,
                   actionTarget:
                     typeof actionResult.target === 'object' && actionResult.target !== null
                       ? actionResult.target as Record<string, unknown>
@@ -8030,6 +10829,14 @@ export function createV2ToolHandlers(
                   : undefined,
                 pageChangeSummary: createPageChangeSummary(previousCapture, currentCapture),
               };
+              if (failed && getDb && finalStepResult.traceId) {
+                mergeAutomationDiagnosticsEvidence(getDb(), {
+                  sessionId: request.sessionId,
+                  traceId: finalStepResult.traceId,
+                  failureEvidence: finalStepResult.failureEvidence,
+                  cdpFailure: actionResult.failureReason as unknown as Record<string, unknown> | undefined,
+                });
+              }
             } else if (step.kind === 'waitFor') {
               const waitInput: ToolInput = {
                 ...step.matcher,
@@ -8060,6 +10867,51 @@ export function createV2ToolHandlers(
                       message: 'Workflow wait step timed out before the requested page state appeared.',
                     },
                 pageChangeSummary: createPageChangeSummary(previousCapture, waited.lastCapture),
+              };
+            } else if (step.kind === 'wait') {
+              const waitSpec = AutomationWaitSpecSchema.parse({
+                ...step.wait,
+                timeoutMs: step.wait.timeoutMs ?? request.defaultTimeoutMs,
+                pollIntervalMs: step.wait.pollIntervalMs ?? request.defaultPollIntervalMs,
+              });
+              const waited = await runAutomationWait({
+                sessionId: request.sessionId,
+                wait: waitSpec,
+                capturePageState: workflowCapturePageState,
+                captureClient,
+                getDb,
+              });
+              if (waited.waitKind === 'url' || waited.waitKind === 'navigation' || waited.waitKind === 'load_state') {
+                lastPageCapture = await workflowCapturePageState(
+                  request.sessionId,
+                  {
+                    includeButtons: true,
+                    includeLinks: true,
+                    includeInputs: true,
+                    includeModals: true,
+                    maxItems: request.mode === 'fast' ? 12 : 20,
+                    maxTextLength: request.mode === 'fast' ? 60 : 80,
+                  },
+                ).catch(() => lastPageCapture);
+              }
+
+              finalStepResult = {
+                id: stepId,
+                kind: step.kind,
+                status: waited.matched ? 'succeeded' : 'failed',
+                durationMs: Math.max(0, Date.now() - startedAt),
+                wait: {
+                  ...(waitSpec as unknown as Record<string, unknown>),
+                  waitKind: waited.waitKind,
+                  matched: waited.matched,
+                  timeoutMs: waited.timeoutMs,
+                  pollIntervalMs: waited.pollIntervalMs,
+                },
+                waitedMs: waited.waitedMs,
+                attempts: waited.attempts,
+                error: waited.error,
+                pageChangeSummary: createPageChangeSummary(previousCapture, lastPageCapture),
+                target: waited.evidence,
               };
             } else {
               const capture = request.mode === 'fast' && lastPageCapture
@@ -8096,7 +10948,8 @@ export function createV2ToolHandlers(
                 step.kind === 'action' && workflowError
                   ? workflowError.details
                   : undefined,
-              matcher: step.kind === 'action' ? undefined : step.matcher,
+              matcher: step.kind === 'assert' || step.kind === 'waitFor' ? step.matcher : undefined,
+              wait: step.kind === 'wait' ? step.wait as unknown as Record<string, unknown> : undefined,
               error: normalizeWorkflowError(error),
             };
           }
@@ -8128,6 +10981,14 @@ export function createV2ToolHandlers(
           if (evidence) {
             failureCaptureCount += 1;
             finalStepResult.failureEvidence = evidence;
+            if (getDb && finalStepResult.traceId) {
+              mergeAutomationDiagnosticsEvidence(getDb(), {
+                sessionId: request.sessionId,
+                traceId: finalStepResult.traceId,
+                failureEvidence: evidence,
+                cdpFailure: finalStepResult.error as unknown as Record<string, unknown> | undefined,
+              });
+            }
           }
         }
 
@@ -8150,7 +11011,8 @@ export function createV2ToolHandlers(
             status: 'skipped',
             durationMs: 0,
             action: step.kind === 'action' ? step.action : undefined,
-            matcher: step.kind === 'action' ? undefined : step.matcher,
+            matcher: step.kind === 'assert' || step.kind === 'waitFor' ? step.matcher : undefined,
+            wait: step.kind === 'wait' ? step.wait as unknown as Record<string, unknown> : undefined,
             pageChangeSummary: undefined,
             error: {
               code: 'workflow_stopped_early',
@@ -8389,7 +11251,64 @@ export function createV2ToolHandlers(
       delete actionInput.sessionId;
       delete actionInput.captureOnFailure;
 
-      const request = LiveUIActionRequestSchema.parse(actionInput);
+      let request = LiveUIActionRequestSchema.parse(actionInput);
+      let targetResolution: Record<string, unknown> | undefined;
+      try {
+        if (request.target?.locator) {
+          targetResolution = {
+            strategy: 'native_locator_pending',
+            matcher: summarizeWorkflowTargetMatcher(request.target as UIWorkflowActionTarget),
+          };
+        } else if (hasSemanticActionTargetMatcher(request.target)) {
+          const resolvedTarget = await resolveWorkflowActionTarget(
+            sessionId,
+            request.target as UIWorkflowActionTarget,
+            capturePageState,
+          );
+          targetResolution = resolvedTarget.resolution;
+          request = LiveUIActionRequestSchema.parse({
+            ...request,
+            target: resolvedTarget.target,
+          });
+        }
+      } catch (error) {
+        if (error instanceof WorkflowTargetResolutionError) {
+          const traceId = request.traceId ?? `uiaction-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+          return {
+            ...createBaseResponse(sessionId),
+            limitsApplied: {
+              maxResults: 1,
+              truncated: false,
+            },
+            action: request.action,
+            status: 'rejected',
+            traceId,
+            startedAt: Date.now(),
+            finishedAt: Date.now(),
+            durationMs: 0,
+            target: {
+              matched: false,
+            },
+            tabContext: {
+              frameId: 0,
+            },
+            failureDetails: {
+              code: error.code,
+              message: error.message,
+            },
+            targetResolution: {
+              ...error.details,
+              strategy: 'semantic_failed',
+            },
+            supportedScopes: {
+              executionScope: 'top-document-v1',
+              topDocumentOnly: false,
+              opensNewBrowserSession: false,
+            },
+          };
+        }
+        throw error;
+      }
       const failureCaptureOptions = resolveFailureEvidenceCaptureOptions(input);
       const capture = await executeLiveCapture(
         captureClient,
@@ -8424,6 +11343,24 @@ export function createV2ToolHandlers(
       const target = typeof actionResult.target === 'object' && actionResult.target !== null
         ? actionResult.target as Record<string, unknown>
         : {};
+      const actionResultRecord = actionResult as Record<string, unknown>;
+      const nativeResult = typeof actionResultRecord.result === 'object' && actionResultRecord.result !== null
+        ? actionResultRecord.result as Record<string, unknown>
+        : undefined;
+      const nativeLocatorResolution = typeof nativeResult?.locatorResolution === 'object' && nativeResult.locatorResolution !== null
+        ? nativeResult.locatorResolution as Record<string, unknown>
+        : undefined;
+      if (nativeLocatorResolution) {
+        targetResolution = nativeLocatorResolution;
+      }
+      if (failed && getDb && actionResult.traceId) {
+        mergeAutomationDiagnosticsEvidence(getDb(), {
+          sessionId,
+          traceId: actionResult.traceId,
+          failureEvidence,
+          cdpFailure: actionResult.failureReason as unknown as Record<string, unknown> | undefined,
+        });
+      }
 
       return {
         ...createBaseResponse(sessionId),
@@ -8445,6 +11382,7 @@ export function createV2ToolHandlers(
             : undefined,
         actionResult,
         target,
+        targetResolution,
         tabContext: {
           tabId: typeof target.tabId === 'number' ? target.tabId : undefined,
           frameId: typeof target.frameId === 'number' ? target.frameId : 0,
@@ -8455,7 +11393,7 @@ export function createV2ToolHandlers(
         postActionState,
         supportedScopes: {
           executionScope: actionResult.executionScope,
-          topDocumentOnly: true,
+          topDocumentOnly: false,
           opensNewBrowserSession: false,
         },
       };
@@ -8520,14 +11458,39 @@ export async function routeToolCall(
   tools: RegisteredTool[],
   toolName: string,
   input: unknown,
+  options: { loopGuard?: ToolLoopGuard } = {},
 ): Promise<ToolResponse> {
   const tool = tools.find((candidate) => candidate.name === toolName);
   if (!tool) {
     throw new Error(`Unknown tool: ${toolName}`);
   }
 
-  const response = await tool.handler(isRecord(input) ? input : {});
-  return attachResponseBytes(response);
+  const normalizedInput = isRecord(input) ? input : {};
+  const guardCall = options.loopGuard?.prepareCall(toolName, normalizedInput);
+  const beforeCall = guardCall ? await options.loopGuard?.beforeCall(guardCall) : undefined;
+  if (beforeCall?.blocked) {
+    return attachResponseBytes(beforeCall.response as ToolResponse);
+  }
+
+  const startedAt = Date.now();
+  try {
+    const response = await tool.handler(normalizedInput);
+    const guarded = guardCall
+      ? await options.loopGuard?.afterCall(guardCall, {
+          response,
+          durationMs: Date.now() - startedAt,
+        })
+      : undefined;
+    return attachResponseBytes((guarded?.response ?? response) as ToolResponse);
+  } catch (error) {
+    if (guardCall) {
+      await options.loopGuard?.afterCall(guardCall, {
+        error,
+        durationMs: Date.now() - startedAt,
+      });
+    }
+    throw error;
+  }
 }
 
 export function createMCPServer(
@@ -8543,6 +11506,20 @@ export function createMCPServer(
     ...v2Handlers,
     ...overrides,
   });
+  const loopGuard = options.loopGuard === false
+    ? undefined
+    : options.loopGuard ?? createToolLoopGuard({
+        getDb: () => getConnection().db,
+        onEvent: (event) => {
+          logger.info(
+            {
+              component: 'mcp',
+              ...event,
+            },
+            `[MCPServer][MCP] ${event.event}`,
+          );
+        },
+      });
   const server = new Server(
     {
       name: 'browser-debug-mcp-bridge',
@@ -8576,7 +11553,7 @@ export function createMCPServer(
     );
 
     try {
-      const response = await routeToolCall(tools, toolName, request.params.arguments);
+      const response = await routeToolCall(tools, toolName, request.params.arguments, { loopGuard });
       logger.info(
         {
           component: 'mcp',

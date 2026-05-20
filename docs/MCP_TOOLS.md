@@ -6,11 +6,40 @@ All tool responses include:
 - `limitsApplied`
 - `redactionSummary`
 - `responseBytes` (serialized byte size estimate for observability)
+- optional `loopGuard` when repeated unchanged failures are detected or blocked
 
 High-volume query tools also support:
 
 - `maxResponseBytes` input (soft byte budget, default `32768`)
 - pagination metadata with `hasMore` and `nextOffset`
+
+## Agent loop protection
+
+The MCP server records recent tool attempts in `mcp_tool_invocations` and opens `mcp_loop_incidents` when an agent repeats the same failing call without changing the underlying state. High-risk live tools such as override enable/capture/planning and live automation warn on the second unchanged failure and block before the next repeated side-effecting attempt after the threshold is reached.
+
+Blocked responses are normal MCP tool responses, not transport failures:
+
+```json
+{
+  "blocked": true,
+  "tool": "enable_overrides",
+  "loopGuard": {
+    "status": "blocked",
+    "reason": "repeated_same_failure",
+    "scope": "tool-input",
+    "rootCauseCode": "TARGET_ASSET_NOT_OBSERVED",
+    "requiredStateChange": ["target route is loaded or interacted with", "observed asset inventory changes"]
+  },
+  "nextActions": [
+    {
+      "code": "CHANGE_STATE_BEFORE_RETRY",
+      "message": "Blocked repeated enable_overrides attempts with unchanged TARGET_ASSET_NOT_OBSERVED result before spending another tool call."
+    }
+  ]
+}
+```
+
+When `loopGuard.status` is `warning` or `blocked_next_attempt`, stop retrying the same tool/input and change real state first: reconnect the live session, load the route, observe assets, edit the override config, or change the target/session. The guard can be disabled only for controlled diagnostics with `MCP_LOOP_GUARD=0`.
 
 ## Session scope and URL filtering
 
@@ -299,10 +328,13 @@ Returns a compact structured page model so flows can avoid repeated large DOM ca
 
 Response highlights:
 
-- `summary`: counts for buttons, inputs, and modals
+- `summary`: counts for buttons, links, inputs, modals, and frames
 - `buttons`: compact action targets with text, selector, disabled, and selected/pressed metadata
+- `links`: compact link targets with text/name/href metadata
 - `inputs`: field labels/placeholders with value length only, never raw typed values
 - `modals`: open modal summaries with title, selector, and action counts
+- `frames`: discovered frame metadata; frame entries include URL/title/origin, sandbox and same-origin policy fields, capture errors, and automation support diagnostics. Frame entries are merged into `buttons`, `links`, `inputs`, and `modals` with `frameId`, `frameUrl`, `frameTitle`, frame policy fields, and frame-aware `elementRef` values.
+- Open shadow roots are traversed for page-state discovery. Shadow selectors use `host >> target` syntax, for example `#settings-host >> #save`.
 
 Prefer this tool before `get_dom_document` or `get_dom_subtree` when the goal is understanding current page state rather than reading raw markup.
 
@@ -323,9 +355,11 @@ Returns compact live refs for interactive elements so automation can reuse `elem
 
 Response highlights:
 
-- `refs`: compact live element entries with `kind`, `elementRef`, selector/testId metadata, and visible text or labels
+- `refs`: compact live element entries with `kind`, `elementRef`, selector/testId metadata, role/name metadata, and visible text or labels
+- `refs[].frameId`, `refs[].frameUrl`, and `refs[].frameTitle`: present for refs discovered inside child frames; pass the returned `elementRef` back to `execute_ui_action` to keep frame targeting intact. Frame refs also carry enough URL/title metadata for the native backend to recover from a stale frame id when the selector still resolves uniquely.
+- Open shadow-root refs use shadow selectors such as `#shadow-host >> #shadow-action`
 - `page`: current URL/title/language/viewport
-- `pageSummary`: current button/input/modal counts
+- `pageSummary`: current button/link/input/modal/frame counts
 
 ### set_viewport
 
@@ -365,7 +399,7 @@ Response highlights:
 - `matched`: whether the assertion passed
 - `matchCount`: how many structured items matched
 - `sampledMatches`: up to 5 matching items for quick debugging
-- `pageSummary`: current button/input/modal counts
+- `pageSummary`: current button/link/input/modal/frame counts
 
 Use this before large DOM captures when the goal is simply to verify UI state.
 
@@ -392,6 +426,180 @@ Response highlights:
 - `attempts`: number of page-state polls performed
 - `waitedMs`: total wait duration
 - `sampledMatches`: matched items when successful
+
+### preflight_automation_flow
+
+Checks whether a live session is ready for a bounded automation flow before the agent starts clicking or typing.
+
+```json
+{
+  "name": "preflight_automation_flow",
+  "arguments": {
+    "sessionId": "sess_123",
+    "expectedUrlContains": "/checkout",
+    "plannedActions": ["click", "input"],
+    "requireSensitiveAutomation": true
+  }
+}
+```
+
+Response highlights:
+
+- `ready`: whether the flow can proceed
+- `blockers`: session, connection, URL, or page-state problems that should stop the flow
+- `warnings`: production-like origin, sensitive-field, or cross-origin frame risks
+- `checks`: compact readiness booleans for session, live connection, expected URL, page capture, and detected risks
+- `nextActions`: concrete guidance to run the flow or resolve blockers
+
+Run this before production or remote-origin flows so agents do not repeatedly try actions against the wrong tab, stale session, iframe noise, or sensitive surfaces.
+
+### URL, navigation, load-state, selector, console, dialog, and network waits
+
+These tools provide first-class waits beyond compact page-state polling:
+
+- `wait_for_url`: waits for `exactUrl`, `urlContains`, or `urlRegex`
+- `wait_for_navigation`: waits for a persisted navigation event by destination URL, source URL, trigger, or tab
+- `wait_for_load_state`: waits for the live document `readyState` to reach `domcontentloaded` or `load`, optionally scoped by URL predicates
+- `wait_for_selector_state`: waits for a selector to be `attached`, `detached`, `visible`, or `hidden`
+- `wait_for_console`: waits for a live console log matching `levels` and/or `contains`
+- `wait_for_dialog`: waits for a native JavaScript `alert`, `confirm`, `prompt`, or `beforeunload` dialog and can accept or dismiss it
+- `wait_for_stable_layout`: waits until the page or a selector's layout snapshot stays unchanged for `stableMs`
+- `wait_for_network_quiet`: waits until persisted network activity has been quiet for a bounded window
+- `wait_for_request`: waits for a persisted request by URL, method, trace id, initiator, content type, or tab
+- `wait_for_response`: waits for a persisted response by request filters plus status, response content type, or error type
+
+```json
+{
+  "name": "wait_for_url",
+  "arguments": {
+    "sessionId": "sess_123",
+    "urlContains": "/dashboard",
+    "timeoutMs": 5000,
+    "pollIntervalMs": 200
+  }
+}
+```
+
+```json
+{
+  "name": "wait_for_load_state",
+  "arguments": {
+    "sessionId": "sess_123",
+    "state": "domcontentloaded",
+    "urlContains": "/dashboard",
+    "timeoutMs": 5000
+  }
+}
+```
+
+```json
+{
+  "name": "wait_for_selector_state",
+  "arguments": {
+    "sessionId": "sess_123",
+    "selector": "#save-status",
+    "frameId": 0,
+    "state": "visible",
+    "timeoutMs": 5000
+  }
+}
+```
+
+```json
+{
+  "name": "wait_for_navigation",
+  "arguments": {
+    "sessionId": "sess_123",
+    "urlContains": "/dashboard",
+    "fromUrlContains": "/login",
+    "trigger": "pushState",
+    "timeoutMs": 5000
+  }
+}
+```
+
+```json
+{
+  "name": "wait_for_console",
+  "arguments": {
+    "sessionId": "sess_123",
+    "levels": ["error"],
+    "contains": "checkout",
+    "timeoutMs": 5000
+  }
+}
+```
+
+```json
+{
+  "name": "wait_for_dialog",
+  "arguments": {
+    "sessionId": "sess_123",
+    "type": "alert",
+    "messageContains": "Saved",
+    "action": "accept",
+    "timeoutMs": 5000
+  }
+}
+```
+
+```json
+{
+  "name": "wait_for_stable_layout",
+  "arguments": {
+    "sessionId": "sess_123",
+    "selector": "#save-status",
+    "stableMs": 500,
+    "timeoutMs": 5000
+  }
+}
+```
+
+```json
+{
+  "name": "wait_for_network_quiet",
+  "arguments": {
+    "sessionId": "sess_123",
+    "quietMs": 500,
+    "urlContains": "/api/checkout",
+    "method": "POST",
+    "timeoutMs": 10000
+  }
+}
+```
+
+```json
+{
+  "name": "wait_for_request",
+  "arguments": {
+    "sessionId": "sess_123",
+    "urlContains": "/api/checkout",
+    "method": "POST",
+    "initiator": "fetch",
+    "timeoutMs": 10000
+  }
+}
+```
+
+```json
+{
+  "name": "wait_for_response",
+  "arguments": {
+    "sessionId": "sess_123",
+    "urlContains": "/api/checkout",
+    "method": "POST",
+    "statusGte": 200,
+    "statusLt": 300,
+    "timeoutMs": 10000
+  }
+}
+```
+
+Response highlights:
+
+- `matched`, `waitKind`, `attempts`, `waitedMs`
+- `evidence` with the final URL/page, selector state, sampled console logs, or sampled network calls
+- structured timeout error codes such as `url_wait_timeout`, `navigation_wait_timeout`, `selector_state_wait_timeout`, `console_wait_timeout`, `dialog_wait_timeout`, `stable_layout_wait_timeout`, `network_quiet_timeout`, `request_wait_timeout`, and `response_wait_timeout`
 
 ### get_live_console_logs
 
@@ -434,6 +642,7 @@ Override these only when full payloads are explicitly needed.
 ### execute_ui_action
 
 Executes one live UI action in the already bound extension session without creating a new browser runtime.
+`click`, `hover`, `input`, `press_key`, `focus`, `blur`, `scroll`, and `submit` currently use the CDP-backed native automation backend (`cdp-native-v2`) for the top document, open shadow roots, and same-origin iframe targets. `reload` uses the extension tab API.
 
 ```json
 {
@@ -446,7 +655,7 @@ Executes one live UI action in the already bound extension session without creat
 }
 ```
 
-You can target by `elementRef` instead of `selector`:
+You can target by `elementRef` instead of `selector`. Frame-scoped refs encode `frameId`, `frameUrl`, and `frameTitle`; if the stored frame id is stale but the frame URL/title and selector still resolve uniquely, the native backend refreshes the frame id before acting.
 
 ```json
 {
@@ -458,6 +667,65 @@ You can target by `elementRef` instead of `selector`:
   }
 }
 ```
+
+You can also use compact semantic target matchers. The server resolves these through `get_page_state`, then sends the resulting frame-aware `elementRef` to the extension:
+
+```json
+{
+  "name": "execute_ui_action",
+  "arguments": {
+    "sessionId": "sess_123",
+    "action": "click",
+    "target": {
+      "scope": "buttons",
+      "textContains": "Confirm"
+    }
+  }
+}
+```
+
+Semantic targets support `scope: "buttons" | "links" | "inputs" | "modals" | "focused"`, text/label/title matching, role/name/placeholder/alt matching, frame filters (`frameUrlContains`, `frameTitleContains`), `exact: true`, and deliberate disambiguation with `nth`, `first`, `last`, or `strict: false`:
+
+```json
+{
+  "name": "execute_ui_action",
+  "arguments": {
+    "sessionId": "sess_123",
+    "action": "hover",
+    "target": {
+      "scope": "links",
+      "role": "link",
+      "name": "Docs",
+      "exact": true,
+      "last": true
+    }
+  }
+}
+```
+
+For more explicit locator-style targeting, use `target.locator`. Direct live actions and workflow action steps pass locator targets to the extension's native DOM resolver, which evaluates the current document, open shadow roots, and accessible frames before CDP actionability checks. The MCP server still keeps compact page-state semantic matching for non-locator targets.
+
+```json
+{
+  "name": "execute_ui_action",
+  "arguments": {
+    "sessionId": "sess_123",
+    "action": "click",
+    "target": {
+      "locator": {
+        "scope": "buttons",
+        "frame": { "selector": "#settings-frame", "titleContains": "Account" },
+        "steps": [
+          { "kind": "role", "role": "button", "name": { "pattern": "^Save", "flags": "i" } },
+          { "kind": "text", "value": "Save changes", "exact": true, "relation": "descendant" }
+        ]
+      }
+    }
+  }
+}
+```
+
+Locator step kinds are `css`, `role`, `text`, `label`, `testId`, `placeholder`, and `altText`. `css` and `testId` steps match exactly by default; text-like steps match by containment unless `exact: true` is set. Regex matchers use `{ "pattern": "...", "flags": "i" }`. By default each step filters the current candidate set; set `relation: "descendant"` to search descendants of the previous matches or `relation: "ancestor"` to require a matching ancestor. `locator.frame.selector` can narrow locator execution to a same-origin frame path such as `#outer-frame => #inner-frame`.
 
 Combined action + wait example:
 
@@ -480,11 +748,20 @@ Combined action + wait example:
 
 Important limits and safeguards:
 
-- V1 only supports the top document in the currently bound tab; iframe targets return an unsupported error
+- Native automation supports the top document, same-origin iframe targets, and translated pointer actions for cross-origin or sandboxed iframe targets when the frame-local point can be mapped into top-document coordinates
+- Native actions and page-state discovery support open shadow roots with `host >> target` selectors. Closed shadow roots are not inspectable.
+- `target.coordinates` support native click/hover in the top document and in frame-local coordinate spaces when the current frame can be translated through its selector chain.
+- Nested same-origin iframe actions are covered when page-state returns a frame-aware `elementRef`
+- Native pointer actions in cross-origin, sandboxed opaque-origin, or inaccessible frames return `unsupported_cross_origin_frame` or `coordinate_frame_translation_failed` when top-document coordinate translation is not possible. The response includes `actionResult.result.framePolicy` and `actionability.frameCoordinateResolved`.
+- Stale frame ids on frame-aware refs are re-resolved by encoded frame URL/title and selector context when possible, including iframe reload/replacement cases. `actionResult.result.frameResolution` reports the frame matcher, candidate counts, sampled frames, and whether recovery selected the frame by direct frame context or selector narrowing. Invalid frame ids without enough metadata, or unresolved frame refs, return `target_frame_not_found`.
+- `target.locator` now has native DOM resolution for direct/workflow actions and compact page-state semantics for server-side diagnostics. It supports chained structured filters, ancestor/descendant relations, regex matching, same-origin frame selector paths, and state filters for `visible`, `enabled`, `disabled`, `editable`, `checked`, `selected`, `pressed`, `expanded`, `readOnly`, and `requiredField`.
+- `actionResult.result.backend` identifies the execution backend (`cdp-native-v2` for migrated native actions)
+- Native actions perform target inspection/actionability checks before dispatch, including visibility, disabled state, readonly/editable state for input, stable layout, pointer-events, viewport intersection, offscreen scroll-into-view, detached-target retry, zero-size geometry, and hit-target mismatch diagnostics
+- Page-state assertions and waits support `visible: true/false`, `role`, `name`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`, and `exact` for structured refs where available
 - `Allow live automation` must be enabled in the extension popup before any action can run
 - Sensitive selectors and input-like actions require the second `Allow sensitive field automation` opt-in
 - The extension shows a red in-page automation indicator while armed/executing and exposes an emergency stop in both the page overlay and popup
-- Failures return structured `failureDetails`, `traceId`, `tabContext`, and optional `postActionEvidence` when `captureOnFailure` is enabled
+- Failures return structured `failureDetails`, `traceId`, `tabContext`, optional `postActionEvidence` when `captureOnFailure` is enabled, and timed-out waits include `evidence.timeoutDiagnostics`
 - When `waitForPageState` is provided and the action succeeds, the response includes `postActionState` with structured wait results
 
 ### run_ui_steps
@@ -534,11 +811,13 @@ Runs a small generic UI workflow locally in the bridge using sequential action, 
   - modes:
     - `safe`: fuller verification and broader state capture
     - `fast`: smaller page-state captures, cached state reuse between steps, and lighter summaries
-  - supported step kinds: `action`, `waitFor`, `assert`
+  - supported step kinds: `action`, `waitFor`, `wait`, `assert`
+  - `waitFor` polls compact page-state matchers
+- `wait` runs the first-class wait engine with `waitKind: "url" | "navigation" | "navigation_lifecycle" | "load_state" | "selector_state" | "console" | "dialog" | "stable_layout" | "download" | "popup" | "network_quiet" | "request" | "response"`
   - action targets can use:
       - direct handles: `elementRef`, `selector`
-      - semantic matchers: `testId`, `scope`, `textContains`, `labelContains`, `titleContains`
-      - optional refinements: `tagName`, `type`, `disabled`, `selected`, `pressed`, `expanded`, `readOnly`, `requiredField`
+      - semantic matchers: `testId`, `scope`, `locator`, `textContains`, `labelContains`, `titleContains`, `role`, `name`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`
+      - optional refinements: `exact`, `nth`, `first`, `last`, `strict`, `tagName`, `type`, `visible`, `enabled`, `disabled`, `editable`, `checked`, `selected`, `pressed`, `expanded`, `readOnly`, `requiredField`
   - the workflow stops on first failure by default and marks remaining steps as `skipped`
   - each step can set `onFailure.strategy` to `stop`, `continue`, or `retry_once`
   - each step can set `onFailure.capture` to collect a failure snapshot using the same snapshot options as `execute_ui_action.captureOnFailure`
@@ -549,6 +828,7 @@ Runs a small generic UI workflow locally in the bridge using sequential action, 
   - `steps`: per-step status, timing, and error details
   - `failedStepId`: first failed step when the workflow stops early
   - action-step failures include structured target diagnostics for not-found and ambiguous semantic matches
+  - `wait` step results include `wait.matched`, `wait.waitKind`, `attempts`, `waitedMs`, and wait-specific evidence under `target`
   - step results include `executionAttempts`, resolved `failurePolicy`, optional `failureEvidence`, and optional `recommendedAction`
   - step results can include `pageChangeSummary` with compact state diffs between workflow steps
   - `workflowDiagnostics` reports retry count, page-state capture count, failure-capture count, and whether cached state was used
@@ -570,17 +850,18 @@ Use this before long live flows to distinguish:
 
 ## V6 Automation history tools
 
-These tools read from the dedicated `automation_runs` and `automation_steps` tables, so historical automation analysis no longer depends on reconstructing flows from generic `ui` event breadcrumbs.
+These tools read from the dedicated `automation_runs` and `automation_steps` tables, so historical automation analysis no longer depends on reconstructing flows from generic `ui` event breadcrumbs. Native action diagnostics are persisted with the history rows, including backend, actionability, frame policy, frame resolution, locator resolution, point metadata, `failureEvidence`, `linkedSnapshot`, and raw `cdpFailure` metadata when the live action returned them.
 
 ### list_automation_runs
 
-Lists first-class automation runs for one session with optional status/action filters.
+Lists first-class automation runs for one session with optional status/action/trace filters.
 
 ```json
 {
   "name": "list_automation_runs",
   "arguments": {
     "sessionId": "sess_123",
+    "traceId": "uiaction-...",
     "status": "failed",
     "limit": 20,
     "offset": 0
@@ -606,8 +887,8 @@ Returns one automation run plus bounded step details from `automation_steps`.
 
 Response highlights:
 
-- `run`: run-level status, selector, trace id, failure/redaction metadata, and step count
-- `steps`: ordered step records with event linkage and redacted input metadata
+- `run`: run-level status, selector, trace id, failure/redaction metadata, diagnostics, and step count
+- `steps`: ordered step records with event linkage, diagnostics, and redacted input metadata
 - `pagination`: step pagination metadata for larger runs
 
 ### Live capture disconnection behavior
@@ -643,6 +924,8 @@ Available tools:
 
 `create_override_profile` generates reviewable config JSON from local build assets. Current adapters are `nextjs` for `.next` output and `static` for framework-neutral asset directories such as `dist/assets`.
 
+Override profile and observed-asset listing tools default to compact responses to avoid large agent context loops. Use `responseProfile: "full"` only when the caller needs every rule or persisted asset field. `create_override_profile` also omits the generated `configJson` by default in compact mode; pass `includeConfigJson: true` or `responseProfile: "full"` when the raw JSON is needed.
+
 The override runtime is framework-agnostic. Adapters currently generate `targetAssetUrl` to `localFilePath` rules with exact matching by default and prefix matching for unstable response URLs when explicitly requested; validation, serving, interception, audit, and diagnosis use the same path for every framework.
 
 `preflight_overrides` is the production-safety gate before `enable_overrides`. It combines profile validation, live-session readiness, observed asset constraints, recent plan/variant context, and persisted diagnosis signals into a single readiness result. Missing live connection state, disconnected sessions, missing observed assets, no observed match for any enabled target, and observed assets recorded only for a different tab are blocking readiness errors. Exact and prefix profile rules use the same matching semantics as the runtime. Generated multi-asset profiles are considered capture-ready when at least one enabled target was observed for the selected session; unobserved enabled targets are reported as warnings and counts rather than blocking the route under test. The response includes `checks.captureReady`, `checks.topLevelScopeLikely`, `checks.observedAssetTabs`, `checks.matchedTargetAssetCount`, `checks.unobservedTargetAssetCount`, and `observedAssets.targetAssetObserved` so callers can distinguish profile problems from session/capture readiness problems.
@@ -655,7 +938,7 @@ The production contract is GET-first for response overrides, with one narrow POS
 
 `observe_override_assets` uses the live extension connection to inspect the selected tab's document, script/style/link DOM nodes, Next.js URL hints such as `/_next/static`, `/_next/data`, and `_rsc=`, and fetch/XHR performance entries, then persists them per session with request metadata. Observed entries include `ruleType` values of `asset`, `document`, `rsc-flight`, `next-data`, or `api-response`, plus request method, resource type, content type, status, and navigation/fetch hints when available.
 
-`list_observed_override_assets` returns the persisted entries. `map_next_override_assets` currently maps observed `asset` entries under `/_next/static/...` back to the local `.next` build, source maps when available, route manifests, and optional fetched production bytes. `plan_next_source_override` applies source edits in a temp Next.js overlay build, prefers safe literal patching of observed static chunks to preserve runtime/module identity, distinguishes direct source-map ownership from client-reference manifest membership, cleans expired `tmp/bn` overlays, and can write an override config.
+`list_observed_override_assets` returns persisted entries with a default limit of 50 and compact rows by default. `map_next_override_assets` currently maps observed `asset` entries under `/_next/static/...` back to the local `.next` build, source maps when available, route manifests, and optional fetched production bytes. `plan_next_source_override` applies source edits in a temp Next.js overlay build, prefers safe literal patching of observed static chunks to preserve runtime/module identity, distinguishes direct source-map ownership from client-reference manifest membership, cleans expired `tmp/bn` overlays, and can write an override config.
 
 Document, RSC flight, Next data, and API response observations are persisted as production-readiness foundations. The runtime fulfills configured request URLs for supported response types. Planner-generated `rsc-flight` rules are supported for captured `text/x-component` `GET` responses with structured Flight string-value patches and `_rsc` target URLs, and for captured POST `text/x-component` response-stage patches with RSC request context and no `next-action` header.
 

@@ -6,7 +6,7 @@ import {
   OVERRIDE_POC_RUN_STATUSES,
 } from '../override-audit-contract.js';
 
-export const SCHEMA_VERSION = 14;
+export const SCHEMA_VERSION = 16;
 
 const OVERRIDE_POC_RUN_STATUS_SQL = OVERRIDE_POC_RUN_STATUSES.map((value) => `'${value}'`).join(', ');
 const OVERRIDE_POC_REQUEST_STATUS_SQL = OVERRIDE_POC_REQUEST_STATUSES.map((value) => `'${value}'`).join(', ');
@@ -184,6 +184,7 @@ CREATE TABLE IF NOT EXISTS automation_runs (
   completed_at INTEGER,
   stop_reason TEXT,
   target_summary_json TEXT,
+  diagnostics_json TEXT,
   failure_json TEXT,
   redaction_json TEXT,
   created_at INTEGER NOT NULL,
@@ -210,6 +211,7 @@ CREATE TABLE IF NOT EXISTS automation_steps (
   duration_ms INTEGER,
   tab_id INTEGER,
   target_summary_json TEXT,
+  diagnostics_json TEXT,
   redaction_json TEXT,
   failure_json TEXT,
   input_metadata_json TEXT,
@@ -350,6 +352,61 @@ CREATE INDEX IF NOT EXISTS idx_override_observed_assets_session_seen ON override
 CREATE INDEX IF NOT EXISTS idx_override_observed_assets_asset_path ON override_observed_assets(asset_path);
 CREATE INDEX IF NOT EXISTS idx_override_observed_assets_rule_type ON override_observed_assets(rule_type);
 
+CREATE TABLE IF NOT EXISTS mcp_tool_invocations (
+  invocation_id TEXT PRIMARY KEY,
+  tool_name TEXT NOT NULL,
+  session_id TEXT,
+  family TEXT NOT NULL,
+  input_hash TEXT NOT NULL,
+  input_summary_json TEXT NOT NULL,
+  outcome_type TEXT NOT NULL CHECK(outcome_type IN ('success', 'failed', 'no_progress', 'blocked')),
+  root_cause_code TEXT,
+  state_hash TEXT,
+  state_summary_json TEXT NOT NULL,
+  response_bytes INTEGER,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  blocked INTEGER NOT NULL DEFAULT 0,
+  warning INTEGER NOT NULL DEFAULT 0,
+  message TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mcp_tool_invocations_tool_input_time
+  ON mcp_tool_invocations(tool_name, session_id, input_hash, created_at);
+CREATE INDEX IF NOT EXISTS idx_mcp_tool_invocations_family_root_time
+  ON mcp_tool_invocations(family, session_id, root_cause_code, state_hash, created_at);
+CREATE INDEX IF NOT EXISTS idx_mcp_tool_invocations_created_at
+  ON mcp_tool_invocations(created_at);
+
+CREATE TABLE IF NOT EXISTS mcp_loop_incidents (
+  incident_id TEXT PRIMARY KEY,
+  fingerprint TEXT NOT NULL,
+  scope TEXT NOT NULL CHECK(scope IN ('tool-input', 'family-root-cause')),
+  status TEXT NOT NULL CHECK(status IN ('open', 'resolved', 'expired')),
+  tool_name TEXT,
+  session_id TEXT,
+  family TEXT NOT NULL,
+  input_hash TEXT,
+  root_cause_code TEXT,
+  state_hash TEXT,
+  first_seen_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  blocked_until INTEGER,
+  severity TEXT NOT NULL CHECK(severity IN ('warning', 'blocked')),
+  message TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mcp_loop_incidents_open_fingerprint
+  ON mcp_loop_incidents(fingerprint)
+  WHERE status = 'open';
+CREATE INDEX IF NOT EXISTS idx_mcp_loop_incidents_status_blocked
+  ON mcp_loop_incidents(status, blocked_until);
+CREATE INDEX IF NOT EXISTS idx_mcp_loop_incidents_session_family
+  ON mcp_loop_incidents(session_id, family, status);
+
 -- Schema version tracking
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER PRIMARY KEY,
@@ -387,6 +444,8 @@ export function clearDatabase(db: Database): void {
     DELETE FROM override_plan_audits;
     DELETE FROM override_requests;
     DELETE FROM override_runs;
+    DELETE FROM mcp_loop_incidents;
+    DELETE FROM mcp_tool_invocations;
     DELETE FROM events;
     DELETE FROM sessions;
     DELETE FROM server_settings;

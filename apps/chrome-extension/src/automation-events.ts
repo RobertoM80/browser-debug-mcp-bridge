@@ -75,6 +75,32 @@ function resolveInputMetadata(
   };
 }
 
+function pickRecordField(source: Record<string, unknown>, key: string): unknown {
+  const value = source[key];
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value
+    : undefined;
+}
+
+function resolveDiagnostics(result: LiveUIActionResult | undefined): Record<string, unknown> | undefined {
+  const resultPayload = result?.result;
+  if (!resultPayload || typeof resultPayload !== 'object' || Array.isArray(resultPayload)) {
+    return undefined;
+  }
+
+  const source = resultPayload as Record<string, unknown>;
+  const diagnostics: Record<string, unknown> = {};
+  if (typeof source.backend === 'string') {
+    diagnostics.backend = source.backend;
+  }
+  diagnostics.actionability = pickRecordField(source, 'actionability');
+  diagnostics.framePolicy = pickRecordField(source, 'framePolicy');
+  diagnostics.locatorResolution = pickRecordField(source, 'locatorResolution');
+  diagnostics.point = pickRecordField(source, 'point');
+
+  return Object.keys(diagnostics).length > 0 ? diagnostics : undefined;
+}
+
 export function buildAutomationEventPayload(options: BuildAutomationEventPayloadOptions): Record<string, unknown> {
   const now = options.timestamp ?? Date.now();
   const traceId = options.result?.traceId ?? options.request.traceId ?? 'unknown-trace';
@@ -107,6 +133,7 @@ export function buildAutomationEventPayload(options: BuildAutomationEventPayload
     target: resolveTargetSummary(options.request, options.result, options.tabId, options.url),
     input:
       resolveInputMetadata(options.request, options.result, sensitive),
+    diagnostics: resolveDiagnostics(options.result),
     failureReason: options.result?.failureReason,
     redaction: {
       inputValueRedacted: options.request.action === 'input',

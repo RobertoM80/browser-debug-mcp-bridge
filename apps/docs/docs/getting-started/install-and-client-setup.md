@@ -71,14 +71,15 @@ GitHub fallback (if registry package is not available):
 
 Notes:
 
-1. First run is slower because dependencies are downloaded.
-2. For stable daily usage, prefer local clone + `node <repo>/scripts/mcp-start.cjs`.
-3. You still need the Chrome extension loaded; this option only changes server startup.
-4. If npm reports `EPERM` under `npm-cache\\_cacache\\tmp\\git-clone...`, use local mode instead.
-5. On Windows, launcher attempts automatic recovery when stale bridge processes still hold port `8065`.
-6. In `mcp-stdio` mode, runtime should stop when the MCP host transport closes.
-7. Runtime state now defaults to a user-local app-data directory instead of the repo/package root. Set `DATA_DIR` only if you want to override it.
-8. If a standalone bridge is already running on `127.0.0.1:8065`, new MCP stdio launches now attach to it instead of killing and replacing it.
+1. Keep `-y` in `npx` MCP host configs. Without it, npm can wait for an interactive install confirmation that VS Code Copilot and other MCP hosts cannot answer.
+2. First run is slower because dependencies are downloaded.
+3. For stable daily usage, prefer local clone + `node <repo>/scripts/mcp-start.cjs`.
+4. You still need the Chrome extension loaded; this option only changes server startup.
+5. If npm reports `EPERM` under `npm-cache\\_cacache\\tmp\\git-clone...`, use local mode instead.
+6. On Windows, launcher attempts automatic recovery when stale bridge processes still hold port `8065`.
+7. In `mcp-stdio` mode, runtime should stop when the MCP host transport closes.
+8. Runtime state now defaults to a user-local app-data directory instead of the repo/package root. Set `DATA_DIR` only if you want to override it.
+9. If a standalone bridge is already running on `127.0.0.1:8065`, new MCP stdio launches now attach to it instead of killing and replacing it.
 
 Recommended durable workflow:
 

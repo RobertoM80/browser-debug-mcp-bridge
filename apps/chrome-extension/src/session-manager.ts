@@ -54,6 +54,11 @@ export type CaptureCommandType =
   | 'CAPTURE_PAGE_STATE'
   | 'CAPTURE_UI_SNAPSHOT'
   | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+  | 'CAPTURE_WAIT_FOR_NAVIGATION_LIFECYCLE'
+  | 'CAPTURE_WAIT_FOR_DIALOG'
+  | 'CAPTURE_WAIT_FOR_STABLE_LAYOUT'
+  | 'CAPTURE_WAIT_FOR_DOWNLOAD'
+  | 'CAPTURE_WAIT_FOR_POPUP'
   | 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
   | 'CAPTURE_OVERRIDE_RESPONSE_BODY'
   | 'CAPTURE_OVERRIDE_POC_GET_STATUS'
@@ -132,6 +137,15 @@ interface SessionManagerOptions {
   redactionEngine?: RedactionEngine;
   handleCaptureCommand?: CaptureCommandHandler;
 }
+
+const REDACTION_PRESERVED_CORRELATION_KEYS = new Set([
+  'traceId',
+  'requestId',
+  'eventId',
+  'runId',
+  'stepId',
+  'sessionId',
+]);
 
 const WS_CONNECTING = 0;
 const WS_OPEN = 1;
@@ -594,6 +608,11 @@ export class SessionManager {
         && message.command !== 'CAPTURE_PAGE_STATE'
         && message.command !== 'CAPTURE_UI_SNAPSHOT'
         && message.command !== 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
+        && message.command !== 'CAPTURE_WAIT_FOR_NAVIGATION_LIFECYCLE'
+        && message.command !== 'CAPTURE_WAIT_FOR_DIALOG'
+        && message.command !== 'CAPTURE_WAIT_FOR_STABLE_LAYOUT'
+        && message.command !== 'CAPTURE_WAIT_FOR_DOWNLOAD'
+        && message.command !== 'CAPTURE_WAIT_FOR_POPUP'
         && message.command !== 'CAPTURE_OVERRIDE_OBSERVE_ASSETS'
         && message.command !== 'CAPTURE_OVERRIDE_RESPONSE_BODY'
         && message.command !== 'CAPTURE_OVERRIDE_POC_GET_STATUS'
@@ -635,7 +654,41 @@ export class SessionManager {
 
   private redactOutboundMessage(message: OutboundMessage): OutboundMessage {
     const { result } = this.redactionEngine.redactObject(message as unknown as Record<string, unknown>);
+    this.restorePreservedCorrelationFields(message, result);
     return result as unknown as OutboundMessage;
+  }
+
+  private restorePreservedCorrelationFields(source: unknown, redacted: unknown): void {
+    if (!source || !redacted || typeof source !== 'object' || typeof redacted !== 'object') {
+      return;
+    }
+
+    if (Array.isArray(source) || Array.isArray(redacted)) {
+      if (!Array.isArray(source) || !Array.isArray(redacted)) {
+        return;
+      }
+
+      const length = Math.min(source.length, redacted.length);
+      for (let index = 0; index < length; index += 1) {
+        this.restorePreservedCorrelationFields(source[index], redacted[index]);
+      }
+      return;
+    }
+
+    const sourceRecord = source as Record<string, unknown>;
+    const redactedRecord = redacted as Record<string, unknown>;
+    for (const [key, value] of Object.entries(sourceRecord)) {
+      if (!(key in redactedRecord)) {
+        continue;
+      }
+
+      if (REDACTION_PRESERVED_CORRELATION_KEYS.has(key) && typeof value === 'string') {
+        redactedRecord[key] = value;
+        continue;
+      }
+
+      this.restorePreservedCorrelationFields(value, redactedRecord[key]);
+    }
   }
 
   private flushBuffer(): void {

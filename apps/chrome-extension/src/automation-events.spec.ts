@@ -34,6 +34,15 @@ describe('automation event payloads', () => {
         url: 'https://example.com/form',
       },
       result: {
+        backend: 'cdp-native-v2',
+        actionability: {
+          visible: true,
+          receivesPointerEvents: true,
+        },
+        framePolicy: {
+          frameId: 0,
+          pointerActionsSupported: true,
+        },
         fieldType: 'email',
         valueLength: 18,
       },
@@ -63,6 +72,17 @@ describe('automation event payloads', () => {
       redaction: {
         inputValueRedacted: true,
         sensitiveTarget: true,
+      },
+      diagnostics: {
+        backend: 'cdp-native-v2',
+        actionability: {
+          visible: true,
+          receivesPointerEvents: true,
+        },
+        framePolicy: {
+          frameId: 0,
+          pointerActionsSupported: true,
+        },
       },
     });
     expect((payload.input as Record<string, unknown>).value).toBeUndefined();

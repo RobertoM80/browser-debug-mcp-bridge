@@ -196,7 +196,7 @@ export const GetElementRefsSchema = z.object({
 
 export const GetInteractiveElementsSchema = z.object({
   sessionId: z.string().describe('Connected session identifier'),
-  kinds: z.array(z.enum(['buttons', 'inputs', 'modals', 'focused'])).optional()
+  kinds: z.array(z.enum(['buttons', 'links', 'inputs', 'modals', 'focused'])).optional()
     .describe('Optional element kinds to include; defaults to all live interactive categories'),
   maxItems: z.number().int().min(1).max(100).optional()
     .describe('Maximum number of structured refs to return'),
@@ -335,7 +335,7 @@ export const ListAutomationRunsSchema = z.object({
   sessionId: z.string().describe('Session identifier'),
   status: z.enum(['requested', 'started', 'succeeded', 'failed', 'rejected', 'stopped']).optional()
     .describe('Optional run status filter'),
-  action: z.enum(['click', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload']).optional()
+  action: z.enum(['click', 'hover', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload']).optional()
     .describe('Optional action filter'),
   traceId: z.string().optional()
     .describe('Optional trace identifier filter'),
@@ -382,15 +382,21 @@ const ExecuteUIActionFailureCaptureSchema = z.object({
 });
 
 const ExecuteUIActionWaitForPageStateSchema = z.object({
-  scope: z.enum(['buttons', 'inputs', 'modals', 'focused', 'page'])
+  scope: z.enum(['buttons', 'links', 'inputs', 'modals', 'focused', 'page'])
     .describe('Structured page-state scope to evaluate after the action'),
   selector: z.string().optional().describe('Optional selector substring matcher'),
   testId: z.string().optional().describe('Optional exact data-testid matcher'),
   textContains: z.string().optional().describe('Optional text substring matcher'),
   labelContains: z.string().optional().describe('Optional input label substring matcher'),
   titleContains: z.string().optional().describe('Optional modal title substring matcher'),
+  role: z.string().optional().describe('Optional exact ARIA/native role matcher'),
+  name: z.string().optional().describe('Optional accessible-name matcher'),
+  placeholder: z.string().optional().describe('Optional input placeholder matcher'),
+  altText: z.string().optional().describe('Optional image alt-text matcher'),
+  exact: z.boolean().optional().describe('Use exact matching for text/name/label/title/placeholder/alt text'),
   urlContains: z.string().optional().describe('Optional page URL substring matcher'),
   language: z.string().optional().describe('Optional exact page language matcher'),
+  visible: z.boolean().optional().describe('Optional visible-state matcher'),
   disabled: z.boolean().optional().describe('Optional disabled-state matcher'),
   selected: z.boolean().optional().describe('Optional selected-state matcher'),
   pressed: z.boolean().optional().describe('Optional pressed-state matcher'),

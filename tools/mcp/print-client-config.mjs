@@ -75,3 +75,4 @@ console.log('=== Claude/Cursor/Windsurf (JSON) [npm registry quick mode] ===');
 console.log(jsonConfigNpxRegistry);
 console.log('');
 console.log('Tip: pass --repo=<absolute path> to override detected repository path.');
+console.log('Tip: keep -y in npx configs so npm cannot block MCP startup on an interactive install prompt.');

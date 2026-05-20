@@ -3,22 +3,88 @@ import { z } from 'zod';
 export const UIWorkflowModeSchema = z.enum(['safe', 'fast']);
 export const UIWorkflowFailureStrategySchema = z.enum(['stop', 'continue', 'retry_once']);
 
-export const UIWorkflowActionTargetScopeSchema = z.enum(['buttons', 'inputs', 'modals', 'focused']);
+export const UIWorkflowActionTargetScopeSchema = z.enum(['buttons', 'links', 'inputs', 'modals', 'focused']);
+
+export const UIWorkflowLocatorMatcherSchema = z.union([
+  z.string().min(1),
+  z.object({
+    pattern: z.string().min(1),
+    flags: z.string().regex(/^[imsu]*$/).optional(),
+  }),
+]);
+
+export const UIWorkflowLocatorStepSchema = z.object({
+  kind: z.enum(['css', 'role', 'text', 'label', 'testId', 'placeholder', 'altText']),
+  value: UIWorkflowLocatorMatcherSchema.optional(),
+  role: z.string().min(1).optional(),
+  name: UIWorkflowLocatorMatcherSchema.optional(),
+  exact: z.boolean().optional(),
+  relation: z.enum(['filter', 'descendant', 'ancestor']).optional(),
+}).superRefine((value, ctx) => {
+  if (value.kind === 'role' && !value.role && !value.value) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'role locator step requires role or value',
+      path: ['role'],
+    });
+  }
+
+  if (value.kind !== 'role' && !value.value) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `${value.kind} locator step requires value`,
+      path: ['value'],
+    });
+  }
+});
+
+export const UIWorkflowLocatorSchema = z.object({
+  scope: UIWorkflowActionTargetScopeSchema.optional(),
+  frame: z.object({
+    selector: z.string().min(1).optional(),
+    urlContains: z.string().min(1).optional(),
+    titleContains: z.string().min(1).optional(),
+  }).optional(),
+  steps: z.array(UIWorkflowLocatorStepSchema).min(1).max(8),
+});
+
+export const UIWorkflowCoordinateTargetSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+  frameId: z.number().int().min(0).optional(),
+});
 
 export const UIWorkflowActionTargetSchema = z.object({
   selector: z.string().min(1).optional(),
   elementRef: z.string().min(1).optional(),
+  coordinates: UIWorkflowCoordinateTargetSchema.optional(),
   tabId: z.number().int().min(0).optional(),
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
+  locator: UIWorkflowLocatorSchema.optional(),
+  frameUrlContains: z.string().min(1).optional(),
+  frameTitleContains: z.string().min(1).optional(),
   testId: z.string().min(1).optional(),
   scope: UIWorkflowActionTargetScopeSchema.optional(),
   textContains: z.string().min(1).optional(),
   labelContains: z.string().min(1).optional(),
   titleContains: z.string().min(1).optional(),
+  role: z.string().min(1).optional(),
+  name: z.string().min(1).optional(),
+  placeholder: z.string().min(1).optional(),
+  altText: z.string().min(1).optional(),
   tagName: z.string().min(1).optional(),
   type: z.string().min(1).optional(),
+  exact: z.boolean().optional(),
+  nth: z.number().int().min(0).optional(),
+  first: z.boolean().optional(),
+  last: z.boolean().optional(),
+  strict: z.boolean().optional(),
+  visible: z.boolean().optional(),
+  enabled: z.boolean().optional(),
   disabled: z.boolean().optional(),
+  editable: z.boolean().optional(),
+  checked: z.boolean().optional(),
   selected: z.boolean().optional(),
   pressed: z.boolean().optional(),
   expanded: z.boolean().optional(),
@@ -28,14 +94,29 @@ export const UIWorkflowActionTargetSchema = z.object({
   if (
     !value.selector
     && !value.elementRef
+    && !value.coordinates
+    && !value.locator
+    && !value.scope
     && !value.testId
     && !value.textContains
     && !value.labelContains
     && !value.titleContains
+    && !value.role
+    && !value.name
+    && !value.placeholder
+    && !value.altText
   ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'target requires selector, elementRef, testId, textContains, labelContains, or titleContains',
+      message: 'target requires selector, elementRef, coordinates, locator, scope, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText',
+      path: ['target'],
+    });
+  }
+  const positionFields = [value.nth !== undefined, value.first === true, value.last === true].filter(Boolean).length;
+  if (positionFields > 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'target can use only one of nth, first, or last',
       path: ['target'],
     });
   }
@@ -78,6 +159,10 @@ export const UIWorkflowActionStepSchema = z.discriminatedUnion('action', [
       button: z.enum(['left', 'middle', 'right']).optional(),
       clickCount: z.number().int().min(1).max(3).optional(),
     }).optional(),
+  }),
+  UIWorkflowActionBaseSchema.extend({
+    action: z.literal('hover'),
+    input: z.object({}).optional(),
   }),
   UIWorkflowActionBaseSchema.extend({
     action: z.literal('input'),
@@ -124,12 +209,19 @@ export const UIWorkflowActionStepSchema = z.discriminatedUnion('action', [
 ]);
 
 export const UIWorkflowPageStateMatcherSchema = z.object({
-  scope: z.enum(['buttons', 'inputs', 'modals', 'focused', 'page']),
+  scope: z.enum(['buttons', 'links', 'inputs', 'modals', 'focused', 'page']),
   selector: z.string().optional(),
   testId: z.string().optional(),
   textContains: z.string().optional(),
   labelContains: z.string().optional(),
   titleContains: z.string().optional(),
+  role: z.string().optional(),
+  name: z.string().optional(),
+  placeholder: z.string().optional(),
+  altText: z.string().optional(),
+  exact: z.boolean().optional(),
+  frameUrlContains: z.string().optional(),
+  frameTitleContains: z.string().optional(),
   urlContains: z.string().optional(),
   language: z.string().optional(),
   disabled: z.boolean().optional(),
@@ -162,6 +254,215 @@ export const UIWorkflowWaitForStepSchema = UIWorkflowStepBaseSchema.extend({
   }),
 });
 
+export const AutomationWaitBaseSchema = z.object({
+  timeoutMs: z.number().int().min(100).max(120000).optional(),
+  pollIntervalMs: z.number().int().min(50).max(5000).optional(),
+});
+
+export const AutomationWaitUrlSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('url'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'url wait requires urlContains, urlRegex, or exactUrl',
+      path: ['wait'],
+    });
+  }
+});
+
+export const AutomationWaitNavigationSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('navigation'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  fromUrlContains: z.string().min(1).optional(),
+  fromUrlRegex: z.string().min(1).optional(),
+  trigger: z.string().min(1).optional(),
+  sinceTs: z.number().int().min(0).optional(),
+  tabId: z.number().int().min(0).optional(),
+}).superRefine((value, ctx) => {
+  if (
+    !value.urlContains
+    && !value.urlRegex
+    && !value.exactUrl
+    && !value.fromUrlContains
+    && !value.fromUrlRegex
+    && !value.trigger
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'navigation wait requires a URL, from-URL, or trigger predicate',
+      path: ['wait'],
+    });
+  }
+});
+
+export const AutomationWaitNavigationLifecycleSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('navigation_lifecycle'),
+  state: z.enum(['commit', 'same_document', 'domcontentloaded', 'load', 'network_idle']).default('load'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  tabId: z.number().int().min(0).optional(),
+});
+
+export const AutomationWaitLoadStateSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('load_state'),
+  state: z.enum(['domcontentloaded', 'load']).default('load'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+});
+
+export const AutomationWaitSelectorStateSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('selector_state'),
+  selector: z.string().min(1),
+  state: z.enum(['attached', 'detached', 'visible', 'hidden']).default('visible'),
+  frameId: z.number().int().min(0).default(0),
+});
+
+export const AutomationWaitConsoleSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('console'),
+  levels: z.array(z.string().min(1)).optional(),
+  contains: z.string().min(1).optional(),
+  sinceTs: z.number().int().min(0).optional(),
+  includeRuntimeErrors: z.boolean().optional(),
+});
+
+export const AutomationWaitDialogSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('dialog'),
+  type: z.enum(['alert', 'confirm', 'prompt', 'beforeunload']).optional(),
+  messageContains: z.string().min(1).optional(),
+  urlContains: z.string().min(1).optional(),
+  action: z.enum(['none', 'accept', 'dismiss']).default('none'),
+  promptText: z.string().optional(),
+  tabId: z.number().int().min(0).optional(),
+});
+
+export const AutomationWaitStableLayoutSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('stable_layout'),
+  selector: z.string().min(1).optional(),
+  stableMs: z.number().int().min(100).max(10000).default(500),
+  tabId: z.number().int().min(0).optional(),
+});
+
+export const AutomationWaitDownloadSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('download'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  filenameContains: z.string().min(1).optional(),
+  filenameRegex: z.string().min(1).optional(),
+  state: z.enum(['started', 'completed']).default('started'),
+  tabId: z.number().int().min(0).optional(),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl && !value.filenameContains && !value.filenameRegex) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'download wait requires a URL or filename predicate',
+      path: ['wait'],
+    });
+  }
+});
+
+export const AutomationWaitPopupSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('popup'),
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  openerTabId: z.number().int().min(0).optional(),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl && value.openerTabId === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'popup wait requires a URL predicate or openerTabId',
+      path: ['wait'],
+    });
+  }
+});
+
+export const AutomationWaitNetworkQuietSchema = AutomationWaitBaseSchema.extend({
+  waitKind: z.literal('network_quiet'),
+  quietMs: z.number().int().min(100).max(10000).default(500),
+  urlContains: z.string().min(1).optional(),
+  method: z.string().min(1).optional(),
+  tabId: z.number().int().min(0).optional(),
+});
+
+export const AutomationWaitNetworkBaseSchema = AutomationWaitBaseSchema.extend({
+  urlContains: z.string().min(1).optional(),
+  urlRegex: z.string().min(1).optional(),
+  exactUrl: z.string().min(1).optional(),
+  method: z.string().min(1).optional(),
+  traceId: z.string().min(1).optional(),
+  initiator: z.enum(['fetch', 'xhr', 'img', 'script', 'other']).optional(),
+  requestContentType: z.string().min(1).optional(),
+  sinceTs: z.number().int().min(0).optional(),
+  tabId: z.number().int().min(0).optional(),
+  includeBodies: z.boolean().optional(),
+});
+
+export const AutomationWaitRequestSchema = AutomationWaitNetworkBaseSchema.extend({
+  waitKind: z.literal('request'),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl && !value.traceId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'request wait requires urlContains, urlRegex, exactUrl, or traceId',
+      path: ['wait'],
+    });
+  }
+});
+
+export const AutomationWaitResponseSchema = AutomationWaitNetworkBaseSchema.extend({
+  waitKind: z.literal('response'),
+  statusIn: z.array(z.number().int().min(100).max(599)).optional(),
+  statusGte: z.number().int().min(100).max(599).optional(),
+  statusLt: z.number().int().min(100).max(600).optional(),
+  responseContentType: z.string().min(1).optional(),
+  errorType: z.string().min(1).optional(),
+}).superRefine((value, ctx) => {
+  if (!value.urlContains && !value.urlRegex && !value.exactUrl && !value.traceId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'response wait requires urlContains, urlRegex, exactUrl, or traceId',
+      path: ['wait'],
+    });
+  }
+  if (value.statusGte !== undefined && value.statusLt !== undefined && value.statusGte >= value.statusLt) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'statusGte must be less than statusLt',
+      path: ['statusGte'],
+    });
+  }
+});
+
+export const AutomationWaitSpecSchema = z.discriminatedUnion('waitKind', [
+  AutomationWaitUrlSchema,
+  AutomationWaitNavigationSchema,
+  AutomationWaitNavigationLifecycleSchema,
+  AutomationWaitLoadStateSchema,
+  AutomationWaitSelectorStateSchema,
+  AutomationWaitConsoleSchema,
+  AutomationWaitDialogSchema,
+  AutomationWaitStableLayoutSchema,
+  AutomationWaitDownloadSchema,
+  AutomationWaitPopupSchema,
+  AutomationWaitNetworkQuietSchema,
+  AutomationWaitRequestSchema,
+  AutomationWaitResponseSchema,
+]);
+
+export const UIWorkflowGenericWaitStepSchema = UIWorkflowStepBaseSchema.extend({
+  kind: z.literal('wait'),
+  wait: AutomationWaitSpecSchema,
+});
+
 export const UIWorkflowAssertStepSchema = UIWorkflowStepBaseSchema.extend({
   kind: z.literal('assert'),
   matcher: UIWorkflowPageStateMatcherSchema,
@@ -170,6 +471,7 @@ export const UIWorkflowAssertStepSchema = UIWorkflowStepBaseSchema.extend({
 export const UIWorkflowStepSchema = z.discriminatedUnion('kind', [
   UIWorkflowActionStepSchema,
   UIWorkflowWaitForStepSchema,
+  UIWorkflowGenericWaitStepSchema,
   UIWorkflowAssertStepSchema,
 ]);
 
@@ -191,10 +493,15 @@ export type UIWorkflowMode = z.infer<typeof UIWorkflowModeSchema>;
 export type UIWorkflowFailureStrategy = z.infer<typeof UIWorkflowFailureStrategySchema>;
 export type UIWorkflowFailureCapture = z.infer<typeof UIWorkflowFailureCaptureSchema>;
 export type UIWorkflowFailurePolicy = z.infer<typeof UIWorkflowFailurePolicySchema>;
+export type UIWorkflowLocatorMatcher = z.infer<typeof UIWorkflowLocatorMatcherSchema>;
+export type UIWorkflowLocatorStep = z.infer<typeof UIWorkflowLocatorStepSchema>;
+export type UIWorkflowLocator = z.infer<typeof UIWorkflowLocatorSchema>;
 export type UIWorkflowActionTarget = z.infer<typeof UIWorkflowActionTargetSchema>;
 export type UIWorkflowActionStep = z.infer<typeof UIWorkflowActionStepSchema>;
 export type UIWorkflowPageStateMatcher = z.infer<typeof UIWorkflowPageStateMatcherSchema>;
 export type UIWorkflowWaitForStep = z.infer<typeof UIWorkflowWaitForStepSchema>;
+export type AutomationWaitSpec = z.infer<typeof AutomationWaitSpecSchema>;
+export type UIWorkflowGenericWaitStep = z.infer<typeof UIWorkflowGenericWaitStepSchema>;
 export type UIWorkflowAssertStep = z.infer<typeof UIWorkflowAssertStepSchema>;
 export type UIWorkflowStep = z.infer<typeof UIWorkflowStepSchema>;
 export type RunUIStepsRequest = z.infer<typeof RunUIStepsSchema>;

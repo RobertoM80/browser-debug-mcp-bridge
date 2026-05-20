@@ -15,7 +15,7 @@
       "executor": "nx:run-commands",
       "outputs": ["{workspaceRoot}/dist/apps/docs"],
       "options": {
-        "command": "docusaurus build apps/docs --out-dir ../../dist/apps/docs"
+        "command": "node tools/docs/build-docs.mjs"
       }
     },
     "lint": {

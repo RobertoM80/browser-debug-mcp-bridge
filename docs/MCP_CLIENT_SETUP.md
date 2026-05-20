@@ -51,6 +51,8 @@ Quick GitHub fallback option (if registry package is not available):
 - command: `npx`
 - args: `["-y", "--package=github:RobertoM80/browser-debug-mcp-bridge", "browser-debug-mcp-bridge"]`
 
+Keep `-y` in every `npx` MCP host config. Without it, npm can pause for interactive install confirmation; VS Code Copilot and other MCP hosts cannot answer that prompt, so startup stalls before tools are registered.
+
 Important:
 
 - This only changes how the MCP server is started.
@@ -175,6 +177,8 @@ Optional Codex npm registry config:
 command = "npx"
 args = ["-y", "browser-debug-mcp-bridge"]
 ```
+
+Do not remove `-y` from the `npx` examples. If npm needs to install or refresh the package cache, omitting `-y` leaves the MCP process waiting at an interactive prompt that the host cannot answer.
 
 If this mode fails with npm cache permission errors (for example `EPERM ... npm-cache\\_cacache\\tmp\\git-clone...`), switch to local mode:
 

@@ -47,6 +47,12 @@ Actions:
 - If startup still fails on port `8065`, stop non-bridge listener processes manually and retry
 - If Codex or another MCP host logs `MCP_STARTUP_LOCKED`, an older `--standalone` launcher still owns the bridge lock. Stop it with `node scripts/mcp-start.cjs --stop` or restart the MCP host after the launcher auto-replaces it.
 
+## MCP host starts but no browser-debug tools appear
+
+- Prefer direct `node` launch to `scripts/mcp-start.cjs` in MCP host config
+- If using `npx`, keep `-y` in args, for example `["-y", "browser-debug-mcp-bridge"]`
+- Without `-y`, npm can wait for interactive install confirmation; VS Code Copilot and other MCP hosts cannot answer that prompt, so startup stalls before tools are registered
+
 ## MCP process remains alive after host closes
 
 - In `mcp-stdio` mode, process should stop when host transport closes
