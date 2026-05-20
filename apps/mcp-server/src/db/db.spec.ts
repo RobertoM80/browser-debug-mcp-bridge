@@ -171,6 +171,14 @@ describe('Database Schema', () => {
       expect(plans).toBeDefined();
     });
 
+    it('should create network blocking audit tables', () => {
+      initializeSchema(db);
+      const runs = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='network_blocking_runs'").get();
+      const requests = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='network_blocking_requests'").get();
+      expect(runs).toBeDefined();
+      expect(requests).toBeDefined();
+    });
+
     it('should create observed override asset table', () => {
       initializeSchema(db);
       const table = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_observed_assets'").get();
@@ -275,6 +283,18 @@ describe('Database Schema', () => {
       expect(planIndexes.map((index) => index.name)).toContain('idx_override_plan_audits_session_created_at');
       expect(planIndexes.map((index) => index.name)).toContain('idx_override_plan_audits_target_url');
       expect(planIndexes.map((index) => index.name)).toContain('idx_override_plan_audits_planner_kind');
+    });
+
+    it('should create indexes on network blocking audit tables', () => {
+      initializeSchema(db);
+      const runIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='network_blocking_runs'").all() as { name: string }[];
+      const requestIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='network_blocking_requests'").all() as { name: string }[];
+
+      expect(runIndexes.map((index) => index.name)).toContain('idx_network_blocking_runs_session_started_at');
+      expect(runIndexes.map((index) => index.name)).toContain('idx_network_blocking_runs_session_status_started_at');
+      expect(requestIndexes.map((index) => index.name)).toContain('idx_network_blocking_requests_session_ts');
+      expect(requestIndexes.map((index) => index.name)).toContain('idx_network_blocking_requests_run_ts');
+      expect(requestIndexes.map((index) => index.name)).toContain('idx_network_blocking_requests_rule_ts');
     });
 
     it('should create indexes on automation tables', () => {
@@ -382,6 +402,8 @@ describe('Database Migrations', () => {
       expect(tableNames).toContain('override_requests');
       expect(tableNames).toContain('override_plan_audits');
       expect(tableNames).toContain('override_observed_assets');
+      expect(tableNames).toContain('network_blocking_runs');
+      expect(tableNames).toContain('network_blocking_requests');
       expect(tableNames).toContain('mcp_tool_invocations');
       expect(tableNames).toContain('mcp_loop_incidents');
       expect(tableNames).toContain('schema_version');

@@ -243,6 +243,58 @@ Fetches chunked body payload for rows that expose `bodyChunkRef`.
 }
 ```
 
+## Network blocking tools
+
+These tools temporarily fail matching requests in a live extension tab and persist block audit rows. They are state-changing and should be disabled when the diagnostic step is complete.
+
+Available tools:
+
+- `enable_network_blocking`
+- `disable_network_blocking`
+- `get_network_blocking_status`
+- `get_network_block_log`
+
+`enable_network_blocking` uses Chrome Debugger Protocol request interception and defaults to `BlockedByClient`. V1 is tab-scoped and mutually exclusive with active response overrides on the same tab.
+
+```json
+{
+  "name": "enable_network_blocking",
+  "arguments": {
+    "sessionId": "sess_123",
+    "rules": [
+      {
+        "ruleId": "checkout-api",
+        "urlContains": "/api/checkout",
+        "method": "POST",
+        "resourceTypes": ["fetch"]
+      }
+    ]
+  }
+}
+```
+
+Each rule requires `exactUrl`, `urlContains`, or `urlRegex`. Optional filters include `method`, `resourceTypes`, and `errorReason`. Blocked requests are written to `network_blocking_requests` and also appear as persisted network failures with `errorType: "blocked"`.
+
+```json
+{
+  "name": "get_network_block_log",
+  "arguments": {
+    "sessionId": "sess_123",
+    "ruleId": "checkout-api",
+    "limit": 20
+  }
+}
+```
+
+```json
+{
+  "name": "disable_network_blocking",
+  "arguments": {
+    "sessionId": "sess_123"
+  }
+}
+```
+
 Tool boundaries:
 
 - `get_recent_events`: broad timeline across event types.

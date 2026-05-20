@@ -2699,6 +2699,121 @@ describe('mcp/server V2 capture tools', () => {
     expect(disabled.active).toBe(false);
   });
 
+  it('routes network blocking control tools through live capture commands', async () => {
+    const captureCalls: Array<{ sessionId: string; command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (sessionId, command, payload) => {
+          captureCalls.push({ sessionId, command, payload });
+          return {
+            ok: true,
+            payload: {
+              active: command === 'CAPTURE_NETWORK_BLOCKING_ENABLE',
+              tabId: payload.tabId,
+              ruleCount: Array.isArray(payload.rules) ? payload.rules.length : 0,
+              blockedRequests: 0,
+              rules: payload.rules ?? [],
+            },
+          };
+        },
+      })
+    );
+
+    const status = await routeToolCall(tools, 'get_network_blocking_status', { sessionId: 'session-live' });
+    const enabled = await routeToolCall(tools, 'enable_network_blocking', {
+      sessionId: 'session-live',
+      tabId: 7,
+      rules: [{ urlContains: '/api/blocked', method: 'post' }],
+    });
+    const disabled = await routeToolCall(tools, 'disable_network_blocking', { sessionId: 'session-live' });
+
+    expect(captureCalls.map((call) => call.command)).toEqual([
+      'CAPTURE_NETWORK_BLOCKING_GET_STATUS',
+      'CAPTURE_NETWORK_BLOCKING_ENABLE',
+      'CAPTURE_NETWORK_BLOCKING_DISABLE',
+    ]);
+    expect(captureCalls[1]?.payload).toMatchObject({
+      tabId: 7,
+      clearCache: true,
+      bypassServiceWorker: true,
+    });
+    expect(captureCalls[1]?.payload.rules).toEqual([
+      expect.objectContaining({
+        urlContains: '/api/blocked',
+        method: 'POST',
+        errorReason: 'BlockedByClient',
+      }),
+    ]);
+    expect(status.active).toBe(false);
+    expect(enabled.active).toBe(true);
+    expect(disabled.active).toBe(false);
+  });
+
+  it('rejects network blocking rules without a URL matcher before live capture', async () => {
+    let called = false;
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async () => {
+          called = true;
+          return { ok: true, payload: {} };
+        },
+      })
+    );
+
+    await expect(routeToolCall(tools, 'enable_network_blocking', {
+      sessionId: 'session-live',
+      rules: [{ method: 'GET' }],
+    })).rejects.toThrow('requires exactUrl, urlContains, or urlRegex');
+    expect(called).toBe(false);
+  });
+
+  it('reads network blocking request audit rows with filters', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    db.prepare(`
+      INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode)
+      VALUES ('session-blocking-log', 1000, 1100, 0)
+    `).run();
+    db.prepare(`
+      INSERT INTO network_blocking_runs (
+        run_id, session_id, started_at, run_status, tab_id, rule_count, blocked_requests, rules_json, created_at, updated_at
+      ) VALUES (
+        'run-block', 'session-blocking-log', 1200, 'active', 7, 1, 1,
+        '[{"ruleId":"api-block","enabled":true,"urlContains":"/api/blocked","errorReason":"BlockedByClient"}]',
+        1200, 1200
+      )
+    `).run();
+    db.prepare(`
+      INSERT INTO network_blocking_requests (
+        request_log_id, run_id, session_id, request_id, ts, tab_id, request_url,
+        request_method, resource_type, rule_id, error_reason, created_at, updated_at
+      ) VALUES (
+        'req-log-1', 'run-block', 'session-blocking-log', 'request-1', 1300, 7,
+        'https://example.com/api/blocked', 'POST', 'fetch', 'api-block', 'BlockedByClient', 1300, 1300
+      )
+    `).run();
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async () => ({ ok: true, payload: {} }),
+      }, () => db)
+    );
+
+    const response = await routeToolCall(tools, 'get_network_block_log', {
+      sessionId: 'session-blocking-log',
+      ruleId: 'api-block',
+      method: 'post',
+    });
+
+    expect(response.requests).toEqual([
+      expect.objectContaining({
+        requestLogId: 'req-log-1',
+        ruleId: 'api-block',
+        requestMethod: 'POST',
+      }),
+    ]);
+    expect(response.source).toBe('network_blocking_requests');
+  });
+
   it('returns persisted override status diagnostics when live status times out', async () => {
     const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
     const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-v2-status-timeout-'));

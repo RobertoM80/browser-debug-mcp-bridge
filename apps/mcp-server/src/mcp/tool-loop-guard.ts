@@ -65,6 +65,8 @@ const HIGH_RISK_BLOCK_THRESHOLD = 3;
 const FAMILY_BLOCK_THRESHOLD = 4;
 
 const HIGH_RISK_TOOLS = new Set([
+  'enable_network_blocking',
+  'disable_network_blocking',
   'enable_overrides',
   'disable_overrides',
   'observe_override_assets',
@@ -77,6 +79,7 @@ const HIGH_RISK_TOOLS = new Set([
 ]);
 
 const FAMILY_BLOCKED_TOOLS = new Set([
+  'enable_network_blocking',
   'enable_overrides',
   'observe_override_assets',
   'capture_override_response_body',
@@ -89,6 +92,9 @@ const LOOP_PRONE_NEXT_ACTIONS = new Set([
   'DIAGNOSE_OVERRIDES',
   'ENABLE_OVERRIDES',
   'GET_OVERRIDE_STATUS',
+  'DISABLE_NETWORK_BLOCKING',
+  'READ_BLOCK_LOG',
+  'RECONNECT_OR_RETRY_STATUS',
   'LOAD_ROUTE',
   'OBSERVE_ASSETS',
   'OBSERVE_OVERRIDE_ASSETS',
@@ -172,6 +178,9 @@ function getSessionId(input: Record<string, unknown>): string | undefined {
 }
 
 function getToolFamily(toolName: string): string {
+  if (toolName.includes('network_block')) {
+    return 'network_control';
+  }
   if (toolName.includes('override')) {
     return 'override';
   }
@@ -351,6 +360,8 @@ function requiredStateChangeFor(rootCauseCode: string | undefined): string[] {
       return ['override profile enabled rules change'];
     case 'LIVE_SESSION_DISCONNECTED':
       return ['live extension connection becomes connected', 'sessionId changes'];
+    case 'OVERRIDE_ACTIVE':
+      return ['active overrides are disabled before network blocking is enabled'];
     case 'NO_OBSERVED_ASSETS':
     case 'TARGET_ASSET_NOT_OBSERVED':
     case 'TARGET_ASSET_NOT_OBSERVED_FOR_RULE':

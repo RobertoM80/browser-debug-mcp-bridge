@@ -147,6 +147,8 @@ Returns aggregate event volume and grouped type distribution.
 }
 ```
 
+Network requests intentionally failed by `enable_network_blocking` are also written as network failures with `errorType: "blocked"`. Use [Network blocking tools](./network-blocking.md) for the authoritative block run and rule audit.
+
 ## `get_network_calls`
 
 ```json

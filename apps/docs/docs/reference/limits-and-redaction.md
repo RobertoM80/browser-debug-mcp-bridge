@@ -18,6 +18,13 @@ All tool responses include:
 - `maxDepth` and related node-depth controls
 - `timeoutMs` with outline fallback when exceeded
 
+## Network Blocking Limits
+
+- `enable_network_blocking` accepts up to 25 rules per run.
+- Rule URL matcher strings are bounded to 512 characters.
+- `get_network_block_log` supports pagination and `maxResponseBytes`.
+- V1 network blocking is mutually exclusive with the active override POC on the same tab because both use Chrome Debugger request interception.
+
 ## Redaction behavior
 
 - Redacts authorization headers and bearer tokens

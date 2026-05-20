@@ -30,6 +30,13 @@ export const ERROR_TOOLS = {
   GET_BODY_CHUNK: 'get_body_chunk',
 } as const;
 
+export const NETWORK_CONTROL_TOOLS = {
+  ENABLE_NETWORK_BLOCKING: 'enable_network_blocking',
+  DISABLE_NETWORK_BLOCKING: 'disable_network_blocking',
+  GET_NETWORK_BLOCKING_STATUS: 'get_network_blocking_status',
+  GET_NETWORK_BLOCK_LOG: 'get_network_block_log',
+} as const;
+
 export const QUERY_TOOLS = {
   GET_ELEMENT_REFS: 'get_element_refs',
   GET_INTERACTIVE_ELEMENTS: 'get_interactive_elements',
@@ -83,6 +90,7 @@ export const AUTOMATION_TOOLS = {
 export const ALL_TOOLS = [
   ...Object.values(SESSION_TOOLS),
   ...Object.values(ERROR_TOOLS),
+  ...Object.values(NETWORK_CONTROL_TOOLS),
   ...Object.values(QUERY_TOOLS),
   ...Object.values(CAPTURE_TOOLS),
   ...Object.values(CORRELATION_TOOLS),

@@ -183,6 +183,78 @@ export const GetBodyChunkSchema = z.object({
   limit: z.number().int().min(1).max(262144).optional().describe('Chunk size in bytes'),
 });
 
+const NetworkBlockingResourceTypeSchema = z.enum([
+  'document',
+  'script',
+  'xhr',
+  'fetch',
+  'image',
+  'stylesheet',
+  'font',
+  'media',
+  'websocket',
+  'other',
+]);
+
+const NetworkBlockingErrorReasonSchema = z.enum(['BlockedByClient', 'Failed', 'Aborted', 'TimedOut']);
+
+const NetworkBlockingRuleSchema = z.object({
+  ruleId: z.string().min(1).max(120).optional()
+    .describe('Stable rule identifier; generated when omitted'),
+  enabled: z.boolean().optional()
+    .describe('Whether this rule is active; defaults true'),
+  exactUrl: z.string().url().optional()
+    .describe('Absolute URL to block exactly'),
+  urlContains: z.string().min(1).max(512).optional()
+    .describe('Case-sensitive URL substring to block'),
+  urlRegex: z.string().min(1).max(512).optional()
+    .describe('JavaScript regular expression matched against the request URL'),
+  method: z.string().min(1).max(16).optional()
+    .describe('Optional HTTP method filter'),
+  resourceTypes: z.array(NetworkBlockingResourceTypeSchema).min(1).max(10).optional()
+    .describe('Optional CDP resource-type filters'),
+  errorReason: NetworkBlockingErrorReasonSchema.optional()
+    .describe('Chrome network failure reason; defaults to BlockedByClient'),
+  note: z.string().max(300).optional()
+    .describe('Operator-facing reason for this rule'),
+}).refine(
+  (rule) => Boolean(rule.exactUrl || rule.urlContains || rule.urlRegex),
+  { message: 'network blocking rule requires exactUrl, urlContains, or urlRegex' },
+);
+
+export const EnableNetworkBlockingSchema = z.object({
+  sessionId: z.string().describe('Connected session identifier'),
+  tabId: z.number().int().min(0).optional().describe('Optional tab bound to this session'),
+  rules: z.array(NetworkBlockingRuleSchema).min(1).max(25)
+    .describe('Network request block rules'),
+  reload: z.boolean().optional()
+    .describe('Reload the tab after enabling blocking'),
+  clearCache: z.boolean().optional()
+    .describe('Disable cache and clear browser cache before blocking; defaults true'),
+  bypassServiceWorker: z.boolean().optional()
+    .describe('Bypass service workers while blocking; defaults true'),
+});
+
+export const DisableNetworkBlockingSchema = z.object({
+  sessionId: z.string().describe('Connected session identifier'),
+});
+
+export const GetNetworkBlockingStatusSchema = z.object({
+  sessionId: z.string().describe('Connected session identifier'),
+});
+
+export const GetNetworkBlockLogSchema = z.object({
+  sessionId: z.string().describe('Session identifier'),
+  runId: z.string().optional().describe('Optional run identifier filter'),
+  ruleId: z.string().optional().describe('Optional rule identifier filter'),
+  urlContains: z.string().optional().describe('Optional URL substring filter'),
+  method: z.string().optional().describe('Optional HTTP method filter'),
+  limit: z.number().int().min(1).max(200).optional().describe('Maximum blocked request rows'),
+  offset: z.number().int().min(0).optional().describe('Pagination offset'),
+  maxResponseBytes: z.number().int().min(1024).max(524288).optional()
+    .describe('Soft byte budget for returned rows before truncation'),
+});
+
 export const GetElementRefsSchema = z.object({
   sessionId: z.string().describe('Unique session identifier'),
   selector: z.string().describe('CSS selector to find elements'),

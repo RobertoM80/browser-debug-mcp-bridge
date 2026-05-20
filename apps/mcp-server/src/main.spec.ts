@@ -421,4 +421,102 @@ describe('MCP Server', () => {
     expect(diagnosisBody.diagnosis.issues.some((issue: { code: string }) => issue.code === 'FULFILL_FAILED')).toBe(true);
     expect(diagnosisBody.diagnosis.issues.some((issue: { code: string }) => issue.code === 'RSC_PATCH_ANCHOR_MISMATCH')).toBe(true);
   });
+
+  it('should persist and list network blocking audit data through HTTP APIs', async () => {
+    initializeDatabase(getConnection().db);
+    clearDatabase(getConnection().db);
+
+    await fastify.inject({
+      method: 'POST',
+      url: '/sessions/import',
+      payload: {
+        session: {
+          session_id: 'network-blocking-test',
+          created_at: 1700000000000,
+          safe_mode: 0,
+        },
+        events: [],
+        network: [],
+        fingerprints: [],
+      },
+    });
+
+    const runResponse = await fastify.inject({
+      method: 'POST',
+      url: '/sessions/network-blocking-test/network-blocking/runs',
+      payload: {
+        runId: 'block-run-1',
+        startedAt: 1700000000100,
+        runStatus: 'active',
+        tabId: 17,
+        selectedTabId: 17,
+        ruleCount: 1,
+        blockedRequests: 0,
+        rules: [{
+          ruleId: 'api-block',
+          enabled: true,
+          urlContains: '/api/blocked',
+          method: 'POST',
+          resourceTypes: ['fetch'],
+          errorReason: 'BlockedByClient',
+        }],
+      },
+    });
+
+    expect(runResponse.statusCode).toBe(200);
+    expect(JSON.parse(runResponse.body).ok).toBe(true);
+
+    const requestResponse = await fastify.inject({
+      method: 'POST',
+      url: '/sessions/network-blocking-test/network-blocking/requests',
+      payload: {
+        requestLogId: 'block-run-1:req-1',
+        runId: 'block-run-1',
+        requestId: 'req-1',
+        timestamp: 1700000000200,
+        tabId: 17,
+        frameId: 0,
+        requestUrl: 'https://example.com/api/blocked',
+        requestMethod: 'POST',
+        resourceType: 'fetch',
+        ruleId: 'api-block',
+        errorReason: 'BlockedByClient',
+      },
+    });
+
+    expect(requestResponse.statusCode).toBe(200);
+    expect(JSON.parse(requestResponse.body).ok).toBe(true);
+
+    const listRunsResponse = await fastify.inject({
+      method: 'GET',
+      url: '/sessions/network-blocking-test/network-blocking/runs',
+    });
+    const listRunsBody = JSON.parse(listRunsResponse.body);
+    expect(listRunsResponse.statusCode).toBe(200);
+    expect(listRunsBody.runs[0]).toMatchObject({
+      runId: 'block-run-1',
+      ruleCount: 1,
+    });
+
+    const listRequestsResponse = await fastify.inject({
+      method: 'GET',
+      url: '/sessions/network-blocking-test/network-blocking/requests?ruleId=api-block&method=POST',
+    });
+    const listRequestsBody = JSON.parse(listRequestsResponse.body);
+    expect(listRequestsResponse.statusCode).toBe(200);
+    expect(listRequestsBody.requests).toEqual([
+      expect.objectContaining({
+        requestLogId: 'block-run-1:req-1',
+        requestMethod: 'POST',
+      }),
+    ]);
+
+    const blockedNetworkRow = getConnection().db.prepare(`
+      SELECT error_class
+      FROM network
+      WHERE session_id = ? AND url = ?
+      LIMIT 1
+    `).get('network-blocking-test', 'https://example.com/api/blocked') as { error_class: string } | undefined;
+    expect(blockedNetworkRow?.error_class).toBe('blocked');
+  });
 });

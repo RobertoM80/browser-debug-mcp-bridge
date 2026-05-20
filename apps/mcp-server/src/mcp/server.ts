@@ -22,6 +22,19 @@ import {
   listOverridePocRequests,
   listOverridePocRuns,
 } from '../override-audit.js';
+import {
+  getLatestNetworkBlockingRun,
+  listNetworkBlockingRequests,
+} from '../network-blocking-audit.js';
+import {
+  NETWORK_BLOCKING_ERROR_REASONS,
+  NETWORK_BLOCKING_RESOURCE_TYPES,
+  isNetworkBlockingErrorReason,
+  isNetworkBlockingResourceType,
+  type NetworkBlockingErrorReason,
+  type NetworkBlockingResourceType,
+  type NetworkBlockingRule,
+} from '../network-blocking-contract.js';
 import type { OverridePlanAuditRecord } from '../override-audit-contract.js';
 import {
   createOverrideProfileConfig,
@@ -977,6 +990,64 @@ const TOOL_SCHEMAS: Record<string, object> = {
       limit: { type: 'number' },
     },
   },
+  enable_network_blocking: {
+    type: 'object',
+    required: ['sessionId', 'rules'],
+    properties: {
+      sessionId: { type: 'string' },
+      tabId: { type: 'number' },
+      rules: {
+        type: 'array',
+        minItems: 1,
+        maxItems: 25,
+        items: {
+          type: 'object',
+          properties: {
+            ruleId: { type: 'string' },
+            enabled: { type: 'boolean' },
+            exactUrl: { type: 'string' },
+            urlContains: { type: 'string' },
+            urlRegex: { type: 'string' },
+            method: { type: 'string' },
+            resourceTypes: { type: 'array', items: { type: 'string', enum: [...NETWORK_BLOCKING_RESOURCE_TYPES] } },
+            errorReason: { type: 'string', enum: [...NETWORK_BLOCKING_ERROR_REASONS] },
+            note: { type: 'string' },
+          },
+        },
+      },
+      reload: { type: 'boolean' },
+      clearCache: { type: 'boolean' },
+      bypassServiceWorker: { type: 'boolean' },
+    },
+  },
+  disable_network_blocking: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+    },
+  },
+  get_network_blocking_status: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+    },
+  },
+  get_network_block_log: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      runId: { type: 'string' },
+      ruleId: { type: 'string' },
+      urlContains: { type: 'string' },
+      method: { type: 'string' },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
+    },
+  },
   get_element_refs: {
     type: 'object',
     required: ['sessionId', 'selector'],
@@ -1924,6 +1995,10 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   wait_for_network_call: 'Wait for the next matching network call and return it deterministically',
   get_request_trace: 'Get correlated UI/events/network chain by requestId or traceId',
   get_body_chunk: 'Retrieve a chunk from a stored large body payload',
+  enable_network_blocking: 'Enable live tab-scoped request blocking for matching network requests',
+  disable_network_blocking: 'Disable live request blocking for a session',
+  get_network_blocking_status: 'Read live or persisted request blocking status for a session',
+  get_network_block_log: 'Read persisted request blocking audit rows',
   get_element_refs: 'Get element references by selector',
   get_dom_subtree: 'Capture a bounded DOM subtree',
   get_dom_document: 'Capture full document as outline or html',
@@ -2248,6 +2323,9 @@ type CaptureCommandName =
   | 'CAPTURE_OVERRIDE_POC_GET_STATUS'
   | 'CAPTURE_OVERRIDE_POC_ENABLE'
   | 'CAPTURE_OVERRIDE_POC_DISABLE'
+  | 'CAPTURE_NETWORK_BLOCKING_GET_STATUS'
+  | 'CAPTURE_NETWORK_BLOCKING_ENABLE'
+  | 'CAPTURE_NETWORK_BLOCKING_DISABLE'
   | 'SET_VIEWPORT'
   | 'EXECUTE_UI_ACTION';
 
@@ -6685,6 +6763,117 @@ function resolveOptionalTabId(value: unknown): number | undefined {
   return tabId;
 }
 
+function normalizeNetworkBlockingMethod(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error('network blocking rule method must be a non-empty string when provided');
+  }
+  const method = value.trim().toUpperCase();
+  if (!/^[A-Z]+$/.test(method) || method.length > 16) {
+    throw new Error('network blocking rule method must be an HTTP method token');
+  }
+  return method;
+}
+
+function normalizeNetworkBlockingResourceTypes(value: unknown): NetworkBlockingResourceType[] | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error('network blocking rule resourceTypes must be a non-empty array when provided');
+  }
+  if (value.length > NETWORK_BLOCKING_RESOURCE_TYPES.length) {
+    throw new Error('network blocking rule resourceTypes is too large');
+  }
+  return value.map((entry) => {
+    if (!isNetworkBlockingResourceType(entry)) {
+      throw new Error(`unsupported network blocking resourceType: ${String(entry)}`);
+    }
+    return entry;
+  });
+}
+
+function normalizeNetworkBlockingErrorReason(value: unknown): NetworkBlockingErrorReason {
+  if (value === undefined || value === null || value === '') {
+    return 'BlockedByClient';
+  }
+  if (!isNetworkBlockingErrorReason(value)) {
+    throw new Error(`unsupported network blocking errorReason: ${String(value)}`);
+  }
+  return value;
+}
+
+function normalizeNetworkBlockingUrlMatcher(value: unknown, fieldName: 'exactUrl' | 'urlContains' | 'urlRegex'): string | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined;
+  }
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`network blocking rule ${fieldName} must be a non-empty string when provided`);
+  }
+  const normalized = value.trim();
+  if (normalized.length > 512) {
+    throw new Error(`network blocking rule ${fieldName} must be 512 characters or less`);
+  }
+  if (fieldName === 'exactUrl') {
+    try {
+      const parsed = new URL(normalized);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new Error('unsupported protocol');
+      }
+    } catch {
+      throw new Error('network blocking rule exactUrl must be an absolute http(s) URL');
+    }
+  }
+  if (fieldName === 'urlRegex') {
+    try {
+      new RegExp(normalized);
+    } catch (error) {
+      throw new Error(`network blocking rule urlRegex is invalid: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return normalized;
+}
+
+function normalizeNetworkBlockingRules(value: unknown): NetworkBlockingRule[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error('rules must include at least one network blocking rule');
+  }
+  if (value.length > 25) {
+    throw new Error('rules must include at most 25 network blocking rules');
+  }
+
+  return value.map((entry, index) => {
+    if (!isRecord(entry)) {
+      throw new Error(`network blocking rule at index ${index} must be an object`);
+    }
+
+    const exactUrl = normalizeNetworkBlockingUrlMatcher(entry.exactUrl, 'exactUrl');
+    const urlContains = normalizeNetworkBlockingUrlMatcher(entry.urlContains, 'urlContains');
+    const urlRegex = normalizeNetworkBlockingUrlMatcher(entry.urlRegex, 'urlRegex');
+    if (!exactUrl && !urlContains && !urlRegex) {
+      throw new Error(`network blocking rule at index ${index} requires exactUrl, urlContains, or urlRegex`);
+    }
+
+    const ruleId = typeof entry.ruleId === 'string' && entry.ruleId.trim().length > 0
+      ? entry.ruleId.trim().slice(0, 120)
+      : `rule-${index + 1}-${randomUUID().slice(0, 8)}`;
+
+    return {
+      ruleId,
+      enabled: entry.enabled !== false,
+      exactUrl,
+      urlContains,
+      urlRegex,
+      method: normalizeNetworkBlockingMethod(entry.method),
+      resourceTypes: normalizeNetworkBlockingResourceTypes(entry.resourceTypes),
+      errorReason: normalizeNetworkBlockingErrorReason(entry.errorReason),
+      note: typeof entry.note === 'string' && entry.note.trim().length > 0 ? entry.note.trim().slice(0, 300) : undefined,
+    };
+  });
+}
+
 function isLiveSessionDisconnectedMessage(message: string): boolean {
   const normalized = message.toLowerCase();
   return normalized.includes('no active extension connection')
@@ -9538,6 +9727,162 @@ export function createV2ToolHandlers(
   };
 
   return {
+    enable_network_blocking: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+      const tabId = resolveOptionalTabId(input.tabId);
+      const rules = normalizeNetworkBlockingRules(input.rules);
+      const command = 'CAPTURE_NETWORK_BLOCKING_ENABLE';
+      const timeoutMs = 8_000;
+      const capture = await executeLiveCapture(
+        captureClient,
+        sessionId,
+        command,
+        {
+          tabId,
+          rules,
+          reload: input.reload === true,
+          clearCache: input.clearCache !== false,
+          bypassServiceWorker: input.bypassServiceWorker !== false,
+        },
+        timeoutMs,
+      );
+      const payload = ensureCaptureSuccess(capture, sessionId);
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: rules.length,
+          truncated: capture.truncated ?? false,
+        },
+        liveStatus: {
+          available: true,
+          command,
+          timeoutMs,
+        },
+        ...payload,
+        nextActions: [
+          { code: 'TRIGGER_REQUESTS', message: 'Reload or interact with the tab so matching requests are attempted under active blocking.' },
+          { code: 'READ_BLOCK_LOG', message: 'Run get_network_block_log after triggering requests to inspect blocked URLs and rules.' },
+          { code: 'DISABLE_NETWORK_BLOCKING', message: 'Disable blocking when the diagnostic window is complete.' },
+        ],
+      };
+    },
+
+    disable_network_blocking: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+      const command = 'CAPTURE_NETWORK_BLOCKING_DISABLE';
+      const timeoutMs = 5_000;
+      const capture = await executeLiveCapture(captureClient, sessionId, command, {}, timeoutMs);
+      const payload = ensureCaptureSuccess(capture, sessionId);
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: capture.truncated ?? false,
+        },
+        liveStatus: {
+          available: true,
+          command,
+          timeoutMs,
+        },
+        ...payload,
+        nextActions: [{ code: 'VERIFY_DISABLED', message: 'Run get_network_blocking_status to confirm request blocking is inactive.' }],
+      };
+    },
+
+    get_network_blocking_status: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+      const command = 'CAPTURE_NETWORK_BLOCKING_GET_STATUS';
+      const timeoutMs = 3_000;
+
+      try {
+        const capture = await executeLiveCapture(captureClient, sessionId, command, {}, timeoutMs);
+        const payload = ensureCaptureSuccess(capture, sessionId);
+        return {
+          ...createBaseResponse(sessionId),
+          limitsApplied: {
+            maxResults: 1,
+            truncated: capture.truncated ?? false,
+          },
+          statusSource: 'live',
+          liveStatus: {
+            available: true,
+            command,
+            timeoutMs,
+          },
+          ...payload,
+        };
+      } catch (error) {
+        if (!getDb) {
+          throw error;
+        }
+        return {
+          ...createBaseResponse(sessionId),
+          limitsApplied: {
+            maxResults: 1,
+            truncated: false,
+          },
+          statusSource: 'persisted-audit',
+          liveStatus: {
+            available: false,
+            command,
+            timeoutMs,
+            error: error instanceof Error ? error.message : String(error),
+            connection: getSessionConnectionState?.(sessionId) ?? null,
+          },
+          active: false,
+          latestRun: getLatestNetworkBlockingRun(getDb(), sessionId),
+          nextActions: [{ code: 'RECONNECT_OR_RETRY_STATUS', message: 'Reconnect the extension session before enabling or disabling live request blocking.' }],
+        };
+      }
+    },
+
+    get_network_block_log: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+      if (!getDb) {
+        throw new Error('get_network_block_log requires database-backed network blocking audit state');
+      }
+      const limit = resolveLimit(input.limit, DEFAULT_LIST_LIMIT);
+      const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
+      const result = listNetworkBlockingRequests(getDb(), {
+        sessionId,
+        limit,
+        offset,
+        runId: typeof input.runId === 'string' && input.runId.trim().length > 0 ? input.runId.trim() : undefined,
+        ruleId: typeof input.ruleId === 'string' && input.ruleId.trim().length > 0 ? input.ruleId.trim() : undefined,
+        urlContains: typeof input.urlContains === 'string' && input.urlContains.trim().length > 0 ? input.urlContains.trim() : undefined,
+        method: typeof input.method === 'string' && input.method.trim().length > 0 ? input.method.trim().toUpperCase() : undefined,
+      });
+      const budgeted = applyByteBudget(result.requests, maxResponseBytes);
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: limit,
+          truncated: result.hasMore || budgeted.truncatedByBytes,
+        },
+        offset,
+        hasMore: result.hasMore,
+        nextOffset: result.nextOffset,
+        requests: budgeted.items,
+        responseBytes: budgeted.responseBytes,
+        source: 'network_blocking_requests',
+      };
+    },
+
     observe_override_assets: async (input) => {
       const sessionId = getSessionId(input);
       if (!sessionId) {

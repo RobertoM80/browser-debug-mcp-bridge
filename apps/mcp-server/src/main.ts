@@ -41,6 +41,22 @@ import {
   isOverridePocRequestStatus,
   isOverridePocRunStatus,
 } from './override-audit-contract.js';
+import {
+  listNetworkBlockingRequests,
+  listNetworkBlockingRuns,
+  upsertNetworkBlockingRequest,
+  upsertNetworkBlockingRun,
+} from './network-blocking-audit.js';
+import {
+  isNetworkBlockingErrorReason,
+  isNetworkBlockingFailureCode,
+  isNetworkBlockingResourceType,
+  isNetworkBlockingRunStatus,
+  type NetworkBlockingRequestRecord,
+  type NetworkBlockingRule,
+  type NetworkBlockingRunRecord,
+} from './network-blocking-contract.js';
+import { EventsRepository } from './db/events-repository.js';
 
 const fastify = Fastify({
   logger: process.env.MCP_STDIO_MODE === '1' ? false : true
@@ -118,6 +134,80 @@ function requireBooleanField(body: Record<string, unknown>, fieldName: string): 
     throw new Error(`${fieldName} must be a boolean`);
   }
   return value;
+}
+
+function optionalStringArrayField(body: Record<string, unknown>, fieldName: string): string[] | undefined {
+  const value = body[fieldName];
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array when provided`);
+  }
+  return value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0).map((entry) => entry.trim());
+}
+
+function parseNetworkBlockingRule(value: unknown): NetworkBlockingRule {
+  if (!isRecord(value)) {
+    throw new Error('rules entries must be objects');
+  }
+  const errorReasonValue = value.errorReason ?? 'BlockedByClient';
+  if (!isNetworkBlockingErrorReason(errorReasonValue)) {
+    throw new Error('rule errorReason must be a supported Chrome Network.ErrorReason');
+  }
+  const resourceTypes = optionalStringArrayField(value, 'resourceTypes');
+  if (resourceTypes?.some((entry) => !isNetworkBlockingResourceType(entry))) {
+    throw new Error('rule resourceTypes contains an unsupported resource type');
+  }
+  return {
+    ruleId: requireStringField(value, 'ruleId'),
+    enabled: value.enabled !== false,
+    exactUrl: optionalStringField(value, 'exactUrl') ?? undefined,
+    urlContains: optionalStringField(value, 'urlContains') ?? undefined,
+    urlRegex: optionalStringField(value, 'urlRegex') ?? undefined,
+    method: optionalStringField(value, 'method')?.toUpperCase(),
+    resourceTypes: resourceTypes as NetworkBlockingRule['resourceTypes'],
+    errorReason: errorReasonValue,
+    note: optionalStringField(value, 'note') ?? undefined,
+  };
+}
+
+function parseNetworkBlockingRules(value: unknown): NetworkBlockingRule[] {
+  if (!Array.isArray(value)) {
+    throw new Error('rules must be an array');
+  }
+  return value.map(parseNetworkBlockingRule);
+}
+
+function persistSyntheticBlockedNetworkEvent(record: NetworkBlockingRequestRecord): void {
+  try {
+    new EventsRepository(getConnection().db).insertEvent({
+      type: 'event',
+      sessionId: record.sessionId,
+      timestamp: record.timestamp,
+      eventType: 'network',
+      tabId: record.tabId,
+      data: {
+        requestId: `blocked:${record.requestId}`,
+        timestamp: record.timestamp,
+        method: record.requestMethod,
+        url: record.requestUrl,
+        status: 0,
+        duration: 0,
+        initiator: record.resourceType === 'xhr' ? 'xhr' : record.resourceType === 'script' ? 'script' : record.resourceType === 'image' ? 'img' : 'other',
+        errorType: 'blocked',
+        blockedBy: 'network_blocking',
+        networkBlockingRunId: record.runId,
+        networkBlockingRuleId: record.ruleId,
+        networkBlockingErrorReason: record.errorReason,
+      },
+    });
+  } catch (error) {
+    fastify.log.warn({
+      error: error instanceof Error ? error.message : String(error),
+      requestLogId: record.requestLogId,
+    }, 'Failed to persist synthetic blocked network event');
+  }
 }
 
 function getDbStats(): { status: 'connected' | 'disconnected'; sessions: number; events: number; network: number; fingerprints: number; snapshots: number } {
@@ -423,6 +513,166 @@ fastify.get('/sessions/:sessionId/overrides/requests', async (request, reply) =>
     ok: true,
     sessionId: params.sessionId,
     runId: runId ?? null,
+    limit,
+    offset,
+    hasMore: result.hasMore,
+    nextOffset: result.nextOffset,
+    requests: result.requests,
+  };
+});
+
+fastify.post('/sessions/:sessionId/network-blocking/runs', async (request, reply) => {
+  const params = request.params as { sessionId: string };
+  if (!hasSession(params.sessionId)) {
+    return reply.code(404).send({ ok: false, error: 'Session not found' });
+  }
+
+  if (!isRecord(request.body)) {
+    return reply.code(400).send({ ok: false, error: 'Invalid network blocking run payload' });
+  }
+
+  try {
+    const body = request.body;
+    const runStatus = body.runStatus;
+    if (!isNetworkBlockingRunStatus(runStatus)) {
+      throw new Error('runStatus must be a valid network blocking run status');
+    }
+
+    const lastErrorCodeValue = body.lastErrorCode;
+    if (lastErrorCodeValue !== undefined && lastErrorCodeValue !== null && !isNetworkBlockingFailureCode(lastErrorCodeValue)) {
+      throw new Error('lastErrorCode must be a valid network blocking failure code when provided');
+    }
+
+    const rules = parseNetworkBlockingRules(body.rules);
+    const record: NetworkBlockingRunRecord = {
+      runId: requireStringField(body, 'runId'),
+      sessionId: params.sessionId,
+      startedAt: requireIntegerField(body, 'startedAt'),
+      endedAt: optionalIntegerField(body, 'endedAt'),
+      runStatus,
+      tabId: requireIntegerField(body, 'tabId'),
+      selectedTabId: optionalIntegerField(body, 'selectedTabId'),
+      ruleCount: requireIntegerField(body, 'ruleCount'),
+      blockedRequests: requireIntegerField(body, 'blockedRequests'),
+      lastBlockedAt: optionalIntegerField(body, 'lastBlockedAt'),
+      lastErrorCode: lastErrorCodeValue ?? null,
+      lastErrorMessage: optionalStringField(body, 'lastErrorMessage'),
+      rules,
+    };
+
+    return {
+      ok: true,
+      run: upsertNetworkBlockingRun(getConnection().db, record),
+    };
+  } catch (error) {
+    return reply.code(400).send({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Invalid network blocking run payload',
+    });
+  }
+});
+
+fastify.get('/sessions/:sessionId/network-blocking/runs', async (request, reply) => {
+  const params = request.params as { sessionId: string };
+  if (!hasSession(params.sessionId)) {
+    return reply.code(404).send({ ok: false, error: 'Session not found' });
+  }
+
+  const query = (request.query ?? {}) as { limit?: string | number; offset?: string | number };
+  const limit = parseLimit(query.limit, 20, 200);
+  const offset = parseOffset(query.offset);
+  const result = listNetworkBlockingRuns(getConnection().db, params.sessionId, limit, offset);
+
+  return {
+    ok: true,
+    sessionId: params.sessionId,
+    limit,
+    offset,
+    hasMore: result.hasMore,
+    nextOffset: result.nextOffset,
+    runs: result.runs,
+  };
+});
+
+fastify.post('/sessions/:sessionId/network-blocking/requests', async (request, reply) => {
+  const params = request.params as { sessionId: string };
+  if (!hasSession(params.sessionId)) {
+    return reply.code(404).send({ ok: false, error: 'Session not found' });
+  }
+
+  if (!isRecord(request.body)) {
+    return reply.code(400).send({ ok: false, error: 'Invalid network blocking request payload' });
+  }
+
+  try {
+    const body = request.body;
+    const resourceType = body.resourceType;
+    if (!isNetworkBlockingResourceType(resourceType)) {
+      throw new Error('resourceType must be a valid network blocking resource type');
+    }
+    const errorReason = body.errorReason;
+    if (!isNetworkBlockingErrorReason(errorReason)) {
+      throw new Error('errorReason must be a valid network blocking error reason');
+    }
+
+    const record: NetworkBlockingRequestRecord = {
+      requestLogId: requireStringField(body, 'requestLogId'),
+      runId: requireStringField(body, 'runId'),
+      sessionId: params.sessionId,
+      requestId: requireStringField(body, 'requestId'),
+      timestamp: requireIntegerField(body, 'timestamp'),
+      tabId: requireIntegerField(body, 'tabId'),
+      frameId: optionalIntegerField(body, 'frameId'),
+      requestUrl: requireStringField(body, 'requestUrl'),
+      requestMethod: requireStringField(body, 'requestMethod').toUpperCase(),
+      resourceType,
+      ruleId: requireStringField(body, 'ruleId'),
+      errorReason,
+    };
+
+    const persisted = upsertNetworkBlockingRequest(getConnection().db, record);
+    persistSyntheticBlockedNetworkEvent(persisted);
+    return {
+      ok: true,
+      request: persisted,
+    };
+  } catch (error) {
+    return reply.code(400).send({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Invalid network blocking request payload',
+    });
+  }
+});
+
+fastify.get('/sessions/:sessionId/network-blocking/requests', async (request, reply) => {
+  const params = request.params as { sessionId: string };
+  if (!hasSession(params.sessionId)) {
+    return reply.code(404).send({ ok: false, error: 'Session not found' });
+  }
+
+  const query = (request.query ?? {}) as {
+    limit?: string | number;
+    offset?: string | number;
+    runId?: string;
+    ruleId?: string;
+    urlContains?: string;
+    method?: string;
+  };
+  const limit = parseLimit(query.limit, 50, 500);
+  const offset = parseOffset(query.offset);
+  const result = listNetworkBlockingRequests(getConnection().db, {
+    sessionId: params.sessionId,
+    limit,
+    offset,
+    runId: typeof query.runId === 'string' && query.runId.trim().length > 0 ? query.runId.trim() : undefined,
+    ruleId: typeof query.ruleId === 'string' && query.ruleId.trim().length > 0 ? query.ruleId.trim() : undefined,
+    urlContains: typeof query.urlContains === 'string' && query.urlContains.trim().length > 0 ? query.urlContains.trim() : undefined,
+    method: typeof query.method === 'string' && query.method.trim().length > 0 ? query.method.trim().toUpperCase() : undefined,
+  });
+
+  return {
+    ok: true,
+    sessionId: params.sessionId,
     limit,
     offset,
     hasMore: result.hasMore,

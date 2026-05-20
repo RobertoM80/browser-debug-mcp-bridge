@@ -5,13 +5,23 @@ import {
   OVERRIDE_POC_REQUEST_STATUSES,
   OVERRIDE_POC_RUN_STATUSES,
 } from '../override-audit-contract.js';
+import {
+  NETWORK_BLOCKING_ERROR_REASONS,
+  NETWORK_BLOCKING_FAILURE_CODES,
+  NETWORK_BLOCKING_RESOURCE_TYPES,
+  NETWORK_BLOCKING_RUN_STATUSES,
+} from '../network-blocking-contract.js';
 
-export const SCHEMA_VERSION = 16;
+export const SCHEMA_VERSION = 17;
 
 const OVERRIDE_POC_RUN_STATUS_SQL = OVERRIDE_POC_RUN_STATUSES.map((value) => `'${value}'`).join(', ');
 const OVERRIDE_POC_REQUEST_STATUS_SQL = OVERRIDE_POC_REQUEST_STATUSES.map((value) => `'${value}'`).join(', ');
 const OVERRIDE_POC_FAILURE_CODE_SQL = OVERRIDE_POC_FAILURE_CODES.map((value) => `'${value}'`).join(', ');
 const OVERRIDE_PLAN_AUDIT_KIND_SQL = OVERRIDE_PLAN_AUDIT_KINDS.map((value) => `'${value}'`).join(', ');
+const NETWORK_BLOCKING_RUN_STATUS_SQL = NETWORK_BLOCKING_RUN_STATUSES.map((value) => `'${value}'`).join(', ');
+const NETWORK_BLOCKING_FAILURE_CODE_SQL = NETWORK_BLOCKING_FAILURE_CODES.map((value) => `'${value}'`).join(', ');
+const NETWORK_BLOCKING_ERROR_REASON_SQL = NETWORK_BLOCKING_ERROR_REASONS.map((value) => `'${value}'`).join(', ');
+const NETWORK_BLOCKING_RESOURCE_TYPE_SQL = NETWORK_BLOCKING_RESOURCE_TYPES.map((value) => `'${value}'`).join(', ');
 
 export const CREATE_TABLES_SQL = `
 -- Sessions table
@@ -280,6 +290,56 @@ CREATE INDEX IF NOT EXISTS idx_override_requests_session_ts ON override_requests
 CREATE INDEX IF NOT EXISTS idx_override_requests_run_ts ON override_requests(run_id, ts);
 CREATE INDEX IF NOT EXISTS idx_override_requests_status_ts ON override_requests(request_status, ts);
 
+CREATE TABLE IF NOT EXISTS network_blocking_runs (
+  run_id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  run_status TEXT NOT NULL CHECK(run_status IN (${NETWORK_BLOCKING_RUN_STATUS_SQL})),
+  tab_id INTEGER NOT NULL,
+  selected_tab_id INTEGER,
+  rule_count INTEGER NOT NULL DEFAULT 0,
+  blocked_requests INTEGER NOT NULL DEFAULT 0,
+  last_blocked_at INTEGER,
+  last_error_code TEXT CHECK(last_error_code IN (${NETWORK_BLOCKING_FAILURE_CODE_SQL})),
+  last_error_message TEXT,
+  rules_json TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_network_blocking_runs_session_started_at
+  ON network_blocking_runs(session_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_network_blocking_runs_session_status_started_at
+  ON network_blocking_runs(session_id, run_status, started_at);
+
+CREATE TABLE IF NOT EXISTS network_blocking_requests (
+  request_log_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  tab_id INTEGER NOT NULL,
+  frame_id INTEGER,
+  request_url TEXT NOT NULL,
+  request_method TEXT NOT NULL,
+  resource_type TEXT NOT NULL CHECK(resource_type IN (${NETWORK_BLOCKING_RESOURCE_TYPE_SQL})),
+  rule_id TEXT NOT NULL,
+  error_reason TEXT NOT NULL CHECK(error_reason IN (${NETWORK_BLOCKING_ERROR_REASON_SQL})),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (run_id) REFERENCES network_blocking_runs(run_id) ON DELETE CASCADE,
+  FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_network_blocking_requests_session_ts
+  ON network_blocking_requests(session_id, ts);
+CREATE INDEX IF NOT EXISTS idx_network_blocking_requests_run_ts
+  ON network_blocking_requests(run_id, ts);
+CREATE INDEX IF NOT EXISTS idx_network_blocking_requests_rule_ts
+  ON network_blocking_requests(rule_id, ts);
+
 CREATE TABLE IF NOT EXISTS override_plan_audits (
   plan_id TEXT PRIMARY KEY,
   session_id TEXT,
@@ -444,6 +504,8 @@ export function clearDatabase(db: Database): void {
     DELETE FROM override_plan_audits;
     DELETE FROM override_requests;
     DELETE FROM override_runs;
+    DELETE FROM network_blocking_requests;
+    DELETE FROM network_blocking_runs;
     DELETE FROM mcp_loop_incidents;
     DELETE FROM mcp_tool_invocations;
     DELETE FROM events;

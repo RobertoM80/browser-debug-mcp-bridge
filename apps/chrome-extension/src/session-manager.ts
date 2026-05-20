@@ -64,6 +64,9 @@ export type CaptureCommandType =
   | 'CAPTURE_OVERRIDE_POC_GET_STATUS'
   | 'CAPTURE_OVERRIDE_POC_ENABLE'
   | 'CAPTURE_OVERRIDE_POC_DISABLE'
+  | 'CAPTURE_NETWORK_BLOCKING_GET_STATUS'
+  | 'CAPTURE_NETWORK_BLOCKING_ENABLE'
+  | 'CAPTURE_NETWORK_BLOCKING_DISABLE'
   | 'SET_VIEWPORT'
   | 'EXECUTE_UI_ACTION';
 
@@ -618,6 +621,9 @@ export class SessionManager {
         && message.command !== 'CAPTURE_OVERRIDE_POC_GET_STATUS'
         && message.command !== 'CAPTURE_OVERRIDE_POC_ENABLE'
         && message.command !== 'CAPTURE_OVERRIDE_POC_DISABLE'
+        && message.command !== 'CAPTURE_NETWORK_BLOCKING_GET_STATUS'
+        && message.command !== 'CAPTURE_NETWORK_BLOCKING_ENABLE'
+        && message.command !== 'CAPTURE_NETWORK_BLOCKING_DISABLE'
         && message.command !== 'SET_VIEWPORT'
         && message.command !== 'EXECUTE_UI_ACTION'
       ) {

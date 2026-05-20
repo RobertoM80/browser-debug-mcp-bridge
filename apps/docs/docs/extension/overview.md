@@ -5,6 +5,7 @@ The MV3 extension contains:
 - background service worker for session lifecycle and WebSocket transport
 - content script for navigation and click capture
 - injected script for fetch/XHR hooks and runtime/console errors
+- CDP-backed live controls for request blocking and response override experiments
 - popup UI for session controls, safe mode, allowlist settings, and live `Bridge Health` diagnostics
 
 ## Session tab isolation
@@ -15,6 +16,14 @@ The MV3 extension contains:
 - If the last bound tab is closed or removed from scope, the session auto-stops.
 - This prevents mixed telemetry from unrelated tabs and base URLs.
 - Live console buffers are session-scoped in memory and queried via `get_live_console_logs`.
+
+## Live network blocking
+
+- MCP can enable temporary request blocking for the bound tab with `enable_network_blocking`.
+- Blocking uses the existing Chrome Debugger permission and fails matched requests with Chrome's network error reasons.
+- Active blocking shows a `BLK` extension badge.
+- Blocking cannot run on the same tab as the experimental override POC in V1.
+- Closing the bound tab, pausing/stopping the session, or suspending the extension disables active blocking.
 
 ## Popup bridge health
 

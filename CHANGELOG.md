@@ -4,6 +4,7 @@
 
 ### Features
 
+* **network:** add live MCP request blocking with persisted block audit logs
 * **automation:** add live document load-state waits for MCP workflows
 * **automation:** add navigation lifecycle, download, and popup waits
 * **automation:** add native JavaScript dialog waits

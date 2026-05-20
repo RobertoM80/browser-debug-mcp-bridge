@@ -30,6 +30,8 @@ import {
   SnapshotPngUsage,
 } from './snapshot-capture';
 import { OverridePocController, type OverridePocStatus } from './override-poc';
+import { NetworkBlockingController } from './network-blocking';
+import type { NetworkBlockingRule } from '../../../libs/shared/src';
 import { redactSnapshotRecord } from '../../../libs/redaction/src';
 import {
   executeNativeBlurAction,
@@ -759,6 +761,14 @@ function getAutomationStatus(): AutomationUiState['status'] {
 
 function syncAutomationBadge(): void {
   if (!chrome.action) {
+    return;
+  }
+
+  const networkBlockingStatus = networkBlockingController.getStatus();
+  if (networkBlockingStatus.active) {
+    chrome.action.setBadgeText({ text: 'BLK' });
+    chrome.action.setTitle({ title: 'Network request blocking active' });
+    chrome.action.setBadgeBackgroundColor({ color: '#7a1f1f' });
     return;
   }
 
@@ -4394,9 +4404,54 @@ async function executeCaptureCommand(
     if (overridePocController.isActiveForTab(tab.id)) {
       throw new Error('Disable active overrides on the target tab before CDP response body capture.');
     }
+    if (networkBlockingController.isActiveForTab(tab.id)) {
+      throw new Error('Disable active network blocking on the target tab before CDP response body capture.');
+    }
 
     rememberCaptureTabForSession(context.sessionId, tab);
     return captureOverrideResponseBodyWithCdp({ payload, tab });
+  }
+
+  if (command === 'CAPTURE_NETWORK_BLOCKING_GET_STATUS') {
+    return {
+      payload: networkBlockingController.getStatus() as unknown as Record<string, unknown>,
+    };
+  }
+
+  if (command === 'CAPTURE_NETWORK_BLOCKING_ENABLE') {
+    const requestedTabId = resolveLiveConsoleTabId(payload.tabId);
+    const tab = await resolveOverridePocTab(context.sessionId, requestedTabId);
+    if (!tab || typeof tab.id !== 'number') {
+      throw new Error('No capture tab is available for network request blocking.');
+    }
+    if (overridePocController.isActiveForTab(tab.id)) {
+      throw new Error('OVERRIDE_ACTIVE: Disable active overrides on the target tab before enabling network request blocking.');
+    }
+
+    rememberCaptureTabForSession(context.sessionId, tab);
+    const rules = Array.isArray(payload.rules) ? payload.rules as NetworkBlockingRule[] : [];
+    const status = await networkBlockingController.enableForTab({
+      sessionId: context.sessionId,
+      tabId: tab.id,
+      selectedTabId: requestedTabId ?? getSelectedOverridePocTabId(context.sessionId),
+      rules,
+      reload: payload.reload === true,
+      clearCache: payload.clearCache !== false,
+      bypassServiceWorker: payload.bypassServiceWorker !== false,
+    });
+    syncAutomationBadge();
+
+    return {
+      payload: status as unknown as Record<string, unknown>,
+    };
+  }
+
+  if (command === 'CAPTURE_NETWORK_BLOCKING_DISABLE') {
+    const status = await networkBlockingController.disable();
+    syncAutomationBadge();
+    return {
+      payload: status as unknown as Record<string, unknown>,
+    };
   }
 
   if (command === 'CAPTURE_OVERRIDE_POC_GET_STATUS') {
@@ -4413,6 +4468,9 @@ async function executeCaptureCommand(
     const tab = await resolveOverridePocTab(context.sessionId, requestedTabId);
     if (!tab || typeof tab.id !== 'number') {
       throw new Error('No capture tab is available for the active session.');
+    }
+    if (networkBlockingController.isActiveForTab(tab.id)) {
+      throw new Error('Disable active network request blocking on the target tab before enabling overrides.');
     }
 
     overridePocTargetTabBySession.set(context.sessionId, tab.id);
@@ -4654,6 +4712,7 @@ const LOG_PREFIX = '[BrowserDebug][Background]';
 let captureConfig: CaptureConfig = { ...DEFAULT_CAPTURE_CONFIG };
 let serverBaseUrlOverride: string | null = null;
 const overridePocController = new OverridePocController(getServerBaseUrl());
+const networkBlockingController = new NetworkBlockingController(getServerBaseUrl());
 const sessionBindingsReady = loadPersistedSessionBindings(chrome.storage.local).catch(() => undefined);
 const captureDiagnostics = {
   received: 0,
@@ -4732,6 +4791,7 @@ function applyServerBaseUrl(nextBaseUrl: unknown): void {
   const serverBaseUrl = getServerBaseUrl();
   updateSessionManagerServerBaseUrl(serverBaseUrl);
   overridePocController.setServerBaseUrl(serverBaseUrl);
+  networkBlockingController.setServerBaseUrl(serverBaseUrl);
 }
 
 function loadServerBaseUrl(storageArea: RuntimeStorageAreaLike): Promise<string | null> {
@@ -5053,6 +5113,7 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
         }
 
         await overridePocController.disable().catch(() => undefined);
+        await networkBlockingController.disable().catch(() => undefined);
         const paused = sessionManager.pauseSession();
         syncAutomationBadge();
         return { ok: true as const, state: paused };
@@ -5212,6 +5273,7 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
     case 'SESSION_STOP':
       return Promise.resolve().then(async () => {
         await overridePocController.disable().catch(() => undefined);
+        await networkBlockingController.disable().catch(() => undefined);
         const activeSessionId = sessionManager.getState().sessionId;
         if (activeSessionId) {
           cleanupSessionLocalState(activeSessionId);
@@ -5729,6 +5791,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
     if (overridePocController.isActiveForTab(tabId)) {
       void overridePocController.disable().catch(() => undefined);
     }
+    if (networkBlockingController.isActiveForTab(tabId)) {
+      void networkBlockingController.disable().catch(() => undefined);
+    }
     return;
   }
 
@@ -5739,6 +5804,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 
   cleanupSessionLocalState(state.sessionId);
   void overridePocController.disable().catch(() => undefined);
+  void networkBlockingController.disable().catch(() => undefined);
   sessionManager.stopSession();
   syncAutomationBadge();
 });

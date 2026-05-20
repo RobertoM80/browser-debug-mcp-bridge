@@ -3,6 +3,7 @@ import {
   ALL_TOOLS,
   SESSION_TOOLS,
   ERROR_TOOLS,
+  NETWORK_CONTROL_TOOLS,
   QUERY_TOOLS,
   CAPTURE_TOOLS,
   CORRELATION_TOOLS,
@@ -34,6 +35,13 @@ describe('tool-definitions', () => {
     expect(ERROR_TOOLS.WAIT_FOR_NETWORK_CALL).toBe('wait_for_network_call');
     expect(ERROR_TOOLS.GET_REQUEST_TRACE).toBe('get_request_trace');
     expect(ERROR_TOOLS.GET_BODY_CHUNK).toBe('get_body_chunk');
+  });
+
+  it('should define network control tools', () => {
+    expect(NETWORK_CONTROL_TOOLS.ENABLE_NETWORK_BLOCKING).toBe('enable_network_blocking');
+    expect(NETWORK_CONTROL_TOOLS.DISABLE_NETWORK_BLOCKING).toBe('disable_network_blocking');
+    expect(NETWORK_CONTROL_TOOLS.GET_NETWORK_BLOCKING_STATUS).toBe('get_network_blocking_status');
+    expect(NETWORK_CONTROL_TOOLS.GET_NETWORK_BLOCK_LOG).toBe('get_network_block_log');
   });
 
   it('should define query tools', () => {
