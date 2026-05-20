@@ -300,26 +300,7 @@ function buildAutomationFixtureHtml(crossOriginFrameUrl: string): string {
           <div id="dialog-result"></div>
           <button id="reload-child-frame" data-testid="reload-child-frame">Reload child frame</button>
           <output id="frame-reload-output"></output>
-          <iframe id="child-frame" srcdoc="
-            <!doctype html>
-            <html>
-              <body>
-                <button id='inside-frame' data-testid='inside-frame'>Inside frame</button>
-                <output id='frame-count'>0</output>
-                <input id='frame-input' data-testid='frame-input' />
-                <output id='frame-input-output'></output>
-                <script>
-                  document.querySelector('#inside-frame').addEventListener('click', () => {
-                    const count = document.querySelector('#frame-count');
-                    count.textContent = String(Number(count.textContent || '0') + 1);
-                  });
-                  document.querySelector('#frame-input').addEventListener('input', (event) => {
-                    document.querySelector('#frame-input-output').textContent = event.target.value;
-                  });
-                </script>
-              </body>
-            </html>
-          "></iframe>
+          <iframe id="child-frame"></iframe>
           <iframe id="cross-origin-frame" src="${crossOriginFrameUrl}"></iframe>
           <iframe id="sandbox-frame" sandbox="allow-scripts" srcdoc="
             <!doctype html>
@@ -333,6 +314,24 @@ function buildAutomationFixtureHtml(crossOriginFrameUrl: string): string {
                     count.textContent = String(Number(count.textContent || '0') + 1);
                   });
                 </script>
+              </body>
+            </html>
+          "></iframe>
+          <iframe id="ambiguous-frame-a" srcdoc="
+            <!doctype html>
+            <html>
+              <head><title>Ambiguous Frame</title></head>
+              <body>
+                <button id='ambiguous-frame-action' data-testid='ambiguous-frame-action'>Ambiguous frame action</button>
+              </body>
+            </html>
+          "></iframe>
+          <iframe id="ambiguous-frame-b" srcdoc="
+            <!doctype html>
+            <html>
+              <head><title>Ambiguous Frame</title></head>
+              <body>
+                <button id='ambiguous-frame-action' data-testid='ambiguous-frame-action'>Ambiguous frame action</button>
               </body>
             </html>
           "></iframe>
@@ -465,9 +464,37 @@ function buildAutomationFixtureHtml(crossOriginFrameUrl: string): string {
             document.querySelector('#closed-shadow-output').textContent = 'closed shadow clicked';
           });
           closedShadowRoot.appendChild(closedShadowButton);
+          const childFrameSrcdoc = [
+            '<!doctype html>',
+            '<html>',
+            '<body>',
+            '<button id="inside-frame" data-testid="inside-frame">Inside frame</button>',
+            '<output id="frame-count">0</output>',
+            '<input id="frame-input" data-testid="frame-input" />',
+            '<output id="frame-input-output"></output>',
+            '<script>',
+            'document.querySelector("#inside-frame").addEventListener("click", () => {',
+            'const count = document.querySelector("#frame-count");',
+            'count.textContent = String(Number(count.textContent || "0") + 1);',
+            '});',
+            'document.querySelector("#frame-input").addEventListener("input", (event) => {',
+            'document.querySelector("#frame-input-output").textContent = event.target.value;',
+            '});',
+            '<' + '/script>',
+            '</body>',
+            '</html>',
+          ].join('');
+          const mountChildFrame = () => {
+            const frame = document.createElement('iframe');
+            frame.id = 'child-frame';
+            frame.srcdoc = childFrameSrcdoc;
+            return frame;
+          };
+          document.querySelector('#child-frame').srcdoc = childFrameSrcdoc;
           document.querySelector('#reload-child-frame').addEventListener('click', () => {
             const frame = document.querySelector('#child-frame');
-            frame.srcdoc = frame.getAttribute('srcdoc');
+            const replacement = mountChildFrame();
+            frame.replaceWith(replacement);
             document.querySelector('#frame-reload-output').textContent = 'reloaded';
           });
           document.querySelector('#outer-frame').srcdoc = [
@@ -1042,6 +1069,40 @@ test.describe('@full live automation through MCP and extension session', () => {
     });
     await expect(targetPage.frameLocator('#child-frame').locator('#frame-count')).toHaveText('3');
 
+    const staleChildFrameElementRef = frameButtonRef?.elementRef as string;
+    const staleChildFrameId = frameButtonRef?.frameId as number;
+    await targetPage.locator('#reload-child-frame').click();
+    await expect(targetPage.locator('#frame-reload-output')).toHaveText('reloaded');
+    await expect(targetPage.frameLocator('#child-frame').locator('#inside-frame')).toBeVisible();
+    await expect(targetPage.frameLocator('#child-frame').locator('#frame-count')).toHaveText('0');
+
+    const reloadedFrameClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        elementRef: staleChildFrameElementRef,
+        frameId: staleChildFrameId + 10_000,
+        tabId,
+      },
+    });
+    expect(reloadedFrameClick.status).toBe('succeeded');
+    expect(reloadedFrameClick.actionResult?.result?.backend).toBe('cdp-native-v2');
+    expect(reloadedFrameClick.target?.frameId).toEqual(expect.any(Number));
+    expect(reloadedFrameClick.actionResult?.result?.actionability).toMatchObject({
+      frameRefreshed: true,
+      previousFrameId: staleChildFrameId + 10_000,
+      frameCoordinateResolved: true,
+    });
+    expect(reloadedFrameClick.actionResult?.result?.frameResolution).toMatchObject({
+      selectedBy: 'target_selector',
+      frameContextCandidateCount: expect.any(Number),
+      selectorMatchedCandidateCount: 1,
+      matched: {
+        frameUrl: 'about:srcdoc',
+      },
+    });
+    await expect(targetPage.frameLocator('#child-frame').locator('#frame-count')).toHaveText('1');
+
     const nestedFrameClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
       action: 'click',
@@ -1084,6 +1145,34 @@ test.describe('@full live automation through MCP and extension session', () => {
       },
     });
     await expect(targetPage.frameLocator('#outer-frame').frameLocator('#inner-frame').locator('#nested-count')).toHaveText('2');
+
+    const ambiguousFrameAttempt = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        selector: '#ambiguous-frame-action',
+        frameTitleContains: 'Ambiguous Frame',
+        tabId,
+      },
+    });
+    expect(ambiguousFrameAttempt.status).toBe('rejected');
+    expect(ambiguousFrameAttempt.failureDetails?.code).toBe('frame_target_ambiguous');
+    expect(ambiguousFrameAttempt.actionResult?.result?.frameResolution).toMatchObject({
+      strategy: 'frame_context',
+      frameContextCandidateCount: 2,
+      selectorMatchedCandidateCount: 2,
+      matchedCandidateCount: 2,
+      selectedBy: 'target_selector',
+    });
+    const ambiguousFrameResolution = ambiguousFrameAttempt.actionResult?.result?.frameResolution as {
+      sampledCandidates?: Array<{ frameId?: number; frameUrl?: string; frameTitle?: string }>;
+    } | undefined;
+    expect(ambiguousFrameResolution?.sampledCandidates).toHaveLength(2);
+    expect(ambiguousFrameResolution?.sampledCandidates?.every((candidate) => {
+      return typeof candidate.frameId === 'number'
+        && candidate.frameUrl === 'about:srcdoc'
+        && candidate.frameTitle === 'Ambiguous Frame';
+    })).toBe(true);
 
     const workflow = await callToolJson<WorkflowResponse>(mcp.client, 'run_ui_steps', {
       sessionId,

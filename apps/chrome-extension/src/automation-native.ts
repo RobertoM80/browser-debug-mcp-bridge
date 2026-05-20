@@ -97,6 +97,7 @@ interface NativeClickTargetSnapshot {
     retryable?: boolean;
   };
   locatorResolution?: Record<string, unknown>;
+  frameResolution?: Record<string, unknown>;
 }
 
 interface NativeClickExecutionOptions {
@@ -292,6 +293,7 @@ function buildRejectedResult(
       actionability: snapshot?.actionability,
       framePolicy: snapshot?.framePolicy,
       locatorResolution: snapshot?.locatorResolution,
+      frameResolution: snapshot?.frameResolution,
       ...resultOverrides,
     },
   };
@@ -344,6 +346,7 @@ function buildSucceededResult(
       actionability: snapshot.actionability,
       framePolicy: snapshot.framePolicy,
       locatorResolution: snapshot.locatorResolution,
+      frameResolution: snapshot.frameResolution,
       point: snapshot.center,
       ...result,
     },
@@ -1073,9 +1076,9 @@ interface FrameResolutionCandidate {
 }
 
 type FrameResolutionResult =
-  | { status: 'found'; candidate: FrameResolutionCandidate }
-  | { status: 'not_found'; candidates: FrameResolutionCandidate[] }
-  | { status: 'ambiguous'; candidates: FrameResolutionCandidate[] };
+  | { status: 'found'; candidate: FrameResolutionCandidate; diagnostics: Record<string, unknown> }
+  | { status: 'not_found'; candidates: FrameResolutionCandidate[]; diagnostics: Record<string, unknown> }
+  | { status: 'ambiguous'; candidates: FrameResolutionCandidate[]; diagnostics: Record<string, unknown> };
 
 interface NativeLocatorCandidate {
   selector: string;
@@ -1232,47 +1235,112 @@ async function resolveFrameIdForTarget(
     args: [selector],
   });
 
-  let candidates = results
-    .map((entry) => ({
-      frameId: entry.frameId ?? 0,
-      selector: typeof entry.result?.selector === 'string' ? entry.result.selector : undefined,
-      url: typeof entry.result?.url === 'string' ? entry.result.url : undefined,
-      title: typeof entry.result?.title === 'string' ? entry.result.title : undefined,
-      matched: entry.result?.matched === true,
-    }))
-    .filter((entry) => entry.matched)
+  const allCandidates = results.map((entry) => ({
+    frameId: entry.frameId ?? 0,
+    selector: typeof entry.result?.selector === 'string' ? entry.result.selector : undefined,
+    url: typeof entry.result?.url === 'string' ? entry.result.url : undefined,
+    title: typeof entry.result?.title === 'string' ? entry.result.title : undefined,
+    matched: entry.result?.matched === true,
+  }));
+  const frameContextCandidates = allCandidates
     .filter((entry) => matchesFrameText(entry.url, context.frameUrl, context.frameUrlContains))
     .filter((entry) => matchesFrameText(entry.title, context.frameTitle, context.frameTitleContains))
-    .map(({ matched: _matched, ...entry }) => entry);
+    .filter((entry) => matchesFrameSelector(entry.selector, context.frameSelector));
+  const selectorMatchedCandidates = frameContextCandidates.filter((entry) => entry.matched);
+  const searchedFrameCandidates = allCandidates.slice(0, 10).map(({ matched: _matched, ...entry }) => ({
+    frameId: entry.frameId,
+    frameSelector: entry.selector,
+    frameUrl: entry.url,
+    frameTitle: entry.title,
+  }));
+  const sampledCandidates = (selectorMatchedCandidates.length > 0 ? selectorMatchedCandidates : frameContextCandidates)
+    .slice(0, 5)
+    .map(({ matched: _matched, ...entry }) => ({
+      frameId: entry.frameId,
+      frameSelector: entry.selector,
+      frameUrl: entry.url,
+      frameTitle: entry.title,
+    }));
+  const buildDiagnostics = (options: {
+    selectedBy: 'frame_context' | 'target_selector';
+    matched?: FrameResolutionCandidate;
+    finalCandidateCount: number;
+  }): Record<string, unknown> => ({
+    strategy: 'frame_context',
+    matcher: {
+      selector,
+      frameId: context.frameId > 0 ? context.frameId : undefined,
+      frameSelector: context.frameSelector,
+      frameUrl: context.frameUrl,
+      frameTitle: context.frameTitle,
+      frameUrlContains: context.frameUrlContains,
+      frameTitleContains: context.frameTitleContains,
+    },
+    searchedFrames: results.length,
+    searchedFrameCandidates,
+    frameContextCandidateCount: frameContextCandidates.length,
+    selectorMatchedCandidateCount: selectorMatchedCandidates.length,
+    matchedCandidateCount: options.finalCandidateCount,
+    selectedBy: options.selectedBy,
+    sampledCandidates,
+    matched: options.matched
+      ? {
+          frameId: options.matched.frameId,
+          frameSelector: options.matched.selector,
+          frameUrl: options.matched.url,
+          frameTitle: options.matched.title,
+        }
+      : undefined,
+  });
 
-  if (context.frameSelector && candidates.length > 0) {
-    const expectedFrameSelector = context.frameSelector;
-    const enrichedCandidates = await Promise.all(
-      candidates.map(async (candidate) => {
-        const frameSelectors = await resolveFrameSelectorChainsForSelector(tabId, selector, candidate.url).catch(() => []);
-        const frameSelectorList = Array.isArray(frameSelectors) ? frameSelectors : [];
-        const matchedFrameSelector = frameSelectorList.find((frameSelector) => matchesFrameSelector(frameSelector, expectedFrameSelector));
-        return matchedFrameSelector
-          ? {
-              ...candidate,
-              selector: matchedFrameSelector,
-            }
-          : undefined;
-      }),
-    );
-    candidates = enrichedCandidates.filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== undefined);
-  }
-
-  if (candidates.length === 1) {
+  if (frameContextCandidates.length === 1) {
+    const [candidate] = frameContextCandidates;
     return {
       status: 'found',
-      candidate: candidates[0] as FrameResolutionCandidate,
+      candidate,
+      diagnostics: buildDiagnostics({
+        selectedBy: 'frame_context',
+        matched: candidate,
+        finalCandidateCount: 1,
+      }),
     };
   }
 
-  return candidates.length === 0
-    ? { status: 'not_found', candidates }
-    : { status: 'ambiguous', candidates };
+  if (frameContextCandidates.length === 0) {
+    return {
+      status: 'not_found',
+      candidates: [],
+      diagnostics: buildDiagnostics({
+        selectedBy: 'frame_context',
+        finalCandidateCount: 0,
+      }),
+    };
+  }
+
+  if (selectorMatchedCandidates.length === 1) {
+    const [candidate] = selectorMatchedCandidates;
+    return {
+      status: 'found',
+      candidate,
+      diagnostics: buildDiagnostics({
+        selectedBy: 'target_selector',
+        matched: candidate,
+        finalCandidateCount: 1,
+      }),
+    };
+  }
+
+  const finalCandidates = selectorMatchedCandidates.length > 0
+    ? selectorMatchedCandidates
+    : frameContextCandidates;
+  return {
+    status: 'ambiguous',
+    candidates: finalCandidates.map(({ matched: _matched, ...entry }) => entry),
+    diagnostics: buildDiagnostics({
+      selectedBy: selectorMatchedCandidates.length > 0 ? 'target_selector' : 'frame_context',
+      finalCandidateCount: finalCandidates.length,
+    }),
+  };
 }
 
 function describeNativeLocatorCandidate(candidate: NativeLocatorCandidate): Record<string, unknown> {
@@ -2144,11 +2212,16 @@ async function inspectActionableTargetForRequest(
   const decodedElementRef = decodeElementRef(request.target?.elementRef);
   const decodedFramePolicy = buildDecodedElementRefFramePolicy(decodedElementRef);
   let frameId = locatorFrameId ?? frameContext.frameId;
+  let frameResolution: Record<string, unknown> | undefined;
   let previousFrameId: number | undefined;
-  if (locatorFrameId === undefined && frameId === 0 && hasFrameLocatorContext(frameContext)) {
+  if (locatorFrameId === undefined && hasFrameLocatorContext(frameContext)) {
     try {
       const resolvedFrame = await resolveFrameIdForTarget(tab.id, selector, frameContext);
+      frameResolution = resolvedFrame.diagnostics;
       if (resolvedFrame.status === 'found') {
+        if (frameId > 0 && frameId !== resolvedFrame.candidate.frameId) {
+          previousFrameId = frameId;
+        }
         frameId = resolvedFrame.candidate.frameId;
       } else if (resolvedFrame.status === 'ambiguous') {
         return {
@@ -2160,19 +2233,41 @@ async function inspectActionableTargetForRequest(
             traceId,
             'frame_target_ambiguous',
             `Frame locator matched ${resolvedFrame.candidates.length} frames for the native target selector.`,
+            undefined,
+            {
+              frameResolution,
+            },
           ),
         };
       } else {
         return {
           ok: false,
-          result: buildRejectedResult(
-            request,
-            tab,
-            startedAt,
-            traceId,
-            'target_frame_not_found',
-            'No frame matched the requested frame locator and native target selector.',
-          ),
+          result: decodedFramePolicy
+            ? buildRejectedResult(
+                request,
+                tab,
+                startedAt,
+                traceId,
+                'unsupported_cross_origin_frame',
+                'The target frame could not be mapped to top-document coordinates. Cross-origin or inaccessible frames are not supported for native pointer actions yet.',
+                undefined,
+                {
+                  framePolicy: decodedFramePolicy,
+                  frameResolution,
+                },
+              )
+            : buildRejectedResult(
+                request,
+                tab,
+                startedAt,
+                traceId,
+                'target_frame_not_found',
+                'No frame matched the requested frame locator and native target selector.',
+                undefined,
+                {
+                  frameResolution,
+                },
+              ),
         };
       }
     } catch {
@@ -2193,6 +2288,7 @@ async function inspectActionableTargetForRequest(
         frameId: snapshot.frameId ?? frameId,
         selector,
         locatorResolution,
+        frameResolution,
         actionability: {
           ...snapshot.actionability,
           attempts: attempt,
@@ -2219,8 +2315,11 @@ async function inspectActionableTargetForRequest(
     const looksLikeMissingFrame = /frame/i.test(message) && /not|no|cannot|missing|found/i.test(message);
     if (looksLikeMissingFrame && hasFrameLocatorContext(frameContext)) {
       const resolvedFrame = await resolveFrameIdForTarget(tab.id, selector, frameContext).catch(() => undefined);
+      frameResolution = resolvedFrame?.diagnostics ?? frameResolution;
       if (resolvedFrame?.status === 'found') {
-        previousFrameId = frameId;
+        if (frameId > 0 && frameId !== resolvedFrame.candidate.frameId) {
+          previousFrameId = frameId;
+        }
         frameId = resolvedFrame.candidate.frameId;
         try {
           snapshot = await inspectClickableTarget(tab.id, frameId, selector);
@@ -2228,6 +2327,7 @@ async function inspectActionableTargetForRequest(
             ...snapshot,
             selector,
             locatorResolution,
+            frameResolution,
           };
         } catch (retryError) {
           const retryMessage = retryError instanceof Error ? retryError.message : message;
@@ -2240,6 +2340,10 @@ async function inspectActionableTargetForRequest(
               traceId,
               'target_frame_not_found',
               retryMessage,
+              undefined,
+              {
+                frameResolution,
+              },
             ),
           };
         }
@@ -2253,6 +2357,10 @@ async function inspectActionableTargetForRequest(
             traceId,
             'frame_target_ambiguous',
             `Frame locator matched ${resolvedFrame.candidates.length} frames while recovering a stale native target frame.`,
+            undefined,
+            {
+              frameResolution,
+            },
           ),
         };
       }
@@ -2296,6 +2404,7 @@ async function inspectActionableTargetForRequest(
               undefined,
               {
                 framePolicy: decodedFramePolicy,
+                frameResolution,
               },
             )
           : buildRejectedResult(
@@ -2305,6 +2414,10 @@ async function inspectActionableTargetForRequest(
               traceId,
               'target_frame_not_found',
               message,
+              undefined,
+              {
+                frameResolution,
+              },
             )
         : buildFailedResult(
             request,
@@ -2335,6 +2448,7 @@ async function inspectActionableTargetForRequest(
     ...snapshot,
     selector,
     locatorResolution,
+    frameResolution,
   };
 
   const failureCode = snapshot.actionability.failureCode;

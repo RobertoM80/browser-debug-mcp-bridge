@@ -992,7 +992,6 @@ describe('native automation backend', () => {
     const sendCommand = vi.fn(async () => ({}));
     const executeScript = vi
       .fn()
-      .mockRejectedValueOnce(new Error('No frame with id 99'))
       .mockResolvedValueOnce([
         {
           frameId: 0,
@@ -1005,9 +1004,10 @@ describe('native automation backend', () => {
         {
           frameId: 4,
           result: {
-            matched: true,
+            matched: false,
             url: 'https://example.com/frame',
             title: 'Frame',
+            selector: '#child-frame',
           },
         },
       ])
@@ -1049,6 +1049,7 @@ describe('native automation backend', () => {
           frameId: 99,
           frameUrl: 'https://example.com/frame',
           frameTitle: 'Frame',
+          frameSelector: '#child-frame',
         }),
         tabId: 7,
       },
@@ -1077,9 +1078,16 @@ describe('native automation backend', () => {
         previousFrameId: 99,
         frameCoordinateResolved: true,
       },
+      frameResolution: {
+        selectedBy: 'frame_context',
+        matched: {
+          frameId: 4,
+          frameSelector: '#child-frame',
+        },
+      },
     });
     expect(executeScript).toHaveBeenNthCalledWith(
-      2,
+      1,
       expect.objectContaining({
         target: {
           tabId: 7,
@@ -1087,6 +1095,90 @@ describe('native automation backend', () => {
         },
       }),
     );
+  });
+
+  it('returns frame ambiguity diagnostics before dispatch when multiple frames match the frame locator', async () => {
+    const attach = vi.fn(async () => undefined);
+    const detach = vi.fn(async () => undefined);
+    const sendCommand = vi.fn(async () => ({}));
+    const executeScript = vi.fn(async () => [
+      {
+        frameId: 0,
+        result: {
+          matched: false,
+          url: 'https://example.com/settings',
+          title: 'Settings',
+        },
+      },
+      {
+        frameId: 4,
+        result: {
+          matched: true,
+          selector: '#ambiguous-frame-a',
+          url: 'about:srcdoc',
+          title: 'Ambiguous Frame',
+        },
+      },
+      {
+        frameId: 5,
+        result: {
+          matched: true,
+          selector: '#ambiguous-frame-b',
+          url: 'about:srcdoc',
+          title: 'Ambiguous Frame',
+        },
+      },
+    ]);
+
+    vi.stubGlobal('chrome', {
+      scripting: {
+        executeScript,
+      },
+      debugger: {
+        attach,
+        detach,
+        sendCommand,
+      },
+    });
+
+    const request: Extract<LiveUIActionRequest, { action: 'click' }> = {
+      action: 'click',
+      traceId: 'trace-click-frame-ambiguous',
+      target: {
+        selector: '#ambiguous-frame-action',
+        frameTitleContains: 'Ambiguous Frame',
+        tabId: 7,
+      },
+    };
+
+    const result = await executeNativeClickAction({
+      request,
+      tab: {
+        id: 7,
+        url: 'https://example.com/settings',
+      } as chrome.tabs.Tab & { id: number },
+      startedAt: 1000,
+      traceId: 'trace-click-frame-ambiguous',
+    });
+
+    expect(result.status).toBe('rejected');
+    expect(result.failureReason?.code).toBe('frame_target_ambiguous');
+    expect(result.result).toMatchObject({
+      backend: nativeAutomationBackend,
+      frameResolution: {
+        strategy: 'frame_context',
+        frameContextCandidateCount: 2,
+        selectorMatchedCandidateCount: 2,
+        matchedCandidateCount: 2,
+        selectedBy: 'target_selector',
+        sampledCandidates: [
+          { frameId: 4, frameSelector: '#ambiguous-frame-a' },
+          { frameId: 5, frameSelector: '#ambiguous-frame-b' },
+        ],
+      },
+    });
+    expect(attach).not.toHaveBeenCalled();
+    expect(sendCommand).not.toHaveBeenCalled();
   });
 
   it('returns explicit frame policy when native pointer coordinates cannot be mapped', async () => {

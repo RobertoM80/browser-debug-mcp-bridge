@@ -753,7 +753,7 @@ Important limits and safeguards:
 - Top-document `target.coordinates` are supported for native click/hover actions. Cross-frame coordinate targets still require future translation support.
 - Nested same-origin iframe actions are covered when page-state returns a frame-aware `elementRef`
 - Native pointer actions in cross-origin, sandboxed opaque-origin, or inaccessible frames return `unsupported_cross_origin_frame` when top-document coordinate translation is not possible. The response includes `actionResult.result.framePolicy` and `actionability.frameCoordinateResolved`.
-- Stale frame ids on frame-aware refs are re-resolved by encoded frame URL/title plus selector when possible. Invalid frame ids without enough metadata, or unresolved frame refs, return `target_frame_not_found`.
+- Stale frame ids on frame-aware refs are re-resolved by encoded frame URL/title and selector context when possible, including iframe reload/replacement cases. `actionResult.result.frameResolution` reports the frame matcher, candidate counts, sampled frames, and whether recovery selected the frame by direct frame context or selector narrowing. Invalid frame ids without enough metadata, or unresolved frame refs, return `target_frame_not_found`.
 - `target.locator` now has native DOM resolution for direct/workflow actions and compact page-state semantics for server-side diagnostics. It supports chained structured filters, ancestor/descendant relations, regex matching, and same-origin frame selector paths, but it is not yet a full Playwright/Cypress locator engine for closed shadow DOM internals or arbitrary selector state.
 - `actionResult.result.backend` identifies the execution backend (`cdp-native-v2` for migrated native actions)
 - Native actions perform target inspection/actionability checks before dispatch, including visibility, disabled state, readonly/editable state for input, stable layout, pointer-events, viewport intersection, offscreen scroll-into-view, detached-target retry, zero-size geometry, and hit-target mismatch diagnostics
@@ -850,7 +850,7 @@ Use this before long live flows to distinguish:
 
 ## V6 Automation history tools
 
-These tools read from the dedicated `automation_runs` and `automation_steps` tables, so historical automation analysis no longer depends on reconstructing flows from generic `ui` event breadcrumbs. Native action diagnostics are persisted with the history rows, including backend, actionability, frame policy, locator resolution, point metadata, `failureEvidence`, `linkedSnapshot`, and raw `cdpFailure` metadata when the live action returned them.
+These tools read from the dedicated `automation_runs` and `automation_steps` tables, so historical automation analysis no longer depends on reconstructing flows from generic `ui` event breadcrumbs. Native action diagnostics are persisted with the history rows, including backend, actionability, frame policy, frame resolution, locator resolution, point metadata, `failureEvidence`, `linkedSnapshot`, and raw `cdpFailure` metadata when the live action returned them.
 
 ### list_automation_runs
 

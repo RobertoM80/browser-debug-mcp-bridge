@@ -15,6 +15,7 @@
 * **automation:** persist native action diagnostics in automation history
 * **automation:** link failure evidence and related snapshots into automation history
 * **automation:** extend live e2e coverage for coordinate actions, unsupported frames, and history diagnostics
+* **automation:** improve frame reload recovery and frame ambiguity diagnostics
 * **automation:** support explicit descendant relations in native locator chains
 
 ## [1.11.1](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.11.0...browser-debug-mcp-bridge-v1.11.1) (2026-05-15)

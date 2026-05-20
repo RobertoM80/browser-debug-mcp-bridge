@@ -134,6 +134,7 @@ Locator step kinds are `css`, `role`, `text`, `label`, `testId`, `placeholder`, 
 - `actionResult.result.backend`: execution backend, currently `cdp-native-v2` for native click/hover/input/key/focus/blur/scroll/submit actions
 - `actionResult.result.framePolicy`: frame URL/origin/sandbox/same-origin metadata when the native backend inspected a frame target
 - `actionResult.result.actionability`: actionability and frame-coordinate diagnostics, including `frameCoordinateResolved` and stale-ref recovery markers when applicable
+- `actionResult.result.frameResolution`: frame-selection diagnostics for frame-aware targets, including stale-frame recovery, ambiguity samples, matcher inputs, and whether the target frame was chosen by frame context or selector narrowing
 - `actionResult.result.locatorResolution`: native locator diagnostics for `target.locator`, including strategy, matched candidate count, selected index, and sampled candidates on not-found or ambiguous failures
 - `tabContext`: resolved `tabId`, `frameId`, and URL used for execution
 - `postActionEvidence`: optional snapshot capture result when `captureOnFailure.enabled` is set and the action fails or is rejected
@@ -439,4 +440,4 @@ Response highlights:
 
 ## Automation history
 
-`list_automation_runs` and `get_automation_run` read from dedicated `automation_runs` and `automation_steps` tables. Rows include run/step status, trace ids, target summaries, failure metadata, redaction metadata, and native diagnostics when available. Native diagnostics can include backend, actionability, frame policy, locator resolution, point metadata, `failureEvidence`, `linkedSnapshot`, and raw `cdpFailure` details from the real browser action.
+`list_automation_runs` and `get_automation_run` read from dedicated `automation_runs` and `automation_steps` tables. Rows include run/step status, trace ids, target summaries, failure metadata, redaction metadata, and native diagnostics when available. Native diagnostics can include backend, actionability, frame policy, frame resolution, locator resolution, point metadata, `failureEvidence`, `linkedSnapshot`, and raw `cdpFailure` details from the real browser action.
