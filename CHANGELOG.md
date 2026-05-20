@@ -20,6 +20,33 @@
 * **automation:** extend live e2e coverage for contenteditable input, Tab navigation, and frame-local coordinates
 * **automation:** support explicit descendant relations in native locator chains
 
+## [1.12.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.11.1...browser-debug-mcp-bridge-v1.12.0) (2026-05-20)
+
+
+### Features
+
+* add automation preflight and wait tools ([fb7efb6](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/fb7efb61b5d784a9947a83b641842ffeb9191e9c))
+* add compact automation locators ([f6b3ecb](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/f6b3ecb168cd6a825c58e7cbe11ec99ee1a24b4f))
+* add frame policy diagnostics ([9974e42](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/9974e42605ff5981c5c1615b757a7b371ad5ce7d))
+* add native dialog waits ([1b7e239](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/1b7e239e413ccecb2010dd622fc261a26137fcbd))
+* add native live automation coverage ([4d06f73](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/4d06f73ac937c16847db71489481d28892637a15))
+* add stable layout waits ([6ecd5f0](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/6ecd5f0fecabb5390ca2b49ac7b40ea14848bad6))
+* advance live automation parity ([fd04fa1](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/fd04fa1c58f32998eabeece9d0033e89073a9bf9))
+* close end-to-end automation parity ([0540ecc](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/0540eccfdc7cae5af51bfcea483f8657201bd159))
+* **e2e:** improve end-to-end automation parity ([5167f2c](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/5167f2cd9cad7f1b979760f37de94504412a1708))
+* expand end-to-end automation parity ([7f50116](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/7f501161bb5595d144528608246a916b7b8bac44))
+* expand live automation locators ([11feee4](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/11feee4b0c9411c0c0c2881efe3fbe3d77a6a8ee))
+* expand live automation waits ([c2b82f9](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/c2b82f98f9c806fa04a5c99ae8d6a85362372b89))
+* extend end-to-end automation diagnostics ([537205d](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/537205db01d5a7590bf7d2c730fd97ad9369eb05))
+* extend live automation frame and shadow targeting ([a423fc2](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/a423fc270ec98624474a3c6e9162224e638ae419))
+* harden frame recovery diagnostics ([a51f49b](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/a51f49b1ff2fbc39eb5f87629f1a833508140e80))
+* harden live automation and override loops ([a85fc17](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/a85fc179d6e5dc0d9004496039f510931a601412))
+
+
+### Bug Fixes
+
+* **override:** enable runtime-controlled overrides by default ([9f6a32d](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/9f6a32d0deeff6bb334d337645a13ce4f132aa2d))
+
 ## [1.11.1](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.11.0...browser-debug-mcp-bridge-v1.11.1) (2026-05-15)
 
 
