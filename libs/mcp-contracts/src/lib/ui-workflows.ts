@@ -41,15 +41,23 @@ export const UIWorkflowLocatorStepSchema = z.object({
 export const UIWorkflowLocatorSchema = z.object({
   scope: UIWorkflowActionTargetScopeSchema.optional(),
   frame: z.object({
+    selector: z.string().min(1).optional(),
     urlContains: z.string().min(1).optional(),
     titleContains: z.string().min(1).optional(),
   }).optional(),
   steps: z.array(UIWorkflowLocatorStepSchema).min(1).max(8),
 });
 
+export const UIWorkflowCoordinateTargetSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+  frameId: z.number().int().min(0).optional(),
+});
+
 export const UIWorkflowActionTargetSchema = z.object({
   selector: z.string().min(1).optional(),
   elementRef: z.string().min(1).optional(),
+  coordinates: UIWorkflowCoordinateTargetSchema.optional(),
   tabId: z.number().int().min(0).optional(),
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
@@ -83,6 +91,7 @@ export const UIWorkflowActionTargetSchema = z.object({
   if (
     !value.selector
     && !value.elementRef
+    && !value.coordinates
     && !value.locator
     && !value.scope
     && !value.testId
@@ -96,7 +105,7 @@ export const UIWorkflowActionTargetSchema = z.object({
   ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'target requires selector, elementRef, locator, scope, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText',
+      message: 'target requires selector, elementRef, coordinates, locator, scope, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText',
       path: ['target'],
     });
   }

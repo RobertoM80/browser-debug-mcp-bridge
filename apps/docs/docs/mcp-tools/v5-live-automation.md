@@ -152,11 +152,13 @@ When this happens, do not retry the same action. Inspect page state, refresh ref
 - Native automation supports the top document and same-origin iframe targets in the currently bound tab
 - `get_page_state` and `get_interactive_elements` merge frame buttons/links/inputs/modals and return frame-aware refs with `frameId`/`frameUrl`/`frameTitle` plus frame automation policy metadata
 - Open shadow roots are traversed for page-state discovery and native actions. Closed shadow roots are not inspectable.
+- Top-document `target.coordinates` are supported for native click/hover actions. Cross-frame coordinate targets still require future translation support.
 - Nested same-origin iframe actions are covered when page-state returns a frame-aware `elementRef`
 - Native pointer actions in cross-origin, sandboxed opaque-origin, or inaccessible frames return `unsupported_cross_origin_frame` when top-document coordinate translation is not possible
 - Stale frame ids on frame-aware refs are re-resolved by encoded frame URL/title plus selector when possible. Invalid frame ids without enough metadata, or unresolved frame refs, return `target_frame_not_found`.
-- `target.locator` now has native DOM resolution for direct/workflow actions and compact page-state semantics for server-side diagnostics. It supports chained structured filters, ancestor/descendant relations, regex matching, and same-origin frame selector paths, but it is not yet a full Playwright/Cypress locator engine for closed shadow DOM, coordinate targeting, or arbitrary selector state.
-- Native actions inspect target actionability before dispatch and return structured failures for hidden, disabled, readonly input, non-editable input, unstable, outside-viewport, pointer-events none, hit-target mismatch, and detached-target cases. Offscreen targets now scroll into view before native pointer dispatch and return pre/post scroll diagnostics.
+- `target.locator` now has native DOM resolution for direct/workflow actions and compact page-state semantics for server-side diagnostics. It supports chained structured filters, ancestor/descendant relations, regex matching, and same-origin frame selector paths, but it is not yet a full Playwright/Cypress locator engine for closed shadow DOM internals or arbitrary selector state.
+- Closed shadow-root selectors fail explicitly with `closed_shadow_root_unsupported`.
+- Native actions inspect target actionability before dispatch and return structured failures for hidden, disabled, readonly input, non-editable input, unstable, outside-viewport, zero-size geometry, pointer-events none, hit-target mismatch, and detached-target cases. Offscreen targets now scroll into view before native pointer dispatch and return pre/post scroll diagnostics.
 - Page-state assertions and waits can match `visible: true` or `visible: false`, role/name fields, and frame URL/title filters on structured buttons, links, inputs, modals, and focused refs
 - Only one action should be driven at a time per session
 - Live automation still respects extension allowlist, pause/disconnect state, and sensitive-field opt-in policy
@@ -430,10 +432,11 @@ Response highlights:
 - `steps[]` with per-step duration, error info, execution attempts, failure policy, and optional failure evidence
 - action-step target resolution includes ambiguity and not-found diagnostics with sampled candidates
 - `wait` steps include `wait.matched`, `wait.waitKind`, `attempts`, `waitedMs`, and wait-specific evidence under `target`
+- timed-out waits now include `evidence.timeoutDiagnostics` with matcher summary and the last observed candidate when the underlying wait can provide one
 - step results can include `pageChangeSummary` describing compact state changes between steps
 - `workflowDiagnostics` includes retry count, state capture count, and failure capture count
 - `stepCounts`, `finalPageSummary`, and `finalPage`
 
 ## Automation history
 
-`list_automation_runs` and `get_automation_run` read from dedicated `automation_runs` and `automation_steps` tables. Rows include run/step status, trace ids, target summaries, failure metadata, redaction metadata, and native diagnostics when available. Native diagnostics can include backend, actionability, frame policy, locator resolution, and point metadata from the real browser action.
+`list_automation_runs` and `get_automation_run` read from dedicated `automation_runs` and `automation_steps` tables. Rows include run/step status, trace ids, target summaries, failure metadata, redaction metadata, and native diagnostics when available. Native diagnostics can include backend, actionability, frame policy, locator resolution, point metadata, `failureEvidence`, `linkedSnapshot`, and raw `cdpFailure` details from the real browser action.

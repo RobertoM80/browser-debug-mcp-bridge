@@ -750,17 +750,18 @@ Important limits and safeguards:
 
 - Native automation supports the top document and same-origin iframe targets in the currently bound tab
 - Native actions and page-state discovery support open shadow roots with `host >> target` selectors. Closed shadow roots are not inspectable.
+- Top-document `target.coordinates` are supported for native click/hover actions. Cross-frame coordinate targets still require future translation support.
 - Nested same-origin iframe actions are covered when page-state returns a frame-aware `elementRef`
 - Native pointer actions in cross-origin, sandboxed opaque-origin, or inaccessible frames return `unsupported_cross_origin_frame` when top-document coordinate translation is not possible. The response includes `actionResult.result.framePolicy` and `actionability.frameCoordinateResolved`.
 - Stale frame ids on frame-aware refs are re-resolved by encoded frame URL/title plus selector when possible. Invalid frame ids without enough metadata, or unresolved frame refs, return `target_frame_not_found`.
-- `target.locator` now has native DOM resolution for direct/workflow actions and compact page-state semantics for server-side diagnostics. It supports chained structured filters, ancestor/descendant relations, regex matching, and same-origin frame selector paths, but it is not yet a full Playwright/Cypress locator engine for closed shadow DOM, coordinate targeting, or arbitrary selector state.
+- `target.locator` now has native DOM resolution for direct/workflow actions and compact page-state semantics for server-side diagnostics. It supports chained structured filters, ancestor/descendant relations, regex matching, and same-origin frame selector paths, but it is not yet a full Playwright/Cypress locator engine for closed shadow DOM internals or arbitrary selector state.
 - `actionResult.result.backend` identifies the execution backend (`cdp-native-v2` for migrated native actions)
-- Native actions perform target inspection/actionability checks before dispatch, including visibility, disabled state, readonly/editable state for input, stable layout, pointer-events, viewport intersection, offscreen scroll-into-view, detached-target retry, and hit-target mismatch diagnostics
+- Native actions perform target inspection/actionability checks before dispatch, including visibility, disabled state, readonly/editable state for input, stable layout, pointer-events, viewport intersection, offscreen scroll-into-view, detached-target retry, zero-size geometry, and hit-target mismatch diagnostics
 - Page-state assertions and waits support `visible: true/false`, `role`, `name`, `placeholder`, `altText`, `frameUrlContains`, `frameTitleContains`, and `exact` for structured refs where available
 - `Allow live automation` must be enabled in the extension popup before any action can run
 - Sensitive selectors and input-like actions require the second `Allow sensitive field automation` opt-in
 - The extension shows a red in-page automation indicator while armed/executing and exposes an emergency stop in both the page overlay and popup
-- Failures return structured `failureDetails`, `traceId`, `tabContext`, and optional `postActionEvidence` when `captureOnFailure` is enabled
+- Failures return structured `failureDetails`, `traceId`, `tabContext`, optional `postActionEvidence` when `captureOnFailure` is enabled, and timed-out waits include `evidence.timeoutDiagnostics`
 - When `waitForPageState` is provided and the action succeeds, the response includes `postActionState` with structured wait results
 
 ### run_ui_steps
@@ -849,7 +850,7 @@ Use this before long live flows to distinguish:
 
 ## V6 Automation history tools
 
-These tools read from the dedicated `automation_runs` and `automation_steps` tables, so historical automation analysis no longer depends on reconstructing flows from generic `ui` event breadcrumbs. Native action diagnostics are persisted with the history rows, including backend, actionability, frame policy, locator resolution, and point metadata when the live action returned them.
+These tools read from the dedicated `automation_runs` and `automation_steps` tables, so historical automation analysis no longer depends on reconstructing flows from generic `ui` event breadcrumbs. Native action diagnostics are persisted with the history rows, including backend, actionability, frame policy, locator resolution, point metadata, `failureEvidence`, `linkedSnapshot`, and raw `cdpFailure` metadata when the live action returned them.
 
 ### list_automation_runs
 

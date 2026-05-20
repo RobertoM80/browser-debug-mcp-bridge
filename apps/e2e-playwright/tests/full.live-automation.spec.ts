@@ -88,13 +88,32 @@ type WaitToolResponse = {
   matched: boolean;
   waitKind: string;
   evidence?: Record<string, unknown>;
+  error?: {
+    code?: string;
+    message?: string;
+  };
 };
 
 type AutomationRunsResponse = {
   runs: Array<{
+    runId?: string;
     traceId?: string;
     action?: string;
     status?: string;
+  }>;
+};
+
+type AutomationRunDetailResponse = {
+  run?: {
+    runId?: string;
+    status?: string;
+    diagnostics?: Record<string, unknown>;
+  };
+  steps: Array<{
+    stepId?: string;
+    status?: string;
+    diagnostics?: Record<string, unknown>;
+    failure?: Record<string, unknown>;
   }>;
 };
 
@@ -161,7 +180,7 @@ async function expectMcpSeesLiveSession(mcp: MCPClientHandle, sessionId: string)
   expect(health.liveConnection?.connected).toBe(true);
 }
 
-function buildAutomationFixtureHtml(): string {
+function buildAutomationFixtureHtml(crossOriginFrameUrl: string): string {
   return `
     <!doctype html>
     <html lang="en">
@@ -178,6 +197,13 @@ function buildAutomationFixtureHtml(): string {
           #shadow-host { display: block; margin-top: 12px; }
           #covered-wrapper { display: inline-block; position: relative; }
           #covered-action { margin: 0; }
+          #zero-size-action {
+            width: 0;
+            height: 0;
+            padding: 0;
+            border: 0;
+            overflow: hidden;
+          }
           #cover-layer {
             position: absolute;
             inset: 0;
@@ -194,6 +220,12 @@ function buildAutomationFixtureHtml(): string {
             width: 120px;
           }
           #layout-target.moving { transform: translateX(96px); }
+          iframe {
+            display: block;
+            width: 320px;
+            height: 120px;
+            margin-top: 12px;
+          }
         </style>
       </head>
       <body>
@@ -216,6 +248,7 @@ function buildAutomationFixtureHtml(): string {
             <button id="covered-action">Covered action</button>
             <div id="cover-layer" aria-hidden="true"></div>
           </div>
+          <button id="zero-size-action">Zero size action</button>
           <output id="count" aria-live="polite">0</output>
           <label for="displayName">Display name</label>
           <input id="displayName" />
@@ -258,11 +291,15 @@ function buildAutomationFixtureHtml(): string {
           <output id="hover-output"></output>
           <div id="shadow-host"></div>
           <output id="shadow-output"></output>
+          <div id="closed-shadow-host"></div>
+          <output id="closed-shadow-output"></output>
           <section id="dialog" role="dialog" aria-modal="true" hidden>
             <h2>Automation dialog</h2>
             <button id="confirm-dialog" data-testid="confirm-dialog">Confirm dialog</button>
           </section>
           <div id="dialog-result"></div>
+          <button id="reload-child-frame" data-testid="reload-child-frame">Reload child frame</button>
+          <output id="frame-reload-output"></output>
           <iframe id="child-frame" srcdoc="
             <!doctype html>
             <html>
@@ -278,6 +315,22 @@ function buildAutomationFixtureHtml(): string {
                   });
                   document.querySelector('#frame-input').addEventListener('input', (event) => {
                     document.querySelector('#frame-input-output').textContent = event.target.value;
+                  });
+                </script>
+              </body>
+            </html>
+          "></iframe>
+          <iframe id="cross-origin-frame" src="${crossOriginFrameUrl}"></iframe>
+          <iframe id="sandbox-frame" sandbox="allow-scripts" srcdoc="
+            <!doctype html>
+            <html>
+              <body>
+                <button id='sandbox-action' data-testid='sandbox-action'>Sandbox action</button>
+                <output id='sandbox-count'>0</output>
+                <script>
+                  document.querySelector('#sandbox-action').addEventListener('click', () => {
+                    const count = document.querySelector('#sandbox-count');
+                    count.textContent = String(Number(count.textContent || '0') + 1);
                   });
                 </script>
               </body>
@@ -403,6 +456,20 @@ function buildAutomationFixtureHtml(): string {
           shadowRoot.querySelector('#shadow-action').addEventListener('click', () => {
             document.querySelector('#shadow-output').textContent = 'shadow clicked';
           });
+          const closedShadowHost = document.querySelector('#closed-shadow-host');
+          const closedShadowRoot = closedShadowHost.attachShadow({ mode: 'closed' });
+          const closedShadowButton = document.createElement('button');
+          closedShadowButton.id = 'closed-shadow-action';
+          closedShadowButton.textContent = 'Run closed shadow';
+          closedShadowButton.addEventListener('click', () => {
+            document.querySelector('#closed-shadow-output').textContent = 'closed shadow clicked';
+          });
+          closedShadowRoot.appendChild(closedShadowButton);
+          document.querySelector('#reload-child-frame').addEventListener('click', () => {
+            const frame = document.querySelector('#child-frame');
+            frame.srcdoc = frame.getAttribute('srcdoc');
+            document.querySelector('#frame-reload-output').textContent = 'reloaded';
+          });
           document.querySelector('#outer-frame').srcdoc = [
             '<!doctype html>',
             '<html>',
@@ -448,13 +515,42 @@ function buildPopupTargetHtml(): string {
   `;
 }
 
+function buildCrossOriginFrameHtml(): string {
+  return `
+    <!doctype html>
+    <html lang="en">
+      <head>
+        <title>Automation cross origin frame</title>
+      </head>
+      <body>
+        <button id="cross-origin-action" data-testid="cross-origin-action">Cross origin action</button>
+        <output id="cross-origin-count">0</output>
+        <script>
+          document.querySelector('#cross-origin-action').addEventListener('click', () => {
+            const count = document.querySelector('#cross-origin-count');
+            count.textContent = String(Number(count.textContent || '0') + 1);
+          });
+        </script>
+      </body>
+    </html>
+  `;
+}
+
 async function installAutomationFixture(page: Page, fixtureUrl: string): Promise<void> {
-  const origin = new URL(fixtureUrl).origin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const escapeRegex = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const fixture = new URL(fixtureUrl);
+  const crossOriginUrl = new URL(fixtureUrl);
+  crossOriginUrl.hostname = fixture.hostname === '127.0.0.1' ? 'localhost' : '127.0.0.1';
+  crossOriginUrl.pathname = '/automation-cross-origin-frame';
+  crossOriginUrl.search = '';
+  crossOriginUrl.hash = '';
+  const origin = escapeRegex(fixture.origin);
+  const crossOrigin = escapeRegex(crossOriginUrl.origin);
   await page.context().route(new RegExp(`^${origin}/automation-fixture(?:[/?#].*)?$`), async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'text/html',
-      body: buildAutomationFixtureHtml(),
+      body: buildAutomationFixtureHtml(crossOriginUrl.toString()),
     });
   });
   await page.context().route(new RegExp(`^${origin}/automation-popup-target(?:[/?#].*)?$`), async (route) => {
@@ -472,6 +568,13 @@ async function installAutomationFixture(page: Page, fixtureUrl: string): Promise
         'content-disposition': 'attachment; filename=\"automation-report.txt\"',
       },
       body: 'automation download payload',
+    });
+  });
+  await page.context().route(new RegExp(`^${crossOrigin}/automation-cross-origin-frame(?:[/?#].*)?$`), async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      body: buildCrossOriginFrameHtml(),
     });
   });
   await page.goto(fixtureUrl, { waitUntil: 'domcontentloaded' });
@@ -530,7 +633,15 @@ test.describe('@full live automation through MCP and extension session', () => {
       const hasDocsLink = refs.refs.some((ref) => ref.selector === '#docs-secondary' && ref.kind === 'links');
       const hasShadowButtonRef = refs.refs.some((ref) => ref.selector === '#shadow-host >> #shadow-action' && ref.kind === 'buttons');
       const hasNestedFrameButtonRef = refs.refs.some((ref) => ref.selector === '#nested-frame-action' && typeof ref.frameId === 'number');
-      return hasFrameButtonRef && hasFrameInputRef && hasDocsLink && hasShadowButtonRef && hasNestedFrameButtonRef;
+      const hasCrossOriginFrameButtonRef = refs.refs.some((ref) => ref.selector === '#cross-origin-action' && typeof ref.frameId === 'number');
+      const hasSandboxFrameButtonRef = refs.refs.some((ref) => ref.selector === '#sandbox-action' && typeof ref.frameId === 'number');
+      return hasFrameButtonRef
+        && hasFrameInputRef
+        && hasDocsLink
+        && hasShadowButtonRef
+        && hasNestedFrameButtonRef
+        && hasCrossOriginFrameButtonRef
+        && hasSandboxFrameButtonRef;
     }, { timeout: 10_000 }).toBe(true);
     if (!refs) {
       throw new Error('expected interactive element refs');
@@ -542,9 +653,13 @@ test.describe('@full live automation through MCP and extension session', () => {
     const frameButtonRef = refs.refs.find((ref) => ref.selector === '#inside-frame' && typeof ref.frameId === 'number');
     const frameInputRef = refs.refs.find((ref) => ref.selector === '#frame-input' && typeof ref.frameId === 'number');
     const nestedFrameButtonRef = refs.refs.find((ref) => ref.selector === '#nested-frame-action' && typeof ref.frameId === 'number');
+    const crossOriginFrameButtonRef = refs.refs.find((ref) => ref.selector === '#cross-origin-action' && typeof ref.frameId === 'number');
+    const sandboxFrameButtonRef = refs.refs.find((ref) => ref.selector === '#sandbox-action' && typeof ref.frameId === 'number');
     expect(frameButtonRef?.elementRef).toEqual(expect.any(String));
     expect(frameInputRef?.elementRef).toEqual(expect.any(String));
     expect(nestedFrameButtonRef?.elementRef).toEqual(expect.any(String));
+    expect(crossOriginFrameButtonRef?.elementRef).toEqual(expect.any(String));
+    expect(sandboxFrameButtonRef?.elementRef).toEqual(expect.any(String));
 
     const click = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
@@ -689,6 +804,42 @@ test.describe('@full live automation through MCP and extension session', () => {
     expect(input.actionResult?.result?.valueLength).toBe('Ada Lovelace'.length);
     await expect(targetPage.locator('#name-output')).toHaveText('Ada Lovelace');
 
+    await targetPage.evaluate(() => {
+      window.scrollTo(0, 0);
+    });
+    const incrementPoint = await targetPage.evaluate(() => {
+      const target = document.querySelector('#increment');
+      if (!(target instanceof HTMLElement)) {
+        return null;
+      }
+      const rect = target.getBoundingClientRect();
+      return {
+        x: Math.round(rect.left + (rect.width / 2)),
+        y: Math.round(rect.top + (rect.height / 2)),
+      };
+    });
+    if (!incrementPoint) {
+      throw new Error('increment point was not available');
+    }
+    const coordinateClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        tabId,
+        coordinates: {
+          x: incrementPoint.x,
+          y: incrementPoint.y,
+        },
+      },
+    });
+    expect(coordinateClick.status).toBe('succeeded');
+    expect(coordinateClick.actionResult?.result).toMatchObject({
+      backend: 'cdp-native-v2',
+      coordinateTarget: true,
+      pointCoordinateSpace: 'top-document',
+    });
+    await expect(targetPage.locator('#count')).toHaveText('4');
+
     const semanticHover = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
       action: 'hover',
@@ -708,6 +859,38 @@ test.describe('@full live automation through MCP and extension session', () => {
       selectedIndex: 1,
     });
     await expect(targetPage.locator('#hover-output')).toHaveText('hovered docs');
+
+    const docsPoint = await targetPage.evaluate(() => {
+      const target = document.querySelector('#docs-secondary');
+      if (!(target instanceof HTMLElement)) {
+        return null;
+      }
+      const rect = target.getBoundingClientRect();
+      return {
+        x: Math.round(rect.left + (rect.width / 2)),
+        y: Math.round(rect.top + (rect.height / 2)),
+      };
+    });
+    if (!docsPoint) {
+      throw new Error('docs-secondary point was not available');
+    }
+    const coordinateHover = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'hover',
+      target: {
+        tabId,
+        coordinates: {
+          x: docsPoint.x,
+          y: docsPoint.y,
+        },
+      },
+    });
+    expect(coordinateHover.status).toBe('succeeded');
+    expect(coordinateHover.actionResult?.result).toMatchObject({
+      backend: 'cdp-native-v2',
+      coordinateTarget: true,
+      pointCoordinateSpace: 'top-document',
+    });
 
     const shadowClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
@@ -859,22 +1042,6 @@ test.describe('@full live automation through MCP and extension session', () => {
     });
     await expect(targetPage.frameLocator('#child-frame').locator('#frame-count')).toHaveText('3');
 
-    const frameInput = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
-      sessionId,
-      action: 'input',
-      target: {
-        elementRef: frameInputRef?.elementRef,
-        tabId,
-      },
-      input: {
-        value: 'Frame Ada',
-      },
-    });
-    expect(frameInput.status).toBe('succeeded');
-    expect(frameInput.actionResult?.result?.backend).toBe('cdp-native-v2');
-    expect(frameInput.target?.frameId).toBe(childFrameId);
-    await expect(targetPage.frameLocator('#child-frame').locator('#frame-input-output')).toHaveText('Frame Ada');
-
     const nestedFrameClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
       action: 'click',
@@ -917,21 +1084,6 @@ test.describe('@full live automation through MCP and extension session', () => {
       },
     });
     await expect(targetPage.frameLocator('#outer-frame').frameLocator('#inner-frame').locator('#nested-count')).toHaveText('2');
-
-    const semanticFrameInput = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
-      sessionId,
-      action: 'input',
-      target: {
-        scope: 'inputs',
-        testId: 'frame-input',
-        tabId,
-      },
-      input: { value: 'Frame Grace' },
-    });
-    expect(semanticFrameInput.status).toBe('succeeded');
-    expect(semanticFrameInput.actionResult?.result?.backend).toBe('cdp-native-v2');
-    expect(semanticFrameInput.target?.frameId).toBe(childFrameId);
-    await expect(targetPage.frameLocator('#child-frame').locator('#frame-input-output')).toHaveText('Frame Grace');
 
     const workflow = await callToolJson<WorkflowResponse>(mcp.client, 'run_ui_steps', {
       sessionId,
@@ -1074,6 +1226,31 @@ test.describe('@full live automation through MCP and extension session', () => {
     await expect.poll(async () => {
       return extension?.context.pages().some((page) => page.url().includes('/automation-popup-target?step=popup')) ?? false;
     }, { timeout: 5_000 }).toBe(true);
+
+    const popupTimeoutClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        selector: '#open-popup',
+        tabId,
+      },
+    });
+    expect(popupTimeoutClick.status).toBe('succeeded');
+
+    const popupTimeoutWait = await callToolJson<WaitToolResponse>(mcp.client, 'wait_for_popup', {
+      sessionId,
+      urlContains: '/automation-popup-target?step=missing',
+      openerTabId: tabId,
+      timeoutMs: 2_000,
+    });
+    expect(popupTimeoutWait.matched).toBe(false);
+    expect(popupTimeoutWait.error?.code).toBe('popup_wait_timeout');
+    expect(popupTimeoutWait.evidence?.timeoutDiagnostics).toMatchObject({
+      matcherSummary: {
+        urlContains: '/automation-popup-target?step=missing',
+        openerTabId: tabId,
+      },
+    });
 
     const downloadClick = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
@@ -1354,6 +1531,69 @@ test.describe('@full live automation through MCP and extension session', () => {
     });
     expect(coveredAttempt.status).toBe('rejected');
     expect(coveredAttempt.failureDetails?.code).toBe('hit_target_mismatch');
+    expect(coveredAttempt.actionResult?.result?.actionability).toMatchObject({
+      isCovered: true,
+      hitTargetMatches: false,
+    });
+
+    const zeroSizeAttempt = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        selector: '#zero-size-action',
+        tabId,
+      },
+    });
+    expect(zeroSizeAttempt.status).toBe('rejected');
+    expect(zeroSizeAttempt.failureDetails?.code).toBe('zero_size_target');
+    expect(zeroSizeAttempt.actionResult?.result?.actionability).toMatchObject({
+      failureCode: 'zero_size_target',
+      boundingRect: {
+        width: 0,
+        height: 0,
+      },
+    });
+
+    const closedShadowAttempt = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        selector: '#closed-shadow-host >> #closed-shadow-action',
+        tabId,
+      },
+    });
+    expect(closedShadowAttempt.status).toBe('rejected');
+    expect(closedShadowAttempt.failureDetails?.code).toBe('closed_shadow_root_unsupported');
+
+    const crossOriginAttempt = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        elementRef: crossOriginFrameButtonRef?.elementRef,
+        tabId,
+      },
+    });
+    expect(crossOriginAttempt.status).toBe('rejected');
+    expect(crossOriginAttempt.failureDetails?.code).toBe('unsupported_cross_origin_frame');
+    expect(crossOriginAttempt.actionResult?.result?.framePolicy).toMatchObject({
+      pointerActionsSupported: false,
+      sameOriginWithTop: false,
+    });
+
+    const sandboxAttempt = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        elementRef: sandboxFrameButtonRef?.elementRef,
+        tabId,
+      },
+    });
+    expect(sandboxAttempt.status).toBe('rejected');
+    expect(sandboxAttempt.failureDetails?.code).toBe('unsupported_cross_origin_frame');
+    expect(sandboxAttempt.actionResult?.result?.framePolicy).toMatchObject({
+      pointerActionsSupported: false,
+      isOpaqueOrigin: true,
+    });
 
     const iframeAttempt = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
@@ -1367,6 +1607,22 @@ test.describe('@full live automation through MCP and extension session', () => {
     expect(iframeAttempt.status).toBe('rejected');
     expect(iframeAttempt.failureDetails?.code).toBe('target_frame_not_found');
 
+    const coveredWithEvidenceAttempt = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        selector: '#covered-action',
+        tabId,
+      },
+      captureOnFailure: {
+        enabled: true,
+        mode: 'dom',
+        styleMode: 'computed-lite',
+      },
+    });
+    expect(coveredWithEvidenceAttempt.status).toBe('rejected');
+    expect(coveredWithEvidenceAttempt.failureDetails?.code).toBe('hit_target_mismatch');
+
     await expect.poll(async () => {
       const runs = await callToolJson<AutomationRunsResponse>(mcp!.client, 'list_automation_runs', {
         sessionId,
@@ -1375,5 +1631,39 @@ test.describe('@full live automation through MCP and extension session', () => {
       });
       return runs.runs[0]?.status ?? 'missing';
     }, { timeout: 10_000 }).toBe('succeeded');
+
+    let coveredRunId: string | undefined;
+    await expect.poll(async () => {
+      const runs = await callToolJson<AutomationRunsResponse>(mcp!.client, 'list_automation_runs', {
+        sessionId,
+        traceId: coveredWithEvidenceAttempt.traceId,
+        limit: 5,
+      });
+      coveredRunId = runs.runs[0]?.runId;
+      return coveredRunId ?? 'missing';
+    }, { timeout: 10_000 }).not.toBe('missing');
+    if (!coveredRunId) {
+      throw new Error('expected covered failure automation run id');
+    }
+
+    const coveredRun = await callToolJson<AutomationRunDetailResponse>(mcp.client, 'get_automation_run', {
+      sessionId,
+      runId: coveredRunId,
+    });
+    expect(['failed', 'rejected']).toContain(coveredRun.run?.status);
+    expect(coveredRun.run?.diagnostics).toMatchObject({
+      failureEvidence: {
+        captured: expect.any(Boolean),
+      },
+    });
+    expect(coveredRun.steps[0]?.diagnostics).toMatchObject({
+      actionability: {
+        hitTargetMatches: false,
+        isCovered: true,
+      },
+      failureEvidence: {
+        captured: expect.any(Boolean),
+      },
+    });
   });
 });

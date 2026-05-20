@@ -36,6 +36,11 @@ export interface UIActionLocator {
 export interface UIWorkflowActionTarget {
   selector?: string;
   elementRef?: string;
+  coordinates?: {
+    x: number;
+    y: number;
+    frameId?: number;
+  };
   tabId?: number;
   frameId?: number;
   url?: string;
@@ -71,6 +76,11 @@ export interface ResolvedWorkflowActionTarget {
   target?: {
     elementRef?: string;
     selector?: string;
+    coordinates?: {
+      x: number;
+      y: number;
+      frameId?: number;
+    };
     tabId?: number;
     frameId?: number;
     url?: string;
@@ -342,6 +352,7 @@ export function summarizeWorkflowTargetMatcher(target: UIWorkflowActionTarget): 
     locator: summarizeWorkflowLocator(target),
     selector: target.selector,
     elementRef: target.elementRef,
+    coordinates: target.coordinates,
     testId: target.testId,
     frameId: target.frameId,
     frameUrlContains: target.frameUrlContains,
@@ -375,6 +386,7 @@ export function hasSemanticActionTargetMatcher(target: UIWorkflowActionTarget | 
     target
     && !target.selector
     && !target.elementRef
+    && !target.coordinates
     && (
       target.locator
       || target.scope
@@ -483,6 +495,21 @@ export async function resolveWorkflowActionTarget(
       },
       resolution: {
         strategy: target.elementRef ? 'elementRef' : 'selector',
+        matcher: summarizeWorkflowTargetMatcher(target),
+      },
+    };
+  }
+
+  if (target.coordinates) {
+    return {
+      target: {
+        tabId: target.tabId,
+        frameId: target.frameId ?? target.coordinates.frameId,
+        url: target.url,
+        coordinates: target.coordinates,
+      },
+      resolution: {
+        strategy: 'coordinates',
         matcher: summarizeWorkflowTargetMatcher(target),
       },
     };

@@ -55,9 +55,16 @@ export const LiveUIActionLocatorSchema = z.object({
   steps: z.array(LiveUIActionLocatorStepSchema).min(1).max(8),
 });
 
+export const LiveUIActionCoordinateTargetSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+  frameId: z.number().int().min(0).optional(),
+});
+
 export const LiveUIActionTargetSchema = z.object({
   selector: z.string().min(1).optional(),
   elementRef: z.string().min(1).optional(),
+  coordinates: LiveUIActionCoordinateTargetSchema.optional(),
   tabId: z.number().int().min(0).optional(),
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
@@ -191,6 +198,7 @@ export type LiveUIAction = z.infer<typeof LiveUIActionSchema>;
 export type LiveUIActionLocatorMatcher = z.infer<typeof LiveUIActionLocatorMatcherSchema>;
 export type LiveUIActionLocatorStep = z.infer<typeof LiveUIActionLocatorStepSchema>;
 export type LiveUIActionLocator = z.infer<typeof LiveUIActionLocatorSchema>;
+export type LiveUIActionCoordinateTarget = z.infer<typeof LiveUIActionCoordinateTargetSchema>;
 export type LiveUIActionTarget = z.infer<typeof LiveUIActionTargetSchema>;
 export type LiveUIActionRequest = z.infer<typeof LiveUIActionRequestSchema>;
 export type LiveUIActionFailureReason = z.infer<typeof LiveUIActionFailureReasonSchema>;

@@ -1862,6 +1862,31 @@ function dialogMatchesWaitPayload(
   return true;
 }
 
+function describeDialogWaitObservation(
+  dialog: CdpJavascriptDialogOpeningPayload,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  const mismatchReasons: string[] = [];
+  if (typeof payload.type === 'string' && dialog.type !== payload.type) {
+    mismatchReasons.push('type');
+  }
+  if (typeof payload.messageContains === 'string' && !String(dialog.message ?? '').includes(payload.messageContains)) {
+    mismatchReasons.push('messageContains');
+  }
+  if (typeof payload.urlContains === 'string' && !String(dialog.url ?? '').includes(payload.urlContains)) {
+    mismatchReasons.push('urlContains');
+  }
+  return {
+    type: dialog.type,
+    message: dialog.message,
+    url: dialog.url,
+    frameId: dialog.frameId,
+    defaultPrompt: dialog.defaultPrompt,
+    matched: mismatchReasons.length === 0,
+    mismatchReasons,
+  };
+}
+
 async function waitForJavascriptDialogInTab(options: {
   payload: Record<string, unknown>;
   tab: chrome.tabs.Tab & { id: number };
@@ -1875,6 +1900,8 @@ async function waitForJavascriptDialogInTab(options: {
   let attached = false;
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   let listener: ((source: chrome.debugger.Debuggee, method: string, params?: unknown) => void) | undefined;
+  let lastObserved: Record<string, unknown> | undefined;
+  let observedCount = 0;
 
   const cleanup = async (): Promise<void> => {
     if (timeoutId) {
@@ -1904,11 +1931,13 @@ async function waitForJavascriptDialogInTab(options: {
         timeoutMs,
         tabId,
         url: tab.url,
+        observedCount,
         expected: {
           type: payload.type,
           messageContains: payload.messageContains,
           urlContains: payload.urlContains,
         },
+        lastObserved,
       });
     }, timeoutMs);
 
@@ -1918,7 +1947,12 @@ async function waitForJavascriptDialogInTab(options: {
       }
 
       const dialog = params as CdpJavascriptDialogOpeningPayload | undefined;
-      if (!dialog || !dialogMatchesWaitPayload(dialog, payload)) {
+      if (!dialog) {
+        return;
+      }
+      observedCount += 1;
+      lastObserved = describeDialogWaitObservation(dialog, payload);
+      if (!dialogMatchesWaitPayload(dialog, payload)) {
         return;
       }
 
@@ -2162,6 +2196,8 @@ async function waitForNavigationLifecycleInTab(options: {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   let listener: ((source: chrome.debugger.Debuggee, method: string, params?: unknown) => void) | undefined;
   let mainFrameId: string | undefined;
+  let lastObserved: Record<string, unknown> | undefined;
+  let observedEventCount = 0;
 
   const cleanup = async (): Promise<void> => {
     if (timeoutId) {
@@ -2188,6 +2224,11 @@ async function waitForNavigationLifecycleInTab(options: {
     const resolvedUrl = typeof event.url === 'string'
       ? event.url
       : liveTab?.pendingUrl ?? liveTab?.url ?? tab.url;
+    lastObserved = {
+      ...event,
+      url: resolvedUrl,
+      matched: matchesWaitUrl(resolvedUrl, payload),
+    };
     if (!matchesWaitUrl(resolvedUrl, payload)) {
       return;
     }
@@ -2214,12 +2255,14 @@ async function waitForNavigationLifecycleInTab(options: {
         timeoutMs,
         tabId,
         url: tab.url,
+        observedEventCount,
         expected: {
           state,
           urlContains: payload.urlContains,
           urlRegex: payload.urlRegex,
           exactUrl: payload.exactUrl,
         },
+        lastObserved,
       });
     }, timeoutMs);
 
@@ -2235,6 +2278,7 @@ async function waitForNavigationLifecycleInTab(options: {
           if (!frame || frame.parentId) {
             return;
           }
+          observedEventCount += 1;
           mainFrameId = frame.id ?? mainFrameId;
           await resolveMatch(resolve, {
             state,
@@ -2251,7 +2295,17 @@ async function waitForNavigationLifecycleInTab(options: {
           if (!event) {
             return;
           }
+          observedEventCount += 1;
           if (mainFrameId && event.frameId && event.frameId !== mainFrameId) {
+            lastObserved = {
+              state,
+              frameId: event.frameId,
+              navigationType: event.navigationType,
+              eventMethod: method,
+              url: event.url,
+              matched: false,
+              mismatchReasons: ['mainFrameId'],
+            };
             return;
           }
           await resolveMatch(resolve, {
@@ -2265,6 +2319,7 @@ async function waitForNavigationLifecycleInTab(options: {
         }
 
         if (state === 'domcontentloaded' && method === 'Page.domContentEventFired') {
+          observedEventCount += 1;
           await resolveMatch(resolve, {
             state,
             eventMethod: method,
@@ -2273,6 +2328,7 @@ async function waitForNavigationLifecycleInTab(options: {
         }
 
         if (state === 'load' && method === 'Page.loadEventFired') {
+          observedEventCount += 1;
           await resolveMatch(resolve, {
             state,
             eventMethod: method,
@@ -2285,7 +2341,18 @@ async function waitForNavigationLifecycleInTab(options: {
           if (!event || event.name !== 'networkIdle') {
             return;
           }
+          observedEventCount += 1;
           if (mainFrameId && event.frameId && event.frameId !== mainFrameId) {
+            lastObserved = {
+              state,
+              frameId: event.frameId,
+              loaderId: event.loaderId,
+              lifecycleName: event.name,
+              timestamp: event.timestamp,
+              eventMethod: method,
+              matched: false,
+              mismatchReasons: ['mainFrameId'],
+            };
             return;
           }
           await resolveMatch(resolve, {
@@ -2334,6 +2401,8 @@ async function waitForDownloadInTab(options: {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   let listener: ((source: chrome.debugger.Debuggee, method: string, params?: unknown) => void) | undefined;
   let matchedDownload: Record<string, unknown> | undefined;
+  let lastObserved: Record<string, unknown> | undefined;
+  let observedEventCount = 0;
 
   const cleanup = async (): Promise<void> => {
     if (timeoutId) {
@@ -2364,6 +2433,7 @@ async function waitForDownloadInTab(options: {
         timeoutMs,
         tabId,
         url: tab.url,
+        observedEventCount,
         expected: {
           state,
           urlContains: payload.urlContains,
@@ -2372,6 +2442,8 @@ async function waitForDownloadInTab(options: {
           filenameContains: payload.filenameContains,
           filenameRegex: payload.filenameRegex,
         },
+        lastObserved,
+        lastMatchedDownload: matchedDownload,
       });
     }, timeoutMs);
 
@@ -2383,7 +2455,26 @@ async function waitForDownloadInTab(options: {
       void (async () => {
         if (method === 'Page.downloadWillBegin') {
           const event = params as CdpDownloadWillBeginPayload | undefined;
-          if (!event || !matchesWaitUrl(event.url, payload) || !matchesWaitFilename(event.suggestedFilename, payload)) {
+          if (!event) {
+            return;
+          }
+          observedEventCount += 1;
+          const urlMatched = matchesWaitUrl(event.url, payload);
+          const filenameMatched = matchesWaitFilename(event.suggestedFilename, payload);
+          lastObserved = {
+            eventMethod: method,
+            guid: event.guid,
+            frameId: event.frameId,
+            url: event.url,
+            suggestedFilename: event.suggestedFilename,
+            state: 'started',
+            matched: urlMatched && filenameMatched,
+            mismatchReasons: [
+              ...(urlMatched ? [] : ['url']),
+              ...(filenameMatched ? [] : ['filename']),
+            ],
+          };
+          if (!urlMatched || !filenameMatched) {
             return;
           }
 
@@ -2411,6 +2502,15 @@ async function waitForDownloadInTab(options: {
           if (!event || !matchedDownload || event.guid !== matchedDownload.guid || state !== 'completed') {
             return;
           }
+          observedEventCount += 1;
+          lastObserved = {
+            eventMethod: method,
+            guid: event.guid,
+            state: event.state,
+            totalBytes: event.totalBytes,
+            receivedBytes: event.receivedBytes,
+            matched: event.state === 'completed',
+          };
 
           if (event.state === 'completed') {
             resolve({
@@ -2456,6 +2556,8 @@ async function waitForPopupFromTab(options: {
   let createdListener: ((createdTab: chrome.tabs.Tab) => void) | undefined;
   let updatedListener: ((tabId: number, changeInfo: chrome.tabs.OnUpdatedInfo, updatedTab: chrome.tabs.Tab) => void) | undefined;
   const pendingTabs = new Set<number>();
+  let lastObserved: Record<string, unknown> | undefined;
+  let observedPopupCount = 0;
 
   const cleanup = (): void => {
     if (timeoutId) {
@@ -2474,6 +2576,14 @@ async function waitForPopupFromTab(options: {
 
   const matchPopup = (resolve: (value: Record<string, unknown>) => void, popupTab: chrome.tabs.Tab): boolean => {
     if (popupTab.openerTabId !== openerTabId) {
+      lastObserved = {
+        tabId: popupTab.id,
+        openerTabId: popupTab.openerTabId,
+        windowId: popupTab.windowId,
+        url: popupTab.pendingUrl ?? popupTab.url,
+        matched: false,
+        mismatchReasons: ['openerTabId'],
+      };
       return false;
     }
 
@@ -2482,6 +2592,14 @@ async function waitForPopupFromTab(options: {
       || typeof payload.urlContains === 'string'
       || typeof payload.urlRegex === 'string';
     if (hasUrlPredicate && !matchesWaitUrl(url, payload)) {
+      lastObserved = {
+        tabId: popupTab.id,
+        openerTabId,
+        windowId: popupTab.windowId,
+        url,
+        matched: false,
+        mismatchReasons: ['url'],
+      };
       return false;
     }
 
@@ -2504,12 +2622,15 @@ async function waitForPopupFromTab(options: {
         matched: false,
         timeoutMs,
         openerTabId,
+        observedPopupCount,
+        pendingTabIds: Array.from(pendingTabs),
         expected: {
           urlContains: payload.urlContains,
           urlRegex: payload.urlRegex,
           exactUrl: payload.exactUrl,
           openerTabId,
         },
+        lastObserved,
       });
     }, timeoutMs);
 
@@ -2517,6 +2638,7 @@ async function waitForPopupFromTab(options: {
       if (createdTab.openerTabId !== openerTabId || typeof createdTab.id !== 'number') {
         return;
       }
+      observedPopupCount += 1;
 
       if (matchPopup(resolve, createdTab)) {
         return;
@@ -2529,6 +2651,7 @@ async function waitForPopupFromTab(options: {
       if (!pendingTabs.has(updatedTabId) && updatedTab.openerTabId !== openerTabId) {
         return;
       }
+      observedPopupCount += 1;
 
       if (matchPopup(resolve, updatedTab)) {
         pendingTabs.delete(updatedTabId);
@@ -3036,6 +3159,7 @@ interface FrameCaptureMetadata {
   frameId: number;
   url?: string;
   title?: string;
+  frameSelector?: string;
   origin?: string;
   isOpaqueOrigin?: boolean;
   parentAccessible?: boolean;
@@ -3054,8 +3178,15 @@ interface FrameElementMetadata {
   title?: string;
   name?: string;
   id?: string;
+  selectorPath?: string;
   sandboxFlags?: string[];
   hasSrcdoc?: boolean;
+}
+
+function isFrameElementMetadata(value: unknown): value is FrameElementMetadata {
+  return typeof value === 'object'
+    && value !== null
+    && typeof (value as { index?: unknown }).index === 'number';
 }
 
 function asRecordArray(value: unknown): Array<Record<string, unknown>> {
@@ -3146,6 +3277,7 @@ function augmentElementRef(elementRef: unknown, frame: FrameCaptureMetadata): st
       frameId: frame.frameId,
       frameUrl: frame.url,
       frameTitle: frame.title,
+      frameSelector: frame.frameSelector,
       frameSameOriginWithTop: frame.sameOriginWithTop,
       frameAutomationSupport: frame.automationSupport,
       frameAutomationUnsupportedReason: frame.automationUnsupportedReason,
@@ -3161,6 +3293,7 @@ function enrichFrameScopedItem(item: Record<string, unknown>, frame: FrameCaptur
     frameId: frame.frameId,
     frameUrl: frame.url,
     frameTitle: frame.title,
+    frameSelector: frame.frameSelector,
     frameSameOriginWithTop: frame.sameOriginWithTop,
     frameAutomationSupport: frame.automationSupport,
     frameAutomationUnsupportedReason: frame.automationUnsupportedReason,
@@ -3174,35 +3307,77 @@ async function listTopFrameElements(tabId: number): Promise<FrameElementMetadata
       tabId,
     },
     func: () => {
-      return Array.from(document.querySelectorAll('iframe, frame')).map((element, index) => {
-        const frameElement = element as HTMLIFrameElement;
-        const sandbox = frameElement instanceof HTMLIFrameElement ? frameElement.getAttribute('sandbox') : null;
-        const sandboxFlags = sandbox === null
-          ? undefined
-          : sandbox
-            .split(/\s+/)
-            .map((flag) => flag.trim())
-            .filter((flag) => flag.length > 0);
-
-        return {
-          index,
-          src: frameElement.getAttribute('src') ?? undefined,
-          resolvedUrl: frameElement.src || undefined,
-          title: frameElement.getAttribute('title') ?? undefined,
-          name: frameElement.getAttribute('name') ?? undefined,
-          id: frameElement.id || undefined,
-          sandboxFlags,
-          hasSrcdoc: frameElement instanceof HTMLIFrameElement && frameElement.getAttribute('srcdoc') !== null,
-        };
-      });
+      const cssEscapeFallback = (value: string): string => {
+        const cssApi = (globalThis as { CSS?: { escape?: (input: string) => string } }).CSS;
+        if (cssApi?.escape) {
+          return cssApi.escape(value);
+        }
+        return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+      };
+      const elementSelectorPath = (element: Element): string => {
+        if (element.id) {
+          return `#${cssEscapeFallback(element.id)}`;
+        }
+        const testId = element.getAttribute('data-testid');
+        if (testId) {
+          return `[data-testid="${cssEscapeFallback(testId)}"]`;
+        }
+        const name = element.getAttribute('name');
+        if (name) {
+          return `${element.tagName.toLowerCase()}[name="${cssEscapeFallback(name)}"]`;
+        }
+        const siblings = element.parentElement
+          ? Array.from(element.parentElement.children).filter((child) => child.tagName === element.tagName)
+          : [element];
+        const index = Math.max(0, siblings.indexOf(element)) + 1;
+        return `${element.tagName.toLowerCase()}:nth-of-type(${index})`;
+      };
+      let frameIndex = 0;
+      const entries: Array<Record<string, unknown>> = [];
+      const visitWindow = (rootWindow: Window, parentPath?: string): void => {
+        const frameElements = Array.from(rootWindow.document.querySelectorAll('iframe, frame')) as HTMLIFrameElement[];
+        for (const frameElement of frameElements) {
+          const sandbox = frameElement instanceof HTMLIFrameElement ? frameElement.getAttribute('sandbox') : null;
+          const sandboxFlags = sandbox === null
+            ? undefined
+            : sandbox
+              .split(/\s+/)
+              .map((flag) => flag.trim())
+              .filter((flag) => flag.length > 0);
+          const selectorPath = parentPath
+            ? `${parentPath} => ${elementSelectorPath(frameElement)}`
+            : elementSelectorPath(frameElement);
+          entries.push({
+            index: frameIndex,
+            src: frameElement.getAttribute('src') ?? undefined,
+            resolvedUrl: frameElement.src || undefined,
+            title: frameElement.getAttribute('title') ?? undefined,
+            name: frameElement.getAttribute('name') ?? undefined,
+            id: frameElement.id || undefined,
+            selectorPath,
+            sandboxFlags,
+            hasSrcdoc: frameElement instanceof HTMLIFrameElement && frameElement.getAttribute('srcdoc') !== null,
+          });
+          frameIndex += 1;
+          try {
+            const childWindow = frameElement.contentWindow;
+            const childDocument = frameElement.contentDocument;
+            if (childWindow && childDocument) {
+              visitWindow(childWindow, selectorPath);
+            }
+          } catch {
+            // Cross-origin descendants cannot be traversed from the top document.
+          }
+        }
+      };
+      visitWindow(window);
+      return entries;
     },
   });
 
   const firstResult = results[0]?.result;
   return Array.isArray(firstResult)
-    ? firstResult
-      .filter((entry) => Boolean(entry) && typeof entry === 'object' && typeof (entry as FrameElementMetadata).index === 'number')
-      .map((entry) => entry as FrameElementMetadata)
+    ? firstResult.flatMap((entry) => isFrameElementMetadata(entry) ? [entry] : [])
     : [];
 }
 
@@ -3223,7 +3398,7 @@ function mergeFrameElementMetadata(
     }
 
     const exactUrlMatch = elements.find((element) => {
-      return Boolean(element.resolvedUrl && frame.url && element.resolvedUrl === frame.url);
+      return Boolean(element.resolvedUrl && frame.url && element.resolvedUrl === frame.url && (!frame.title || !element.title || element.title === frame.title));
     });
     const srcdocMatch = frame.url === 'about:srcdoc' && srcdocFrames.length === elements.filter((element) => element.hasSrcdoc).length
       ? elements.filter((element) => element.hasSrcdoc)[srcdocFrames.findIndex((entry) => entry.frameId === frame.frameId)]
@@ -3235,6 +3410,7 @@ function mergeFrameElementMetadata(
 
     return withFrameAutomationPolicy({
       ...frame,
+      frameSelector: matchedElement.selectorPath,
       sandboxFlags: matchedElement.sandboxFlags,
       title: frame.title || matchedElement.title,
     });

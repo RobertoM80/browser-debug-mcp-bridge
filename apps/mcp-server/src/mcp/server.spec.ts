@@ -4585,6 +4585,61 @@ describe('mcp/server V2 capture tools', () => {
     });
   });
 
+  it('keeps last observed dialog timeout diagnostics through the live extension session', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async () => ({
+          ok: true,
+          payload: {
+            matched: false,
+            tabId: 7,
+            timeoutMs: 500,
+            observedCount: 1,
+            expected: {
+              type: 'alert',
+              messageContains: 'Saved',
+            },
+            lastObserved: {
+              type: 'confirm',
+              message: 'Leave page?',
+              url: 'https://app.example.com/settings',
+              matched: false,
+              mismatchReasons: ['type', 'messageContains'],
+            },
+          },
+          truncated: false,
+        }),
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_dialog', {
+      sessionId: 'session-v2',
+      type: 'alert',
+      messageContains: 'Saved',
+      tabId: 7,
+      timeoutMs: 500,
+    });
+
+    expect(response.matched).toBe(false);
+    expect(response.error).toMatchObject({
+      code: 'dialog_wait_timeout',
+    });
+    expect(response.evidence).toMatchObject({
+      timeoutDiagnostics: {
+        matcherSummary: {
+          type: 'alert',
+          messageContains: 'Saved',
+          tabId: 7,
+        },
+        candidateCount: 1,
+        lastObserved: {
+          type: 'confirm',
+          mismatchReasons: ['type', 'messageContains'],
+        },
+      },
+    });
+  });
+
   it('waits for a stable layout window through the live extension session', async () => {
     const tools = createToolRegistry(
       createV2ToolHandlers({
@@ -4692,6 +4747,61 @@ describe('mcp/server V2 capture tools', () => {
     });
   });
 
+  it('keeps navigation lifecycle timeout diagnostics through the live extension session', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async () => ({
+          ok: true,
+          payload: {
+            matched: false,
+            state: 'load',
+            timeoutMs: 500,
+            tabId: 7,
+            observedEventCount: 2,
+            expected: {
+              state: 'load',
+              urlContains: '/checkout/complete',
+            },
+            lastObserved: {
+              state: 'load',
+              eventMethod: 'Page.loadEventFired',
+              url: 'https://app.example.com/cart',
+              matched: false,
+            },
+          },
+          truncated: false,
+        }),
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_navigation_lifecycle', {
+      sessionId: 'session-v2',
+      state: 'load',
+      urlContains: '/checkout/complete',
+      tabId: 7,
+      timeoutMs: 500,
+    });
+
+    expect(response.matched).toBe(false);
+    expect(response.error).toMatchObject({
+      code: 'navigation_lifecycle_wait_timeout',
+    });
+    expect(response.evidence).toMatchObject({
+      timeoutDiagnostics: {
+        matcherSummary: {
+          state: 'load',
+          urlContains: '/checkout/complete',
+          tabId: 7,
+        },
+        candidateCount: 2,
+        lastObserved: {
+          eventMethod: 'Page.loadEventFired',
+          url: 'https://app.example.com/cart',
+        },
+      },
+    });
+  });
+
   it('waits for a download through the live extension session', async () => {
     const tools = createToolRegistry(
       createV2ToolHandlers({
@@ -4741,6 +4851,69 @@ describe('mcp/server V2 capture tools', () => {
     });
   });
 
+  it('keeps download timeout diagnostics through the live extension session', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async () => ({
+          ok: true,
+          payload: {
+            matched: false,
+            state: 'completed',
+            timeoutMs: 500,
+            tabId: 7,
+            observedEventCount: 2,
+            expected: {
+              filenameContains: 'report',
+              state: 'completed',
+            },
+            lastObserved: {
+              eventMethod: 'Page.downloadProgress',
+              guid: 'download-1',
+              state: 'inProgress',
+              receivedBytes: 120,
+              totalBytes: 240,
+              matched: false,
+            },
+            lastMatchedDownload: {
+              guid: 'download-1',
+              url: 'https://app.example.com/export/report.csv',
+              suggestedFilename: 'report.csv',
+              state: 'started',
+            },
+          },
+          truncated: false,
+        }),
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_download', {
+      sessionId: 'session-v2',
+      filenameContains: 'report',
+      state: 'completed',
+      tabId: 7,
+      timeoutMs: 500,
+    });
+
+    expect(response.matched).toBe(false);
+    expect(response.error).toMatchObject({
+      code: 'download_wait_timeout',
+    });
+    expect(response.evidence).toMatchObject({
+      timeoutDiagnostics: {
+        matcherSummary: {
+          filenameContains: 'report',
+          state: 'completed',
+          tabId: 7,
+        },
+        candidateCount: 2,
+        lastObserved: {
+          eventMethod: 'Page.downloadProgress',
+          state: 'inProgress',
+        },
+      },
+    });
+  });
+
   it('waits for a popup through the live extension session', async () => {
     const tools = createToolRegistry(
       createV2ToolHandlers({
@@ -4783,6 +4956,61 @@ describe('mcp/server V2 capture tools', () => {
       },
       popup: {
         tabId: 11,
+      },
+    });
+  });
+
+  it('keeps popup timeout diagnostics through the live extension session', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async () => ({
+          ok: true,
+          payload: {
+            matched: false,
+            timeoutMs: 500,
+            openerTabId: 7,
+            observedPopupCount: 2,
+            pendingTabIds: [11],
+            expected: {
+              urlContains: '/oauth/callback',
+              openerTabId: 7,
+            },
+            lastObserved: {
+              tabId: 11,
+              openerTabId: 7,
+              url: 'https://app.example.com/oauth/start',
+              matched: false,
+              mismatchReasons: ['url'],
+            },
+          },
+          truncated: false,
+        }),
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'wait_for_popup', {
+      sessionId: 'session-v2',
+      urlContains: '/oauth/callback',
+      openerTabId: 7,
+      timeoutMs: 500,
+    });
+
+    expect(response.matched).toBe(false);
+    expect(response.error).toMatchObject({
+      code: 'popup_wait_timeout',
+    });
+    expect(response.evidence).toMatchObject({
+      timeoutDiagnostics: {
+        matcherSummary: {
+          urlContains: '/oauth/callback',
+          openerTabId: 7,
+        },
+        candidateCount: 2,
+        sampledCandidates: [11],
+        lastObserved: {
+          tabId: 11,
+          mismatchReasons: ['url'],
+        },
       },
     });
   });
@@ -6243,6 +6471,80 @@ describe('mcp/server V2 capture tools', () => {
       },
     });
     expect(response.status).toBe('succeeded');
+  });
+
+  it('passes coordinate targets through the live ui action path', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          return {
+            ok: true,
+            payload: {
+              action: 'click',
+              traceId: 'trace-live-coordinate-1',
+              status: 'succeeded',
+              executionScope: 'top-document-v1',
+              startedAt: 1700000000000,
+              finishedAt: 1700000000020,
+              target: {
+                matched: true,
+                selector: '#submit',
+                resolvedSelector: '#submit',
+                tagName: 'button',
+                tabId: 9,
+                frameId: 0,
+                url: 'http://localhost:3000/checkout',
+              },
+              result: {
+                backend: 'cdp-native-v2',
+                point: {
+                  x: 180,
+                  y: 120,
+                },
+                pointCoordinateSpace: 'top-document',
+                coordinateTarget: true,
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'execute_ui_action', {
+      sessionId: 'session-v2',
+      action: 'click',
+      target: {
+        tabId: 9,
+        coordinates: {
+          x: 180,
+          y: 120,
+        },
+      },
+    });
+
+    expect(captureCalls[0]).toMatchObject({
+      command: 'EXECUTE_UI_ACTION',
+      payload: {
+        action: 'click',
+        target: {
+          tabId: 9,
+          coordinates: {
+            x: 180,
+            y: 120,
+          },
+        },
+      },
+    });
+    expect(response.status).toBe('succeeded');
+    expect(response.actionResult).toMatchObject({
+      result: {
+        coordinateTarget: true,
+        pointCoordinateSpace: 'top-document',
+      },
+    });
   });
 
   it('resolves semantic execute_ui_action targets through page-state refs', async () => {

@@ -133,6 +133,98 @@ describe('native automation backend', () => {
     expect(chromeMock.detach).toHaveBeenCalledWith({ tabId: 7 });
   });
 
+  it('dispatches coordinate click targets directly in the top document', async () => {
+    const chromeMock = installChromeMock({
+      url: 'https://example.com/settings',
+      inViewport: true,
+      point: {
+        x: 88,
+        y: 44,
+      },
+      viewportRect: {
+        x: 0,
+        y: 0,
+        width: 1280,
+        height: 720,
+      },
+      hitTargetSelector: '#save',
+      hitTargetTagName: 'button',
+      hitTargetTextPreview: 'Save',
+    });
+    const request: Extract<LiveUIActionRequest, { action: 'click' }> = {
+      action: 'click',
+      traceId: 'trace-click-coordinate-native',
+      target: {
+        tabId: 7,
+        coordinates: {
+          x: 88,
+          y: 44,
+        },
+      },
+    };
+
+    const result = await executeNativeClickAction({
+      request,
+      tab: {
+        id: 7,
+        url: 'https://example.com/settings',
+      } as chrome.tabs.Tab & { id: number },
+      startedAt: 1000,
+      traceId: 'trace-click-coordinate-native',
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(result.result).toMatchObject({
+      backend: nativeAutomationBackend,
+      point: {
+        x: 88,
+        y: 44,
+      },
+      pointCoordinateSpace: 'top-document',
+      coordinateTarget: true,
+    });
+    expect(chromeMock.sendCommand).toHaveBeenCalledWith(
+      { tabId: 7 },
+      'Input.dispatchMouseEvent',
+      expect.objectContaining({
+        type: 'mousePressed',
+        x: 88,
+        y: 44,
+      }),
+    );
+  });
+
+  it('rejects coordinate targets for non-top-document frames', async () => {
+    const chromeMock = installChromeMock();
+    const request: Extract<LiveUIActionRequest, { action: 'click' }> = {
+      action: 'click',
+      traceId: 'trace-click-coordinate-frame',
+      target: {
+        tabId: 7,
+        coordinates: {
+          x: 88,
+          y: 44,
+          frameId: 4,
+        },
+      },
+    };
+
+    const result = await executeNativeClickAction({
+      request,
+      tab: {
+        id: 7,
+        url: 'https://example.com/settings',
+      } as chrome.tabs.Tab & { id: number },
+      startedAt: 1000,
+      traceId: 'trace-click-coordinate-frame',
+    });
+
+    expect(result.status).toBe('rejected');
+    expect(result.failureReason?.code).toBe('coordinate_frame_unsupported');
+    expect(chromeMock.executeScript).not.toHaveBeenCalled();
+    expect(chromeMock.sendCommand).not.toHaveBeenCalled();
+  });
+
   it('resolves locator targets in the native page context before dispatch', async () => {
     const attach = vi.fn(async () => undefined);
     const detach = vi.fn(async () => undefined);
@@ -592,6 +684,67 @@ describe('native automation backend', () => {
     );
   });
 
+  it('dispatches coordinate hover targets directly in the top document', async () => {
+    const chromeMock = installChromeMock({
+      url: 'https://example.com/settings',
+      inViewport: true,
+      point: {
+        x: 144,
+        y: 96,
+      },
+      viewportRect: {
+        x: 0,
+        y: 0,
+        width: 1280,
+        height: 720,
+      },
+      hitTargetSelector: '#docs-secondary',
+      hitTargetTagName: 'a',
+      hitTargetTextPreview: 'Docs',
+    });
+    const request: Extract<LiveUIActionRequest, { action: 'hover' }> = {
+      action: 'hover',
+      traceId: 'trace-hover-coordinate-native',
+      target: {
+        tabId: 7,
+        coordinates: {
+          x: 144,
+          y: 96,
+        },
+      },
+    };
+
+    const result = await executeNativeHoverAction({
+      request,
+      tab: {
+        id: 7,
+        url: 'https://example.com/settings',
+      } as chrome.tabs.Tab & { id: number },
+      startedAt: 1000,
+      traceId: 'trace-hover-coordinate-native',
+    });
+
+    expect(result.status).toBe('succeeded');
+    expect(result.result).toMatchObject({
+      backend: nativeAutomationBackend,
+      point: {
+        x: 144,
+        y: 96,
+      },
+      pointCoordinateSpace: 'top-document',
+      coordinateTarget: true,
+    });
+    expect(chromeMock.sendCommand).toHaveBeenCalledWith(
+      { tabId: 7 },
+      'Input.dispatchMouseEvent',
+      expect.objectContaining({
+        type: 'mouseMoved',
+        x: 144,
+        y: 96,
+      }),
+    );
+  });
+
   it('rejects non-actionable native click targets before dispatch', async () => {
     const chromeMock = installChromeMock({
       ...targetSnapshot,
@@ -630,6 +783,111 @@ describe('native automation backend', () => {
       },
     });
     expect(chromeMock.attach).not.toHaveBeenCalled();
+    expect(chromeMock.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('returns zero-size diagnostics for geometry failures', async () => {
+    const chromeMock = installChromeMock({
+      ...targetSnapshot,
+      actionability: {
+        ...targetSnapshot.actionability,
+        visible: false,
+        failureCode: 'zero_size_target',
+        failureMessage: 'The native click target has zero size.',
+        boundingRect: {
+          x: 20,
+          y: 12,
+          width: 0,
+          height: 0,
+        },
+        intersectionRect: {
+          x: 20,
+          y: 12,
+          width: 0,
+          height: 0,
+        },
+        viewportRect: {
+          x: 0,
+          y: 0,
+          width: 1280,
+          height: 720,
+        },
+      },
+    });
+    const request: Extract<LiveUIActionRequest, { action: 'click' }> = {
+      action: 'click',
+      traceId: 'trace-click-zero-size',
+      target: {
+        selector: '#zero-size-action',
+        tabId: 7,
+      },
+    };
+
+    const result = await executeNativeClickAction({
+      request,
+      tab: {
+        id: 7,
+        url: 'https://example.com/settings',
+      } as chrome.tabs.Tab & { id: number },
+      startedAt: 1000,
+      traceId: 'trace-click-zero-size',
+    });
+
+    expect(result.status).toBe('rejected');
+    expect(result.failureReason?.code).toBe('zero_size_target');
+    expect(result.result).toMatchObject({
+      backend: nativeAutomationBackend,
+      actionability: {
+        failureCode: 'zero_size_target',
+        boundingRect: {
+          width: 0,
+          height: 0,
+        },
+      },
+    });
+    expect(chromeMock.sendCommand).not.toHaveBeenCalled();
+  });
+
+  it('returns explicit diagnostics for closed shadow root selectors', async () => {
+    const chromeMock = installChromeMock({
+      ...targetSnapshot,
+      matched: false,
+      selector: '#closed-shadow-host >> #closed-shadow-action',
+      resolvedSelector: '#closed-shadow-host >> #closed-shadow-action',
+      actionability: {
+        ...targetSnapshot.actionability,
+        visible: false,
+        failureCode: 'closed_shadow_root_unsupported',
+        failureMessage: 'The target selector requires traversing a closed or inaccessible shadow root, which native automation does not support.',
+      },
+    });
+    const request: Extract<LiveUIActionRequest, { action: 'click' }> = {
+      action: 'click',
+      traceId: 'trace-click-closed-shadow',
+      target: {
+        selector: '#closed-shadow-host >> #closed-shadow-action',
+        tabId: 7,
+      },
+    };
+
+    const result = await executeNativeClickAction({
+      request,
+      tab: {
+        id: 7,
+        url: 'https://example.com/settings',
+      } as chrome.tabs.Tab & { id: number },
+      startedAt: 1000,
+      traceId: 'trace-click-closed-shadow',
+    });
+
+    expect(result.status).toBe('rejected');
+    expect(result.failureReason?.code).toBe('closed_shadow_root_unsupported');
+    expect(result.result).toMatchObject({
+      backend: nativeAutomationBackend,
+      actionability: {
+        failureCode: 'closed_shadow_root_unsupported',
+      },
+    });
     expect(chromeMock.sendCommand).not.toHaveBeenCalled();
   });
 

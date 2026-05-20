@@ -159,9 +159,16 @@ const UIActionLocatorSchema = z.object({
   steps: z.array(UIActionLocatorStepSchema).min(1).max(8),
 });
 
+const UIActionCoordinateTargetSchema = z.object({
+  x: z.number().finite(),
+  y: z.number().finite(),
+  frameId: z.number().int().min(0).optional(),
+});
+
 const LiveUIActionTargetSchema = z.object({
   selector: z.string().min(1).optional(),
   elementRef: z.string().min(1).optional(),
+  coordinates: UIActionCoordinateTargetSchema.optional(),
   tabId: z.number().int().min(0).optional(),
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
@@ -295,6 +302,7 @@ const UIWorkflowActionTargetScopeSchema = UIActionTargetScopeSchema;
 const UIWorkflowActionTargetSchema = z.object({
   selector: z.string().min(1).optional(),
   elementRef: z.string().min(1).optional(),
+  coordinates: UIActionCoordinateTargetSchema.optional(),
   tabId: z.number().int().min(0).optional(),
   frameId: z.number().int().min(0).optional(),
   url: z.string().url().optional(),
@@ -328,6 +336,7 @@ const UIWorkflowActionTargetSchema = z.object({
   if (
     !value.selector
     && !value.elementRef
+    && !value.coordinates
     && !value.locator
     && !value.scope
     && !value.testId
@@ -341,7 +350,7 @@ const UIWorkflowActionTargetSchema = z.object({
   ) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'target requires selector, elementRef, locator, scope, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText',
+      message: 'target requires selector, elementRef, coordinates, locator, scope, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText',
       path: ['target'],
     });
   }
@@ -1675,6 +1684,14 @@ const TOOL_SCHEMAS: Record<string, object> = {
         properties: {
           selector: { type: 'string' },
           elementRef: { type: 'string' },
+          coordinates: {
+            type: 'object',
+            properties: {
+              x: { type: 'number' },
+              y: { type: 'number' },
+              frameId: { type: 'number' },
+            },
+          },
           tabId: { type: 'number' },
           frameId: { type: 'number' },
           url: { type: 'string' },
@@ -1786,6 +1803,14 @@ const TOOL_SCHEMAS: Record<string, object> = {
               properties: {
                 selector: { type: 'string' },
                 elementRef: { type: 'string' },
+                coordinates: {
+                  type: 'object',
+                  properties: {
+                    x: { type: 'number' },
+                    y: { type: 'number' },
+                    frameId: { type: 'number' },
+                  },
+                },
                 tabId: { type: 'number' },
                 frameId: { type: 'number' },
                 url: { type: 'string' },
@@ -4426,6 +4451,37 @@ interface AutomationWaitResult {
   };
 }
 
+function buildWaitTimeoutDiagnostics(options: {
+  waitKind: AutomationWaitSpec['waitKind'];
+  timeoutMs: number;
+  waitedMs: number;
+  attempts: number;
+  pollIntervalMs: number;
+  matcherSummary: Record<string, unknown>;
+  lastObserved?: unknown;
+  candidateCount?: number;
+  sampledCandidates?: unknown[];
+}): Record<string, unknown> {
+  const diagnostics: Record<string, unknown> = {
+    waitKind: options.waitKind,
+    timeoutMs: options.timeoutMs,
+    waitedMs: options.waitedMs,
+    attempts: options.attempts,
+    pollIntervalMs: options.pollIntervalMs,
+    matcherSummary: options.matcherSummary,
+  };
+  if (options.lastObserved !== undefined) {
+    diagnostics.lastObserved = options.lastObserved;
+  }
+  if (typeof options.candidateCount === 'number') {
+    diagnostics.candidateCount = options.candidateCount;
+  }
+  if (Array.isArray(options.sampledCandidates) && options.sampledCandidates.length > 0) {
+    diagnostics.sampledCandidates = options.sampledCandidates;
+  }
+  return diagnostics;
+}
+
 function resolveOptionalMatcherString(value: unknown): string | undefined {
   if (typeof value !== 'string') {
     return undefined;
@@ -5029,7 +5085,23 @@ async function waitForUrlCondition(
     attempts,
     timeoutMs,
     pollIntervalMs,
-    evidence: { page: lastPage, expected: wait },
+    evidence: {
+      page: lastPage,
+      expected: wait,
+      timeoutDiagnostics: buildWaitTimeoutDiagnostics({
+        waitKind: 'url',
+        timeoutMs,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        pollIntervalMs,
+        matcherSummary: {
+          exactUrl: wait.exactUrl,
+          urlContains: wait.urlContains,
+          urlRegex: wait.urlRegex,
+        },
+        lastObserved: lastPage,
+      }),
+    },
     error: {
       code: 'url_wait_timeout',
       message: 'Timed out waiting for the page URL to match the requested condition.',
@@ -5119,6 +5191,20 @@ async function waitForLoadStateCondition(
       state: expectedState,
       page: lastPage,
       expected: wait,
+      timeoutDiagnostics: buildWaitTimeoutDiagnostics({
+        waitKind: 'load_state',
+        timeoutMs,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        pollIntervalMs,
+        matcherSummary: {
+          state: expectedState,
+          exactUrl: wait.exactUrl,
+          urlContains: wait.urlContains,
+          urlRegex: wait.urlRegex,
+        },
+        lastObserved: lastPage,
+      }),
     },
     error: {
       code: 'load_state_wait_timeout',
@@ -5172,6 +5258,19 @@ async function waitForSelectorStateCondition(
       selector: wait.selector,
       state: expectedState,
       selectorState: lastState,
+      timeoutDiagnostics: buildWaitTimeoutDiagnostics({
+        waitKind: 'selector_state',
+        timeoutMs,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        pollIntervalMs,
+        matcherSummary: {
+          selector: wait.selector,
+          state: expectedState,
+          frameId: wait.frameId,
+        },
+        lastObserved: lastState,
+      }),
     },
     error: {
       code: 'selector_state_wait_timeout',
@@ -5240,6 +5339,17 @@ async function waitForConsoleCondition(
     evidence: {
       filters: { levels, contains, sinceTs, includeRuntimeErrors },
       sampledLogs: lastLogs.slice(0, 5).map((log) => mapLiveConsoleLogRecord(log, 'compact')),
+      timeoutDiagnostics: buildWaitTimeoutDiagnostics({
+        waitKind: 'console',
+        timeoutMs,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        pollIntervalMs,
+        matcherSummary: { levels, contains, sinceTs, includeRuntimeErrors },
+        lastObserved: lastLogs[0],
+        candidateCount: lastLogs.length,
+        sampledCandidates: lastLogs.slice(0, 5).map((log) => mapLiveConsoleLogRecord(log, 'compact')),
+      }),
     },
     error: {
       code: 'console_wait_timeout',
@@ -5290,6 +5400,24 @@ async function waitForDialogCondition(
       },
       dialog: matched ? payload : undefined,
       expected: matched ? undefined : payload.expected ?? wait,
+      timeoutDiagnostics: matched
+        ? undefined
+        : buildWaitTimeoutDiagnostics({
+            waitKind: 'dialog',
+            timeoutMs,
+            waitedMs: Date.now() - startedAt,
+            attempts: 1,
+            pollIntervalMs: timeoutMs,
+            matcherSummary: {
+              type: wait.type,
+              messageContains: wait.messageContains,
+              urlContains: wait.urlContains,
+              action: wait.action,
+              tabId: wait.tabId,
+            },
+            lastObserved: payload.lastObserved,
+            candidateCount: typeof payload.observedCount === 'number' ? payload.observedCount : undefined,
+          }),
     },
     error: matched
       ? undefined
@@ -5339,6 +5467,21 @@ async function waitForStableLayoutCondition(
         tabId: wait.tabId,
       },
       layout: payload,
+      timeoutDiagnostics: matched
+        ? undefined
+        : buildWaitTimeoutDiagnostics({
+            waitKind: 'stable_layout',
+            timeoutMs,
+            waitedMs: Date.now() - startedAt,
+            attempts: typeof payload.attempts === 'number' ? payload.attempts : 1,
+            pollIntervalMs,
+            matcherSummary: {
+              selector: wait.selector,
+              stableMs,
+              tabId: wait.tabId,
+            },
+            lastObserved: payload.snapshot,
+          }),
     },
     error: matched
       ? undefined
@@ -5482,6 +5625,26 @@ async function waitForNavigationCondition(
         tabId,
       },
       sampledEvents: lastEvents.slice(0, 5).map((row) => mapNavigationWaitEvent(row)),
+      timeoutDiagnostics: buildWaitTimeoutDiagnostics({
+        waitKind: 'navigation',
+        timeoutMs,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        pollIntervalMs,
+        matcherSummary: {
+          urlContains: wait.urlContains,
+          urlRegex: wait.urlRegex,
+          exactUrl: wait.exactUrl,
+          fromUrlContains: wait.fromUrlContains,
+          fromUrlRegex: wait.fromUrlRegex,
+          trigger: wait.trigger,
+          sinceTs,
+          tabId,
+        },
+        lastObserved: lastEvents.length > 0 ? mapNavigationWaitEvent(lastEvents[lastEvents.length - 1] as EventRow) : undefined,
+        candidateCount: lastEvents.length,
+        sampledCandidates: lastEvents.slice(0, 5).map((row) => mapNavigationWaitEvent(row)),
+      }),
     },
     error: {
       code: 'navigation_wait_timeout',
@@ -5531,6 +5694,24 @@ async function waitForNavigationLifecycleCondition(
       },
       lifecycle: matched ? payload : undefined,
       expected: matched ? undefined : payload.expected ?? wait,
+      timeoutDiagnostics: matched
+        ? undefined
+        : buildWaitTimeoutDiagnostics({
+            waitKind: 'navigation_lifecycle',
+            timeoutMs,
+            waitedMs: Date.now() - startedAt,
+            attempts: 1,
+            pollIntervalMs: timeoutMs,
+            matcherSummary: {
+              state: wait.state,
+              urlContains: wait.urlContains,
+              urlRegex: wait.urlRegex,
+              exactUrl: wait.exactUrl,
+              tabId: wait.tabId,
+            },
+            lastObserved: payload.lastObserved,
+            candidateCount: typeof payload.observedEventCount === 'number' ? payload.observedEventCount : undefined,
+          }),
     },
     error: matched
       ? undefined
@@ -5586,6 +5767,26 @@ async function waitForDownloadCondition(
       },
       download: matched ? payload : undefined,
       expected: matched ? undefined : payload.expected ?? wait,
+      timeoutDiagnostics: matched
+        ? undefined
+        : buildWaitTimeoutDiagnostics({
+            waitKind: 'download',
+            timeoutMs,
+            waitedMs: Date.now() - startedAt,
+            attempts: 1,
+            pollIntervalMs: timeoutMs,
+            matcherSummary: {
+              urlContains: wait.urlContains,
+              urlRegex: wait.urlRegex,
+              exactUrl: wait.exactUrl,
+              filenameContains: wait.filenameContains,
+              filenameRegex: wait.filenameRegex,
+              state: wait.state,
+              tabId: wait.tabId,
+            },
+            lastObserved: payload.lastObserved ?? payload.lastMatchedDownload,
+            candidateCount: typeof payload.observedEventCount === 'number' ? payload.observedEventCount : undefined,
+          }),
     },
     error: matched
       ? undefined
@@ -5635,6 +5836,24 @@ async function waitForPopupCondition(
       },
       popup: matched ? payload : undefined,
       expected: matched ? undefined : payload.expected ?? wait,
+      timeoutDiagnostics: matched
+        ? undefined
+        : buildWaitTimeoutDiagnostics({
+            waitKind: 'popup',
+            timeoutMs,
+            waitedMs: Date.now() - startedAt,
+            attempts: 1,
+            pollIntervalMs: timeoutMs,
+            matcherSummary: {
+              urlContains: wait.urlContains,
+              urlRegex: wait.urlRegex,
+              exactUrl: wait.exactUrl,
+              openerTabId: wait.openerTabId,
+            },
+            lastObserved: payload.lastObserved,
+            candidateCount: typeof payload.observedPopupCount === 'number' ? payload.observedPopupCount : undefined,
+            sampledCandidates: Array.isArray(payload.pendingTabIds) ? payload.pendingTabIds : undefined,
+          }),
     },
     error: matched
       ? undefined
@@ -5792,6 +6011,17 @@ async function waitForNetworkMatchCondition(
     evidence: {
       filters,
       sampledCalls: lastCalls.slice(0, 5).map((row) => mapNetworkCallRecord(row, false)),
+      timeoutDiagnostics: buildWaitTimeoutDiagnostics({
+        waitKind: wait.waitKind,
+        timeoutMs,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        pollIntervalMs,
+        matcherSummary: filters,
+        lastObserved: lastCalls.length > 0 ? mapNetworkCallRecord(lastCalls[lastCalls.length - 1] as NetworkCallRow, false) : undefined,
+        candidateCount: lastCalls.length,
+        sampledCandidates: lastCalls.slice(0, 5).map((row) => mapNetworkCallRecord(row, false)),
+      }),
     },
     error: {
       code: wait.waitKind === 'request' ? 'request_wait_timeout' : 'response_wait_timeout',
@@ -5897,6 +6127,17 @@ async function waitForNetworkQuietCondition(
       filters: { urlContains, method, tabId },
       lastActivityAt,
       sampledCalls: lastCalls.slice(0, 5).map((row) => mapNetworkCallRecord(row, false)),
+      timeoutDiagnostics: buildWaitTimeoutDiagnostics({
+        waitKind: 'network_quiet',
+        timeoutMs,
+        waitedMs: Date.now() - startedAt,
+        attempts,
+        pollIntervalMs,
+        matcherSummary: { quietMs, urlContains, method, tabId },
+        lastObserved: lastCalls.length > 0 ? mapNetworkCallRecord(lastCalls[0] as NetworkCallRow, false) : undefined,
+        candidateCount: lastCalls.length,
+        sampledCandidates: lastCalls.slice(0, 5).map((row) => mapNetworkCallRecord(row, false)),
+      }),
     },
     error: {
       code: 'network_quiet_timeout',

@@ -97,6 +97,32 @@ describe('ui-workflows', () => {
     expect(firstStep?.target.locator?.steps[1]?.relation).toBe('descendant');
   });
 
+  it('parses coordinate workflow action targets', () => {
+    const parsed = RunUIStepsSchema.parse({
+      sessionId: 'sess_123',
+      steps: [
+        {
+          kind: 'action',
+          action: 'click',
+          target: {
+            coordinates: {
+              x: 220,
+              y: 144,
+            },
+            tabId: 4,
+          },
+        },
+      ],
+    });
+
+    const firstStep = parsed.steps[0];
+    expect(firstStep?.kind).toBe('action');
+    expect(firstStep?.target.coordinates).toEqual({
+      x: 220,
+      y: 144,
+    });
+  });
+
   it('parses ancestor locator relations in workflow action targets', () => {
     const parsed = RunUIStepsSchema.parse({
       sessionId: 'sess_123',
@@ -469,7 +495,7 @@ describe('ui-workflows', () => {
           target: {},
         },
       ],
-    })).toThrow('target requires selector, elementRef, locator, scope, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText');
+    })).toThrow('target requires selector, elementRef, coordinates, locator, scope, testId, textContains, labelContains, titleContains, role, name, placeholder, or altText');
   });
 
   it('creates readable workflow trace ids', () => {

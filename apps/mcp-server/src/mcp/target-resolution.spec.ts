@@ -43,6 +43,38 @@ describe('target resolution', () => {
     });
   });
 
+  it('passes coordinate targets through without capturing page state', async () => {
+    const capturePageState = vi.fn();
+
+    const resolved = await resolveWorkflowActionTarget('session-1', {
+      coordinates: {
+        x: 320,
+        y: 180,
+      },
+      tabId: 9,
+    }, capturePageState);
+
+    expect(capturePageState).not.toHaveBeenCalled();
+    expect(resolved).toMatchObject({
+      target: {
+        coordinates: {
+          x: 320,
+          y: 180,
+        },
+        tabId: 9,
+      },
+      resolution: {
+        strategy: 'coordinates',
+        matcher: {
+          coordinates: {
+            x: 320,
+            y: 180,
+          },
+        },
+      },
+    });
+  });
+
   it('detects semantic targets that need page-state resolution', () => {
     expect(hasSemanticActionTargetMatcher(undefined)).toBe(false);
     expect(hasSemanticActionTargetMatcher({ selector: '#save', role: 'button' })).toBe(false);

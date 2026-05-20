@@ -63,6 +63,24 @@ interface NativeClickTargetSnapshot {
       width: number;
       height: number;
     };
+    boundingRect?: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+    intersectionRect?: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
+    viewportRect?: {
+      x: number;
+      y: number;
+      width: number;
+      height: number;
+    };
     frameCoordinateResolved?: boolean;
     frameRefreshed?: boolean;
     previousFrameId?: number;
@@ -70,6 +88,8 @@ interface NativeClickTargetSnapshot {
     failureMessage?: string;
     hitTargetTagName?: string;
     hitTargetSelector?: string;
+    hitTargetTextPreview?: string;
+    isCovered?: boolean;
     attempts?: number;
     retryCount?: number;
     retriedAfterDetach?: boolean;
@@ -123,6 +143,10 @@ interface DecodedElementRef {
   frameId?: number;
   frameUrl?: string;
   frameTitle?: string;
+  frameSelector?: string;
+  frameSameOriginWithTop?: boolean;
+  frameAutomationSupport?: 'native' | 'diagnostic-only';
+  frameAutomationUnsupportedReason?: string;
 }
 
 function decodeElementRef(elementRef: string | undefined): DecodedElementRef | undefined {
@@ -145,10 +169,51 @@ function decodeElementRef(elementRef: string | undefined): DecodedElementRef | u
         typeof (decoded as { frameTitle?: unknown }).frameTitle === 'string' && (decoded as { frameTitle: string }).frameTitle.length > 0
           ? (decoded as { frameTitle: string }).frameTitle
           : undefined,
+      frameSelector:
+        typeof (decoded as { frameSelector?: unknown }).frameSelector === 'string' && (decoded as { frameSelector: string }).frameSelector.length > 0
+          ? (decoded as { frameSelector: string }).frameSelector
+          : undefined,
+      frameSameOriginWithTop:
+        typeof (decoded as { frameSameOriginWithTop?: unknown }).frameSameOriginWithTop === 'boolean'
+          ? (decoded as { frameSameOriginWithTop: boolean }).frameSameOriginWithTop
+          : undefined,
+      frameAutomationSupport:
+        (decoded as { frameAutomationSupport?: unknown }).frameAutomationSupport === 'native'
+          || (decoded as { frameAutomationSupport?: unknown }).frameAutomationSupport === 'diagnostic-only'
+          ? (decoded as { frameAutomationSupport: 'native' | 'diagnostic-only' }).frameAutomationSupport
+          : undefined,
+      frameAutomationUnsupportedReason:
+        typeof (decoded as { frameAutomationUnsupportedReason?: unknown }).frameAutomationUnsupportedReason === 'string'
+          ? (decoded as { frameAutomationUnsupportedReason: string }).frameAutomationUnsupportedReason
+          : undefined,
     };
   } catch {
     return undefined;
   }
+}
+
+function buildDecodedElementRefFramePolicy(decoded: DecodedElementRef | undefined): NativeFramePolicy | undefined {
+  if (!decoded || decoded.frameAutomationSupport !== 'diagnostic-only') {
+    return undefined;
+  }
+
+  const unsupportedReason = decoded.frameAutomationUnsupportedReason === 'sandboxed_opaque_origin'
+    || decoded.frameAutomationUnsupportedReason === 'cross_origin_with_top'
+    ? decoded.frameAutomationUnsupportedReason
+    : 'cross_origin_with_top';
+
+  return {
+    frameId: decoded.frameId ?? 0,
+    url: decoded.frameUrl,
+    title: decoded.frameTitle,
+    origin: undefined,
+    topAccessible: unsupportedReason !== 'cross_origin_with_top' ? false : false,
+    parentAccessible: false,
+    sameOriginWithTop: decoded.frameSameOriginWithTop ?? false,
+    isOpaqueOrigin: unsupportedReason === 'sandboxed_opaque_origin',
+    pointerActionsSupported: false,
+    unsupportedReason,
+  };
 }
 
 function resolveActionSelector(request: LiveUIActionRequest): string | undefined {
@@ -156,7 +221,10 @@ function resolveActionSelector(request: LiveUIActionRequest): string | undefined
 }
 
 function resolveActionFrameId(request: LiveUIActionRequest): number {
-  return request.target?.frameId ?? decodeElementRef(request.target?.elementRef)?.frameId ?? 0;
+  return request.target?.frameId
+    ?? request.target?.coordinates?.frameId
+    ?? decodeElementRef(request.target?.elementRef)?.frameId
+    ?? 0;
 }
 
 interface ActionFrameContext {
@@ -172,7 +240,7 @@ function resolveActionFrameContext(request: LiveUIActionRequest): ActionFrameCon
   const decoded = decodeElementRef(request.target?.elementRef);
   return {
     frameId: request.target?.frameId ?? decoded?.frameId ?? 0,
-    frameSelector: request.target?.locator?.frame?.selector,
+    frameSelector: request.target?.locator?.frame?.selector ?? decoded?.frameSelector,
     frameUrl: decoded?.frameUrl,
     frameTitle: decoded?.frameTitle,
     frameUrlContains: request.target?.locator?.frame?.urlContains ?? request.target?.frameUrlContains,
@@ -339,13 +407,16 @@ async function inspectClickableTarget(tabId: number, frameId: number, selector: 
         }
         return localSelector;
       };
-      const queryElement = (root: Document | ShadowRoot, query: string): Element | null => {
+      const queryElementWithDiagnostics = (
+        root: Document | ShadowRoot,
+        query: string,
+      ): { element: Element | null; closedShadowBlocked: boolean } => {
         const parts = query
           .split(shadowSeparator)
           .map((part) => part.trim())
           .filter((part) => part.length > 0);
         if (parts.length === 0) {
-          return null;
+          return { element: null, closedShadowBlocked: false };
         }
 
         let currentRoot: Document | ShadowRoot = root;
@@ -353,17 +424,17 @@ async function inspectClickableTarget(tabId: number, frameId: number, selector: 
         for (const [index, part] of parts.entries()) {
           currentElement = currentRoot.querySelector(part);
           if (!currentElement) {
-            return null;
+            return { element: null, closedShadowBlocked: false };
           }
           if (index < parts.length - 1) {
             const shadowRoot = currentElement.shadowRoot;
             if (!shadowRoot) {
-              return null;
+              return { element: null, closedShadowBlocked: true };
             }
             currentRoot = shadowRoot;
           }
         }
-        return currentElement;
+        return { element: currentElement, closedShadowBlocked: false };
       };
 
       const textPreview = (element: Element): string | undefined => {
@@ -485,8 +556,16 @@ async function inspectClickableTarget(tabId: number, frameId: number, selector: 
         height: rect.height,
       });
 
-      const target = queryElement(document, selectorValue);
+      const queriedTarget = queryElementWithDiagnostics(document, selectorValue);
+      const target = queriedTarget.element;
       if (!target) {
+        if (queriedTarget.closedShadowBlocked) {
+          return makeFailure(
+            'closed_shadow_root_unsupported',
+            'The target selector requires traversing a closed or inaccessible shadow root, which native automation does not support.',
+            null,
+          );
+        }
         return makeFailure('target_not_found', 'No matching element was found for the native click target.', null);
       }
 
@@ -525,16 +604,28 @@ async function inspectClickableTarget(tabId: number, frameId: number, selector: 
       }
       const rect = target.getBoundingClientRect();
       const postScrollRect = rectSnapshot(rect);
+      const viewportRect = {
+        x: 0,
+        y: 0,
+        width: window.innerWidth,
+        height: window.innerHeight,
+      };
+      const intersectionRect = {
+        x: Math.max(0, rect.left),
+        y: Math.max(0, rect.top),
+        width: Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0)),
+        height: Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0)),
+      };
       const stable = Math.abs(firstRect.x - rect.x) < 0.5
         && Math.abs(firstRect.y - rect.y) < 0.5
         && Math.abs(firstRect.width - rect.width) < 0.5
         && Math.abs(firstRect.height - rect.height) < 0.5;
       const style = getComputedStyle(target);
-      const visible = rect.width > 0
-        && rect.height > 0
-        && style.visibility !== 'hidden'
+      const hasBox = rect.width > 0 && rect.height > 0;
+      const styleVisible = style.visibility !== 'hidden'
         && style.display !== 'none'
         && Number(style.opacity || '1') > 0;
+      const visible = hasBox && styleVisible;
       const disabled = target instanceof HTMLButtonElement
         || target instanceof HTMLInputElement
         || target instanceof HTMLSelectElement
@@ -562,6 +653,7 @@ async function inspectClickableTarget(tabId: number, frameId: number, selector: 
       const hitTargetMatches = hitTarget === target
         || Boolean(hitTarget && target.contains(hitTarget))
         || isShadowHostForTarget(hitTarget, target);
+      const isCovered = inViewport && !hitTargetMatches;
 
       const baseSnapshot: NativeClickTargetSnapshot = {
         matched: true,
@@ -593,15 +685,23 @@ async function inspectClickableTarget(tabId: number, frameId: number, selector: 
             || Math.abs(preScrollRect.y - postScrollRect.y) >= 0.5,
           preScrollRect,
           postScrollRect,
+          boundingRect: postScrollRect,
+          intersectionRect,
+          viewportRect,
           frameCoordinateResolved: resolvedFrameId === 0,
           hitTargetTagName: hitTarget instanceof Element ? hitTarget.tagName.toLowerCase() : undefined,
           hitTargetSelector: hitTarget instanceof Element ? getElementSelector(hitTarget) : undefined,
+          hitTargetTextPreview: hitTarget instanceof Element ? textPreview(hitTarget) : undefined,
+          isCovered,
         },
       };
 
-      if (!visible) {
+      if (!styleVisible) {
         baseSnapshot.actionability.failureCode = 'target_not_visible';
         baseSnapshot.actionability.failureMessage = 'The native click target is not visible.';
+      } else if (!hasBox) {
+        baseSnapshot.actionability.failureCode = 'zero_size_target';
+        baseSnapshot.actionability.failureMessage = 'The native click target has zero size.';
       } else if (disabled) {
         baseSnapshot.actionability.failureCode = 'target_disabled';
         baseSnapshot.actionability.failureMessage = 'The native click target is disabled.';
@@ -659,6 +759,124 @@ function rejectMissingSelector(
     'native_target_selector_required',
     'Native actions require a selector or an elementRef containing a selector.',
   );
+}
+
+function hasCoordinateTarget(request: LiveUIActionRequest): request is LiveUIActionRequest & {
+  target: NonNullable<LiveUIActionRequest['target']> & {
+    coordinates: {
+      x: number;
+      y: number;
+      frameId?: number;
+    };
+  };
+} {
+  return typeof request.target?.coordinates?.x === 'number' && typeof request.target?.coordinates?.y === 'number';
+}
+
+async function inspectCoordinatePoint(
+  tabId: number,
+  x: number,
+  y: number,
+): Promise<{
+  url?: string;
+  inViewport: boolean;
+  point: { x: number; y: number };
+  viewportRect: { x: number; y: number; width: number; height: number };
+  hitTargetSelector?: string;
+  hitTargetTagName?: string;
+  hitTargetTextPreview?: string;
+}> {
+  return executeScriptInFrame(
+    tabId,
+    0,
+    (rawX, rawY) => {
+      const point = {
+        x: typeof rawX === 'number' && Number.isFinite(rawX) ? rawX : 0,
+        y: typeof rawY === 'number' && Number.isFinite(rawY) ? rawY : 0,
+      };
+      const cssEscapeFallback = (value: string): string => {
+        const cssApi = (globalThis as { CSS?: { escape?: (input: string) => string } }).CSS;
+        if (cssApi?.escape) {
+          return cssApi.escape(value);
+        }
+        return value.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+      };
+      const shadowSeparator = ' >> ';
+      const getLocalElementSelector = (element: Element): string => {
+        if (element.id) {
+          return `#${cssEscapeFallback(element.id)}`;
+        }
+        const testId = element.getAttribute('data-testid');
+        if (testId) {
+          return `[data-testid="${cssEscapeFallback(testId)}"]`;
+        }
+        return element.tagName.toLowerCase();
+      };
+      const getElementSelector = (element: Element): string => {
+        const localSelector = getLocalElementSelector(element);
+        const root = element.getRootNode();
+        if (root instanceof ShadowRoot) {
+          return `${getElementSelector(root.host)}${shadowSeparator}${localSelector}`;
+        }
+        return localSelector;
+      };
+      const textPreview = (element: Element): string | undefined => {
+        const text = (element.textContent ?? '').replace(/\s+/g, ' ').trim();
+        return text.length > 120 ? `${text.slice(0, 117)}...` : text || undefined;
+      };
+      const viewportRect = {
+        x: 0,
+        y: 0,
+        width: window.innerWidth,
+        height: window.innerHeight,
+      };
+      const inViewport = point.x >= 0
+        && point.y >= 0
+        && point.x <= window.innerWidth
+        && point.y <= window.innerHeight;
+      const hitTarget = inViewport ? document.elementFromPoint(point.x, point.y) : null;
+      return {
+        url: window.location.href,
+        inViewport,
+        point,
+        viewportRect,
+        hitTargetSelector: hitTarget instanceof Element ? getElementSelector(hitTarget) : undefined,
+        hitTargetTagName: hitTarget instanceof Element ? hitTarget.tagName.toLowerCase() : undefined,
+        hitTargetTextPreview: hitTarget instanceof Element ? textPreview(hitTarget) : undefined,
+      };
+    },
+    [x, y],
+  );
+}
+
+function buildCoordinateSnapshot(
+  inspection: Awaited<ReturnType<typeof inspectCoordinatePoint>>,
+): NativeClickTargetSnapshot {
+  return {
+    matched: Boolean(inspection.hitTargetSelector),
+    resolvedSelector: inspection.hitTargetSelector,
+    tagName: inspection.hitTargetTagName,
+    textPreview: inspection.hitTargetTextPreview,
+    frameId: 0,
+    url: inspection.url,
+    center: inspection.point,
+    topCenter: inspection.point,
+    actionability: {
+      visible: inspection.inViewport,
+      enabled: true,
+      stable: true,
+      inViewport: inspection.inViewport,
+      receivesPointerEvents: true,
+      hitTargetMatches: true,
+      viewportRect: inspection.viewportRect,
+      frameCoordinateResolved: true,
+      hitTargetTagName: inspection.hitTargetTagName,
+      hitTargetSelector: inspection.hitTargetSelector,
+      hitTargetTextPreview: inspection.hitTargetTextPreview,
+      failureCode: inspection.inViewport ? undefined : 'target_outside_viewport',
+      failureMessage: inspection.inViewport ? undefined : 'The requested coordinate is outside the current viewport.',
+    },
+  };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -1923,6 +2141,8 @@ async function inspectActionableTargetForRequest(
   }
 
   const frameContext = resolveActionFrameContext(request);
+  const decodedElementRef = decodeElementRef(request.target?.elementRef);
+  const decodedFramePolicy = buildDecodedElementRefFramePolicy(decodedElementRef);
   let frameId = locatorFrameId ?? frameContext.frameId;
   let previousFrameId: number | undefined;
   if (locatorFrameId === undefined && frameId === 0 && hasFrameLocatorContext(frameContext)) {
@@ -2065,14 +2285,27 @@ async function inspectActionableTargetForRequest(
     return {
       ok: false,
       result: looksLikeMissingFrame
-        ? buildRejectedResult(
-            request,
-            tab,
-            startedAt,
-            traceId,
-            'target_frame_not_found',
-            message,
-          )
+        ? decodedFramePolicy
+          ? buildRejectedResult(
+              request,
+              tab,
+              startedAt,
+              traceId,
+              'unsupported_cross_origin_frame',
+              'The target frame could not be mapped to top-document coordinates. Cross-origin or inaccessible frames are not supported for native pointer actions yet.',
+              undefined,
+              {
+                framePolicy: decodedFramePolicy,
+              },
+            )
+          : buildRejectedResult(
+              request,
+              tab,
+              startedAt,
+              traceId,
+              'target_frame_not_found',
+              message,
+            )
         : buildFailedResult(
             request,
             tab,
@@ -2603,6 +2836,56 @@ async function dispatchNativeKey(tabId: number, input: Extract<LiveUIActionReque
 
 export async function executeNativeClickAction(options: NativeClickExecutionOptions): Promise<LiveUIActionResult> {
   const { request, tab, startedAt, traceId } = options;
+  if (hasCoordinateTarget(request)) {
+    const requestedFrameId = request.target.coordinates.frameId ?? request.target.frameId ?? 0;
+    if (requestedFrameId !== 0) {
+      return buildRejectedResult(
+        request,
+        tab,
+        startedAt,
+        traceId,
+        'coordinate_frame_unsupported',
+        'Coordinate targets currently support only the top document.',
+      );
+    }
+
+    const inspection = await inspectCoordinatePoint(tab.id, request.target.coordinates.x, request.target.coordinates.y);
+    const snapshot = buildCoordinateSnapshot(inspection);
+    if (!snapshot.actionability.inViewport || !snapshot.center) {
+      return buildRejectedResult(
+        request,
+        tab,
+        startedAt,
+        traceId,
+        'target_outside_viewport',
+        'The requested coordinate is outside the current viewport.',
+        snapshot,
+      );
+    }
+
+    try {
+      const button = mouseButtonName(request.input?.button);
+      const clickCount = request.input?.clickCount ?? 1;
+      await dispatchNativeClick(tab.id, snapshot.center, button, clickCount);
+      return buildSucceededResult(request, tab, startedAt, traceId, snapshot, {
+        clickCount,
+        button,
+        point: snapshot.center,
+        pointCoordinateSpace: 'top-document',
+        coordinateTarget: true,
+      });
+    } catch (error) {
+      return buildFailedResult(
+        request,
+        tab,
+        startedAt,
+        traceId,
+        'native_click_dispatch_failed',
+        error instanceof Error ? error.message : 'Native click dispatch failed.',
+      );
+    }
+  }
+
   const target = await inspectActionableTargetForRequest(request, tab, startedAt, traceId);
   if (!target.ok) {
     return target.result;
@@ -2668,6 +2951,52 @@ export async function executeNativeClickAction(options: NativeClickExecutionOpti
 
 export async function executeNativeHoverAction(options: NativeHoverExecutionOptions): Promise<LiveUIActionResult> {
   const { request, tab, startedAt, traceId } = options;
+  if (hasCoordinateTarget(request)) {
+    const requestedFrameId = request.target.coordinates.frameId ?? request.target.frameId ?? 0;
+    if (requestedFrameId !== 0) {
+      return buildRejectedResult(
+        request,
+        tab,
+        startedAt,
+        traceId,
+        'coordinate_frame_unsupported',
+        'Coordinate targets currently support only the top document.',
+      );
+    }
+
+    const inspection = await inspectCoordinatePoint(tab.id, request.target.coordinates.x, request.target.coordinates.y);
+    const snapshot = buildCoordinateSnapshot(inspection);
+    if (!snapshot.actionability.inViewport || !snapshot.center) {
+      return buildRejectedResult(
+        request,
+        tab,
+        startedAt,
+        traceId,
+        'target_outside_viewport',
+        'The requested coordinate is outside the current viewport.',
+        snapshot,
+      );
+    }
+
+    try {
+      await dispatchNativeMouseMove(tab.id, snapshot.center);
+      return buildSucceededResult(request, tab, startedAt, traceId, snapshot, {
+        point: snapshot.center,
+        pointCoordinateSpace: 'top-document',
+        coordinateTarget: true,
+      });
+    } catch (error) {
+      return buildFailedResult(
+        request,
+        tab,
+        startedAt,
+        traceId,
+        'native_hover_dispatch_failed',
+        error instanceof Error ? error.message : 'Native hover dispatch failed.',
+      );
+    }
+  }
+
   const target = await inspectActionableTargetForRequest(request, tab, startedAt, traceId);
   if (!target.ok) {
     return target.result;

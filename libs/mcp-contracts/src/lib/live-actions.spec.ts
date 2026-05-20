@@ -70,6 +70,25 @@ describe('live-actions', () => {
     expect(parsed.target?.frameUrlContains).toBe('/embedded');
   });
 
+  it('parses coordinate live UI action targets', () => {
+    const parsed = LiveUIActionRequestSchema.parse({
+      action: 'click',
+      target: {
+        coordinates: {
+          x: 128.5,
+          y: 64,
+        },
+        tabId: 7,
+      },
+    });
+
+    expect(parsed.target?.coordinates).toEqual({
+      x: 128.5,
+      y: 64,
+    });
+    expect(parsed.target?.tabId).toBe(7);
+  });
+
   it('parses chained locator live UI action targets', () => {
     const parsed = LiveUIActionRequestSchema.parse({
       action: 'click',
