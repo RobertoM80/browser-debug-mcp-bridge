@@ -971,7 +971,7 @@ Reads bounded chunks from the persisted Lighthouse `json` or `html` report artif
 
 ### plan_lighthouse_fixes
 
-Creates a persisted prioritized fix plan from the stored Lighthouse JSON report. V1 plans remediation items only; it does not patch source files automatically.
+Creates a persisted prioritized fix plan from the stored Lighthouse JSON report. When `projectRoot` is supplied, the planner scans the local repo for likely source files tied to Lighthouse resource URLs and route-level audits so the report can drive follow-up source fixes.
 
 ```json
 {
@@ -979,7 +979,10 @@ Creates a persisted prioritized fix plan from the stored Lighthouse JSON report.
   "arguments": {
     "reportId": "lhr-...",
     "minPriority": "medium",
-    "limit": 50
+    "limit": 50,
+    "projectRoot": "C:/path/to/repo/apps/web",
+    "routePath": "/pricing",
+    "sourceCandidateLimit": 5
   }
 }
 ```
@@ -987,8 +990,12 @@ Creates a persisted prioritized fix plan from the stored Lighthouse JSON report.
 Response highlights:
 
 - `plan.items`: audit id, title, priority, estimated savings, rationale, and suggested action
+- `plan.items[].resourceUrls`: resource URLs extracted from Lighthouse audit details
+- `plan.items[].sourceCandidates`: local source files that match listed resources or the audited route
+- `plan.items[].fixReadiness`: `source-located`, `route-located`, or `needs-investigation`
+- `plan.items[].nextSteps`: concrete repair steps to apply, then validate with another Lighthouse run
 - `plan.priorityCounts`: critical/high/medium/low counts
-- `plan.summary`: source report URL, scores, and audit count
+- `plan.summary`: source report URL, scores, audit count, and repo scan context when `projectRoot` is used
 
 ### Live capture disconnection behavior
 

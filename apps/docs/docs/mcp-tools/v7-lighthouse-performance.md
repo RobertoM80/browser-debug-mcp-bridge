@@ -65,7 +65,7 @@ Read bounded chunks from the persisted `json` or `html` artifact.
 
 ## `plan_lighthouse_fixes`
 
-Create a prioritized remediation plan from the stored Lighthouse JSON report.
+Create a prioritized remediation plan from the stored Lighthouse JSON report. Add `projectRoot` to have the MCP server scan the local project for source files that correspond to Lighthouse resource URLs and the audited route.
 
 ```json
 {
@@ -73,9 +73,12 @@ Create a prioritized remediation plan from the stored Lighthouse JSON report.
   "arguments": {
     "reportId": "lhr-...",
     "minPriority": "medium",
-    "limit": 50
+    "limit": 50,
+    "projectRoot": "C:/path/to/repo/apps/web",
+    "routePath": "/pricing",
+    "sourceCandidateLimit": 5
   }
 }
 ```
 
-The plan includes audit ids, titles, priorities, estimated savings when Lighthouse provides them, rationale, and suggested action. V1 does not patch source files automatically.
+The plan includes audit ids, titles, priorities, estimated savings when Lighthouse provides them, rationale, suggested action, resource URLs extracted from audit details, likely local source candidates, fix readiness, and next repair steps. Source edits are then made by the coding agent or developer against those candidates, followed by another Lighthouse run for comparison.

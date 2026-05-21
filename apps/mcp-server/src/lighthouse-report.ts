@@ -1,7 +1,8 @@
 import type { Database } from 'better-sqlite3';
+import type { Dirent } from 'fs';
 import { randomUUID } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
-import { dirname, join } from 'path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { basename, dirname, extname, join, relative, resolve, sep } from 'path';
 import { getRuntimeDataDir } from './runtime-paths.js';
 
 export const LIGHTHOUSE_REPORT_ASSET_DIR = 'lighthouse-reports';
@@ -12,14 +13,57 @@ const DEFAULT_ASSET_CHUNK_BYTES = 64 * 1024;
 const MAX_ASSET_CHUNK_BYTES = 256 * 1024;
 const DEFAULT_FIX_ITEM_LIMIT = 50;
 const MAX_FIX_ITEM_LIMIT = 200;
+const DEFAULT_SOURCE_CANDIDATE_LIMIT = 5;
+const MAX_SOURCE_CANDIDATE_LIMIT = 20;
+const MAX_REPO_SCAN_FILES = 20_000;
+const MAX_REPO_SCAN_DEPTH = 12;
 
 const LIGHTHOUSE_CATEGORY_IDS = new Set(['performance', 'accessibility', 'best-practices', 'seo', 'pwa']);
 const LIGHTHOUSE_ASSETS = new Set(['json', 'html']);
+const REPO_SCAN_IGNORED_DIRS = new Set([
+  '.git',
+  '.hg',
+  '.next',
+  '.nx',
+  '.turbo',
+  'coverage',
+  'dist',
+  'build',
+  'node_modules',
+  'test-results',
+  'playwright-report',
+]);
+const SOURCE_CANDIDATE_EXTENSIONS = new Set([
+  '.astro',
+  '.avif',
+  '.cjs',
+  '.css',
+  '.gif',
+  '.html',
+  '.jpeg',
+  '.jpg',
+  '.js',
+  '.jsx',
+  '.less',
+  '.mjs',
+  '.png',
+  '.sass',
+  '.scss',
+  '.svg',
+  '.svelte',
+  '.ts',
+  '.tsx',
+  '.vue',
+  '.webp',
+  '.woff',
+  '.woff2',
+]);
 
 export type LighthouseFormFactor = 'mobile' | 'desktop';
 export type LighthouseReportStatus = 'succeeded' | 'failed';
 export type LighthouseReportAsset = 'json' | 'html';
 export type LighthouseFixPriority = 'critical' | 'high' | 'medium' | 'low';
+export type LighthouseFixReadiness = 'source-located' | 'route-located' | 'needs-investigation';
 
 interface LighthouseCategory {
   id: string;
@@ -37,6 +81,8 @@ interface LighthouseAuditDetails {
   type?: string;
   overallSavingsMs?: number;
   overallSavingsBytes?: number;
+  items?: unknown[];
+  [key: string]: unknown;
 }
 
 interface LighthouseAudit {
@@ -83,6 +129,15 @@ export interface RunLighthouseReportInput {
   artifactDir?: string;
 }
 
+export interface LighthouseFixPlanInput {
+  reportId: string;
+  minPriority?: LighthouseFixPriority;
+  limit?: number;
+  projectRoot?: string;
+  routePath?: string;
+  sourceCandidateLimit?: number;
+}
+
 export interface LighthouseReportRecord {
   reportId: string;
   sessionId?: string;
@@ -106,6 +161,14 @@ export interface LighthouseReportRecord {
   errorMessage?: string;
 }
 
+export interface LighthouseSourceCandidate {
+  path: string;
+  relativePath: string;
+  matchType: 'resource-path' | 'resource-name' | 'route-entry' | 'route-layout';
+  resourceUrl?: string;
+  reason: string;
+}
+
 export interface LighthouseFixPlanItem {
   auditId: string;
   title: string;
@@ -117,6 +180,10 @@ export interface LighthouseFixPlanItem {
   estimatedSavingsBytes?: number;
   rationale: string;
   suggestedAction: string;
+  resourceUrls: string[];
+  sourceCandidates: LighthouseSourceCandidate[];
+  fixReadiness: LighthouseFixReadiness;
+  nextSteps: string[];
 }
 
 export interface LighthouseFixPlanRecord {
@@ -138,6 +205,23 @@ export interface LighthouseRunner {
     maxWaitForLoadMs?: number;
     chromeFlags: string[];
   }): Promise<LighthouseRunnerResult>;
+}
+
+interface LighthouseSourceContext {
+  rootPath: string;
+  routePath?: string;
+  sourceCandidateLimit: number;
+  files: RepoFileEntry[];
+  scanFileCount: number;
+  scanTruncated: boolean;
+}
+
+interface RepoFileEntry {
+  path: string;
+  relativePath: string;
+  basename: string;
+  extension: string;
+  normalizedStem: string;
 }
 
 export function getLighthouseArtifactRoot(): string {
@@ -191,6 +275,13 @@ export function resolveLighthouseFixItemLimit(value: unknown): number {
     return DEFAULT_FIX_ITEM_LIMIT;
   }
   return Math.min(Math.max(1, Math.floor(value)), MAX_FIX_ITEM_LIMIT);
+}
+
+export function resolveLighthouseSourceCandidateLimit(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return DEFAULT_SOURCE_CANDIDATE_LIMIT;
+  }
+  return Math.min(Math.max(1, Math.floor(value)), MAX_SOURCE_CANDIDATE_LIMIT);
 }
 
 export function resolveLighthouseUrl(db: Database, input: { sessionId?: string; url?: string }): string {
@@ -375,16 +466,22 @@ export function getLighthouseReportAsset(
 
 export function planLighthouseFixes(
   db: Database,
-  input: { reportId: string; minPriority?: LighthouseFixPriority; limit?: number },
+  input: LighthouseFixPlanInput,
 ): LighthouseFixPlanRecord {
   const report = getLighthouseReport(db, input.reportId);
   if (report.status !== 'succeeded' || !report.jsonPath) {
     throw new Error(`Lighthouse report is not usable for fix planning: ${input.reportId}`);
   }
   const lhr = JSON.parse(readFileSync(report.jsonPath, 'utf8')) as LighthouseResult;
+  const sourceContext = createLighthouseSourceContext({
+    projectRoot: input.projectRoot,
+    routePath: input.routePath,
+    sourceCandidateLimit: input.sourceCandidateLimit,
+    reportUrl: report.finalUrl ?? report.requestedUrl,
+  });
   const minRank = priorityRank(input.minPriority ?? 'low');
   const limit = resolveLighthouseFixItemLimit(input.limit);
-  const items = createLighthouseFixPlanItems(lhr)
+  const items = createLighthouseFixPlanItems(lhr, sourceContext)
     .filter((item) => priorityRank(item.priority) <= minRank)
     .slice(0, limit);
   const priorityCounts = countPriorities(items);
@@ -397,6 +494,15 @@ export function planLighthouseFixes(
     scores: report.scores,
     generatedFromAuditCount: Object.keys(lhr.audits ?? {}).length,
     returnedItemCount: items.length,
+    sourceContext: sourceContext
+      ? {
+          projectRoot: sourceContext.rootPath,
+          routePath: sourceContext.routePath,
+          scannedFileCount: sourceContext.scanFileCount,
+          scanTruncated: sourceContext.scanTruncated,
+          sourceCandidateLimit: sourceContext.sourceCandidateLimit,
+        }
+      : undefined,
   };
 
   db.prepare(`
@@ -430,7 +536,7 @@ export function planLighthouseFixes(
   };
 }
 
-export function createLighthouseFixPlanItems(lhr: LighthouseResult): LighthouseFixPlanItem[] {
+export function createLighthouseFixPlanItems(lhr: LighthouseResult, sourceContext?: LighthouseSourceContext): LighthouseFixPlanItem[] {
   const auditCategoryMap = buildAuditCategoryMap(lhr);
   const audits = Object.values(lhr.audits ?? {});
   const items = audits
@@ -440,6 +546,8 @@ export function createLighthouseFixPlanItems(lhr: LighthouseResult): LighthouseF
       const savingsMs = normalizeSavings(details.overallSavingsMs);
       const savingsBytes = normalizeSavings(details.overallSavingsBytes);
       const priority = classifyPriority(audit, savingsMs, savingsBytes);
+      const resourceUrls = extractAuditResourceUrls(audit);
+      const sourceCandidates = sourceContext ? findSourceCandidatesForAudit(audit, resourceUrls, sourceContext) : [];
       return {
         auditId: audit.id,
         title: audit.title ?? audit.id,
@@ -451,6 +559,10 @@ export function createLighthouseFixPlanItems(lhr: LighthouseResult): LighthouseF
         estimatedSavingsBytes: savingsBytes,
         rationale: buildFixRationale(audit, savingsMs, savingsBytes),
         suggestedAction: buildSuggestedAction(audit.id),
+        resourceUrls,
+        sourceCandidates,
+        fixReadiness: classifyFixReadiness(sourceCandidates),
+        nextSteps: buildLighthouseNextSteps(audit.id, resourceUrls, sourceCandidates),
       };
     });
 
@@ -461,6 +573,376 @@ export function createLighthouseFixPlanItems(lhr: LighthouseResult): LighthouseF
     }
     return (second.estimatedSavingsMs ?? 0) - (first.estimatedSavingsMs ?? 0);
   });
+}
+
+function createLighthouseSourceContext(input: {
+  projectRoot?: string;
+  routePath?: string;
+  sourceCandidateLimit?: number;
+  reportUrl?: string;
+}): LighthouseSourceContext | undefined {
+  if (typeof input.projectRoot !== 'string' || input.projectRoot.trim().length === 0) {
+    return undefined;
+  }
+
+  const rootPath = resolve(input.projectRoot.trim());
+  if (!existsSync(rootPath) || !statSync(rootPath).isDirectory()) {
+    throw new Error(`projectRoot must be an existing directory: ${input.projectRoot}`);
+  }
+
+  const scan = scanProjectFiles(rootPath);
+  return {
+    rootPath,
+    routePath: normalizeRoutePath(input.routePath) ?? normalizeRoutePathFromUrl(input.reportUrl),
+    sourceCandidateLimit: resolveLighthouseSourceCandidateLimit(input.sourceCandidateLimit),
+    files: scan.files,
+    scanFileCount: scan.scanned,
+    scanTruncated: scan.truncated,
+  };
+}
+
+function scanProjectFiles(rootPath: string): { files: RepoFileEntry[]; scanned: number; truncated: boolean } {
+  const files: RepoFileEntry[] = [];
+  let scanned = 0;
+  let truncated = false;
+
+  function walk(currentPath: string, depth: number): void {
+    if (depth > MAX_REPO_SCAN_DEPTH || scanned >= MAX_REPO_SCAN_FILES) {
+      truncated = true;
+      return;
+    }
+
+    let entries: Dirent[];
+    try {
+      entries = readdirSync(currentPath, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (scanned >= MAX_REPO_SCAN_FILES) {
+        truncated = true;
+        return;
+      }
+
+      const entryPath = join(currentPath, entry.name);
+      if (entry.isDirectory()) {
+        if (!REPO_SCAN_IGNORED_DIRS.has(entry.name)) {
+          walk(entryPath, depth + 1);
+        }
+        continue;
+      }
+
+      if (!entry.isFile() || !isSourceCandidateFile(entry.name)) {
+        continue;
+      }
+
+      scanned += 1;
+      const extension = extname(entry.name).toLowerCase();
+      files.push({
+        path: entryPath,
+        relativePath: toPosixPath(relative(rootPath, entryPath)),
+        basename: entry.name.toLowerCase(),
+        extension,
+        normalizedStem: normalizeAssetStem(entry.name),
+      });
+    }
+  }
+
+  walk(rootPath, 0);
+  return { files, scanned, truncated };
+}
+
+function isSourceCandidateFile(fileName: string): boolean {
+  return SOURCE_CANDIDATE_EXTENSIONS.has(extname(fileName).toLowerCase());
+}
+
+function extractAuditResourceUrls(audit: LighthouseAudit): string[] {
+  const urls = new Set<string>();
+  collectResourceUrls(audit.details, urls, 0);
+  return Array.from(urls).slice(0, 25);
+}
+
+function collectResourceUrls(value: unknown, urls: Set<string>, depth: number): void {
+  if (depth > 8 || urls.size >= 25 || value === null || value === undefined) {
+    return;
+  }
+
+  if (typeof value === 'string') {
+    const url = normalizeResourceUrl(value);
+    if (url) {
+      urls.add(url);
+    }
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectResourceUrls(entry, urls, depth + 1);
+    }
+    return;
+  }
+
+  if (typeof value !== 'object') {
+    return;
+  }
+
+  for (const entry of Object.values(value as Record<string, unknown>)) {
+    collectResourceUrls(entry, urls, depth + 1);
+  }
+}
+
+function normalizeResourceUrl(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (trimmed.length > 2_048) {
+    return undefined;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : undefined;
+  } catch {
+    return trimmed.startsWith('/') && !trimmed.startsWith('//') ? trimmed : undefined;
+  }
+}
+
+function findSourceCandidatesForAudit(
+  audit: LighthouseAudit,
+  resourceUrls: string[],
+  context: LighthouseSourceContext,
+): LighthouseSourceCandidate[] {
+  const candidates = new Map<string, LighthouseSourceCandidate>();
+
+  for (const resourceUrl of resourceUrls) {
+    for (const candidate of findResourceSourceCandidates(resourceUrl, context)) {
+      candidates.set(`${candidate.matchType}:${candidate.relativePath}:${candidate.resourceUrl ?? ''}`, candidate);
+      if (candidates.size >= context.sourceCandidateLimit) {
+        return Array.from(candidates.values());
+      }
+    }
+  }
+
+  if (auditCanUseRouteCandidates(audit.id)) {
+    for (const candidate of findRouteSourceCandidates(context)) {
+      candidates.set(`${candidate.matchType}:${candidate.relativePath}`, candidate);
+      if (candidates.size >= context.sourceCandidateLimit) {
+        return Array.from(candidates.values());
+      }
+    }
+  }
+
+  return Array.from(candidates.values());
+}
+
+function findResourceSourceCandidates(resourceUrl: string, context: LighthouseSourceContext): LighthouseSourceCandidate[] {
+  const resourcePath = extractResourcePath(resourceUrl);
+  if (!resourcePath) {
+    return [];
+  }
+
+  const resourceFileName = basename(resourcePath).toLowerCase();
+  if (!resourceFileName) {
+    return [];
+  }
+
+  const normalizedResourceStem = normalizeAssetStem(resourceFileName);
+  const resourceExtension = extname(resourceFileName).toLowerCase();
+  const pathSuffixes = [
+    stripLeadingSlash(resourcePath),
+    `public/${stripLeadingSlash(resourcePath)}`,
+  ].map((entry) => entry.toLowerCase());
+  const candidates: LighthouseSourceCandidate[] = [];
+
+  for (const file of context.files) {
+    const lowerRelativePath = file.relativePath.toLowerCase();
+    const exactPathMatch = pathSuffixes.some((suffix) => lowerRelativePath.endsWith(suffix));
+    if (exactPathMatch) {
+      candidates.push({
+        path: file.path,
+        relativePath: file.relativePath,
+        matchType: 'resource-path',
+        resourceUrl,
+        reason: `File path matches Lighthouse resource ${resourcePath}`,
+      });
+      continue;
+    }
+
+    if (
+      file.extension === resourceExtension &&
+      (file.basename === resourceFileName || (normalizedResourceStem.length > 0 && file.normalizedStem === normalizedResourceStem))
+    ) {
+      candidates.push({
+        path: file.path,
+        relativePath: file.relativePath,
+        matchType: 'resource-name',
+        resourceUrl,
+        reason: `File name matches Lighthouse resource ${resourceFileName}`,
+      });
+    }
+  }
+
+  return candidates.slice(0, context.sourceCandidateLimit);
+}
+
+function findRouteSourceCandidates(context: LighthouseSourceContext): LighthouseSourceCandidate[] {
+  const routePath = context.routePath;
+  if (!routePath) {
+    return [];
+  }
+
+  const routeSegments = routePath === '/' ? [] : routePath.split('/').filter(Boolean);
+  const routePart = routeSegments.join('/');
+  const routePatterns = routeSegments.length === 0
+    ? [
+        'app/page',
+        'src/app/page',
+        'pages/index',
+        'src/pages/index',
+      ]
+    : [
+        `app/${routePart}/page`,
+        `src/app/${routePart}/page`,
+        `pages/${routePart}`,
+        `src/pages/${routePart}`,
+        `pages/${routePart}/index`,
+        `src/pages/${routePart}/index`,
+      ];
+  const layoutPatterns = routeSegments.length === 0
+    ? ['app/layout', 'src/app/layout']
+    : [
+        `app/${routePart}/layout`,
+        `src/app/${routePart}/layout`,
+      ];
+
+  const candidates: LighthouseSourceCandidate[] = [];
+  for (const file of context.files) {
+    const withoutExtension = file.relativePath.slice(0, -file.extension.length).toLowerCase();
+    if (routePatterns.some((pattern) => withoutExtension.endsWith(pattern))) {
+      candidates.push({
+        path: file.path,
+        relativePath: file.relativePath,
+        matchType: 'route-entry',
+        reason: `Route entry candidate for ${routePath}`,
+      });
+      continue;
+    }
+    if (layoutPatterns.some((pattern) => withoutExtension.endsWith(pattern))) {
+      candidates.push({
+        path: file.path,
+        relativePath: file.relativePath,
+        matchType: 'route-layout',
+        reason: `Route layout candidate for ${routePath}`,
+      });
+    }
+  }
+
+  return candidates.slice(0, context.sourceCandidateLimit);
+}
+
+function auditCanUseRouteCandidates(auditId: string): boolean {
+  return new Set([
+    'cumulative-layout-shift',
+    'first-contentful-paint',
+    'interactive',
+    'largest-contentful-paint',
+    'render-blocking-resources',
+    'server-response-time',
+    'speed-index',
+    'total-blocking-time',
+    'unused-css-rules',
+    'unused-javascript',
+  ]).has(auditId);
+}
+
+function classifyFixReadiness(candidates: LighthouseSourceCandidate[]): LighthouseFixReadiness {
+  if (candidates.some((candidate) => candidate.matchType === 'resource-path' || candidate.matchType === 'resource-name')) {
+    return 'source-located';
+  }
+  if (candidates.some((candidate) => candidate.matchType === 'route-entry' || candidate.matchType === 'route-layout')) {
+    return 'route-located';
+  }
+  return 'needs-investigation';
+}
+
+function buildLighthouseNextSteps(
+  auditId: string,
+  resourceUrls: string[],
+  sourceCandidates: LighthouseSourceCandidate[],
+): string[] {
+  const steps: string[] = [];
+  const hasResources = resourceUrls.length > 0;
+  const hasCandidates = sourceCandidates.length > 0;
+
+  if (hasCandidates) {
+    steps.push('Review the listed sourceCandidates first; they are the most likely files to edit for this audit.');
+  } else if (hasResources) {
+    steps.push('Inspect the listed resourceUrls and map any bundled or hashed assets back through source maps or the app bundler.');
+  } else {
+    steps.push('Use the persisted JSON/HTML report to inspect the audit details before editing source.');
+  }
+
+  const auditSteps: Record<string, string> = {
+    'render-blocking-resources': 'Move non-critical CSS/JS off the initial render path, inline critical CSS only when justified, or add preload/defer where the framework supports it.',
+    'unused-javascript': 'Trace the listed scripts to their route imports and split or lazy-load code that is not needed for the initial interaction.',
+    'unused-css-rules': 'Move broad CSS into route/component styles or remove selectors that are not used by the audited page.',
+    'modern-image-formats': 'Convert located image assets to AVIF/WebP and update references while keeping fallbacks where needed.',
+    'uses-optimized-images': 'Resize or recompress located images to match rendered dimensions and quality requirements.',
+    'largest-contentful-paint': 'Find the LCP element or resource, prioritize its load, and reduce server/render work that delays it.',
+    'total-blocking-time': 'Break long startup tasks, reduce hydration work, or defer non-critical scripts from the audited route.',
+    'cumulative-layout-shift': 'Reserve image/embed/font space with dimensions, aspect-ratio, or stable fallback layout.',
+    'server-response-time': 'Inspect the route handler, data fetching, cache policy, and deployment path for the audited URL.',
+  };
+  steps.push(auditSteps[auditId] ?? 'Apply the remediation described by Lighthouse, then run a new report to compare scores and metrics.');
+  steps.push('After editing, run run_lighthouse_report again for the same URL and compare the new plan against this report.');
+  return steps;
+}
+
+function normalizeRoutePath(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  const withoutQuery = trimmed.split(/[?#]/, 1)[0] ?? '';
+  const route = withoutQuery.startsWith('/') ? withoutQuery : `/${withoutQuery}`;
+  return route.replace(/\/+/g, '/').replace(/\/$/, '') || '/';
+}
+
+function normalizeRoutePathFromUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return undefined;
+  }
+  try {
+    return normalizeRoutePath(new URL(value).pathname);
+  } catch {
+    return normalizeRoutePath(value);
+  }
+}
+
+function extractResourcePath(resourceUrl: string): string | undefined {
+  try {
+    return decodeURIComponent(new URL(resourceUrl).pathname);
+  } catch {
+    return resourceUrl.startsWith('/') ? decodeURIComponent(resourceUrl.split(/[?#]/, 1)[0] ?? '') : undefined;
+  }
+}
+
+function normalizeAssetStem(fileName: string): string {
+  const extension = extname(fileName);
+  const name = extension.length > 0 ? basename(fileName, extension) : basename(fileName);
+  const normalized = name.toLowerCase();
+  const parts = normalized.split(/[._-]/);
+  const lastPart = parts.at(-1);
+  if (lastPart && /^[a-z0-9]{8,}$/.test(lastPart) && parts.length > 1) {
+    return parts.slice(0, -1).join('-');
+  }
+  return normalized;
+}
+
+function stripLeadingSlash(value: string): string {
+  return value.replace(/^\/+/, '');
+}
+
+function toPosixPath(value: string): string {
+  return value.split(sep).join('/');
 }
 
 function createDefaultLighthouseRunner(): LighthouseRunner {

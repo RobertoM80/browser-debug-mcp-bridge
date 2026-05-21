@@ -1705,6 +1705,9 @@ const TOOL_SCHEMAS: Record<string, object> = {
       reportId: { type: 'string' },
       minPriority: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
       limit: { type: 'number' },
+      projectRoot: { type: 'string' },
+      routePath: { type: 'string' },
+      sourceCandidateLimit: { type: 'number' },
     },
   },
   list_automation_runs: {
@@ -9477,6 +9480,9 @@ export function createV1ToolHandlers(
             ? input.minPriority
             : undefined,
         limit: typeof input.limit === 'number' ? input.limit : undefined,
+        projectRoot: typeof input.projectRoot === 'string' ? input.projectRoot : undefined,
+        routePath: typeof input.routePath === 'string' ? input.routePath : undefined,
+        sourceCandidateLimit: typeof input.sourceCandidateLimit === 'number' ? input.sourceCandidateLimit : undefined,
       });
 
       return {

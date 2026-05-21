@@ -372,6 +372,12 @@ export const PlanLighthouseFixesSchema = z.object({
     .describe('Lowest priority to include; defaults to low'),
   limit: z.number().int().min(1).max(200).optional()
     .describe('Maximum number of fix items to return'),
+  projectRoot: z.string().optional()
+    .describe('Optional local project root to scan for source files related to Lighthouse audit resources'),
+  routePath: z.string().optional()
+    .describe('Optional app route path for route-level source candidate mapping; defaults to the report URL path'),
+  sourceCandidateLimit: z.number().int().min(1).max(20).optional()
+    .describe('Maximum local source candidates to attach to each fix item'),
 });
 
 export const ListAutomationRunsSchema = z.object({

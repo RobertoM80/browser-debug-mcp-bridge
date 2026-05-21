@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, expect, it, afterEach } from 'vitest';
@@ -79,6 +79,7 @@ function createRunner(): LighthouseRunner {
               details: {
                 type: 'opportunity',
                 overallSavingsMs: 1_200,
+                items: [{ url: `${input.url}/styles.css` }],
               },
             },
             'unused-javascript': {
@@ -90,6 +91,7 @@ function createRunner(): LighthouseRunner {
               details: {
                 type: 'opportunity',
                 overallSavingsBytes: 184_320,
+                items: [{ url: `${input.url}/main.js` }],
               },
             },
           },
@@ -136,21 +138,42 @@ describe('lighthouse reports', () => {
 
   it('creates prioritized fix plans from a stored Lighthouse report', async () => {
     const db = createDb();
+    const projectRoot = createTempDir();
+    mkdirSync(join(projectRoot, 'src', 'app', 'page'), { recursive: true });
+    writeFileSync(join(projectRoot, 'src', 'app', 'page', 'page.tsx'), 'export default function Page() { return null; }\n', 'utf8');
+    writeFileSync(join(projectRoot, 'src', 'app', 'page', 'styles.css'), 'body { color: black; }\n', 'utf8');
+    writeFileSync(join(projectRoot, 'src', 'app', 'page', 'main.js'), 'console.log("main");\n', 'utf8');
     const report = await runLighthouseReport(db, {
       url: 'https://example.com/page',
       artifactDir: createTempDir(),
     }, createRunner());
 
-    const plan = planLighthouseFixes(db, { reportId: report.reportId });
+    const plan = planLighthouseFixes(db, {
+      reportId: report.reportId,
+      projectRoot,
+      routePath: '/page',
+    });
 
     expect(plan.itemCount).toBe(3);
     expect(plan.items[0]).toMatchObject({
       auditId: 'render-blocking-resources',
       priority: 'critical',
+      resourceUrls: ['https://example.com/page/styles.css'],
+      fixReadiness: 'source-located',
     });
+    expect(plan.items[0].sourceCandidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        relativePath: 'src/app/page/styles.css',
+        matchType: 'resource-path',
+      }),
+    ]));
     expect(plan.priorityCounts.critical).toBe(1);
     expect(plan.priorityCounts.high).toBe(1);
     expect(plan.items.map((item) => item.auditId)).toContain('first-contentful-paint');
+    expect(plan.summary.sourceContext).toMatchObject({
+      routePath: '/page',
+      scannedFileCount: 3,
+    });
     db.close();
   });
 
