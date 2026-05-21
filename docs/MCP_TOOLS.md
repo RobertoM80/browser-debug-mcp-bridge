@@ -891,6 +891,105 @@ Response highlights:
 - `steps`: ordered step records with event linkage, diagnostics, and redacted input metadata
 - `pagination`: step pagination metadata for larger runs
 
+## Lighthouse performance tools
+
+These tools run the official Lighthouse engine from the MCP server and persist the same class of JSON/HTML report that Chrome DevTools' Lighthouse panel shows. They do not automate or scrape the DevTools UI. When `sessionId` is supplied, the bridge uses that session's latest URL as the Lighthouse target; the audit itself runs in an isolated Lighthouse-controlled Chrome instance.
+
+Available tools:
+
+- `run_lighthouse_report`
+- `list_lighthouse_reports`
+- `get_lighthouse_report`
+- `get_lighthouse_report_asset`
+- `plan_lighthouse_fixes`
+
+### run_lighthouse_report
+
+Runs Lighthouse for an absolute `url` or for the latest URL from `sessionId`, stores metadata in SQLite, and writes JSON/HTML artifacts to the runtime data directory.
+
+```json
+{
+  "name": "run_lighthouse_report",
+  "arguments": {
+    "sessionId": "sess_123",
+    "formFactor": "mobile",
+    "categories": ["performance"]
+  }
+}
+```
+
+Response highlights:
+
+- `report.reportId`: stable id for follow-up reads and planning
+- `report.status`: `succeeded` or `failed`; failed runs are persisted with `errorMessage`
+- `report.scores`: category scores such as `performance`
+- `report.metrics`: key Web Vitals and Lighthouse metric display values
+- `report.jsonBytes` / `report.htmlBytes`: artifact sizes available through chunked reads
+
+### list_lighthouse_reports
+
+Lists persisted Lighthouse report metadata with optional `sessionId`, `urlContains`, and `status` filters.
+
+```json
+{
+  "name": "list_lighthouse_reports",
+  "arguments": {
+    "sessionId": "sess_123",
+    "status": "succeeded",
+    "limit": 20
+  }
+}
+```
+
+### get_lighthouse_report
+
+Returns one persisted report summary by `reportId`.
+
+```json
+{
+  "name": "get_lighthouse_report",
+  "arguments": { "reportId": "lhr-..." }
+}
+```
+
+### get_lighthouse_report_asset
+
+Reads bounded chunks from the persisted Lighthouse `json` or `html` report artifact.
+
+```json
+{
+  "name": "get_lighthouse_report_asset",
+  "arguments": {
+    "reportId": "lhr-...",
+    "asset": "html",
+    "offset": 0,
+    "maxBytes": 65536,
+    "encoding": "base64"
+  }
+}
+```
+
+### plan_lighthouse_fixes
+
+Creates a persisted prioritized fix plan from the stored Lighthouse JSON report. V1 plans remediation items only; it does not patch source files automatically.
+
+```json
+{
+  "name": "plan_lighthouse_fixes",
+  "arguments": {
+    "reportId": "lhr-...",
+    "minPriority": "medium",
+    "limit": 50
+  }
+}
+```
+
+Response highlights:
+
+- `plan.items`: audit id, title, priority, estimated savings, rationale, and suggested action
+- `plan.priorityCounts`: critical/high/medium/low counts
+- `plan.summary`: source report URL, scores, and audit count
+
 ### Live capture disconnection behavior
 
 When a listed session is not currently connected, live tools return a normalized disconnection error that starts with:

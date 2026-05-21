@@ -30,6 +30,7 @@ describe('project documentation', () => {
     expect(content).toContain('list_sessions');
     expect(content).toContain('get_dom_subtree');
     expect(content).toContain('explain_last_failure');
+    expect(content).toContain('run_lighthouse_report');
   });
 
   it('should include a root SECURITY document with privacy controls', () => {
@@ -75,6 +76,7 @@ describe('project documentation', () => {
 
     expect(introContent).toContain('Browser Debug MCP Bridge Documentation');
     expect(toolsContent).toContain('V1 query tools');
+    expect(toolsContent).toContain('V7 Lighthouse performance tools');
     expect(securityContent).toContain('Safe mode is ON by default');
   });
 });

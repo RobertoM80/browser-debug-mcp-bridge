@@ -177,6 +177,11 @@ export const EXPECTED_TOOL_NAMES = [
   'list_snapshots',
   'get_snapshot_for_event',
   'get_snapshot_asset',
+  'run_lighthouse_report',
+  'list_lighthouse_reports',
+  'get_lighthouse_report',
+  'get_lighthouse_report_asset',
+  'plan_lighthouse_fixes',
   'list_automation_runs',
   'get_automation_run',
 ] as const;
