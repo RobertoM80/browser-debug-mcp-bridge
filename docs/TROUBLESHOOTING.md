@@ -2,7 +2,7 @@
 
 ## Server does not start
 
-- Confirm Node 20+ is installed
+- Confirm Node 22.19+ is installed
 - Prefer direct launch path in MCP config: `command = node`, `args = ["...\\scripts\\mcp-start.cjs"]`
 - If using npm mode, run `npx -y browser-debug-mcp-bridge`
 - If VS Code Copilot or another MCP host shows no browser-debug tools after an `npx` setup, confirm `args` includes `"-y"`; without it, npm may wait for an install confirmation prompt the host cannot answer.

@@ -27,9 +27,12 @@ describe('mcp/server foundation', () => {
   it('registers known tools with input schemas', () => {
     const tools = createToolRegistry();
     const listSessions = tools.find((tool) => tool.name === 'list_sessions');
+    const lighthouseReport = tools.find((tool) => tool.name === 'run_lighthouse_report');
 
     expect(listSessions).toBeDefined();
     expect(listSessions?.inputSchema).toMatchObject({ type: 'object' });
+    expect(lighthouseReport).toBeDefined();
+    expect(lighthouseReport?.inputSchema).toMatchObject({ type: 'object' });
   });
 
   it('routes a tool call to custom handler', async () => {

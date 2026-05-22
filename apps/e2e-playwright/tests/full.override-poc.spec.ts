@@ -1696,8 +1696,8 @@ async function runNextRscFlightOverrideScenario(): Promise<void> {
     });
     await waitForCaptureSetup();
     await targetPage.click('nav a[href="/about"]');
-    await expect(targetPage.locator('#about-proof')).toHaveText('Original proof: 42 inspection notes reviewed by humans.');
     const capture = await capturePromise;
+    await expect(targetPage.locator('#about-proof')).toHaveText('Original proof: 42 inspection notes reviewed by humans.');
     expect(capture).toMatchObject({
       captureMode: 'cdp-response',
       matchMode: 'prefix',
@@ -2119,8 +2119,8 @@ async function runNextExperimentalRscFlightFulfillmentScenario(): Promise<void> 
     });
     await waitForCaptureSetup();
     await targetPage.click('nav a[href="/products"]');
-    await expect(targetPage.locator('#products-headline')).toHaveText('Original debugging kits');
     const capture = await capturePromise;
+    await expect(targetPage.locator('#products-headline')).toHaveText('Original debugging kits');
     expect(capture).toMatchObject({
       captureMode: 'cdp-response',
       matchMode: 'prefix',

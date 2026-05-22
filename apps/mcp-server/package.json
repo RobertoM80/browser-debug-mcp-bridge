@@ -2,6 +2,9 @@
   "name": "mcp-server",
   "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.19"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.app.json",
     "serve": "tsx src/main.ts",
@@ -15,8 +18,10 @@
     "@types/ws": "^8.18.1",
     "better-sqlite3": "^12.6.2",
     "cheerio": "^1.2.0",
+    "chrome-launcher": "1.2.1",
     "fastify": "^5.7.4",
     "jszip": "^3.10.1",
+    "lighthouse": "13.3.0",
     "ws": "^8.19.0"
   },
   "devDependencies": {

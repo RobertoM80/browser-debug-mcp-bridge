@@ -16,7 +16,7 @@ It captures console logs, network calls, navigation, UI events, DOM snapshots, s
 
 ## Requirements
 
-- Node.js `>=20`
+- Node.js `>=22.19`
 - Chrome or Chromium with extension Developer Mode enabled
 - An MCP-capable AI client
 

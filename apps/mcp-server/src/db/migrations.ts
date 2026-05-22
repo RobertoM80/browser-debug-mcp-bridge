@@ -217,6 +217,70 @@ function ensureAutomationDiagnosticsColumns(db: Database): void {
   }
 }
 
+function ensureLighthouseReportTables(db: Database): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS lighthouse_reports (
+      report_id TEXT PRIMARY KEY,
+      session_id TEXT,
+      requested_url TEXT NOT NULL,
+      final_url TEXT,
+      status TEXT NOT NULL CHECK(status IN ('succeeded', 'failed')),
+      created_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      duration_ms INTEGER,
+      lighthouse_version TEXT,
+      user_agent TEXT,
+      fetch_time TEXT,
+      form_factor TEXT NOT NULL CHECK(form_factor IN ('mobile', 'desktop')),
+      categories_json TEXT NOT NULL,
+      metrics_json TEXT NOT NULL,
+      scores_json TEXT NOT NULL,
+      score_performance REAL,
+      score_accessibility REAL,
+      score_best_practices REAL,
+      score_seo REAL,
+      score_pwa REAL,
+      json_path TEXT,
+      json_bytes INTEGER,
+      html_path TEXT,
+      html_bytes INTEGER,
+      run_warnings_json TEXT NOT NULL,
+      runtime_error_json TEXT,
+      config_json TEXT NOT NULL,
+      error_message TEXT,
+      FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_lighthouse_reports_session_created
+      ON lighthouse_reports(session_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_lighthouse_reports_url_created
+      ON lighthouse_reports(requested_url, created_at);
+    CREATE INDEX IF NOT EXISTS idx_lighthouse_reports_status_created
+      ON lighthouse_reports(status, created_at);
+
+    CREATE TABLE IF NOT EXISTS lighthouse_fix_plans (
+      plan_id TEXT PRIMARY KEY,
+      report_id TEXT NOT NULL,
+      session_id TEXT,
+      created_at INTEGER NOT NULL,
+      item_count INTEGER NOT NULL DEFAULT 0,
+      critical_count INTEGER NOT NULL DEFAULT 0,
+      high_count INTEGER NOT NULL DEFAULT 0,
+      medium_count INTEGER NOT NULL DEFAULT 0,
+      low_count INTEGER NOT NULL DEFAULT 0,
+      summary_json TEXT NOT NULL,
+      items_json TEXT NOT NULL,
+      FOREIGN KEY (report_id) REFERENCES lighthouse_reports(report_id) ON DELETE CASCADE,
+      FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE SET NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_lighthouse_fix_plans_report_created
+      ON lighthouse_fix_plans(report_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_lighthouse_fix_plans_session_created
+      ON lighthouse_fix_plans(session_id, created_at);
+  `);
+}
+
 function ensureMcpToolLoopGuardTables(db: Database): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS mcp_tool_invocations (
@@ -1053,6 +1117,39 @@ const migrations: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_mock_hits_matched_fulfilled_ts
           ON mock_hits(matched, fulfilled, ts);
       `);
+    },
+  },
+  {
+    version: 19,
+    name: 'lighthouse_reports_merge_compatibility',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ssr_mock_audits (
+          audit_id TEXT PRIMARY KEY,
+          created_at INTEGER NOT NULL,
+          action TEXT NOT NULL CHECK(action IN (${SSR_MOCK_AUDIT_ACTION_SQL})),
+          status TEXT NOT NULL CHECK(status IN (${SSR_MOCK_AUDIT_STATUS_SQL})),
+          project_root TEXT NOT NULL,
+          target_url TEXT,
+          api_host TEXT,
+          env_var_name TEXT,
+          env_file_path TEXT,
+          mock_base_url TEXT,
+          rollback_id TEXT,
+          summary_json TEXT NOT NULL,
+          result_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ssr_mock_audits_project_created_at
+          ON ssr_mock_audits(project_root, created_at);
+        CREATE INDEX IF NOT EXISTS idx_ssr_mock_audits_rollback_id
+          ON ssr_mock_audits(rollback_id);
+        CREATE INDEX IF NOT EXISTS idx_ssr_mock_audits_action_status_created_at
+          ON ssr_mock_audits(action, status, created_at);
+      `);
+
+      ensureLighthouseReportTables(db);
     },
   },
 ];

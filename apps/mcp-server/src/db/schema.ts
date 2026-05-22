@@ -13,7 +13,7 @@ import {
   SSR_MOCK_AUDIT_STATUSES,
 } from '../override-audit-contract.js';
 
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 
 const OVERRIDE_POC_RUN_STATUS_SQL = OVERRIDE_POC_RUN_STATUSES.map((value) => `'${value}'`).join(', ');
 const OVERRIDE_POC_REQUEST_STATUS_SQL = OVERRIDE_POC_REQUEST_STATUSES.map((value) => `'${value}'`).join(', ');
@@ -513,6 +513,66 @@ CREATE INDEX IF NOT EXISTS idx_mcp_loop_incidents_status_blocked
 CREATE INDEX IF NOT EXISTS idx_mcp_loop_incidents_session_family
   ON mcp_loop_incidents(session_id, family, status);
 
+CREATE TABLE IF NOT EXISTS lighthouse_reports (
+  report_id TEXT PRIMARY KEY,
+  session_id TEXT,
+  requested_url TEXT NOT NULL,
+  final_url TEXT,
+  status TEXT NOT NULL CHECK(status IN ('succeeded', 'failed')),
+  created_at INTEGER NOT NULL,
+  completed_at INTEGER,
+  duration_ms INTEGER,
+  lighthouse_version TEXT,
+  user_agent TEXT,
+  fetch_time TEXT,
+  form_factor TEXT NOT NULL CHECK(form_factor IN ('mobile', 'desktop')),
+  categories_json TEXT NOT NULL,
+  metrics_json TEXT NOT NULL,
+  scores_json TEXT NOT NULL,
+  score_performance REAL,
+  score_accessibility REAL,
+  score_best_practices REAL,
+  score_seo REAL,
+  score_pwa REAL,
+  json_path TEXT,
+  json_bytes INTEGER,
+  html_path TEXT,
+  html_bytes INTEGER,
+  run_warnings_json TEXT NOT NULL,
+  runtime_error_json TEXT,
+  config_json TEXT NOT NULL,
+  error_message TEXT,
+  FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_lighthouse_reports_session_created
+  ON lighthouse_reports(session_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_lighthouse_reports_url_created
+  ON lighthouse_reports(requested_url, created_at);
+CREATE INDEX IF NOT EXISTS idx_lighthouse_reports_status_created
+  ON lighthouse_reports(status, created_at);
+
+CREATE TABLE IF NOT EXISTS lighthouse_fix_plans (
+  plan_id TEXT PRIMARY KEY,
+  report_id TEXT NOT NULL,
+  session_id TEXT,
+  created_at INTEGER NOT NULL,
+  item_count INTEGER NOT NULL DEFAULT 0,
+  critical_count INTEGER NOT NULL DEFAULT 0,
+  high_count INTEGER NOT NULL DEFAULT 0,
+  medium_count INTEGER NOT NULL DEFAULT 0,
+  low_count INTEGER NOT NULL DEFAULT 0,
+  summary_json TEXT NOT NULL,
+  items_json TEXT NOT NULL,
+  FOREIGN KEY (report_id) REFERENCES lighthouse_reports(report_id) ON DELETE CASCADE,
+  FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_lighthouse_fix_plans_report_created
+  ON lighthouse_fix_plans(report_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_lighthouse_fix_plans_session_created
+  ON lighthouse_fix_plans(session_id, created_at);
+
 -- Schema version tracking
 CREATE TABLE IF NOT EXISTS schema_version (
   version INTEGER PRIMARY KEY,
@@ -554,6 +614,8 @@ export function clearDatabase(db: Database): void {
     DELETE FROM ssr_mock_audits;
     DELETE FROM override_requests;
     DELETE FROM override_runs;
+    DELETE FROM lighthouse_fix_plans;
+    DELETE FROM lighthouse_reports;
     DELETE FROM mcp_loop_incidents;
     DELETE FROM mcp_tool_invocations;
     DELETE FROM events;
