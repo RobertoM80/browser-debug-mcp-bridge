@@ -331,6 +331,55 @@ export const GetSnapshotAssetSchema = z.object({
     .describe('Chunk encoding mode'),
 });
 
+export const RunLighthouseReportSchema = z.object({
+  sessionId: z.string().optional()
+    .describe('Optional captured session identifier; the latest session URL is used when url is omitted'),
+  url: z.string().url().optional()
+    .describe('Absolute http(s) URL to audit'),
+  formFactor: z.enum(['mobile', 'desktop']).optional()
+    .describe('Lighthouse form factor; defaults to mobile'),
+  categories: z.array(z.enum(['performance', 'accessibility', 'best-practices', 'seo', 'pwa'])).optional()
+    .describe('Lighthouse categories to run; defaults to performance'),
+  maxWaitForLoadMs: z.number().int().min(1000).max(120000).optional()
+    .describe('Maximum page load wait in milliseconds'),
+  chromeFlags: z.array(z.string()).max(20).optional()
+    .describe('Additional Chrome flags passed to the isolated Lighthouse browser'),
+});
+
+export const ListLighthouseReportsSchema = z.object({
+  sessionId: z.string().optional().describe('Optional session filter'),
+  urlContains: z.string().optional().describe('Optional URL substring filter'),
+  status: z.enum(['succeeded', 'failed']).optional().describe('Optional report status filter'),
+  limit: z.number().int().min(1).max(200).optional().describe('Maximum number of reports to return'),
+  offset: z.number().int().min(0).optional().describe('Pagination offset'),
+});
+
+export const GetLighthouseReportSchema = z.object({
+  reportId: z.string().describe('Persisted Lighthouse report identifier'),
+});
+
+export const GetLighthouseReportAssetSchema = z.object({
+  reportId: z.string().describe('Persisted Lighthouse report identifier'),
+  asset: z.enum(['json', 'html']).default('json').describe('Report artifact to read'),
+  offset: z.number().int().min(0).optional().describe('Byte offset'),
+  maxBytes: z.number().int().min(1).max(262144).optional().describe('Maximum chunk size'),
+  encoding: z.enum(['raw', 'base64']).default('base64').describe('Chunk encoding mode'),
+});
+
+export const PlanLighthouseFixesSchema = z.object({
+  reportId: z.string().describe('Persisted Lighthouse report identifier'),
+  minPriority: z.enum(['critical', 'high', 'medium', 'low']).optional()
+    .describe('Lowest priority to include; defaults to low'),
+  limit: z.number().int().min(1).max(200).optional()
+    .describe('Maximum number of fix items to return'),
+  projectRoot: z.string().optional()
+    .describe('Optional local project root to scan for source files related to Lighthouse audit resources'),
+  routePath: z.string().optional()
+    .describe('Optional app route path for route-level source candidate mapping; defaults to the report URL path'),
+  sourceCandidateLimit: z.number().int().min(1).max(20).optional()
+    .describe('Maximum local source candidates to attach to each fix item'),
+});
+
 export const ListAutomationRunsSchema = z.object({
   sessionId: z.string().describe('Session identifier'),
   status: z.enum(['requested', 'started', 'succeeded', 'failed', 'rejected', 'stopped']).optional()

@@ -16,6 +16,7 @@ All tool responses include:
 - **Experimental override tools** for exact asset profile generation, persisted live asset observation, Next.js source/chunk mapping, bounded drift checks, source-edit planning, validation, enable/disable, request logs, and observed-asset-aware diagnosis
 - **V5 live automation tools** for one-at-a-time UI actions inside the already bound extension session
 - **V6 automation history tools** for first-class automation run and step analysis from dedicated tables
+- **V7 Lighthouse performance tools** for official Lighthouse JSON/HTML reports and persisted fix plans
 
 ## Request/response conventions
 
@@ -40,3 +41,4 @@ Continue with:
 - [Experimental override POC](../extension/experimental-override-poc.md)
 - [V5 live automation tools](./v5-live-automation.md)
 - [V6 automation history tools](./v6-automation-history.md)
+- [V7 Lighthouse performance tools](./v7-lighthouse-performance.md)

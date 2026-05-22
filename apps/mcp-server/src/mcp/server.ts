@@ -38,6 +38,14 @@ import { mapNextOverrideAssetsWithDrift } from '../next-asset-mapper.js';
 import { planNextSourceOverride, type NextSourceOverridePlanResult, type PlannedNextOverrideRule } from '../next-source-override-planner.js';
 import { listObservedOverrideAssets, persistObservedOverrideAssets } from '../override-observed-assets.js';
 import { planOverrideResponsePatch, type OverrideResponsePatchPlanResult } from '../override-response-planner.js';
+import {
+  getLighthouseReport,
+  getLighthouseReportAsset,
+  listLighthouseReports,
+  normalizeLighthouseAsset,
+  planLighthouseFixes,
+  runLighthouseReport,
+} from '../lighthouse-report.js';
 import { createToolLoopGuard, type ToolLoopGuard } from './tool-loop-guard.js';
 
 type ToolInput = Record<string, unknown>;
@@ -1648,6 +1656,60 @@ const TOOL_SCHEMAS: Record<string, object> = {
       encoding: { type: 'string' },
     },
   },
+  run_lighthouse_report: {
+    type: 'object',
+    properties: {
+      sessionId: { type: 'string' },
+      url: { type: 'string' },
+      formFactor: { type: 'string', enum: ['mobile', 'desktop'] },
+      categories: {
+        type: 'array',
+        items: { type: 'string', enum: ['performance', 'accessibility', 'best-practices', 'seo', 'pwa'] },
+      },
+      maxWaitForLoadMs: { type: 'number' },
+      chromeFlags: { type: 'array', items: { type: 'string' } },
+    },
+  },
+  list_lighthouse_reports: {
+    type: 'object',
+    properties: {
+      sessionId: { type: 'string' },
+      urlContains: { type: 'string' },
+      status: { type: 'string', enum: ['succeeded', 'failed'] },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
+    },
+  },
+  get_lighthouse_report: {
+    type: 'object',
+    required: ['reportId'],
+    properties: {
+      reportId: { type: 'string' },
+    },
+  },
+  get_lighthouse_report_asset: {
+    type: 'object',
+    required: ['reportId'],
+    properties: {
+      reportId: { type: 'string' },
+      asset: { type: 'string', enum: ['json', 'html'] },
+      offset: { type: 'number' },
+      maxBytes: { type: 'number' },
+      encoding: { type: 'string', enum: ['base64', 'raw'] },
+    },
+  },
+  plan_lighthouse_fixes: {
+    type: 'object',
+    required: ['reportId'],
+    properties: {
+      reportId: { type: 'string' },
+      minPriority: { type: 'string', enum: ['critical', 'high', 'medium', 'low'] },
+      limit: { type: 'number' },
+      projectRoot: { type: 'string' },
+      routePath: { type: 'string' },
+      sourceCandidateLimit: { type: 'number' },
+    },
+  },
   list_automation_runs: {
     type: 'object',
     required: ['sessionId'],
@@ -1972,6 +2034,11 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   list_snapshots: 'List snapshot metadata by session/time/trigger',
   get_snapshot_for_event: 'Find snapshot most related to an event',
   get_snapshot_asset: 'Read bounded binary chunks for snapshot assets',
+  run_lighthouse_report: 'Run an official Lighthouse report for a URL or session URL and persist JSON/HTML artifacts',
+  list_lighthouse_reports: 'List persisted Lighthouse report metadata',
+  get_lighthouse_report: 'Read one persisted Lighthouse report summary',
+  get_lighthouse_report_asset: 'Read bounded chunks from a persisted Lighthouse JSON or HTML report artifact',
+  plan_lighthouse_fixes: 'Create a prioritized fix plan from a persisted Lighthouse report',
   list_automation_runs: 'List first-class automation runs from dedicated automation tables',
   get_automation_run: 'Inspect one automation run with bounded step details',
   execute_ui_action: 'Execute one live UI action in the current bound extension session',
@@ -9307,6 +9374,124 @@ export function createV1ToolHandlers(
         encoding,
         chunk: encoding === 'raw' ? Array.from(chunkBuffer.values()) : undefined,
         chunkBase64: encoding === 'base64' ? chunkBuffer.toString('base64') : undefined,
+      };
+    },
+
+    run_lighthouse_report: async (input) => {
+      const db = getDb();
+      const sessionId = getSessionId(input);
+      const report = await runLighthouseReport(db, {
+        sessionId,
+        url: typeof input.url === 'string' ? input.url : undefined,
+        formFactor: input.formFactor === 'desktop' ? 'desktop' : 'mobile',
+        categories: Array.isArray(input.categories)
+          ? input.categories.filter((entry): entry is string => typeof entry === 'string')
+          : undefined,
+        maxWaitForLoadMs: typeof input.maxWaitForLoadMs === 'number' ? input.maxWaitForLoadMs : undefined,
+        chromeFlags: Array.isArray(input.chromeFlags)
+          ? input.chromeFlags.filter((entry): entry is string => typeof entry === 'string')
+          : undefined,
+      });
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        report,
+      };
+    },
+
+    list_lighthouse_reports: async (input) => {
+      const db = getDb();
+      const result = listLighthouseReports(db, {
+        sessionId: getSessionId(input),
+        urlContains: typeof input.urlContains === 'string' ? input.urlContains : undefined,
+        status: typeof input.status === 'string' ? input.status : undefined,
+        limit: typeof input.limit === 'number' ? input.limit : undefined,
+        offset: typeof input.offset === 'number' ? input.offset : undefined,
+      });
+
+      return {
+        ...createBaseResponse(getSessionId(input)),
+        limitsApplied: {
+          maxResults: result.pagination.limit,
+          truncated: result.pagination.hasMore,
+        },
+        pagination: result.pagination,
+        reports: result.reports,
+      };
+    },
+
+    get_lighthouse_report: async (input) => {
+      const db = getDb();
+      const reportId = typeof input.reportId === 'string' ? input.reportId : '';
+      if (!reportId) {
+        throw new Error('reportId is required');
+      }
+      const report = getLighthouseReport(db, reportId);
+
+      return {
+        ...createBaseResponse(report.sessionId),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        report,
+      };
+    },
+
+    get_lighthouse_report_asset: async (input) => {
+      const db = getDb();
+      const reportId = typeof input.reportId === 'string' ? input.reportId : '';
+      if (!reportId) {
+        throw new Error('reportId is required');
+      }
+      const asset = normalizeLighthouseAsset(input.asset);
+      const chunk = getLighthouseReportAsset(db, {
+        reportId,
+        asset,
+        offset: typeof input.offset === 'number' ? input.offset : undefined,
+        maxBytes: typeof input.maxBytes === 'number' ? input.maxBytes : undefined,
+        encoding: input.encoding === 'raw' ? 'raw' : 'base64',
+      });
+
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: typeof chunk.bytesReturned === 'number' ? chunk.bytesReturned : 0,
+          truncated: chunk.hasMore === true,
+        },
+        ...chunk,
+      };
+    },
+
+    plan_lighthouse_fixes: async (input) => {
+      const db = getDb();
+      const reportId = typeof input.reportId === 'string' ? input.reportId : '';
+      if (!reportId) {
+        throw new Error('reportId is required');
+      }
+      const plan = planLighthouseFixes(db, {
+        reportId,
+        minPriority:
+          input.minPriority === 'critical' || input.minPriority === 'high' || input.minPriority === 'medium' || input.minPriority === 'low'
+            ? input.minPriority
+            : undefined,
+        limit: typeof input.limit === 'number' ? input.limit : undefined,
+        projectRoot: typeof input.projectRoot === 'string' ? input.projectRoot : undefined,
+        routePath: typeof input.routePath === 'string' ? input.routePath : undefined,
+        sourceCandidateLimit: typeof input.sourceCandidateLimit === 'number' ? input.sourceCandidateLimit : undefined,
+      });
+
+      return {
+        ...createBaseResponse(plan.sessionId),
+        limitsApplied: {
+          maxResults: plan.itemCount,
+          truncated: false,
+        },
+        plan,
       };
     },
 

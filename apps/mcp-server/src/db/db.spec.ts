@@ -384,6 +384,8 @@ describe('Database Migrations', () => {
       expect(tableNames).toContain('override_observed_assets');
       expect(tableNames).toContain('mcp_tool_invocations');
       expect(tableNames).toContain('mcp_loop_incidents');
+      expect(tableNames).toContain('lighthouse_reports');
+      expect(tableNames).toContain('lighthouse_fix_plans');
       expect(tableNames).toContain('schema_version');
     });
 
@@ -412,6 +414,16 @@ describe('Database Migrations', () => {
       expect(invocationIndexes.map((index) => index.name)).toContain('idx_mcp_tool_invocations_family_root_time');
       expect(incidentIndexes.map((index) => index.name)).toContain('idx_mcp_loop_incidents_open_fingerprint');
       expect(incidentIndexes.map((index) => index.name)).toContain('idx_mcp_loop_incidents_session_family');
+    });
+
+    it('should include Lighthouse report tables and indexes after all migrations', () => {
+      initializeDatabase(db);
+      const reportIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='lighthouse_reports'").all() as { name: string }[];
+      const planIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='lighthouse_fix_plans'").all() as { name: string }[];
+      expect(reportIndexes.map((index) => index.name)).toContain('idx_lighthouse_reports_session_created');
+      expect(reportIndexes.map((index) => index.name)).toContain('idx_lighthouse_reports_status_created');
+      expect(planIndexes.map((index) => index.name)).toContain('idx_lighthouse_fix_plans_report_created');
+      expect(planIndexes.map((index) => index.name)).toContain('idx_lighthouse_fix_plans_session_created');
     });
 
     it('should backfill automation tables from existing lifecycle events during migration', () => {

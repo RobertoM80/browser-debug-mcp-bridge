@@ -4742,6 +4742,19 @@ function loadServerBaseUrl(storageArea: RuntimeStorageAreaLike): Promise<string 
   });
 }
 
+function persistServerBaseUrl(value: string | null): Promise<void> {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.set({ [SERVER_BASE_URL_STORAGE_KEY]: value }, () => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
+      resolve();
+    });
+  });
+}
+
 updateSessionManagerServerBaseUrl(getServerBaseUrl());
 
 async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
@@ -5286,8 +5299,10 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
       });
 
     case 'TEST_SET_SERVER_BASE_URL':
-      return Promise.resolve().then(() => {
-        applyServerBaseUrl(request.serverBaseUrl ?? null);
+      return Promise.resolve().then(async () => {
+        const nextBaseUrl = normalizeServerBaseUrl(request.serverBaseUrl ?? null);
+        await persistServerBaseUrl(nextBaseUrl);
+        applyServerBaseUrl(nextBaseUrl);
         return {
           ok: true as const,
           result: {
