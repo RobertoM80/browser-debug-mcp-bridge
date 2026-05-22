@@ -270,6 +270,65 @@ describe('mcp/server foundation', () => {
 
     db.close();
   });
+
+  it('creates, updates, lists, and deletes mock routes through the MCP tool surface', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+
+    const created = await routeToolCall(tools, 'create_mock_route', {
+      targetUrl: 'https://api.example.com/products',
+      mode: 'browser',
+      method: 'GET',
+      bodyJson: { items: [] },
+      responseHeaders: { 'content-type': 'application/json' },
+      projectRoot: 'C:/repo',
+    });
+    const routeId = (created.route as { routeId: string }).routeId;
+    expect((created.route as { bodyKind: string; enabled: boolean }).bodyKind).toBe('json');
+    expect((created.route as { bodyKind: string; enabled: boolean }).enabled).toBe(false);
+    expect((created.nextActions as Array<{ code: string }>)[0]?.code).toBe('ENABLE_MOCK_ROUTE');
+
+    const updated = await routeToolCall(tools, 'update_mock_route', {
+      routeId,
+      enabled: false,
+      bodyText: '{"items":[1]}',
+      statusCode: 202,
+    });
+    expect((updated.route as { enabled: boolean; bodyKind: string; statusCode: number }).enabled).toBe(false);
+    expect((updated.route as { enabled: boolean; bodyKind: string; statusCode: number }).bodyKind).toBe('text');
+    expect((updated.route as { enabled: boolean; bodyKind: string; statusCode: number }).statusCode).toBe(202);
+
+    const listed = await routeToolCall(tools, 'list_mock_routes', {
+      projectRoot: 'C:/repo',
+    });
+    expect((listed.routes as Array<{ routeId: string }>)).toHaveLength(1);
+    expect((listed.routes as Array<{ routeId: string }>)[0]?.routeId).toBe(routeId);
+
+    const status = await routeToolCall(tools, 'get_mock_status', {
+      routeId,
+    });
+    expect((status.route as { routeId: string }).routeId).toBe(routeId);
+    expect((status.recentRuns as unknown[])).toHaveLength(0);
+    expect((status.recentHits as unknown[])).toHaveLength(0);
+
+    const deleted = await routeToolCall(tools, 'delete_mock_route', {
+      routeId,
+    });
+    expect(deleted.deleted).toBe(true);
+
+    const ssrCreated = await routeToolCall(tools, 'create_mock_route', {
+      targetUrl: 'https://api.example.com/products',
+      mode: 'ssr',
+      enabled: true,
+      sessionScope: 'run-1',
+      bodyJson: { items: [] },
+    });
+    expect(ssrCreated.ssrMockBasePath).toBe('/mock/ssr/run-1');
+    expect((ssrCreated.nextActions as Array<{ code: string }>)[0]?.code).toBe('APPLY_SSR_MOCK_CONFIG');
+
+    db.close();
+  });
 });
 
 describe('mcp/server V1 query tools', () => {

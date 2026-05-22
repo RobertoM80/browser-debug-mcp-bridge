@@ -167,10 +167,16 @@ describe('Database Schema', () => {
       const requests = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_requests'").get();
       const plans = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_plan_audits'").get();
       const ssrAudits = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='ssr_mock_audits'").get();
+      const mockRoutes = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='mock_routes'").get();
+      const mockRuns = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='mock_runs'").get();
+      const mockHits = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='mock_hits'").get();
       expect(runs).toBeDefined();
       expect(requests).toBeDefined();
       expect(plans).toBeDefined();
       expect(ssrAudits).toBeDefined();
+      expect(mockRoutes).toBeDefined();
+      expect(mockRuns).toBeDefined();
+      expect(mockHits).toBeDefined();
     });
 
     it('should create observed override asset table', () => {
@@ -269,6 +275,9 @@ describe('Database Schema', () => {
       const requestIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_requests'").all() as { name: string }[];
       const planIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_plan_audits'").all() as { name: string }[];
       const ssrAuditIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='ssr_mock_audits'").all() as { name: string }[];
+      const mockRouteIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='mock_routes'").all() as { name: string }[];
+      const mockRunIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='mock_runs'").all() as { name: string }[];
+      const mockHitIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='mock_hits'").all() as { name: string }[];
 
       expect(runIndexes.map((index) => index.name)).toContain('idx_override_runs_session_started_at');
       expect(runIndexes.map((index) => index.name)).toContain('idx_override_runs_session_status_started_at');
@@ -281,6 +290,12 @@ describe('Database Schema', () => {
       expect(ssrAuditIndexes.map((index) => index.name)).toContain('idx_ssr_mock_audits_project_created_at');
       expect(ssrAuditIndexes.map((index) => index.name)).toContain('idx_ssr_mock_audits_rollback_id');
       expect(ssrAuditIndexes.map((index) => index.name)).toContain('idx_ssr_mock_audits_action_status_created_at');
+      expect(mockRouteIndexes.map((index) => index.name)).toContain('idx_mock_routes_mode_enabled_created_at');
+      expect(mockRouteIndexes.map((index) => index.name)).toContain('idx_mock_routes_target_url_method');
+      expect(mockRunIndexes.map((index) => index.name)).toContain('idx_mock_runs_route_started_at');
+      expect(mockRunIndexes.map((index) => index.name)).toContain('idx_mock_runs_session_status_started_at');
+      expect(mockHitIndexes.map((index) => index.name)).toContain('idx_mock_hits_route_ts');
+      expect(mockHitIndexes.map((index) => index.name)).toContain('idx_mock_hits_matched_fulfilled_ts');
     });
 
     it('should create indexes on automation tables', () => {

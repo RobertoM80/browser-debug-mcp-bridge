@@ -898,6 +898,7 @@ export class OverridePocController {
   private async fetchOverrideBody(rule: Pick<OverridePocServerRuleConfig, 'targetAssetUrl' | 'requestMethod'>): Promise<{
     bodyBase64: string;
     responseHeaders: DebuggerHeader[];
+    responseCode: number;
   }> {
     const response = await fetch(
       `${this.serverBaseUrl}/overrides/poc/asset?assetUrl=${encodeURIComponent(rule.targetAssetUrl)}&requestMethod=${encodeURIComponent(rule.requestMethod)}`,
@@ -916,11 +917,23 @@ export class OverridePocController {
 
     const buffer = await response.arrayBuffer();
     const contentType = response.headers.get('Content-Type') ?? 'application/javascript; charset=utf-8';
-    const responseHeaders: DebuggerHeader[] = [
-      { name: 'Content-Type', value: contentType },
-      { name: 'Cache-Control', value: 'no-store, no-cache, must-revalidate' },
-      { name: 'X-BDMCP-Override-Poc', value: '1' },
-    ];
+    const responseCodeHeader = response.headers.get('X-BDMCP-Mock-Response-Code');
+    const parsedResponseCode = responseCodeHeader ? Number(responseCodeHeader) : 200;
+    const responseCode = Number.isInteger(parsedResponseCode) && parsedResponseCode >= 100 && parsedResponseCode <= 599
+      ? parsedResponseCode
+      : 200;
+    const responseHeaders: DebuggerHeader[] = Array.from(response.headers.entries())
+      .filter(([name]) => name.toLowerCase() !== 'x-bdmcp-mock-response-code')
+      .map(([name, value]) => ({ name, value }));
+    if (!responseHeaders.some((header) => header.name.toLowerCase() === 'content-type')) {
+      responseHeaders.push({ name: 'Content-Type', value: contentType });
+    }
+    if (!responseHeaders.some((header) => header.name.toLowerCase() === 'cache-control')) {
+      responseHeaders.push({ name: 'Cache-Control', value: 'no-store, no-cache, must-revalidate' });
+    }
+    if (!responseHeaders.some((header) => header.name.toLowerCase() === 'x-bdmcp-override-poc')) {
+      responseHeaders.push({ name: 'X-BDMCP-Override-Poc', value: '1' });
+    }
     if (!contentType.toLowerCase().includes('text/x-component')) {
       responseHeaders.push({ name: 'Content-Length', value: String(buffer.byteLength) });
     }
@@ -928,6 +941,7 @@ export class OverridePocController {
     return {
       bodyBase64: arrayBufferToBase64(buffer),
       responseHeaders,
+      responseCode,
     };
   }
 
@@ -947,6 +961,7 @@ export class OverridePocController {
       requestId,
       timestamp: activeRun.lastMatchedAt,
       requestUrl,
+      requestMethod: rule.requestMethod,
       status: 'matched',
     });
     void this.persistRun(activeRun);
@@ -966,6 +981,7 @@ export class OverridePocController {
     requestLogId: string,
     requestId: string,
     requestUrl: string,
+    requestMethod: string,
     failure: OverridePocControllerError,
   ): void {
     this.recordError(failure.message, failure.code);
@@ -976,6 +992,7 @@ export class OverridePocController {
       requestId,
       timestamp: Date.now(),
       requestUrl,
+      requestMethod,
       status: 'failed',
       failureCode: failure.code,
       errorMessage: failure.message,
@@ -988,6 +1005,7 @@ export class OverridePocController {
     requestLogId: string,
     requestId: string,
     requestUrl: string,
+    requestMethod: string,
     responseCode: number,
   ): void {
     activeRun.fulfilledRequests += 1;
@@ -1001,6 +1019,7 @@ export class OverridePocController {
       requestId,
       timestamp: activeRun.lastFulfilledAt,
       requestUrl,
+      requestMethod,
       status: 'fulfilled',
       responseCode,
     });
@@ -1096,7 +1115,7 @@ export class OverridePocController {
         responseHeaders,
         body: bytesToBase64(patchedBytes),
       });
-      this.recordFulfilledRequest(activeRun, requestLogId, requestId, requestUrl, responseCode);
+      this.recordFulfilledRequest(activeRun, requestLogId, requestId, requestUrl, matchedRule.requestMethod, responseCode);
 
       console.info('[mcpdbg][override-poc] fulfilled RSC response-stage request', {
         tabId: activeRun.tabId,
@@ -1106,7 +1125,7 @@ export class OverridePocController {
       });
     } catch (error) {
       const failure = asOverridePocError(error, 'FULFILL_FAILED');
-      this.recordFailedRequest(activeRun, requestLogId, requestId, requestUrl, failure);
+      this.recordFailedRequest(activeRun, requestLogId, requestId, requestUrl, matchedRule.requestMethod, failure);
       console.warn('[mcpdbg][override-poc] RSC response-stage fulfillment skipped', {
         tabId: activeRun.tabId,
         ruleId: matchedRule.ruleId,
@@ -1182,6 +1201,7 @@ export class OverridePocController {
           requestLogId,
           requestId,
           requestUrl,
+          matchedRule.requestMethod,
           new OverridePocControllerError('RSC_PATCH_UNSUPPORTED', message),
         );
         console.warn('[mcpdbg][override-poc] unsupported RSC flight override skipped', {
@@ -1198,18 +1218,18 @@ export class OverridePocController {
         overrideBody = await this.fetchOverrideBody(matchedRule);
       } catch (error) {
         const failure = asOverridePocError(error, 'OVERRIDE_ASSET_FETCH_FAILED');
-        this.recordFailedRequest(activeRun, requestLogId, requestId, requestUrl, failure);
+        this.recordFailedRequest(activeRun, requestLogId, requestId, requestUrl, matchedRule.requestMethod, failure);
         throw failure;
       }
 
       await sendDebuggerCommand(debuggee, 'Fetch.fulfillRequest', {
         requestId,
-        responseCode: 200,
-        responsePhrase: 'OK',
+        responseCode: overrideBody.responseCode,
+        responsePhrase: overrideBody.responseCode === 200 ? 'OK' : undefined,
         responseHeaders: overrideBody.responseHeaders,
         body: overrideBody.bodyBase64,
       });
-      this.recordFulfilledRequest(activeRun, requestLogId, requestId, requestUrl, 200);
+      this.recordFulfilledRequest(activeRun, requestLogId, requestId, requestUrl, matchedRule.requestMethod, overrideBody.responseCode);
 
       console.info('[mcpdbg][override-poc] fulfilled request', {
         tabId: activeRun.tabId,
@@ -1221,7 +1241,7 @@ export class OverridePocController {
       });
     } catch (error) {
       const failure = asOverridePocError(error, 'FULFILL_FAILED');
-      this.recordFailedRequest(activeRun, requestLogId, requestId, requestUrl, failure);
+      this.recordFailedRequest(activeRun, requestLogId, requestId, requestUrl, matchedRule.requestMethod, failure);
       console.error('[mcpdbg][override-poc] fulfill failed', {
         tabId: activeRun.tabId,
         requestUrl,

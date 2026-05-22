@@ -4,16 +4,26 @@ import {
   OVERRIDE_PLAN_AUDIT_KINDS,
   OVERRIDE_POC_REQUEST_STATUSES,
   OVERRIDE_POC_RUN_STATUSES,
+  MOCK_ROUTE_BODY_KINDS,
+  MOCK_ROUTE_MATCH_MODES,
+  MOCK_ROUTE_MODES,
+  MOCK_ROUTE_SOURCE_KINDS,
+  MOCK_RUN_STATUSES,
   SSR_MOCK_AUDIT_ACTIONS,
   SSR_MOCK_AUDIT_STATUSES,
 } from '../override-audit-contract.js';
 
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 
 const OVERRIDE_POC_RUN_STATUS_SQL = OVERRIDE_POC_RUN_STATUSES.map((value) => `'${value}'`).join(', ');
 const OVERRIDE_POC_REQUEST_STATUS_SQL = OVERRIDE_POC_REQUEST_STATUSES.map((value) => `'${value}'`).join(', ');
 const OVERRIDE_POC_FAILURE_CODE_SQL = OVERRIDE_POC_FAILURE_CODES.map((value) => `'${value}'`).join(', ');
 const OVERRIDE_PLAN_AUDIT_KIND_SQL = OVERRIDE_PLAN_AUDIT_KINDS.map((value) => `'${value}'`).join(', ');
+const MOCK_ROUTE_MODE_SQL = MOCK_ROUTE_MODES.map((value) => `'${value}'`).join(', ');
+const MOCK_ROUTE_MATCH_MODE_SQL = MOCK_ROUTE_MATCH_MODES.map((value) => `'${value}'`).join(', ');
+const MOCK_ROUTE_BODY_KIND_SQL = MOCK_ROUTE_BODY_KINDS.map((value) => `'${value}'`).join(', ');
+const MOCK_ROUTE_SOURCE_KIND_SQL = MOCK_ROUTE_SOURCE_KINDS.map((value) => `'${value}'`).join(', ');
+const MOCK_RUN_STATUS_SQL = MOCK_RUN_STATUSES.map((value) => `'${value}'`).join(', ');
 const SSR_MOCK_AUDIT_ACTION_SQL = SSR_MOCK_AUDIT_ACTIONS.map((value) => `'${value}'`).join(', ');
 const SSR_MOCK_AUDIT_STATUS_SQL = SSR_MOCK_AUDIT_STATUSES.map((value) => `'${value}'`).join(', ');
 
@@ -338,6 +348,77 @@ CREATE INDEX IF NOT EXISTS idx_ssr_mock_audits_project_created_at ON ssr_mock_au
 CREATE INDEX IF NOT EXISTS idx_ssr_mock_audits_rollback_id ON ssr_mock_audits(rollback_id);
 CREATE INDEX IF NOT EXISTS idx_ssr_mock_audits_action_status_created_at ON ssr_mock_audits(action, status, created_at);
 
+CREATE TABLE IF NOT EXISTS mock_routes (
+  route_id TEXT PRIMARY KEY,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  mode TEXT NOT NULL CHECK(mode IN (${MOCK_ROUTE_MODE_SQL})),
+  method TEXT NOT NULL,
+  match_mode TEXT NOT NULL CHECK(match_mode IN (${MOCK_ROUTE_MATCH_MODE_SQL})),
+  target_url TEXT NOT NULL,
+  status_code INTEGER NOT NULL,
+  response_headers_json TEXT NOT NULL,
+  body_kind TEXT NOT NULL CHECK(body_kind IN (${MOCK_ROUTE_BODY_KIND_SQL})),
+  body_json TEXT,
+  body_text TEXT,
+  body_base64 TEXT,
+  body_file_path TEXT,
+  delay_ms INTEGER NOT NULL DEFAULT 0,
+  source_kind TEXT NOT NULL CHECK(source_kind IN (${MOCK_ROUTE_SOURCE_KIND_SQL})),
+  session_scope TEXT,
+  project_root TEXT,
+  ttl_ms INTEGER,
+  expires_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_mock_routes_mode_enabled_created_at ON mock_routes(mode, enabled, created_at);
+CREATE INDEX IF NOT EXISTS idx_mock_routes_target_url_method ON mock_routes(target_url, method);
+CREATE INDEX IF NOT EXISTS idx_mock_routes_project_root ON mock_routes(project_root);
+
+CREATE TABLE IF NOT EXISTS mock_runs (
+  run_id TEXT PRIMARY KEY,
+  route_id TEXT NOT NULL,
+  execution_mode TEXT NOT NULL CHECK(execution_mode IN (${MOCK_ROUTE_MODE_SQL})),
+  session_id TEXT,
+  tab_id INTEGER,
+  project_root TEXT,
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  status TEXT NOT NULL CHECK(status IN (${MOCK_RUN_STATUS_SQL})),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (route_id) REFERENCES mock_routes(route_id) ON DELETE CASCADE,
+  FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_mock_runs_route_started_at ON mock_runs(route_id, started_at);
+CREATE INDEX IF NOT EXISTS idx_mock_runs_session_status_started_at ON mock_runs(session_id, status, started_at);
+CREATE INDEX IF NOT EXISTS idx_mock_runs_project_root_started_at ON mock_runs(project_root, started_at);
+
+CREATE TABLE IF NOT EXISTS mock_hits (
+  hit_id TEXT PRIMARY KEY,
+  run_id TEXT,
+  route_id TEXT NOT NULL,
+  ts INTEGER NOT NULL,
+  request_url TEXT NOT NULL,
+  request_method TEXT NOT NULL,
+  matched INTEGER NOT NULL DEFAULT 0,
+  fulfilled INTEGER NOT NULL DEFAULT 0,
+  status_code INTEGER,
+  response_source TEXT NOT NULL CHECK(response_source IN (${MOCK_ROUTE_SOURCE_KIND_SQL})),
+  error_code TEXT,
+  error_message TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (run_id) REFERENCES mock_runs(run_id) ON DELETE SET NULL,
+  FOREIGN KEY (route_id) REFERENCES mock_routes(route_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_mock_hits_route_ts ON mock_hits(route_id, ts);
+CREATE INDEX IF NOT EXISTS idx_mock_hits_run_ts ON mock_hits(run_id, ts);
+CREATE INDEX IF NOT EXISTS idx_mock_hits_matched_fulfilled_ts ON mock_hits(matched, fulfilled, ts);
+
 CREATE TABLE IF NOT EXISTS override_observed_assets (
   observed_asset_id TEXT PRIMARY KEY,
   session_id TEXT NOT NULL,
@@ -466,6 +547,9 @@ export function clearDatabase(db: Database): void {
     DELETE FROM automation_steps;
     DELETE FROM automation_runs;
     DELETE FROM override_observed_assets;
+    DELETE FROM mock_hits;
+    DELETE FROM mock_runs;
+    DELETE FROM mock_routes;
     DELETE FROM override_plan_audits;
     DELETE FROM ssr_mock_audits;
     DELETE FROM override_requests;

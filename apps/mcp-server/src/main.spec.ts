@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { fastify } from './main.js';
 import { clearDatabase, getConnection, initializeDatabase } from './db';
 import { readFileSync } from 'fs';
+import { listMockHits, listMockRuns, upsertMockRoute } from './mock-store';
 
 describe('MCP Server', () => {
   it('should have fastify instance', () => {
@@ -420,5 +421,217 @@ describe('MCP Server', () => {
     expect(diagnosisBody.diagnosis.summary.requestFailureCount).toBe(2);
     expect(diagnosisBody.diagnosis.issues.some((issue: { code: string }) => issue.code === 'FULFILL_FAILED')).toBe(true);
     expect(diagnosisBody.diagnosis.issues.some((issue: { code: string }) => issue.code === 'RSC_PATCH_ANCHOR_MISMATCH')).toBe(true);
+  });
+
+  it('should expose browser mock routes through override config, asset, and hit audit APIs', async () => {
+    initializeDatabase(getConnection().db);
+    clearDatabase(getConnection().db);
+
+    const now = 1700000000000;
+    upsertMockRoute(getConnection().db, {
+      routeId: 'route-products-empty',
+      createdAt: now,
+      updatedAt: now,
+      enabled: true,
+      mode: 'browser',
+      method: 'GET',
+      matchMode: 'exact',
+      targetUrl: 'https://api.example.com/products',
+      statusCode: 202,
+      responseHeaders: {
+        'content-type': 'application/json; charset=utf-8',
+        'x-test-mock': 'products',
+      },
+      bodyKind: 'json',
+      bodyJson: { items: [] },
+      bodyText: null,
+      bodyBase64: null,
+      bodyFilePath: null,
+      delayMs: 0,
+      sourceKind: 'manual',
+      sessionScope: null,
+      projectRoot: 'C:/repo/app',
+      ttlMs: null,
+      expiresAt: null,
+    });
+
+    const configResponse = await fastify.inject({
+      method: 'GET',
+      url: '/overrides/poc/config',
+    });
+    const configBody = JSON.parse(configResponse.body);
+    expect(configResponse.statusCode).toBe(200);
+    expect(configBody.enabled).toBe(true);
+    expect(configBody.fileExists).toBe(true);
+    expect(configBody.rules[0]).toMatchObject({
+      ruleId: 'mock-route-route-products-empty',
+      ruleType: 'api-response',
+      targetAssetUrl: 'https://api.example.com/products',
+      fileExists: true,
+    });
+
+    const assetResponse = await fastify.inject({
+      method: 'GET',
+      url: `/overrides/poc/asset?assetUrl=${encodeURIComponent('https://api.example.com/products')}&requestMethod=GET`,
+    });
+    expect(assetResponse.statusCode).toBe(200);
+    expect(assetResponse.headers['x-bdmcp-mock']).toBe('1');
+    expect(assetResponse.headers['x-bdmcp-mock-route']).toBe('route-products-empty');
+    expect(assetResponse.headers['x-bdmcp-mock-response-code']).toBe('202');
+    expect(JSON.parse(assetResponse.body)).toEqual({ items: [] });
+
+    await fastify.inject({
+      method: 'POST',
+      url: '/sessions/import',
+      payload: {
+        session: {
+          session_id: 'mock-browser-session',
+          created_at: now,
+          safe_mode: 0,
+        },
+        events: [],
+        network: [],
+        fingerprints: [],
+      },
+    });
+
+    const runResponse = await fastify.inject({
+      method: 'POST',
+      url: '/sessions/mock-browser-session/overrides/runs',
+      payload: {
+        runId: 'override-run-1',
+        startedAt: now + 100,
+        runStatus: 'active',
+        tabId: 17,
+        selectedTabId: 17,
+        targetAssetUrl: 'https://api.example.com/products',
+        localFilePath: 'bdmcp-mock-route:route-products-empty',
+        resolvedLocalFilePath: 'bdmcp-mock-route:route-products-empty',
+        contentType: 'application/json; charset=utf-8',
+        autoReload: false,
+        configPath: 'mock-routes-db',
+        fileExists: true,
+        fileSizeBytes: 12,
+        matchedRequests: 1,
+        fulfilledRequests: 1,
+      },
+    });
+    expect(runResponse.statusCode).toBe(200);
+
+    const requestResponse = await fastify.inject({
+      method: 'POST',
+      url: '/sessions/mock-browser-session/overrides/requests',
+      payload: {
+        requestLogId: 'override-run-1:request-1',
+        runId: 'override-run-1',
+        requestId: 'request-1',
+        timestamp: now + 200,
+        requestUrl: 'https://api.example.com/products',
+        requestMethod: 'GET',
+        status: 'fulfilled',
+        responseCode: 202,
+      },
+    });
+    expect(requestResponse.statusCode).toBe(200);
+
+    const mockRuns = listMockRuns(getConnection().db, {
+      routeId: 'route-products-empty',
+      limit: 10,
+      offset: 0,
+    }).runs;
+    const mockHits = listMockHits(getConnection().db, {
+      routeId: 'route-products-empty',
+      limit: 10,
+      offset: 0,
+    }).hits;
+    expect(mockRuns[0]).toMatchObject({
+      runId: 'override-run-1:route-products-empty',
+      routeId: 'route-products-empty',
+      executionMode: 'browser',
+      sessionId: 'mock-browser-session',
+    });
+    expect(mockHits[0]).toMatchObject({
+      hitId: 'override-run-1:request-1:route-products-empty',
+      routeId: 'route-products-empty',
+      requestUrl: 'https://api.example.com/products',
+      fulfilled: true,
+      statusCode: 202,
+    });
+  });
+
+  it('should serve active SSR mock routes from the internal mock endpoint', async () => {
+    initializeDatabase(getConnection().db);
+    clearDatabase(getConnection().db);
+
+    const now = 1700000000000;
+    upsertMockRoute(getConnection().db, {
+      routeId: 'route-ssr-search',
+      createdAt: now,
+      updatedAt: now,
+      enabled: true,
+      mode: 'ssr',
+      method: 'POST',
+      matchMode: 'exact',
+      targetUrl: 'https://api.example.com/products/search',
+      statusCode: 203,
+      responseHeaders: {
+        'content-type': 'application/json; charset=utf-8',
+        'x-test-mock': 'ssr-search',
+      },
+      bodyKind: 'json',
+      bodyJson: { items: ['mocked'] },
+      bodyText: null,
+      bodyBase64: null,
+      bodyFilePath: null,
+      delayMs: 0,
+      sourceKind: 'manual',
+      sessionScope: 'run-1',
+      projectRoot: 'C:/repo/app',
+      ttlMs: null,
+      expiresAt: null,
+    });
+
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/mock/ssr/run-1/products/search',
+      payload: { q: 'debug' },
+    });
+
+    expect(response.statusCode).toBe(203);
+    expect(response.headers['x-bdmcp-mock']).toBe('1');
+    expect(response.headers['x-bdmcp-mock-route']).toBe('route-ssr-search');
+    expect(response.headers['x-bdmcp-mock-execution-mode']).toBe('ssr');
+    expect(response.headers['x-test-mock']).toBe('ssr-search');
+    expect(JSON.parse(response.body)).toEqual({ items: ['mocked'] });
+
+    const missResponse = await fastify.inject({
+      method: 'GET',
+      url: '/mock/ssr/run-1/products/search',
+    });
+    expect(missResponse.statusCode).toBe(404);
+
+    const mockRuns = listMockRuns(getConnection().db, {
+      routeId: 'route-ssr-search',
+      limit: 10,
+      offset: 0,
+    }).runs;
+    const mockHits = listMockHits(getConnection().db, {
+      routeId: 'route-ssr-search',
+      limit: 10,
+      offset: 0,
+    }).hits;
+    expect(mockRuns[0]).toMatchObject({
+      runId: 'ssr:run-1:route-ssr-search',
+      routeId: 'route-ssr-search',
+      executionMode: 'ssr',
+      sessionId: null,
+    });
+    expect(mockHits[0]).toMatchObject({
+      routeId: 'route-ssr-search',
+      requestUrl: '/products/search',
+      requestMethod: 'POST',
+      fulfilled: true,
+      statusCode: 203,
+    });
   });
 });

@@ -837,13 +837,17 @@ async function enableOverrideForTab(popupPage: Page, targetPage: Page, tabId: nu
     type: 'OVERRIDE_POC_SET_TARGET_TAB',
     tabId,
   });
-  expect(selectResponse.ok).toBe(true);
+  if (!selectResponse.ok) {
+    throw new Error(`Failed to select override target tab: ${selectResponse.error}`);
+  }
 
   const enableResponse = await sendRuntimeMessage<RuntimeResponse>(popupPage, {
     type: 'OVERRIDE_POC_ENABLE',
     tabId,
   });
-  expect(enableResponse.ok).toBe(true);
+  if (!enableResponse.ok) {
+    throw new Error(`Failed to enable override POC: ${enableResponse.error}`);
+  }
 
   const reloadResult = await reloadPromise;
   if (!reloadResult.navigated) {

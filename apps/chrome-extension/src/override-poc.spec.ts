@@ -300,6 +300,101 @@ describe('OverridePocController', () => {
     expect(status.lastError).toBeUndefined();
   });
 
+  it('forwards browser mock response status and headers through the override asset endpoint', async () => {
+    const chromeMock = new ChromeOverrideMock();
+    vi.stubGlobal('chrome', chromeMock.chrome);
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/overrides/poc/config')) {
+        return createJsonResponse({
+          ok: true,
+          enabled: true,
+          targetAssetUrl: 'https://api.example.com/products',
+          localFilePath: 'bdmcp-mock-route:route-products',
+          resolvedLocalFilePath: 'bdmcp-mock-route:route-products',
+          contentType: 'application/json; charset=utf-8',
+          autoReload: false,
+          configPath: 'C:/repo/override-poc.local.json;mock-routes-db',
+          fileExists: true,
+          fileSizeBytes: 12,
+          rules: [{
+            ruleId: 'mock-route-route-products',
+            enabled: true,
+            ruleType: 'api-response',
+            requestMethod: 'GET',
+            matchMode: 'exact',
+            allowExperimentalRscFlightFulfillment: false,
+            targetAssetUrl: 'https://api.example.com/products',
+            localFilePath: 'bdmcp-mock-route:route-products',
+            resolvedLocalFilePath: 'bdmcp-mock-route:route-products',
+            contentType: 'application/json; charset=utf-8',
+            fileExists: true,
+            fileSizeBytes: 12,
+          }],
+        });
+      }
+      if (url.includes('/overrides/poc/asset?assetUrl=')) {
+        return new Response('{"items":[]}', {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            'X-BDMCP-Mock': '1',
+            'X-BDMCP-Mock-Route': 'route-products',
+            'X-BDMCP-Mock-Response-Code': '207',
+            'X-Test-Mock': 'products',
+          },
+        });
+      }
+      if (isAuditEndpoint(url)) {
+        return createJsonResponse({ ok: true });
+      }
+
+      throw new Error(`Unexpected fetch: ${url} ${init?.method ?? 'GET'}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const controller = new OverridePocController('http://127.0.0.1:8065');
+    await controller.enableForTab({ sessionId: 'session-1', tabId: 17, selectedTabId: 17 });
+    chromeMock.sendCommand.mockClear();
+
+    chromeMock.emitDebuggerEvent(
+      { tabId: 17 },
+      'Fetch.requestPaused',
+      {
+        requestId: 'request-1',
+        request: {
+          url: 'https://api.example.com/products',
+          method: 'GET',
+        },
+      },
+    );
+
+    await flushPromises();
+
+    const fulfillCall = chromeMock.sendCommand.mock.calls.find((call) => call[1] === 'Fetch.fulfillRequest');
+    expect(fulfillCall?.[2]).toMatchObject({
+      requestId: 'request-1',
+      responseCode: 207,
+    });
+    expect((fulfillCall?.[2] as { responseHeaders: Array<{ name: string; value: string }> }).responseHeaders).toEqual(
+      expect.arrayContaining([
+        { name: 'x-bdmcp-mock', value: '1' },
+        { name: 'x-bdmcp-mock-route', value: 'route-products' },
+        { name: 'x-test-mock', value: 'products' },
+      ]),
+    );
+    expect((fulfillCall?.[2] as { responseHeaders: Array<{ name: string }> }).responseHeaders.some((header) => header.name === 'x-bdmcp-mock-response-code')).toBe(false);
+
+    const requestAuditBodies = fetchMock.mock.calls
+      .filter((call) => String(call[0]).endsWith('/sessions/session-1/overrides/requests'))
+      .map((call) => JSON.parse(String(call[1]?.body)));
+    expect(requestAuditBodies.at(-1)).toMatchObject({
+      requestMethod: 'GET',
+      responseCode: 207,
+      status: 'fulfilled',
+    });
+  });
+
   it('fulfills matching requests from any enabled profile rule', async () => {
     const chromeMock = new ChromeOverrideMock();
     vi.stubGlobal('chrome', chromeMock.chrome);

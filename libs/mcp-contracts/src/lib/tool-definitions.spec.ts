@@ -8,6 +8,7 @@ import {
   CORRELATION_TOOLS,
   SNAPSHOT_TOOLS,
   SSR_MOCK_TOOLS,
+  MOCK_TOOLS,
   AUTOMATION_TOOLS,
 } from './tool-definitions';
 
@@ -69,6 +70,17 @@ describe('tool-definitions', () => {
     expect(SSR_MOCK_TOOLS.APPLY_SSR_MOCK_CONFIG).toBe('apply_ssr_mock_config');
     expect(SSR_MOCK_TOOLS.REMOVE_SSR_MOCK_CONFIG).toBe('remove_ssr_mock_config');
     expect(SSR_MOCK_TOOLS.GET_SSR_MOCK_AUDIT_LOG).toBe('get_ssr_mock_audit_log');
+  });
+
+  it('should define mock route tools', () => {
+    expect(MOCK_TOOLS.CREATE_MOCK_ROUTE).toBe('create_mock_route');
+    expect(MOCK_TOOLS.UPDATE_MOCK_ROUTE).toBe('update_mock_route');
+    expect(MOCK_TOOLS.DELETE_MOCK_ROUTE).toBe('delete_mock_route');
+    expect(MOCK_TOOLS.LIST_MOCK_ROUTES).toBe('list_mock_routes');
+    expect(MOCK_TOOLS.GET_MOCK_ROUTE).toBe('get_mock_route');
+    expect(MOCK_TOOLS.GET_MOCK_RUN_LOG).toBe('get_mock_run_log');
+    expect(MOCK_TOOLS.GET_MOCK_HIT_LOG).toBe('get_mock_hit_log');
+    expect(MOCK_TOOLS.GET_MOCK_STATUS).toBe('get_mock_status');
   });
 
   it('should define automation tools', () => {

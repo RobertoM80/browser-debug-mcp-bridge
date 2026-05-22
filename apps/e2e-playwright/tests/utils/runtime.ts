@@ -230,6 +230,15 @@ export interface ExtensionContextHandle {
   close(): Promise<void>;
 }
 
+type TestSetServerBaseUrlResponse =
+  | {
+      ok: true;
+      result?: {
+        serverBaseUrl?: string;
+      };
+    }
+  | { ok: false; error: string };
+
 function isIgnorablePlaywrightArtifactCloseError(error: unknown): boolean {
   if (!(error instanceof Error)) {
     return false;
@@ -270,13 +279,12 @@ export async function launchExtensionContext(): Promise<ExtensionContextHandle> 
     context,
     extensionId,
     setServerBaseUrl: async (baseUrl: string) => {
-      await serviceWorker.evaluate(
-        async ({ nextBaseUrl, storageKey }) => {
-          await chrome.storage.local.set({ [storageKey]: nextBaseUrl });
-        },
-        { nextBaseUrl: baseUrl, storageKey: 'serverBaseUrl' },
-      );
-      await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+      const page = await openExtensionPage(context, extensionId, 'popup.html');
+      try {
+        await setExtensionServerBaseUrl(page, baseUrl);
+      } finally {
+        await page.close();
+      }
     },
     close: async () => {
       try {
@@ -367,8 +375,25 @@ export async function sendRuntimeMessage<T>(page: Page, message: unknown): Promi
 }
 
 export async function setExtensionServerBaseUrl(page: Page, serverBaseUrl: string | null): Promise<void> {
-  await sendRuntimeMessage(page, {
+  await page.evaluate(
+    async ({ nextBaseUrl, storageKey }) => {
+      await chrome.storage.local.set({ [storageKey]: nextBaseUrl });
+    },
+    { nextBaseUrl: serverBaseUrl, storageKey: 'serverBaseUrl' },
+  );
+
+  const response = await sendRuntimeMessage<TestSetServerBaseUrlResponse>(page, {
     type: 'TEST_SET_SERVER_BASE_URL',
     serverBaseUrl,
   });
+  if (!response.ok) {
+    throw new Error(`Failed to set extension server base URL: ${response.error}`);
+  }
+
+  const expectedBaseUrl = serverBaseUrl?.replace(/\/$/, '') ?? 'http://127.0.0.1:8065';
+  if (response.result?.serverBaseUrl !== expectedBaseUrl) {
+    throw new Error(
+      `Extension server base URL mismatch: expected ${expectedBaseUrl}, received ${response.result?.serverBaseUrl ?? 'missing'}`,
+    );
+  }
 }
