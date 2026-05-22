@@ -24,6 +24,15 @@
 * **mcp-server:** execute browser mock routes through the existing override fulfillment path
 * **mcp-server:** serve enabled SSR mock routes from the built-in mock endpoint
 
+## [1.13.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.12.0...browser-debug-mcp-bridge-v1.13.0) (2026-05-22)
+
+
+### Features
+
+* add lighthouse performance reports ([74cbcaa](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/74cbcaa0b5d10a8851eda182db49f33a1e196259))
+* add repo-aware lighthouse fix planning ([2e325ac](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/2e325ac24e4bb22405c15e459f50a31dab082c0c))
+* **mcp:** add Lighthouse performance reports ([02de923](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/02de923fab7d69a52fdc90cd159141a153036861))
+
 ## [1.12.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.11.1...browser-debug-mcp-bridge-v1.12.0) (2026-05-20)
 
 
