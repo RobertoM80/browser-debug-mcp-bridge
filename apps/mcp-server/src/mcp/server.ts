@@ -18,11 +18,13 @@ import { getConnection } from '../db/connection.js';
 import {
   diagnoseOverridePoc,
   insertOverridePlanAudit,
+  insertSsrMockAudit,
   listOverridePlanAudits,
   listOverridePocRequests,
   listOverridePocRuns,
+  listSsrMockAudits,
 } from '../override-audit.js';
-import type { OverridePlanAuditRecord } from '../override-audit-contract.js';
+import type { OverridePlanAuditRecord, SsrMockAuditRecord, SsrMockAuditStatus } from '../override-audit-contract.js';
 import {
   createOverrideProfileConfig,
   OVERRIDE_PROFILE_ADAPTERS,
@@ -38,6 +40,7 @@ import { mapNextOverrideAssetsWithDrift } from '../next-asset-mapper.js';
 import { planNextSourceOverride, type NextSourceOverridePlanResult, type PlannedNextOverrideRule } from '../next-source-override-planner.js';
 import { listObservedOverrideAssets, persistObservedOverrideAssets } from '../override-observed-assets.js';
 import { planOverrideResponsePatch, type OverrideResponsePatchPlanResult } from '../override-response-planner.js';
+import { applySsrMockConfig, discoverSsrMockability, removeSsrMockConfig } from '../ssr-mock.js';
 import { createToolLoopGuard, type ToolLoopGuard } from './tool-loop-guard.js';
 
 type ToolInput = Record<string, unknown>;
@@ -1597,6 +1600,47 @@ const TOOL_SCHEMAS: Record<string, object> = {
       runId: { type: 'string' },
     },
   },
+  discover_ssr_mockability: {
+    type: 'object',
+    required: ['projectRoot'],
+    properties: {
+      projectRoot: { type: 'string' },
+      targetUrl: { type: 'string' },
+      apiHost: { type: 'string' },
+      maxFiles: { type: 'number' },
+    },
+  },
+  apply_ssr_mock_config: {
+    type: 'object',
+    required: ['projectRoot', 'envVarName', 'mockBaseUrl'],
+    properties: {
+      projectRoot: { type: 'string' },
+      envVarName: { type: 'string' },
+      mockBaseUrl: { type: 'string' },
+      envFilePath: { type: 'string' },
+      rollbackId: { type: 'string' },
+    },
+  },
+  remove_ssr_mock_config: {
+    type: 'object',
+    required: ['envFilePath', 'envVarName'],
+    properties: {
+      envFilePath: { type: 'string' },
+      envVarName: { type: 'string' },
+      rollbackId: { type: 'string' },
+    },
+  },
+  get_ssr_mock_audit_log: {
+    type: 'object',
+    properties: {
+      projectRoot: { type: 'string' },
+      rollbackId: { type: 'string' },
+      envVarName: { type: 'string' },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
+    },
+  },
   explain_last_failure: {
     type: 'object',
     required: ['sessionId'],
@@ -1967,6 +2011,10 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_override_request_log: 'Read persisted browser override request audit rows',
   get_override_plan_log: 'Read persisted generated override plan audit rows with previews, hashes, and rollback metadata',
   diagnose_overrides: 'Diagnose persisted browser override runs and failure indicators',
+  discover_ssr_mockability: 'Inspect a local project for env-driven or central-client SSR mock injection points',
+  apply_ssr_mock_config: 'Apply a temporary SSR mock base URL by commenting the old env value and writing a managed replacement',
+  remove_ssr_mock_config: 'Restore or remove a managed SSR mock env patch from a local env file',
+  get_ssr_mock_audit_log: 'Read persisted SSR mock discovery and env patch audit rows',
   explain_last_failure: 'Explain the latest failure timeline',
   get_event_correlation: 'Correlate related events by window',
   list_snapshots: 'List snapshot metadata by session/time/trigger',
@@ -2328,6 +2376,36 @@ function resolveMaxResponseBytes(value: unknown): number {
   }
 
   return Math.min(floored, MAX_RESPONSE_BYTES);
+}
+
+function createSsrMockAuditRecord(input: {
+  action: SsrMockAuditRecord['action'];
+  status: SsrMockAuditStatus;
+  projectRoot: string;
+  targetUrl?: string | null;
+  apiHost?: string | null;
+  envVarName?: string | null;
+  envFilePath?: string | null;
+  mockBaseUrl?: string | null;
+  rollbackId?: string | null;
+  summary?: unknown;
+  result?: unknown;
+}): SsrMockAuditRecord {
+  return {
+    auditId: randomUUID(),
+    createdAt: Date.now(),
+    action: input.action,
+    status: input.status,
+    projectRoot: input.projectRoot,
+    targetUrl: input.targetUrl ?? null,
+    apiHost: input.apiHost ?? null,
+    envVarName: input.envVarName ?? null,
+    envFilePath: input.envFilePath ?? null,
+    mockBaseUrl: input.mockBaseUrl ?? null,
+    rollbackId: input.rollbackId ?? null,
+    summary: input.summary ?? null,
+    result: input.result ?? null,
+  };
 }
 
 function estimateJsonBytes(value: unknown): number {
@@ -7955,6 +8033,182 @@ export function createV1ToolHandlers(
         nextActions: firstIssue?.suggestedActions[0]
           ? [{ code: firstIssue.code, message: firstIssue.suggestedActions[0] }]
           : [{ code: 'NO_DIAGNOSIS_ISSUES', message: 'No diagnosis issues were found for the selected override run.' }],
+      };
+    },
+
+    discover_ssr_mockability: async (input) => {
+      const db = getDb();
+      const projectRoot = normalizeOptionalString(input.projectRoot);
+      if (!projectRoot) {
+        throw new Error('projectRoot is required');
+      }
+
+      const discovery = discoverSsrMockability({
+        projectRoot,
+        targetUrl: normalizeOptionalString(input.targetUrl),
+        apiHost: normalizeOptionalString(input.apiHost),
+        maxFiles: typeof input.maxFiles === 'number' ? input.maxFiles : undefined,
+      });
+      const auditRecord = createSsrMockAuditRecord({
+        action: 'discover',
+        status: discovery.mockable ? 'succeeded' : 'not_mockable',
+        projectRoot: discovery.projectRoot,
+        targetUrl: discovery.targetUrl,
+        apiHost: discovery.apiHost,
+        envVarName: discovery.preferredEnvVarName,
+        envFilePath: discovery.preferredEnvFilePath,
+        summary: {
+          classification: discovery.classification,
+          scannedFileCount: discovery.scannedFileCount,
+          candidateCount: discovery.candidates.length,
+        },
+        result: discovery,
+      });
+      insertSsrMockAudit(db, auditRecord);
+
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: discovery.candidates.length,
+          truncated: false,
+        },
+        audit: auditRecord,
+        ...discovery,
+      };
+    },
+
+    apply_ssr_mock_config: async (input) => {
+      const db = getDb();
+      const projectRoot = normalizeOptionalString(input.projectRoot);
+      if (!projectRoot) {
+        throw new Error('projectRoot is required');
+      }
+      const envVarName = normalizeOptionalString(input.envVarName);
+      if (!envVarName) {
+        throw new Error('envVarName is required');
+      }
+      const mockBaseUrl = normalizeOptionalString(input.mockBaseUrl);
+      if (!mockBaseUrl) {
+        throw new Error('mockBaseUrl is required');
+      }
+
+      const applied = applySsrMockConfig({
+        projectRoot,
+        envVarName,
+        mockBaseUrl,
+        envFilePath: normalizeOptionalString(input.envFilePath),
+        rollbackId: normalizeOptionalString(input.rollbackId),
+      });
+      const auditRecord = createSsrMockAuditRecord({
+        action: 'apply-config',
+        status: applied.changed ? 'succeeded' : 'no_change',
+        projectRoot,
+        envVarName,
+        envFilePath: applied.envFilePath,
+        mockBaseUrl: applied.mockBaseUrl,
+        rollbackId: applied.rollbackId,
+        summary: {
+          mode: applied.mode,
+          createdFile: applied.createdFile,
+          changed: applied.changed,
+        },
+        result: applied,
+      });
+      insertSsrMockAudit(db, auditRecord);
+
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        audit: auditRecord,
+        ...applied,
+        nextActions: [
+          { code: 'RESTART_APP_SERVER', message: 'Restart the SSR app server so the env change takes effect.' },
+          { code: 'REMOVE_SSR_MOCK_CONFIG', message: 'Run remove_ssr_mock_config when the mock session is finished.' },
+        ],
+      };
+    },
+
+    remove_ssr_mock_config: async (input) => {
+      const db = getDb();
+      const envFilePath = normalizeOptionalString(input.envFilePath);
+      if (!envFilePath) {
+        throw new Error('envFilePath is required');
+      }
+      const envVarName = normalizeOptionalString(input.envVarName);
+      if (!envVarName) {
+        throw new Error('envVarName is required');
+      }
+
+      const removed = removeSsrMockConfig({
+        envFilePath,
+        envVarName,
+        rollbackId: normalizeOptionalString(input.rollbackId),
+      });
+      const auditRecord = createSsrMockAuditRecord({
+        action: 'remove-config',
+        status: removed.restored ? 'succeeded' : 'not_found',
+        projectRoot: envFilePath,
+        envVarName,
+        envFilePath: removed.envFilePath,
+        rollbackId: removed.rollbackId,
+        summary: {
+          mode: removed.mode,
+          restored: removed.restored,
+        },
+        result: removed,
+      });
+      insertSsrMockAudit(db, auditRecord);
+
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        audit: auditRecord,
+        ...removed,
+        nextActions: removed.restored
+          ? [{ code: 'RESTART_APP_SERVER', message: 'Restart the SSR app server so the restored env value takes effect.' }]
+          : [{ code: 'INSPECT_ENV_FILE', message: 'No managed SSR mock patch was found for this env var.' }],
+      };
+    },
+
+    get_ssr_mock_audit_log: async (input) => {
+      const db = getDb();
+      const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
+      const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
+      const projectRoot = normalizeOptionalString(input.projectRoot);
+      const rollbackId = normalizeOptionalString(input.rollbackId);
+      const envVarName = normalizeOptionalString(input.envVarName);
+      const result = listSsrMockAudits(db, {
+        projectRoot,
+        rollbackId,
+        envVarName,
+        limit,
+        offset,
+      });
+      const bytePage = applyByteBudget(result.audits, maxResponseBytes);
+      const truncated = result.hasMore || bytePage.truncatedByBytes;
+
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: limit,
+          truncated,
+        },
+        projectRoot: projectRoot ?? null,
+        rollbackId: rollbackId ?? null,
+        envVarName: envVarName ?? null,
+        pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+        responseBytes: bytePage.responseBytes,
+        audits: bytePage.items,
+        nextActions: bytePage.items.length === 0
+          ? [{ code: 'DISCOVER_SSR_MOCKABILITY', message: 'Run discover_ssr_mockability or apply_ssr_mock_config to create SSR mock audit rows.' }]
+          : [{ code: 'REVIEW_SSR_MOCK_CLEANUP', message: 'Review the latest audit rows to confirm rollback ids and env file cleanup state.' }],
       };
     },
 

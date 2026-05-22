@@ -57,6 +57,13 @@ export const SNAPSHOT_TOOLS = {
   GET_SNAPSHOT_ASSET: 'get_snapshot_asset',
 } as const;
 
+export const SSR_MOCK_TOOLS = {
+  DISCOVER_SSR_MOCKABILITY: 'discover_ssr_mockability',
+  APPLY_SSR_MOCK_CONFIG: 'apply_ssr_mock_config',
+  REMOVE_SSR_MOCK_CONFIG: 'remove_ssr_mock_config',
+  GET_SSR_MOCK_AUDIT_LOG: 'get_ssr_mock_audit_log',
+} as const;
+
 export const AUTOMATION_TOOLS = {
   LIST_AUTOMATION_RUNS: 'list_automation_runs',
   GET_AUTOMATION_RUN: 'get_automation_run',
@@ -87,5 +94,6 @@ export const ALL_TOOLS = [
   ...Object.values(CAPTURE_TOOLS),
   ...Object.values(CORRELATION_TOOLS),
   ...Object.values(SNAPSHOT_TOOLS),
+  ...Object.values(SSR_MOCK_TOOLS),
   ...Object.values(AUTOMATION_TOOLS),
 ];

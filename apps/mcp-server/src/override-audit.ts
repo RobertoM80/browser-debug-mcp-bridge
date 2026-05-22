@@ -5,8 +5,11 @@ import {
   type OverridePlanAuditRecord,
   type OverridePocRequestRecord,
   type OverridePocRunRecord,
+  type SsrMockAuditRecord,
   isOverridePocFailureCode,
   isOverridePlanAuditKind,
+  isSsrMockAuditAction,
+  isSsrMockAuditStatus,
   type OverridePocRunStatus,
 } from './override-audit-contract.js';
 
@@ -24,6 +27,12 @@ export interface OverridePocRequestListResult {
 
 export interface OverridePlanAuditListResult {
   plans: OverridePlanAuditRecord[];
+  hasMore: boolean;
+  nextOffset: number | null;
+}
+
+export interface SsrMockAuditListResult {
+  audits: SsrMockAuditRecord[];
   hasMore: boolean;
   nextOffset: number | null;
 }
@@ -161,6 +170,22 @@ interface ObservedAssetDiagnosticRow {
   csp_meta_json: string | null;
 }
 
+interface SsrMockAuditRow {
+  audit_id: string;
+  created_at: number;
+  action: string;
+  status: string;
+  project_root: string;
+  target_url: string | null;
+  api_host: string | null;
+  env_var_name: string | null;
+  env_file_path: string | null;
+  mock_base_url: string | null;
+  rollback_id: string | null;
+  summary_json: string;
+  result_json: string;
+}
+
 function parseJsonValue(value: string | null): unknown {
   if (!value) {
     return null;
@@ -249,6 +274,24 @@ function mapRequestRow(row: OverrideRequestRow): OverridePocRequestRecord {
     failureCode: isOverridePocFailureCode(row.failure_code) ? row.failure_code : null,
     errorMessage: row.error_message,
     responseCode: row.response_code,
+  };
+}
+
+function mapSsrMockAuditRow(row: SsrMockAuditRow): SsrMockAuditRecord {
+  return {
+    auditId: row.audit_id,
+    createdAt: row.created_at,
+    action: isSsrMockAuditAction(row.action) ? row.action : 'discover',
+    status: isSsrMockAuditStatus(row.status) ? row.status : 'succeeded',
+    projectRoot: row.project_root,
+    targetUrl: row.target_url,
+    apiHost: row.api_host,
+    envVarName: row.env_var_name,
+    envFilePath: row.env_file_path,
+    mockBaseUrl: row.mock_base_url,
+    rollbackId: row.rollback_id,
+    summary: parseJsonValue(row.summary_json),
+    result: parseJsonValue(row.result_json),
   };
 }
 
@@ -509,6 +552,58 @@ export function insertOverridePlanAudit(db: Database, record: OverridePlanAuditR
   return record;
 }
 
+export function insertSsrMockAudit(db: Database, record: SsrMockAuditRecord): SsrMockAuditRecord {
+  const now = Date.now();
+  db.prepare(`
+    INSERT INTO ssr_mock_audits (
+      audit_id,
+      created_at,
+      action,
+      status,
+      project_root,
+      target_url,
+      api_host,
+      env_var_name,
+      env_file_path,
+      mock_base_url,
+      rollback_id,
+      summary_json,
+      result_json,
+      updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(audit_id) DO UPDATE SET
+      action = excluded.action,
+      status = excluded.status,
+      project_root = excluded.project_root,
+      target_url = excluded.target_url,
+      api_host = excluded.api_host,
+      env_var_name = excluded.env_var_name,
+      env_file_path = excluded.env_file_path,
+      mock_base_url = excluded.mock_base_url,
+      rollback_id = excluded.rollback_id,
+      summary_json = excluded.summary_json,
+      result_json = excluded.result_json,
+      updated_at = excluded.updated_at
+  `).run(
+    record.auditId,
+    record.createdAt,
+    record.action,
+    record.status,
+    record.projectRoot,
+    record.targetUrl ?? null,
+    record.apiHost ?? null,
+    record.envVarName ?? null,
+    record.envFilePath ?? null,
+    record.mockBaseUrl ?? null,
+    record.rollbackId ?? null,
+    encodeJson(record.summary),
+    encodeJson(record.result),
+    now,
+  );
+
+  return record;
+}
+
 export function listOverridePocRuns(
   db: Database,
   sessionId: string,
@@ -630,6 +725,63 @@ export function listOverridePlanAudits(
   const page = rows.slice(0, options.limit).map(mapPlanAuditRow);
   return {
     plans: page,
+    hasMore,
+    nextOffset: hasMore ? options.offset + options.limit : null,
+  };
+}
+
+export function listSsrMockAudits(
+  db: Database,
+  options: {
+    projectRoot?: string;
+    rollbackId?: string;
+    envVarName?: string;
+    limit: number;
+    offset: number;
+  },
+): SsrMockAuditListResult {
+  const where: string[] = [];
+  const params: unknown[] = [];
+
+  if (options.projectRoot) {
+    where.push('project_root = ?');
+    params.push(options.projectRoot);
+  }
+  if (options.rollbackId) {
+    where.push('rollback_id = ?');
+    params.push(options.rollbackId);
+  }
+  if (options.envVarName) {
+    where.push('env_var_name = ?');
+    params.push(options.envVarName);
+  }
+
+  const whereSql = where.length > 0 ? `WHERE ${where.join(' AND ')}` : '';
+  const rows = db.prepare(`
+    SELECT
+      audit_id,
+      created_at,
+      action,
+      status,
+      project_root,
+      target_url,
+      api_host,
+      env_var_name,
+      env_file_path,
+      mock_base_url,
+      rollback_id,
+      summary_json,
+      result_json
+    FROM ssr_mock_audits
+    ${whereSql}
+    ORDER BY created_at DESC, rowid DESC
+    LIMIT ? OFFSET ?
+  `).all(...params, options.limit + 1, options.offset) as SsrMockAuditRow[];
+
+  const hasMore = rows.length > options.limit;
+  const page = rows.slice(0, options.limit).map(mapSsrMockAuditRow);
+  return {
+    audits: page,
     hasMore,
     nextOffset: hasMore ? options.offset + options.limit : null,
   };

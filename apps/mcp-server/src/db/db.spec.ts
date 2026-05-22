@@ -166,9 +166,11 @@ describe('Database Schema', () => {
       const runs = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_runs'").get();
       const requests = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_requests'").get();
       const plans = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_plan_audits'").get();
+      const ssrAudits = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='ssr_mock_audits'").get();
       expect(runs).toBeDefined();
       expect(requests).toBeDefined();
       expect(plans).toBeDefined();
+      expect(ssrAudits).toBeDefined();
     });
 
     it('should create observed override asset table', () => {
@@ -266,6 +268,7 @@ describe('Database Schema', () => {
       const runIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_runs'").all() as { name: string }[];
       const requestIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_requests'").all() as { name: string }[];
       const planIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_plan_audits'").all() as { name: string }[];
+      const ssrAuditIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='ssr_mock_audits'").all() as { name: string }[];
 
       expect(runIndexes.map((index) => index.name)).toContain('idx_override_runs_session_started_at');
       expect(runIndexes.map((index) => index.name)).toContain('idx_override_runs_session_status_started_at');
@@ -275,6 +278,9 @@ describe('Database Schema', () => {
       expect(planIndexes.map((index) => index.name)).toContain('idx_override_plan_audits_session_created_at');
       expect(planIndexes.map((index) => index.name)).toContain('idx_override_plan_audits_target_url');
       expect(planIndexes.map((index) => index.name)).toContain('idx_override_plan_audits_planner_kind');
+      expect(ssrAuditIndexes.map((index) => index.name)).toContain('idx_ssr_mock_audits_project_created_at');
+      expect(ssrAuditIndexes.map((index) => index.name)).toContain('idx_ssr_mock_audits_rollback_id');
+      expect(ssrAuditIndexes.map((index) => index.name)).toContain('idx_ssr_mock_audits_action_status_created_at');
     });
 
     it('should create indexes on automation tables', () => {

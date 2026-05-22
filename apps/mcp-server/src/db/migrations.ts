@@ -6,6 +6,8 @@ import {
   OVERRIDE_PLAN_AUDIT_KINDS,
   OVERRIDE_POC_REQUEST_STATUSES,
   OVERRIDE_POC_RUN_STATUSES,
+  SSR_MOCK_AUDIT_ACTIONS,
+  SSR_MOCK_AUDIT_STATUSES,
 } from '../override-audit-contract.js';
 
 export interface Migration {
@@ -91,6 +93,8 @@ const OVERRIDE_POC_RUN_STATUS_SQL = OVERRIDE_POC_RUN_STATUSES.map((value) => `'$
 const OVERRIDE_POC_REQUEST_STATUS_SQL = OVERRIDE_POC_REQUEST_STATUSES.map((value) => `'${value}'`).join(', ');
 const OVERRIDE_POC_FAILURE_CODE_SQL = OVERRIDE_POC_FAILURE_CODES.map((value) => `'${value}'`).join(', ');
 const OVERRIDE_PLAN_AUDIT_KIND_SQL = OVERRIDE_PLAN_AUDIT_KINDS.map((value) => `'${value}'`).join(', ');
+const SSR_MOCK_AUDIT_ACTION_SQL = SSR_MOCK_AUDIT_ACTIONS.map((value) => `'${value}'`).join(', ');
+const SSR_MOCK_AUDIT_STATUS_SQL = SSR_MOCK_AUDIT_STATUSES.map((value) => `'${value}'`).join(', ');
 
 function ensureAutomationTablesAndBackfill(db: Database): void {
   db.exec(`
@@ -922,6 +926,37 @@ const migrations: Migration[] = [
     version: 16,
     name: 'automation_diagnostics_json',
     up: ensureAutomationDiagnosticsColumns,
+  },
+  {
+    version: 17,
+    name: 'ssr_mock_audits',
+    up: (db) => {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS ssr_mock_audits (
+          audit_id TEXT PRIMARY KEY,
+          created_at INTEGER NOT NULL,
+          action TEXT NOT NULL CHECK(action IN (${SSR_MOCK_AUDIT_ACTION_SQL})),
+          status TEXT NOT NULL CHECK(status IN (${SSR_MOCK_AUDIT_STATUS_SQL})),
+          project_root TEXT NOT NULL,
+          target_url TEXT,
+          api_host TEXT,
+          env_var_name TEXT,
+          env_file_path TEXT,
+          mock_base_url TEXT,
+          rollback_id TEXT,
+          summary_json TEXT NOT NULL,
+          result_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_ssr_mock_audits_project_created_at
+          ON ssr_mock_audits(project_root, created_at);
+        CREATE INDEX IF NOT EXISTS idx_ssr_mock_audits_rollback_id
+          ON ssr_mock_audits(rollback_id);
+        CREATE INDEX IF NOT EXISTS idx_ssr_mock_audits_action_status_created_at
+          ON ssr_mock_audits(action, status, created_at);
+      `);
+    },
   },
 ];
 

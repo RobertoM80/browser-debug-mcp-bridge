@@ -48,6 +48,23 @@ export const OVERRIDE_PLAN_AUDIT_KINDS = [
 
 export type OverridePlanAuditKind = typeof OVERRIDE_PLAN_AUDIT_KINDS[number];
 
+export const SSR_MOCK_AUDIT_ACTIONS = [
+  'discover',
+  'apply-config',
+  'remove-config',
+] as const;
+
+export type SsrMockAuditAction = typeof SSR_MOCK_AUDIT_ACTIONS[number];
+
+export const SSR_MOCK_AUDIT_STATUSES = [
+  'succeeded',
+  'no_change',
+  'not_mockable',
+  'not_found',
+] as const;
+
+export type SsrMockAuditStatus = typeof SSR_MOCK_AUDIT_STATUSES[number];
+
 export interface OverridePocRunRecord {
   runId: string;
   sessionId: string;
@@ -112,6 +129,22 @@ export interface OverridePlanAuditRecord {
   rollback: unknown;
 }
 
+export interface SsrMockAuditRecord {
+  auditId: string;
+  createdAt: number;
+  action: SsrMockAuditAction;
+  status: SsrMockAuditStatus;
+  projectRoot: string;
+  targetUrl?: string | null;
+  apiHost?: string | null;
+  envVarName?: string | null;
+  envFilePath?: string | null;
+  mockBaseUrl?: string | null;
+  rollbackId?: string | null;
+  summary?: unknown;
+  result?: unknown;
+}
+
 export function isOverridePocRunStatus(value: unknown): value is OverridePocRunStatus {
   return typeof value === 'string' && (OVERRIDE_POC_RUN_STATUSES as readonly string[]).includes(value);
 }
@@ -126,4 +159,12 @@ export function isOverridePocFailureCode(value: unknown): value is OverridePocFa
 
 export function isOverridePlanAuditKind(value: unknown): value is OverridePlanAuditKind {
   return typeof value === 'string' && (OVERRIDE_PLAN_AUDIT_KINDS as readonly string[]).includes(value);
+}
+
+export function isSsrMockAuditAction(value: unknown): value is SsrMockAuditAction {
+  return typeof value === 'string' && (SSR_MOCK_AUDIT_ACTIONS as readonly string[]).includes(value);
+}
+
+export function isSsrMockAuditStatus(value: unknown): value is SsrMockAuditStatus {
+  return typeof value === 'string' && (SSR_MOCK_AUDIT_STATUSES as readonly string[]).includes(value);
 }

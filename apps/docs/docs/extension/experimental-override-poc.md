@@ -117,6 +117,8 @@ You can also operate the same flow through MCP on a connected live session with 
 
 Override MCP responses are compact by default for agent safety. `list_override_profiles`, `create_override_profile`, `validate_override_profile`, and `list_observed_override_assets` accept `responseProfile: "full"` when full rule or asset rows are needed. `create_override_profile` omits raw `configJson` in compact mode unless `includeConfigJson: true` is passed.
 
+The MCP server also now exposes an early SSR helper path for projects that fetch data on the server before the browser ever sees the response. `discover_ssr_mockability` scans a local project for env-driven base URLs and central request clients, `apply_ssr_mock_config` comments the old env value and writes a managed temporary mock base URL, and `remove_ssr_mock_config` restores or removes that managed patch. This does not magically intercept arbitrary hardcoded SSR calls; it only helps when the target app already has a mockable env or central client path.
+
 ## What It Does
 
 When enabled, the background service worker:
