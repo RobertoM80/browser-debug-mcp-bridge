@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify';
 import { mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { pathToFileURL } from 'url';
@@ -22,6 +22,8 @@ import {
 import {
   getOverridePocAssetResponse,
   getOverridePocConfigSummary,
+  type OverridePocConfigSummary,
+  type OverridePocRuleSummary,
 } from './override-poc.js';
 import {
   diagnoseOverridePoc,
@@ -40,7 +42,16 @@ import {
   isOverridePocFailureCode,
   isOverridePocRequestStatus,
   isOverridePocRunStatus,
+  type MockRouteRecord,
 } from './override-audit-contract.js';
+import {
+  buildMockRouteResponse,
+  findActiveBrowserMockRoute,
+  findActiveSsrMockRoute,
+  insertMockHit,
+  insertMockRun,
+  listActiveBrowserMockRoutes,
+} from './mock-store.js';
 
 const fastify = Fastify({
   logger: process.env.MCP_STDIO_MODE === '1' ? false : true
@@ -53,6 +64,7 @@ const startedAt = Date.now();
 let cleanupInterval: NodeJS.Timeout | null = null;
 let lastCleanupResult: ReturnType<typeof runRetentionCleanup> | null = null;
 const MAX_SESSION_IMPORT_BYTES = 10 * 1024 * 1024;
+const MOCK_ROUTE_LOCAL_PATH_PREFIX = 'bdmcp-mock-route:';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -79,6 +91,126 @@ function requireStringField(body: Record<string, unknown>, fieldName: string): s
     throw new Error(`${fieldName} must be a non-empty string`);
   }
   return value.trim();
+}
+
+function inferMockRouteContentType(route: MockRouteRecord): string {
+  const configured = route.responseHeaders['content-type'];
+  if (configured) {
+    return configured;
+  }
+  return route.bodyKind === 'json'
+    ? 'application/json; charset=utf-8'
+    : route.bodyKind === 'text'
+      ? 'text/plain; charset=utf-8'
+      : 'application/octet-stream';
+}
+
+function estimateMockRouteBodySize(route: MockRouteRecord): number | null {
+  switch (route.bodyKind) {
+    case 'json':
+      return Buffer.byteLength(JSON.stringify(route.bodyJson ?? null), 'utf8');
+    case 'text':
+      return Buffer.byteLength(route.bodyText ?? '', 'utf8');
+    case 'base64':
+      return Buffer.from(route.bodyBase64 ?? '', 'base64').byteLength;
+    case 'file':
+      return null;
+  }
+}
+
+function toMockOverrideRule(route: MockRouteRecord): OverridePocRuleSummary {
+  const localFilePath = `${MOCK_ROUTE_LOCAL_PATH_PREFIX}${route.routeId}`;
+  return {
+    ruleId: `mock-route-${route.routeId}`,
+    enabled: route.enabled,
+    ruleType: 'api-response',
+    requestMethod: route.method,
+    matchMode: route.matchMode,
+    allowExperimentalRscFlightFulfillment: false,
+    targetAssetUrl: route.targetUrl,
+    localFilePath,
+    resolvedLocalFilePath: localFilePath,
+    contentType: inferMockRouteContentType(route),
+    fileExists: true,
+    fileSizeBytes: estimateMockRouteBodySize(route),
+  };
+}
+
+function getOverridePocConfigSummaryWithBrowserMocks(): OverridePocConfigSummary {
+  const db = getConnection().db;
+  const summary = getOverridePocConfigSummary();
+  const mockRules = listActiveBrowserMockRoutes(db).map(toMockOverrideRule);
+  if (mockRules.length === 0) {
+    return summary;
+  }
+
+  const rules = [...mockRules, ...summary.rules];
+  const primaryRule = mockRules[0] ?? rules[0];
+  return {
+    ...summary,
+    enabled: true,
+    profileName: `${summary.profileName} + browser mocks`,
+    configPath: `${summary.configPath};mock-routes-db`,
+    rules,
+    ruleCount: rules.length,
+    enabledRuleCount: rules.filter((rule) => rule.enabled).length,
+    ruleType: primaryRule.ruleType,
+    requestMethod: primaryRule.requestMethod,
+    matchMode: primaryRule.matchMode,
+    targetAssetUrl: primaryRule.targetAssetUrl,
+    localFilePath: primaryRule.localFilePath,
+    resolvedLocalFilePath: primaryRule.resolvedLocalFilePath,
+    contentType: primaryRule.contentType,
+    fileExists: true,
+    fileSizeBytes: primaryRule.fileSizeBytes,
+  };
+}
+
+function normalizeRequestMethod(value: unknown): string {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim().toUpperCase() : 'GET';
+}
+
+async function applyMockRouteDelay(route: MockRouteRecord): Promise<void> {
+  if (route.delayMs <= 0) {
+    return;
+  }
+  const delayMs = Math.min(route.delayMs, 30_000);
+  await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+}
+
+function ensureMockRunForOverrideRequest(options: {
+  route: MockRouteRecord;
+  overrideRunId: string;
+  sessionId: string;
+  timestamp: number;
+}): string {
+  const mockRunId = `${options.overrideRunId}:${options.route.routeId}`;
+  insertMockRun(getConnection().db, {
+    runId: mockRunId,
+    routeId: options.route.routeId,
+    executionMode: 'browser',
+    sessionId: options.sessionId,
+    projectRoot: options.route.projectRoot,
+    startedAt: options.timestamp,
+    status: 'active',
+  });
+  return mockRunId;
+}
+
+function getSsrMockRequestPath(rawUrl: string | undefined, scope: string): string {
+  const parsed = new URL(rawUrl ?? '/', 'http://bdmcp.local');
+  const prefix = `/mock/ssr/${scope}`;
+  const pathname = parsed.pathname;
+  const suffix = pathname === prefix
+    ? '/'
+    : pathname.startsWith(`${prefix}/`)
+      ? pathname.slice(prefix.length)
+      : pathname;
+  return `${suffix || '/'}${parsed.search}`;
+}
+
+function createMockHitId(prefix: string, routeId: string): string {
+  return `${prefix}:${routeId}:${Date.now()}:${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function optionalStringField(body: Record<string, unknown>, fieldName: string): string | null {
@@ -184,7 +316,7 @@ fastify.get('/overrides/poc/config', async (_request, reply) => {
   try {
     return {
       ok: true,
-      ...getOverridePocConfigSummary(),
+      ...getOverridePocConfigSummaryWithBrowserMocks(),
     };
   } catch (error) {
     return reply.code(500).send({
@@ -206,6 +338,20 @@ fastify.get('/overrides/poc/asset', async (request, reply) => {
   }
 
   try {
+    const mockRoute = findActiveBrowserMockRoute(getConnection().db, assetUrl, requestMethod);
+    if (mockRoute) {
+      await applyMockRouteDelay(mockRoute);
+      const result = buildMockRouteResponse(mockRoute);
+      for (const [name, value] of Object.entries(result.responseHeaders)) {
+        reply.header(name, value);
+      }
+      reply.header('Cache-Control', 'no-store, no-cache, must-revalidate');
+      reply.header('X-BDMCP-Mock', '1');
+      reply.header('X-BDMCP-Mock-Route', result.route.routeId);
+      reply.header('X-BDMCP-Mock-Response-Code', String(result.responseCode));
+      return reply.send(result.buffer);
+    }
+
     const result = getOverridePocAssetResponse(assetUrl, undefined, requestMethod);
     reply.header('Content-Type', result.contentType);
     reply.header('Cache-Control', 'no-store, no-cache, must-revalidate');
@@ -227,6 +373,100 @@ fastify.get('/overrides/poc/asset', async (request, reply) => {
       error: message,
     });
   }
+});
+
+async function handleSsrMockRequest(request: FastifyRequest, reply: FastifyReply) {
+  const params = request.params as { scope?: string };
+  const scope = typeof params.scope === 'string' ? params.scope.trim() : '';
+  if (!scope) {
+    return reply.code(400).send({
+      ok: false,
+      error: 'SSR mock scope is required',
+    });
+  }
+
+  const requestPath = getSsrMockRequestPath(request.raw.url, scope);
+  const requestMethod = normalizeRequestMethod(request.method);
+  const db = getConnection().db;
+  const route = findActiveSsrMockRoute(db, scope, requestPath, requestMethod);
+  if (!route) {
+    return reply.code(404).send({
+      ok: false,
+      error: `No active SSR mock route matched ${requestMethod} ${requestPath}`,
+    });
+  }
+
+  const timestamp = Date.now();
+  const runId = `ssr:${scope}:${route.routeId}`;
+  insertMockRun(db, {
+    runId,
+    routeId: route.routeId,
+    executionMode: 'ssr',
+    sessionId: null,
+    tabId: null,
+    projectRoot: route.projectRoot,
+    startedAt: timestamp,
+    status: 'active',
+  });
+
+  try {
+    await applyMockRouteDelay(route);
+    const result = buildMockRouteResponse(route);
+    for (const [name, value] of Object.entries(result.responseHeaders)) {
+      reply.header(name, value);
+    }
+    reply.header('Cache-Control', 'no-store, no-cache, must-revalidate');
+    reply.header('X-BDMCP-Mock', '1');
+    reply.header('X-BDMCP-Mock-Route', route.routeId);
+    reply.header('X-BDMCP-Mock-Execution-Mode', 'ssr');
+    insertMockHit(db, {
+      hitId: createMockHitId('ssr-hit', route.routeId),
+      runId,
+      routeId: route.routeId,
+      timestamp,
+      requestUrl: requestPath,
+      requestMethod,
+      matched: true,
+      fulfilled: true,
+      statusCode: result.responseCode,
+      responseSource: route.sourceKind,
+      errorCode: null,
+      errorMessage: null,
+    });
+    return reply.code(result.responseCode).send(result.buffer);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to build SSR mock response';
+    insertMockHit(db, {
+      hitId: createMockHitId('ssr-hit', route.routeId),
+      runId,
+      routeId: route.routeId,
+      timestamp,
+      requestUrl: requestPath,
+      requestMethod,
+      matched: true,
+      fulfilled: false,
+      statusCode: 500,
+      responseSource: route.sourceKind,
+      errorCode: 'SSR_MOCK_RESPONSE_FAILED',
+      errorMessage: message,
+    });
+    return reply.code(500).send({
+      ok: false,
+      error: message,
+    });
+  }
+}
+
+fastify.route({
+  method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'],
+  url: '/mock/ssr/:scope',
+  handler: handleSsrMockRequest,
+});
+
+fastify.route({
+  method: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS', 'HEAD'],
+  url: '/mock/ssr/:scope/*',
+  handler: handleSsrMockRequest,
 });
 
 fastify.post('/sessions/:sessionId/overrides/runs', async (request, reply) => {
@@ -274,6 +514,21 @@ fastify.post('/sessions/:sessionId/overrides/runs', async (request, reply) => {
       lastErrorCode: lastErrorCodeValue ?? null,
       lastErrorMessage: optionalStringField(body, 'lastErrorMessage'),
     };
+
+    const mockRoute = findActiveBrowserMockRoute(getConnection().db, record.targetAssetUrl, normalizeRequestMethod(body.requestMethod));
+    if (mockRoute) {
+      insertMockRun(getConnection().db, {
+        runId: `${record.runId}:${mockRoute.routeId}`,
+        routeId: mockRoute.routeId,
+        executionMode: 'browser',
+        sessionId: params.sessionId,
+        tabId: record.tabId,
+        projectRoot: mockRoute.projectRoot,
+        startedAt: record.startedAt,
+        endedAt: record.endedAt,
+        status: record.runStatus === 'disabled' ? 'stopped' : record.runStatus,
+      });
+    }
 
     return {
       ok: true,
@@ -338,11 +593,37 @@ fastify.post('/sessions/:sessionId/overrides/requests', async (request, reply) =
       requestId: requireStringField(body, 'requestId'),
       timestamp: requireIntegerField(body, 'timestamp'),
       requestUrl: requireStringField(body, 'requestUrl'),
+      requestMethod: normalizeRequestMethod(body.requestMethod),
       status,
       failureCode: failureCodeValue ?? null,
       errorMessage: optionalStringField(body, 'errorMessage'),
       responseCode: optionalIntegerField(body, 'responseCode'),
     };
+
+    const requestMethod = record.requestMethod ?? 'GET';
+    const mockRoute = findActiveBrowserMockRoute(getConnection().db, record.requestUrl, requestMethod);
+    if (mockRoute) {
+      const mockRunId = ensureMockRunForOverrideRequest({
+        route: mockRoute,
+        overrideRunId: record.runId,
+        sessionId: params.sessionId,
+        timestamp: record.timestamp,
+      });
+      insertMockHit(getConnection().db, {
+        hitId: `${record.requestLogId}:${mockRoute.routeId}`,
+        runId: mockRunId,
+        routeId: mockRoute.routeId,
+        timestamp: record.timestamp,
+        requestUrl: record.requestUrl,
+        requestMethod,
+        matched: true,
+        fulfilled: record.status === 'fulfilled',
+        statusCode: record.responseCode,
+        responseSource: mockRoute.sourceKind,
+        errorCode: record.failureCode,
+        errorMessage: record.errorMessage,
+      });
+    }
 
     return {
       ok: true,

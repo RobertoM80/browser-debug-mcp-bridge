@@ -198,6 +198,140 @@ describe('mcp/server foundation', () => {
 
     await expect(routeToolCall(tools, 'does_not_exist', {})).rejects.toThrow('Unknown tool');
   });
+
+  it('discovers SSR mockability through the MCP tool surface', async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'mcp-ssr-discovery-'));
+    writeFileSync(join(projectRoot, '.env.local'), 'API_BASE_URL=https://api.example.com\n', 'utf8');
+    writeFileSync(
+      join(projectRoot, 'server-client.ts'),
+      [
+        "const apiBaseUrl = process.env.API_BASE_URL ?? 'https://api.example.com';",
+        "export async function getProducts() { return fetch(`${apiBaseUrl}/products`); }",
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+
+    const response = await routeToolCall(tools, 'discover_ssr_mockability', {
+      projectRoot,
+      targetUrl: 'https://api.example.com/products',
+    });
+
+    expect(response.classification).toBe('mockable-env');
+    expect(response.preferredEnvVarName).toBe('API_BASE_URL');
+    expect(response.mockable).toBe(true);
+    expect((response.audit as { action: string }).action).toBe('discover');
+
+    const auditLog = await routeToolCall(tools, 'get_ssr_mock_audit_log', {
+      projectRoot,
+    });
+    expect((auditLog.audits as Array<{ action: string }>)).toHaveLength(1);
+    expect((auditLog.audits as Array<{ action: string }>)[0]?.action).toBe('discover');
+
+    db.close();
+  });
+
+  it('applies and removes SSR mock env config through the MCP tool surface', async () => {
+    const projectRoot = mkdtempSync(join(tmpdir(), 'mcp-ssr-env-'));
+    const envFilePath = join(projectRoot, '.env.local');
+    writeFileSync(envFilePath, 'API_BASE_URL=https://api.example.com\n', 'utf8');
+
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+
+    const applied = await routeToolCall(tools, 'apply_ssr_mock_config', {
+      projectRoot,
+      envVarName: 'API_BASE_URL',
+      mockBaseUrl: 'http://127.0.0.1:8065/mock/ssr/run-1',
+      rollbackId: 'run-1',
+    });
+    expect(applied.mode).toBe('replaced-existing-value');
+    expect(readFileSync(envFilePath, 'utf8')).toContain('# BDMCP_MOCK_ORIGINAL run-1 API_BASE_URL=https://api.example.com');
+    expect((applied.audit as { action: string; status: string }).action).toBe('apply-config');
+
+    const removed = await routeToolCall(tools, 'remove_ssr_mock_config', {
+      envFilePath,
+      envVarName: 'API_BASE_URL',
+      rollbackId: 'run-1',
+    });
+    expect(removed.mode).toBe('restored-commented-value');
+    expect(readFileSync(envFilePath, 'utf8')).toBe('API_BASE_URL=https://api.example.com\n');
+    expect((removed.audit as { action: string; status: string }).action).toBe('remove-config');
+
+    const auditLog = await routeToolCall(tools, 'get_ssr_mock_audit_log', {
+      rollbackId: 'run-1',
+    });
+    expect((auditLog.audits as Array<{ action: string }>).map((entry) => entry.action)).toEqual([
+      'remove-config',
+      'apply-config',
+    ]);
+
+    db.close();
+  });
+
+  it('creates, updates, lists, and deletes mock routes through the MCP tool surface', async () => {
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+
+    const created = await routeToolCall(tools, 'create_mock_route', {
+      targetUrl: 'https://api.example.com/products',
+      mode: 'browser',
+      method: 'GET',
+      bodyJson: { items: [] },
+      responseHeaders: { 'content-type': 'application/json' },
+      projectRoot: 'C:/repo',
+    });
+    const routeId = (created.route as { routeId: string }).routeId;
+    expect((created.route as { bodyKind: string; enabled: boolean }).bodyKind).toBe('json');
+    expect((created.route as { bodyKind: string; enabled: boolean }).enabled).toBe(false);
+    expect((created.nextActions as Array<{ code: string }>)[0]?.code).toBe('ENABLE_MOCK_ROUTE');
+
+    const updated = await routeToolCall(tools, 'update_mock_route', {
+      routeId,
+      enabled: false,
+      bodyText: '{"items":[1]}',
+      statusCode: 202,
+    });
+    expect((updated.route as { enabled: boolean; bodyKind: string; statusCode: number }).enabled).toBe(false);
+    expect((updated.route as { enabled: boolean; bodyKind: string; statusCode: number }).bodyKind).toBe('text');
+    expect((updated.route as { enabled: boolean; bodyKind: string; statusCode: number }).statusCode).toBe(202);
+
+    const listed = await routeToolCall(tools, 'list_mock_routes', {
+      projectRoot: 'C:/repo',
+    });
+    expect((listed.routes as Array<{ routeId: string }>)).toHaveLength(1);
+    expect((listed.routes as Array<{ routeId: string }>)[0]?.routeId).toBe(routeId);
+
+    const status = await routeToolCall(tools, 'get_mock_status', {
+      routeId,
+    });
+    expect((status.route as { routeId: string }).routeId).toBe(routeId);
+    expect((status.recentRuns as unknown[])).toHaveLength(0);
+    expect((status.recentHits as unknown[])).toHaveLength(0);
+
+    const deleted = await routeToolCall(tools, 'delete_mock_route', {
+      routeId,
+    });
+    expect(deleted.deleted).toBe(true);
+
+    const ssrCreated = await routeToolCall(tools, 'create_mock_route', {
+      targetUrl: 'https://api.example.com/products',
+      mode: 'ssr',
+      enabled: true,
+      sessionScope: 'run-1',
+      bodyJson: { items: [] },
+    });
+    expect(ssrCreated.ssrMockBasePath).toBe('/mock/ssr/run-1');
+    expect((ssrCreated.nextActions as Array<{ code: string }>)[0]?.code).toBe('APPLY_SSR_MOCK_CONFIG');
+
+    db.close();
+  });
 });
 
 describe('mcp/server V1 query tools', () => {

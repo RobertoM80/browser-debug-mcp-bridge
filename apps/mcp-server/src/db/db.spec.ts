@@ -166,9 +166,17 @@ describe('Database Schema', () => {
       const runs = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_runs'").get();
       const requests = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_requests'").get();
       const plans = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='override_plan_audits'").get();
+      const ssrAudits = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='ssr_mock_audits'").get();
+      const mockRoutes = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='mock_routes'").get();
+      const mockRuns = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='mock_runs'").get();
+      const mockHits = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='mock_hits'").get();
       expect(runs).toBeDefined();
       expect(requests).toBeDefined();
       expect(plans).toBeDefined();
+      expect(ssrAudits).toBeDefined();
+      expect(mockRoutes).toBeDefined();
+      expect(mockRuns).toBeDefined();
+      expect(mockHits).toBeDefined();
     });
 
     it('should create observed override asset table', () => {
@@ -266,6 +274,10 @@ describe('Database Schema', () => {
       const runIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_runs'").all() as { name: string }[];
       const requestIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_requests'").all() as { name: string }[];
       const planIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='override_plan_audits'").all() as { name: string }[];
+      const ssrAuditIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='ssr_mock_audits'").all() as { name: string }[];
+      const mockRouteIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='mock_routes'").all() as { name: string }[];
+      const mockRunIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='mock_runs'").all() as { name: string }[];
+      const mockHitIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='mock_hits'").all() as { name: string }[];
 
       expect(runIndexes.map((index) => index.name)).toContain('idx_override_runs_session_started_at');
       expect(runIndexes.map((index) => index.name)).toContain('idx_override_runs_session_status_started_at');
@@ -275,6 +287,15 @@ describe('Database Schema', () => {
       expect(planIndexes.map((index) => index.name)).toContain('idx_override_plan_audits_session_created_at');
       expect(planIndexes.map((index) => index.name)).toContain('idx_override_plan_audits_target_url');
       expect(planIndexes.map((index) => index.name)).toContain('idx_override_plan_audits_planner_kind');
+      expect(ssrAuditIndexes.map((index) => index.name)).toContain('idx_ssr_mock_audits_project_created_at');
+      expect(ssrAuditIndexes.map((index) => index.name)).toContain('idx_ssr_mock_audits_rollback_id');
+      expect(ssrAuditIndexes.map((index) => index.name)).toContain('idx_ssr_mock_audits_action_status_created_at');
+      expect(mockRouteIndexes.map((index) => index.name)).toContain('idx_mock_routes_mode_enabled_created_at');
+      expect(mockRouteIndexes.map((index) => index.name)).toContain('idx_mock_routes_target_url_method');
+      expect(mockRunIndexes.map((index) => index.name)).toContain('idx_mock_runs_route_started_at');
+      expect(mockRunIndexes.map((index) => index.name)).toContain('idx_mock_runs_session_status_started_at');
+      expect(mockHitIndexes.map((index) => index.name)).toContain('idx_mock_hits_route_ts');
+      expect(mockHitIndexes.map((index) => index.name)).toContain('idx_mock_hits_matched_fulfilled_ts');
     });
 
     it('should create indexes on automation tables', () => {
@@ -360,6 +381,56 @@ describe('Database Migrations', () => {
       runMigrations(db);
       const version = getSchemaVersion(db);
       expect(version).toBe(SCHEMA_VERSION);
+    });
+
+    it('should repair databases that already used main version 17 for Lighthouse tables', () => {
+      initializeSchema(db);
+      db.exec(`
+        DROP TABLE IF EXISTS mock_hits;
+        DROP TABLE IF EXISTS mock_runs;
+        DROP TABLE IF EXISTS mock_routes;
+        DROP TABLE IF EXISTS ssr_mock_audits;
+        DELETE FROM schema_version;
+        INSERT INTO schema_version (version, applied_at) VALUES (17, 999);
+      `);
+
+      runMigrations(db);
+
+      const tableNames = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[])
+        .map((table) => table.name);
+      expect(tableNames).toEqual(expect.arrayContaining([
+        'lighthouse_reports',
+        'lighthouse_fix_plans',
+        'ssr_mock_audits',
+        'mock_routes',
+        'mock_runs',
+        'mock_hits',
+      ]));
+      expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
+    });
+
+    it('should repair databases that already used feature version 18 for mock tables', () => {
+      initializeSchema(db);
+      db.exec(`
+        DROP TABLE IF EXISTS lighthouse_fix_plans;
+        DROP TABLE IF EXISTS lighthouse_reports;
+        DELETE FROM schema_version;
+        INSERT INTO schema_version (version, applied_at) VALUES (18, 999);
+      `);
+
+      runMigrations(db);
+
+      const tableNames = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[])
+        .map((table) => table.name);
+      expect(tableNames).toEqual(expect.arrayContaining([
+        'lighthouse_reports',
+        'lighthouse_fix_plans',
+        'ssr_mock_audits',
+        'mock_routes',
+        'mock_runs',
+        'mock_hits',
+      ]));
+      expect(getSchemaVersion(db)).toBe(SCHEMA_VERSION);
     });
   });
 

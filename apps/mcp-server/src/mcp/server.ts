@@ -18,11 +18,22 @@ import { getConnection } from '../db/connection.js';
 import {
   diagnoseOverridePoc,
   insertOverridePlanAudit,
+  insertSsrMockAudit,
   listOverridePlanAudits,
   listOverridePocRequests,
   listOverridePocRuns,
+  listSsrMockAudits,
 } from '../override-audit.js';
-import type { OverridePlanAuditRecord } from '../override-audit-contract.js';
+import type {
+  MockRouteBodyKind,
+  MockRouteMode,
+  MockRouteRecord,
+  MockRouteSourceKind,
+  OverridePlanAuditRecord,
+  SsrMockAuditRecord,
+  SsrMockAuditStatus,
+} from '../override-audit-contract.js';
+import { deleteMockRoute, getMockRoute, listMockHits, listMockRoutes, listMockRuns, upsertMockRoute } from '../mock-store.js';
 import {
   createOverrideProfileConfig,
   OVERRIDE_PROFILE_ADAPTERS,
@@ -38,6 +49,7 @@ import { mapNextOverrideAssetsWithDrift } from '../next-asset-mapper.js';
 import { planNextSourceOverride, type NextSourceOverridePlanResult, type PlannedNextOverrideRule } from '../next-source-override-planner.js';
 import { listObservedOverrideAssets, persistObservedOverrideAssets } from '../override-observed-assets.js';
 import { planOverrideResponsePatch, type OverrideResponsePatchPlanResult } from '../override-response-planner.js';
+import { applySsrMockConfig, discoverSsrMockability, removeSsrMockConfig } from '../ssr-mock.js';
 import {
   getLighthouseReport,
   getLighthouseReportAsset,
@@ -1605,6 +1617,145 @@ const TOOL_SCHEMAS: Record<string, object> = {
       runId: { type: 'string' },
     },
   },
+  discover_ssr_mockability: {
+    type: 'object',
+    required: ['projectRoot'],
+    properties: {
+      projectRoot: { type: 'string' },
+      targetUrl: { type: 'string' },
+      apiHost: { type: 'string' },
+      maxFiles: { type: 'number' },
+    },
+  },
+  apply_ssr_mock_config: {
+    type: 'object',
+    required: ['projectRoot', 'envVarName', 'mockBaseUrl'],
+    properties: {
+      projectRoot: { type: 'string' },
+      envVarName: { type: 'string' },
+      mockBaseUrl: { type: 'string' },
+      envFilePath: { type: 'string' },
+      rollbackId: { type: 'string' },
+    },
+  },
+  remove_ssr_mock_config: {
+    type: 'object',
+    required: ['envFilePath', 'envVarName'],
+    properties: {
+      envFilePath: { type: 'string' },
+      envVarName: { type: 'string' },
+      rollbackId: { type: 'string' },
+    },
+  },
+  get_ssr_mock_audit_log: {
+    type: 'object',
+    properties: {
+      projectRoot: { type: 'string' },
+      rollbackId: { type: 'string' },
+      envVarName: { type: 'string' },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
+    },
+  },
+  create_mock_route: {
+    type: 'object',
+    required: ['targetUrl'],
+    properties: {
+      routeId: { type: 'string' },
+      enabled: { type: 'boolean' },
+      mode: { type: 'string' },
+      method: { type: 'string' },
+      matchMode: { type: 'string' },
+      targetUrl: { type: 'string' },
+      statusCode: { type: 'number' },
+      responseHeaders: { type: 'object' },
+      bodyJson: {},
+      bodyText: { type: 'string' },
+      bodyBase64: { type: 'string' },
+      bodyFilePath: { type: 'string' },
+      delayMs: { type: 'number' },
+      sourceKind: { type: 'string' },
+      sessionScope: { type: 'string' },
+      projectRoot: { type: 'string' },
+      ttlMs: { type: 'number' },
+    },
+  },
+  update_mock_route: {
+    type: 'object',
+    required: ['routeId'],
+    properties: {
+      routeId: { type: 'string' },
+      enabled: { type: 'boolean' },
+      mode: { type: 'string' },
+      method: { type: 'string' },
+      matchMode: { type: 'string' },
+      targetUrl: { type: 'string' },
+      statusCode: { type: 'number' },
+      responseHeaders: { type: 'object' },
+      bodyJson: {},
+      bodyText: { type: 'string' },
+      bodyBase64: { type: 'string' },
+      bodyFilePath: { type: 'string' },
+      delayMs: { type: 'number' },
+      sourceKind: { type: 'string' },
+      sessionScope: { type: 'string' },
+      projectRoot: { type: 'string' },
+      ttlMs: { type: 'number' },
+    },
+  },
+  delete_mock_route: {
+    type: 'object',
+    required: ['routeId'],
+    properties: {
+      routeId: { type: 'string' },
+    },
+  },
+  list_mock_routes: {
+    type: 'object',
+    properties: {
+      projectRoot: { type: 'string' },
+      mode: { type: 'string' },
+      enabled: { type: 'boolean' },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
+    },
+  },
+  get_mock_route: {
+    type: 'object',
+    required: ['routeId'],
+    properties: {
+      routeId: { type: 'string' },
+    },
+  },
+  get_mock_run_log: {
+    type: 'object',
+    properties: {
+      routeId: { type: 'string' },
+      sessionId: { type: 'string' },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
+    },
+  },
+  get_mock_hit_log: {
+    type: 'object',
+    properties: {
+      routeId: { type: 'string' },
+      runId: { type: 'string' },
+      limit: { type: 'number' },
+      offset: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
+    },
+  },
+  get_mock_status: {
+    type: 'object',
+    properties: {
+      routeId: { type: 'string' },
+      projectRoot: { type: 'string' },
+    },
+  },
   explain_last_failure: {
     type: 'object',
     required: ['sessionId'],
@@ -2029,6 +2180,18 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_override_request_log: 'Read persisted browser override request audit rows',
   get_override_plan_log: 'Read persisted generated override plan audit rows with previews, hashes, and rollback metadata',
   diagnose_overrides: 'Diagnose persisted browser override runs and failure indicators',
+  discover_ssr_mockability: 'Inspect a local project for env-driven or central-client SSR mock injection points',
+  apply_ssr_mock_config: 'Apply a temporary SSR mock base URL by commenting the old env value and writing a managed replacement',
+  remove_ssr_mock_config: 'Restore or remove a managed SSR mock env patch from a local env file',
+  get_ssr_mock_audit_log: 'Read persisted SSR mock discovery and env patch audit rows',
+  create_mock_route: 'Create or persist a reusable browser or SSR mock route',
+  update_mock_route: 'Update an existing mock route definition',
+  delete_mock_route: 'Delete a persisted mock route',
+  list_mock_routes: 'List persisted mock route definitions',
+  get_mock_route: 'Read one persisted mock route definition',
+  get_mock_run_log: 'Read persisted mock route run records',
+  get_mock_hit_log: 'Read persisted mock route hit records',
+  get_mock_status: 'Summarize persisted mock route, run, and hit state',
   explain_last_failure: 'Explain the latest failure timeline',
   get_event_correlation: 'Correlate related events by window',
   list_snapshots: 'List snapshot metadata by session/time/trigger',
@@ -2395,6 +2558,36 @@ function resolveMaxResponseBytes(value: unknown): number {
   }
 
   return Math.min(floored, MAX_RESPONSE_BYTES);
+}
+
+function createSsrMockAuditRecord(input: {
+  action: SsrMockAuditRecord['action'];
+  status: SsrMockAuditStatus;
+  projectRoot: string;
+  targetUrl?: string | null;
+  apiHost?: string | null;
+  envVarName?: string | null;
+  envFilePath?: string | null;
+  mockBaseUrl?: string | null;
+  rollbackId?: string | null;
+  summary?: unknown;
+  result?: unknown;
+}): SsrMockAuditRecord {
+  return {
+    auditId: randomUUID(),
+    createdAt: Date.now(),
+    action: input.action,
+    status: input.status,
+    projectRoot: input.projectRoot,
+    targetUrl: input.targetUrl ?? null,
+    apiHost: input.apiHost ?? null,
+    envVarName: input.envVarName ?? null,
+    envFilePath: input.envFilePath ?? null,
+    mockBaseUrl: input.mockBaseUrl ?? null,
+    rollbackId: input.rollbackId ?? null,
+    summary: input.summary ?? null,
+    result: input.result ?? null,
+  };
 }
 
 function estimateJsonBytes(value: unknown): number {
@@ -3877,6 +4070,112 @@ function normalizeOptionalString(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeMockRouteMode(value: unknown): MockRouteMode {
+  return value === 'ssr' || value === 'both' ? value : 'browser';
+}
+
+function normalizeMockRouteSourceKind(value: unknown): MockRouteSourceKind {
+  return value === 'captured' || value === 'patched' ? value : 'manual';
+}
+
+function normalizeMockRouteBody(input: ToolInput): {
+  bodyKind: MockRouteBodyKind;
+  bodyJson?: unknown;
+  bodyText?: string | null;
+  bodyBase64?: string | null;
+  bodyFilePath?: string | null;
+} | null {
+  if (Object.prototype.hasOwnProperty.call(input, 'bodyJson')) {
+    return {
+      bodyKind: 'json',
+      bodyJson: input.bodyJson,
+    };
+  }
+
+  const bodyText = normalizeOptionalString(input.bodyText);
+  if (bodyText !== undefined) {
+    return {
+      bodyKind: 'text',
+      bodyText,
+    };
+  }
+
+  const bodyBase64 = normalizeOptionalString(input.bodyBase64);
+  if (bodyBase64 !== undefined) {
+    return {
+      bodyKind: 'base64',
+      bodyBase64,
+    };
+  }
+
+  const bodyFilePath = normalizeOptionalString(input.bodyFilePath);
+  if (bodyFilePath !== undefined) {
+    return {
+      bodyKind: 'file',
+      bodyFilePath,
+    };
+  }
+
+  return null;
+}
+
+function createMockRouteRecord(input: ToolInput, existing?: MockRouteRecord): MockRouteRecord {
+  const now = Date.now();
+  const targetUrl = normalizeOptionalString(input.targetUrl) ?? existing?.targetUrl;
+  if (!targetUrl) {
+    throw new Error('targetUrl is required');
+  }
+
+  const body = normalizeMockRouteBody(input);
+  const ttlMs = typeof input.ttlMs === 'number' && Number.isFinite(input.ttlMs) && input.ttlMs > 0
+    ? Math.floor(input.ttlMs)
+    : existing?.ttlMs ?? null;
+
+  return {
+    routeId: normalizeOptionalString(input.routeId) ?? existing?.routeId ?? randomUUID(),
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+    enabled: typeof input.enabled === 'boolean' ? input.enabled : existing?.enabled ?? false,
+    mode: normalizeMockRouteMode(input.mode ?? existing?.mode),
+    method: normalizeHttpMethod(input.method) ?? existing?.method ?? 'GET',
+    matchMode: input.matchMode === 'prefix' ? 'prefix' : existing?.matchMode ?? 'exact',
+    targetUrl,
+    statusCode: typeof input.statusCode === 'number' && Number.isFinite(input.statusCode)
+      ? Math.max(100, Math.min(599, Math.floor(input.statusCode)))
+      : existing?.statusCode ?? 200,
+    responseHeaders: Object.keys(normalizeMockHeaders(input.responseHeaders)).length > 0
+      ? normalizeMockHeaders(input.responseHeaders)
+      : existing?.responseHeaders ?? {},
+    bodyKind: body?.bodyKind ?? existing?.bodyKind ?? 'json',
+    bodyJson: body?.bodyJson ?? existing?.bodyJson,
+    bodyText: body?.bodyText ?? existing?.bodyText ?? null,
+    bodyBase64: body?.bodyBase64 ?? existing?.bodyBase64 ?? null,
+    bodyFilePath: body?.bodyFilePath ?? existing?.bodyFilePath ?? null,
+    delayMs: typeof input.delayMs === 'number' && Number.isFinite(input.delayMs) && input.delayMs >= 0
+      ? Math.floor(input.delayMs)
+      : existing?.delayMs ?? 0,
+    sourceKind: normalizeMockRouteSourceKind(input.sourceKind ?? existing?.sourceKind),
+    sessionScope: normalizeOptionalString(input.sessionScope) ?? existing?.sessionScope ?? null,
+    projectRoot: normalizeOptionalString(input.projectRoot) ?? existing?.projectRoot ?? null,
+    ttlMs,
+    expiresAt: ttlMs !== null ? now + ttlMs : null,
+  };
+}
+
+function normalizeMockHeaders(value: unknown): Record<string, string> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return {};
+  }
+
+  const headers: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (typeof raw === 'string') {
+      headers[key.toLowerCase()] = raw;
+    }
+  }
+  return headers;
 }
 
 function normalizeStatusIn(value: unknown): number[] {
@@ -8022,6 +8321,399 @@ export function createV1ToolHandlers(
         nextActions: firstIssue?.suggestedActions[0]
           ? [{ code: firstIssue.code, message: firstIssue.suggestedActions[0] }]
           : [{ code: 'NO_DIAGNOSIS_ISSUES', message: 'No diagnosis issues were found for the selected override run.' }],
+      };
+    },
+
+    discover_ssr_mockability: async (input) => {
+      const db = getDb();
+      const projectRoot = normalizeOptionalString(input.projectRoot);
+      if (!projectRoot) {
+        throw new Error('projectRoot is required');
+      }
+
+      const discovery = discoverSsrMockability({
+        projectRoot,
+        targetUrl: normalizeOptionalString(input.targetUrl),
+        apiHost: normalizeOptionalString(input.apiHost),
+        maxFiles: typeof input.maxFiles === 'number' ? input.maxFiles : undefined,
+      });
+      const auditRecord = createSsrMockAuditRecord({
+        action: 'discover',
+        status: discovery.mockable ? 'succeeded' : 'not_mockable',
+        projectRoot: discovery.projectRoot,
+        targetUrl: discovery.targetUrl,
+        apiHost: discovery.apiHost,
+        envVarName: discovery.preferredEnvVarName,
+        envFilePath: discovery.preferredEnvFilePath,
+        summary: {
+          classification: discovery.classification,
+          scannedFileCount: discovery.scannedFileCount,
+          candidateCount: discovery.candidates.length,
+        },
+        result: discovery,
+      });
+      insertSsrMockAudit(db, auditRecord);
+
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: discovery.candidates.length,
+          truncated: false,
+        },
+        audit: auditRecord,
+        ...discovery,
+      };
+    },
+
+    apply_ssr_mock_config: async (input) => {
+      const db = getDb();
+      const projectRoot = normalizeOptionalString(input.projectRoot);
+      if (!projectRoot) {
+        throw new Error('projectRoot is required');
+      }
+      const envVarName = normalizeOptionalString(input.envVarName);
+      if (!envVarName) {
+        throw new Error('envVarName is required');
+      }
+      const mockBaseUrl = normalizeOptionalString(input.mockBaseUrl);
+      if (!mockBaseUrl) {
+        throw new Error('mockBaseUrl is required');
+      }
+
+      const applied = applySsrMockConfig({
+        projectRoot,
+        envVarName,
+        mockBaseUrl,
+        envFilePath: normalizeOptionalString(input.envFilePath),
+        rollbackId: normalizeOptionalString(input.rollbackId),
+      });
+      const auditRecord = createSsrMockAuditRecord({
+        action: 'apply-config',
+        status: applied.changed ? 'succeeded' : 'no_change',
+        projectRoot,
+        envVarName,
+        envFilePath: applied.envFilePath,
+        mockBaseUrl: applied.mockBaseUrl,
+        rollbackId: applied.rollbackId,
+        summary: {
+          mode: applied.mode,
+          createdFile: applied.createdFile,
+          changed: applied.changed,
+        },
+        result: applied,
+      });
+      insertSsrMockAudit(db, auditRecord);
+
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        audit: auditRecord,
+        ...applied,
+        nextActions: [
+          { code: 'RESTART_APP_SERVER', message: 'Restart the SSR app server so the env change takes effect.' },
+          { code: 'REMOVE_SSR_MOCK_CONFIG', message: 'Run remove_ssr_mock_config when the mock session is finished.' },
+        ],
+      };
+    },
+
+    remove_ssr_mock_config: async (input) => {
+      const db = getDb();
+      const envFilePath = normalizeOptionalString(input.envFilePath);
+      if (!envFilePath) {
+        throw new Error('envFilePath is required');
+      }
+      const envVarName = normalizeOptionalString(input.envVarName);
+      if (!envVarName) {
+        throw new Error('envVarName is required');
+      }
+
+      const removed = removeSsrMockConfig({
+        envFilePath,
+        envVarName,
+        rollbackId: normalizeOptionalString(input.rollbackId),
+      });
+      const auditRecord = createSsrMockAuditRecord({
+        action: 'remove-config',
+        status: removed.restored ? 'succeeded' : 'not_found',
+        projectRoot: envFilePath,
+        envVarName,
+        envFilePath: removed.envFilePath,
+        rollbackId: removed.rollbackId,
+        summary: {
+          mode: removed.mode,
+          restored: removed.restored,
+        },
+        result: removed,
+      });
+      insertSsrMockAudit(db, auditRecord);
+
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        audit: auditRecord,
+        ...removed,
+        nextActions: removed.restored
+          ? [{ code: 'RESTART_APP_SERVER', message: 'Restart the SSR app server so the restored env value takes effect.' }]
+          : [{ code: 'INSPECT_ENV_FILE', message: 'No managed SSR mock patch was found for this env var.' }],
+      };
+    },
+
+    get_ssr_mock_audit_log: async (input) => {
+      const db = getDb();
+      const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
+      const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
+      const projectRoot = normalizeOptionalString(input.projectRoot);
+      const rollbackId = normalizeOptionalString(input.rollbackId);
+      const envVarName = normalizeOptionalString(input.envVarName);
+      const result = listSsrMockAudits(db, {
+        projectRoot,
+        rollbackId,
+        envVarName,
+        limit,
+        offset,
+      });
+      const bytePage = applyByteBudget(result.audits, maxResponseBytes);
+      const truncated = result.hasMore || bytePage.truncatedByBytes;
+
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: limit,
+          truncated,
+        },
+        projectRoot: projectRoot ?? null,
+        rollbackId: rollbackId ?? null,
+        envVarName: envVarName ?? null,
+        pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+        responseBytes: bytePage.responseBytes,
+        audits: bytePage.items,
+        nextActions: bytePage.items.length === 0
+          ? [{ code: 'DISCOVER_SSR_MOCKABILITY', message: 'Run discover_ssr_mockability or apply_ssr_mock_config to create SSR mock audit rows.' }]
+          : [{ code: 'REVIEW_SSR_MOCK_CLEANUP', message: 'Review the latest audit rows to confirm rollback ids and env file cleanup state.' }],
+      };
+    },
+
+    create_mock_route: async (input) => {
+      const db = getDb();
+      const record = createMockRouteRecord(input);
+      upsertMockRoute(db, record);
+
+      const ssrScope = record.sessionScope ?? record.routeId;
+      const ssrMockBasePath = record.mode === 'ssr' || record.mode === 'both'
+        ? `/mock/ssr/${encodeURIComponent(ssrScope)}`
+        : undefined;
+
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        route: record,
+        ssrMockBasePath,
+        nextActions: [record.enabled
+          ? {
+              code: record.mode === 'browser' ? 'ENABLE_BROWSER_MOCKS' : 'APPLY_SSR_MOCK_CONFIG',
+              message: record.mode === 'browser'
+                ? 'Enable browser overrides so matching requests are fulfilled.'
+                : record.mode === 'ssr'
+                ? `Point the discovered SSR env var at ${ssrMockBasePath ?? '/mock/ssr/<scope>'}.`
+                : `Use browser overrides or point the discovered SSR env var at ${ssrMockBasePath ?? '/mock/ssr/<scope>'}.`,
+            }
+          : {
+              code: 'ENABLE_MOCK_ROUTE',
+              message: 'Set enabled=true when the route should start affecting browser or SSR traffic.',
+            }],
+      };
+    },
+
+    update_mock_route: async (input) => {
+      const db = getDb();
+      const routeId = normalizeOptionalString(input.routeId);
+      if (!routeId) {
+        throw new Error('routeId is required');
+      }
+      const existing = getMockRoute(db, routeId);
+      if (!existing) {
+        throw new Error(`Unknown mock route: ${routeId}`);
+      }
+      const record = createMockRouteRecord(input, existing);
+      upsertMockRoute(db, record);
+
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        route: record,
+        nextActions: [{ code: 'REVIEW_MOCK_STATUS', message: 'Review route mode, target URL, and body payload before running the mock.' }],
+      };
+    },
+
+    delete_mock_route: async (input) => {
+      const db = getDb();
+      const routeId = normalizeOptionalString(input.routeId);
+      if (!routeId) {
+        throw new Error('routeId is required');
+      }
+      const deleted = deleteMockRoute(db, routeId);
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        routeId,
+        deleted,
+        nextActions: deleted
+          ? [{ code: 'CONFIRM_CLEANUP', message: 'If a runtime was using this route, confirm no active mock run still references it.' }]
+          : [{ code: 'LIST_MOCK_ROUTES', message: 'The route was not found; list persisted mock routes to confirm the intended routeId.' }],
+      };
+    },
+
+    list_mock_routes: async (input) => {
+      const db = getDb();
+      const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
+      const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
+      const result = listMockRoutes(db, {
+        projectRoot: normalizeOptionalString(input.projectRoot),
+        mode: normalizeOptionalString(input.mode) === 'ssr' || normalizeOptionalString(input.mode) === 'both'
+          ? normalizeOptionalString(input.mode) as MockRouteMode
+          : normalizeOptionalString(input.mode) === 'browser'
+            ? 'browser'
+            : undefined,
+        enabled: typeof input.enabled === 'boolean' ? input.enabled : undefined,
+        limit,
+        offset,
+      });
+      const bytePage = applyByteBudget(result.routes, maxResponseBytes);
+      const truncated = result.hasMore || bytePage.truncatedByBytes;
+
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: limit,
+          truncated,
+        },
+        pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+        responseBytes: bytePage.responseBytes,
+        routes: bytePage.items,
+        nextActions: bytePage.items.length === 0
+          ? [{ code: 'CREATE_MOCK_ROUTE', message: 'Create a persisted mock route before enabling browser or SSR mocking.' }]
+          : [{ code: 'GET_MOCK_STATUS', message: 'Inspect mock status and recent run or hit records for one route.' }],
+      };
+    },
+
+    get_mock_route: async (input) => {
+      const db = getDb();
+      const routeId = normalizeOptionalString(input.routeId);
+      if (!routeId) {
+        throw new Error('routeId is required');
+      }
+      const route = getMockRoute(db, routeId);
+      if (!route) {
+        throw new Error(`Unknown mock route: ${routeId}`);
+      }
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: 1,
+          truncated: false,
+        },
+        route,
+        nextActions: [{ code: 'GET_MOCK_STATUS', message: 'Inspect latest runs and hits before enabling or updating this route.' }],
+      };
+    },
+
+    get_mock_run_log: async (input) => {
+      const db = getDb();
+      const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
+      const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
+      const result = listMockRuns(db, {
+        routeId: normalizeOptionalString(input.routeId),
+        sessionId: normalizeOptionalString(input.sessionId),
+        limit,
+        offset,
+      });
+      const bytePage = applyByteBudget(result.runs, maxResponseBytes);
+      const truncated = result.hasMore || bytePage.truncatedByBytes;
+
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: limit,
+          truncated,
+        },
+        pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+        responseBytes: bytePage.responseBytes,
+        runs: bytePage.items,
+        nextActions: bytePage.items.length === 0
+          ? [{ code: 'ENABLE_BROWSER_MOCKS', message: 'No mock runs exist yet; wire a runtime flow that can create execution records.' }]
+          : [{ code: 'GET_MOCK_HIT_LOG', message: 'Inspect matching hit records for the selected run or route.' }],
+      };
+    },
+
+    get_mock_hit_log: async (input) => {
+      const db = getDb();
+      const limit = resolveLimit(input.limit, DEFAULT_EVENT_LIMIT);
+      const offset = resolveOffset(input.offset);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
+      const result = listMockHits(db, {
+        routeId: normalizeOptionalString(input.routeId),
+        runId: normalizeOptionalString(input.runId),
+        limit,
+        offset,
+      });
+      const bytePage = applyByteBudget(result.hits, maxResponseBytes);
+      const truncated = result.hasMore || bytePage.truncatedByBytes;
+
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: limit,
+          truncated,
+        },
+        pagination: buildOffsetPagination(offset, bytePage.items.length, truncated, maxResponseBytes),
+        responseBytes: bytePage.responseBytes,
+        hits: bytePage.items,
+        nextActions: bytePage.items.length === 0
+          ? [{ code: 'RUN_MOCK_ROUTE', message: 'No hit records exist yet; execute the route through a browser or SSR runtime.' }]
+          : [{ code: 'DIAGNOSE_MOCK_ROUTE', message: 'Use hit results to verify whether the route matched and fulfilled as expected.' }],
+      };
+    },
+
+    get_mock_status: async (input) => {
+      const db = getDb();
+      const routeId = normalizeOptionalString(input.routeId);
+      const projectRoot = normalizeOptionalString(input.projectRoot);
+      const route = routeId ? getMockRoute(db, routeId) : null;
+      const recentRoutes = listMockRoutes(db, { projectRoot, limit: 5, offset: 0 }).routes;
+      const recentRuns = listMockRuns(db, { routeId, limit: 5, offset: 0 }).runs;
+      const recentHits = listMockHits(db, { routeId, limit: 5, offset: 0 }).hits;
+
+      return {
+        ...createBaseResponse(),
+        limitsApplied: {
+          maxResults: 5,
+          truncated: false,
+        },
+        route,
+        recentRoutes,
+        recentRuns,
+        recentHits,
+        nextActions: route
+          ? [{ code: 'EXECUTE_MOCK_ROUTE', message: 'Bind the persisted route to browser or SSR execution so runs and hits begin to accumulate.' }]
+          : [{ code: 'CREATE_MOCK_ROUTE', message: 'Persist a mock route first, then inspect status again.' }],
       };
     },
 

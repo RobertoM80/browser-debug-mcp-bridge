@@ -7,6 +7,8 @@ import {
   CAPTURE_TOOLS,
   CORRELATION_TOOLS,
   SNAPSHOT_TOOLS,
+  SSR_MOCK_TOOLS,
+  MOCK_TOOLS,
   AUTOMATION_TOOLS,
 } from './tool-definitions';
 
@@ -61,6 +63,24 @@ describe('tool-definitions', () => {
     expect(SNAPSHOT_TOOLS.LIST_SNAPSHOTS).toBe('list_snapshots');
     expect(SNAPSHOT_TOOLS.GET_SNAPSHOT_FOR_EVENT).toBe('get_snapshot_for_event');
     expect(SNAPSHOT_TOOLS.GET_SNAPSHOT_ASSET).toBe('get_snapshot_asset');
+  });
+
+  it('should define SSR mock tools', () => {
+    expect(SSR_MOCK_TOOLS.DISCOVER_SSR_MOCKABILITY).toBe('discover_ssr_mockability');
+    expect(SSR_MOCK_TOOLS.APPLY_SSR_MOCK_CONFIG).toBe('apply_ssr_mock_config');
+    expect(SSR_MOCK_TOOLS.REMOVE_SSR_MOCK_CONFIG).toBe('remove_ssr_mock_config');
+    expect(SSR_MOCK_TOOLS.GET_SSR_MOCK_AUDIT_LOG).toBe('get_ssr_mock_audit_log');
+  });
+
+  it('should define mock route tools', () => {
+    expect(MOCK_TOOLS.CREATE_MOCK_ROUTE).toBe('create_mock_route');
+    expect(MOCK_TOOLS.UPDATE_MOCK_ROUTE).toBe('update_mock_route');
+    expect(MOCK_TOOLS.DELETE_MOCK_ROUTE).toBe('delete_mock_route');
+    expect(MOCK_TOOLS.LIST_MOCK_ROUTES).toBe('list_mock_routes');
+    expect(MOCK_TOOLS.GET_MOCK_ROUTE).toBe('get_mock_route');
+    expect(MOCK_TOOLS.GET_MOCK_RUN_LOG).toBe('get_mock_run_log');
+    expect(MOCK_TOOLS.GET_MOCK_HIT_LOG).toBe('get_mock_hit_log');
+    expect(MOCK_TOOLS.GET_MOCK_STATUS).toBe('get_mock_status');
   });
 
   it('should define automation tools', () => {

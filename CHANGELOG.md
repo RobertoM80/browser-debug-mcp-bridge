@@ -19,6 +19,10 @@
 * **automation:** support translated frame-local coordinate actions and native locator state filters
 * **automation:** extend live e2e coverage for contenteditable input, Tab navigation, and frame-local coordinates
 * **automation:** support explicit descendant relations in native locator chains
+* **mcp-server:** add SSR mockability discovery and managed env patch tools
+* **mcp-server:** add persisted mock route, run, and hit records with MCP CRUD and status tools
+* **mcp-server:** execute browser mock routes through the existing override fulfillment path
+* **mcp-server:** serve enabled SSR mock routes from the built-in mock endpoint
 
 ## [1.12.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.11.1...browser-debug-mcp-bridge-v1.12.0) (2026-05-20)
 
