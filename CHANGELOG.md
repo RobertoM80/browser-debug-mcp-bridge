@@ -24,6 +24,13 @@
 * **mcp-server:** execute browser mock routes through the existing override fulfillment path
 * **mcp-server:** serve enabled SSR mock routes from the built-in mock endpoint
 
+## [1.14.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.13.0...browser-debug-mcp-bridge-v1.14.0) (2026-05-25)
+
+
+### Features
+
+* **cli:** add packaged browser debug CLI fallback ([4187cda](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/4187cda97e94f57bfb520f6e02df65bb2401cdd3))
+
 ## [1.13.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.12.0...browser-debug-mcp-bridge-v1.13.0) (2026-05-22)
 
 
