@@ -3,6 +3,7 @@ import { fastify } from './main.js';
 import { clearDatabase, getConnection, initializeDatabase } from './db';
 import { readFileSync } from 'fs';
 import { listMockHits, listMockRuns, upsertMockRoute } from './mock-store';
+import { CLI_TOKEN_HEADER, ensureCliToken } from './cli/auth';
 
 describe('MCP Server', () => {
   it('should have fastify instance', () => {
@@ -45,6 +46,42 @@ describe('MCP Server', () => {
     expect(typeof body.uptimeMs).toBe('number');
     expect(body.database).toBeDefined();
     expect(body.websocket).toBeDefined();
+  });
+
+  it('should expose CLI tool discovery and protect generic tool execution', async () => {
+    initializeDatabase(getConnection().db);
+
+    const listResponse = await fastify.inject({
+      method: 'GET',
+      url: '/cli/tools',
+    });
+
+    expect(listResponse.statusCode).toBe(200);
+    const listBody = JSON.parse(listResponse.body);
+    expect(listBody.ok).toBe(true);
+    expect(listBody.tools.some((tool: { name: string }) => tool.name === 'list_sessions')).toBe(true);
+
+    const rejected = await fastify.inject({
+      method: 'POST',
+      url: '/cli/tools/list_sessions',
+      payload: { arguments: { limit: 10 } },
+    });
+
+    expect(rejected.statusCode).toBe(401);
+
+    const accepted = await fastify.inject({
+      method: 'POST',
+      url: '/cli/tools/list_sessions',
+      headers: {
+        [CLI_TOKEN_HEADER]: ensureCliToken(),
+      },
+      payload: { arguments: { limit: 10 } },
+    });
+
+    expect(accepted.statusCode).toBe(200);
+    const acceptedBody = JSON.parse(accepted.body);
+    expect(acceptedBody.ok).toBe(true);
+    expect(Array.isArray(acceptedBody.response.sessions)).toBe(true);
   });
 
   it('should import a session payload', async () => {

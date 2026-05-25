@@ -8,13 +8,17 @@
   },
   "files": [
     "scripts/mcp-start.cjs",
+    "scripts/browser-debug-cli.cjs",
+    ".agents/skills/browser-debug-cli/**/*",
     "apps/mcp-server/dist/**/*",
     "apps/mcp-server/package.json",
     "README.md",
     "LICENSE"
   ],
   "bin": {
-    "browser-debug-mcp-bridge": "scripts/mcp-start.cjs"
+    "browser-debug-mcp-bridge": "scripts/mcp-start.cjs",
+    "bdmcp": "scripts/browser-debug-cli.cjs",
+    "browser-debug-cli": "scripts/browser-debug-cli.cjs"
   },
   "scripts": {
     "typecheck": "nx run-many -t lint --projects mcp-server,chrome-extension,shared,redaction,selectors,mcp-contracts",
@@ -22,14 +26,15 @@
     "test:non-e2e": "nx run-many -t test --exclude=e2e-playwright",
     "lint": "nx run-many -t lint",
     "build": "nx run-many -t build",
-    "verify:ci": "pnpm typecheck && pnpm lint && pnpm test:non-e2e && pnpm build && pnpm docs:ci && pnpm mcp:check-stdio-guard",
-    "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm build && pnpm docs:ci && pnpm mcp:check-stdio-guard",
+    "verify:ci": "pnpm typecheck && pnpm lint && pnpm test:non-e2e && pnpm build && pnpm docs:ci && pnpm mcp:check-stdio-guard && pnpm mcp:package-smoke",
+    "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm build && pnpm docs:ci && pnpm mcp:check-stdio-guard && pnpm mcp:package-smoke",
     "serve": "nx serve mcp-server",
     "mcp:start": "node scripts/mcp-start.cjs",
     "mcp:diagnose": "node tools/mcp/diagnose-bridge.mjs",
     "mcp:doctor": "node tools/mcp/diagnose-bridge.mjs",
     "mcp:doctor:json": "node tools/mcp/diagnose-bridge.mjs --json",
     "mcp:smoke": "node tools/mcp/diagnose-bridge.mjs --smoke",
+    "mcp:package-smoke": "node tools/mcp/package-smoke.mjs",
     "build:mcp-runtime": "pnpm -C apps/mcp-server build",
     "prepack": "pnpm run build:mcp-runtime",
     "docs:dev": "nx serve docs",
@@ -101,8 +106,10 @@
     "@modelcontextprotocol/sdk": "^1.27.1",
     "better-sqlite3": "^12.6.2",
     "cheerio": "^1.2.0",
+    "chrome-launcher": "1.2.1",
     "fastify": "^5.7.4",
     "jszip": "^3.10.1",
+    "lighthouse": "13.3.0",
     "tsx": "^4.21.0",
     "ws": "^8.19.0",
     "zod": "^4.3.6"

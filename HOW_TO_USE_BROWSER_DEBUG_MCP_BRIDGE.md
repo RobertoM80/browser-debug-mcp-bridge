@@ -46,7 +46,7 @@ What the diagram means:
 
 You need:
 
-1. Node.js 20+
+1. Node.js `>=22.19`
 2. npm (for quick no-repo install)
 3. pnpm 9+ (only for local clone mode and extension build from source)
 4. Git (only for local clone mode)
@@ -81,6 +81,8 @@ Then in MCP client config use direct node launch:
 1. command: `node`
 2. args: `["<NPM_GLOBAL_ROOT>/browser-debug-mcp-bridge/scripts/mcp-start.cjs"]`
 
+Studio or MCPS is not required for this setup. Any MCP host that supports command/args stdio server configuration can use the same launcher.
+
 Find `<NPM_GLOBAL_ROOT>` with:
 
 ```bash
@@ -93,6 +95,15 @@ Secondary quick option:
 2. args: `["-y", "browser-debug-mcp-bridge"]`
 
 Keep `-y` in `npx` MCP host configs. Without it, npm can wait for interactive install confirmation; VS Code Copilot and other MCP hosts cannot answer that prompt, so no tools are registered.
+
+If Copilot MCP servers are disabled by organization policy but terminal commands are allowed, use the packaged CLI:
+
+```bash
+browser-debug-mcp-bridge --standalone
+bdmcp init-copilot
+bdmcp health
+bdmcp sessions --live
+```
 
 ### 1B) Local clone mode
 

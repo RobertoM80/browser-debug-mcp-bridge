@@ -73,7 +73,16 @@ thumbs.db
 .cursor/
 .opencode/
 .agents/
+!.agents/
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/browser-debug-cli/
+!.agents/skills/browser-debug-cli/SKILL.md
 skills*
+!.agents/skills/
+!.agents/skills/browser-debug-cli/
+!.agents/skills/browser-debug-cli/SKILL.md
 opencode.json
 .github/agents/
 .github/prompts/

@@ -2,10 +2,11 @@
 
 ## Test Layers
 
-This repository uses two test layers:
+This repository uses three test layers:
 
 1. Unit and integration tests with Vitest (workspace-wide).
 2. End-to-end tests with Playwright (`apps/e2e-playwright`).
+3. Package smoke tests that install the packed npm package and exercise the published launchers.
 
 ## Local Commands
 
@@ -22,6 +23,12 @@ pnpm test:e2e:smoke
 # E2E full suite (deeper coverage)
 pnpm test:e2e:full
 
+# Packaged npm smoke test
+pnpm mcp:package-smoke
+
+# CI validation lane without browser E2E
+pnpm verify:ci
+
 # All E2E tests
 pnpm test:e2e
 
@@ -34,7 +41,7 @@ Default E2E execution is headless. Use `pnpm test:e2e:head` only when you need a
 ## CI Mapping
 
 - PR and push to `main`:
-  1. `validate` job runs `pnpm verify`
+  1. `validate` job runs `pnpm verify:ci`
   2. `e2e-smoke` job runs Playwright smoke suite
   3. `e2e-full` job runs Playwright full suite
 - Nightly:
@@ -45,7 +52,9 @@ Default E2E execution is headless. Use `pnpm test:e2e:head` only when you need a
 ## Scope Expectations
 
 - Use unit/integration tests for contracts, schemas, persistence, and core logic.
-- Use E2E smoke tests for extension popup wiring and MCP connectivity sanity.
+- Use unit/integration tests for Browser Debug CLI argument parsing, local gateway authorization, and tool routing.
+- Use package smoke tests for the published MCP launcher, `bdmcp` launcher, packaged Copilot skill files, stdio safety, and CLI-to-gateway calls.
+- Use E2E smoke tests for extension popup wiring, MCP connectivity sanity, and `bdmcp` connectivity against the same runtime.
 - Use E2E full tests for extension-to-server-to-DB data flow and tool outputs.
 
 ## E2E Runtime Isolation

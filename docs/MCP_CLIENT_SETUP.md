@@ -7,7 +7,7 @@ This repository now exposes a single universal launcher that starts:
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js `>=22.19`
 - Chrome extension loaded and connected to `127.0.0.1:8065`
 - For no-repo mode, download `chrome-extension-dist.tgz` from latest GitHub release and load it unpacked
 - For local clone mode only:
@@ -16,6 +16,8 @@ This repository now exposes a single universal launcher that starts:
   - `npm i -g browser-debug-mcp-bridge`
 
 ## Universal command
+
+This path does not require Studio or MCPS. Any MCP host that supports command/args stdio server configuration can launch the same wrapper and will see the same Browser Debug MCP Bridge tools.
 
 Recommended quick setup (no repo clone):
 
@@ -52,6 +54,17 @@ Quick GitHub fallback option (if registry package is not available):
 - args: `["-y", "--package=github:RobertoM80/browser-debug-mcp-bridge", "browser-debug-mcp-bridge"]`
 
 Keep `-y` in every `npx` MCP host config. Without it, npm can pause for interactive install confirmation; VS Code Copilot and other MCP hosts cannot answer that prompt, so startup stalls before tools are registered.
+
+If MCP servers are disabled by organization policy but terminal commands are allowed, use the non-MCP CLI workflow instead:
+
+```bash
+browser-debug-mcp-bridge --standalone
+bdmcp init-copilot
+bdmcp health
+bdmcp sessions --live
+```
+
+See [Browser Debug CLI](BROWSER_DEBUG_CLI.md).
 
 Important:
 

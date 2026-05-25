@@ -46,6 +46,8 @@ Load the extension:
 
 Recommended launch method: direct `node` command pointing at the installed package script.
 
+Studio or MCPS is not required. The package launcher is a standard MCP stdio server entrypoint, so any MCP host that supports command/args server configuration can use it directly and gets the same tool surface.
+
 Find the global npm root:
 
 ```bash
@@ -95,6 +97,20 @@ Quick secondary option:
 ```
 
 Keep `-y` in `npx` configs. Without it, npm can wait for an interactive install confirmation that MCP hosts such as VS Code Copilot cannot answer, so the server appears to start but no tools are registered.
+
+## Copilot Without MCP
+
+If a Copilot organization disables MCP servers but terminal commands are allowed, use the packaged CLI workflow instead:
+
+```bash
+browser-debug-mcp-bridge --standalone
+bdmcp init-copilot
+bdmcp health
+bdmcp sessions --live
+bdmcp summary @recommended
+```
+
+The CLI exposes the same bridge tool handlers through local commands and a token-protected local gateway. See [Browser Debug CLI](docs/BROWSER_DEBUG_CLI.md).
 
 ## First Debug Session
 

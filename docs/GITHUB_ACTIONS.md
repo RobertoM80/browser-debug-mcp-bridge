@@ -14,17 +14,18 @@ What it does:
 1. Checks out repository code
 2. Installs Node + pnpm
 3. Installs dependencies
-4. Runs `validate` job (`pnpm verify`)
+4. Runs `validate` job (`pnpm verify:ci`)
 5. Runs Playwright `e2e-smoke` job
 6. Runs Playwright `e2e-full` job
 
-What `pnpm verify` includes:
+What `pnpm verify:ci` includes:
 1. Typecheck
 2. Lint
-3. Tests
+3. Non-E2E tests
 4. Build
 5. Docs CI checks
 6. MCP stdio safety guard
+7. Packaged npm install smoke test, including the published `bdmcp` CLI launcher
 
 Why it exists:
 1. Prevent regressions before merge
@@ -90,7 +91,7 @@ When it runs:
 2. Manually
 
 What it does:
-1. Runs `pnpm verify`
+1. Runs `pnpm verify`, including packaged npm install smoke test before publish
 2. Packages release artifacts:
    - `mcp-server-dist.tgz`
    - `chrome-extension-dist.tgz`
@@ -132,7 +133,7 @@ When it runs:
 2. Manually
 
 What it does:
-1. Runs `pnpm verify`
+1. Runs `pnpm verify`, including packaged npm install smoke test
 2. Installs Playwright Chromium
 3. Runs Playwright full E2E suite
 4. Starts local `mcp-server`

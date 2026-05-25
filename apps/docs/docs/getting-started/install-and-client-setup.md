@@ -2,6 +2,8 @@
 
 This page covers both fast no-repo setup and local development setup.
 
+Studio or MCPS is optional. The package ships a first-class stdio launcher, so any MCP host with command/args server configuration can use Browser Debug MCP Bridge directly.
+
 ## 1) Quick setup (no repo clone, recommended)
 
 Install runtime:
@@ -68,6 +70,17 @@ GitHub fallback (if registry package is not available):
 
 1. command: `npx`
 2. args: `["-y", "--package=github:RobertoM80/browser-debug-mcp-bridge", "browser-debug-mcp-bridge"]`
+
+If Copilot MCP servers are disabled by organization policy but terminal commands are allowed, use the packaged CLI workflow:
+
+```bash
+browser-debug-mcp-bridge --standalone
+bdmcp init-copilot
+bdmcp health
+bdmcp sessions --live
+```
+
+See [Copilot CLI Workflow](./copilot-cli-workflow.md).
 
 Notes:
 

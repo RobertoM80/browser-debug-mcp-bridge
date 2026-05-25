@@ -2,11 +2,13 @@
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js `>=22.19`
 - Chrome with developer mode enabled
 - Chrome extension (release asset or local build)
 
 ## Fast path (no repo clone, recommended)
+
+Studio or MCPS is not required for this path. Configure any MCP host that supports command/args stdio with the launcher below and it will expose the same Browser Debug MCP Bridge tools.
 
 ```bash
 npm i -g browser-debug-mcp-bridge
@@ -43,6 +45,17 @@ In `mcp-stdio` mode, bridge should stop when host transport closes. If a stale p
 node scripts/mcp-start.cjs --stop
 ```
 
+## Copilot without MCP
+
+If Copilot MCP servers are disabled by organization policy but terminal commands are allowed, use the packaged CLI workflow:
+
+```bash
+browser-debug-mcp-bridge --standalone
+bdmcp init-copilot
+bdmcp health
+bdmcp sessions --live
+```
+
 ## Load extension build
 
 1. Build once (local path only): `pnpm nx build chrome-extension`
@@ -65,5 +78,6 @@ node scripts/mcp-start.cjs --stop
 ## Next steps
 
 - Follow [Install + MCP Client Setup](./install-and-client-setup.md)
+- Follow [Copilot CLI Workflow](./copilot-cli-workflow.md)
 - Follow [Local Debug Session Workflow](./local-debug-session.md)
 - Review [MCP Tools Overview](../mcp-tools/overview.md)

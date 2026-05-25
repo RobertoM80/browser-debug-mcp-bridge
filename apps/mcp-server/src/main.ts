@@ -52,9 +52,14 @@ import {
   insertMockRun,
   listActiveBrowserMockRoutes,
 } from './mock-store.js';
+import { registerCliGateway } from './cli/gateway.js';
 
 const fastify = Fastify({
   logger: process.env.MCP_STDIO_MODE === '1' ? false : true
+});
+
+registerCliGateway(fastify, {
+  getWebSocketManager: () => wsManager,
 });
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 8065;
