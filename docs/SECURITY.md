@@ -6,6 +6,7 @@ Safe mode is **ON by default**.
 
 ## Privacy Rules
 
+- Page, network, console, navigation, and UI event processing stays disabled until a bound session is active; pausing or stopping disables it again
 - Never capture cookies, localStorage, or response bodies without explicit opt-in
 - Redact tokens, JWTs, and PII from all outputs
 - Domain allowlist required - default is empty

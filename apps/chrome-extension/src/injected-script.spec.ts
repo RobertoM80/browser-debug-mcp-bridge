@@ -4,6 +4,32 @@ import { describe, expect, it, vi } from 'vitest';
 import { installInjectedCapture } from './injected-script';
 
 describe('injected-script capture', () => {
+  it('bypasses page hooks until capture is enabled', async () => {
+    const postSpy = vi.spyOn(window, 'postMessage');
+    const originalFetch = window.fetch;
+    window.fetch = vi.fn(async () => new Response('ok', { status: 200 })) as typeof fetch;
+    const cleanup = installInjectedCapture({ win: window, captureEnabled: false });
+
+    await window.fetch('/inactive');
+    expect(postSpy.mock.calls.some((entry) => (entry[0] as { eventType?: string }).eventType === 'network')).toBe(false);
+
+    window.dispatchEvent(new MessageEvent('message', {
+      data: {
+        source: 'browser-debug-mcp-bridge',
+        kind: 'bridge-control',
+        controlType: 'network_config',
+        data: { captureEnabled: true, captureBodies: false },
+      },
+      source: window,
+    }));
+    await window.fetch('/active');
+
+    expect(postSpy.mock.calls.some((entry) => (entry[0] as { eventType?: string }).eventType === 'network')).toBe(true);
+    cleanup();
+    window.fetch = originalFetch;
+    postSpy.mockRestore();
+  });
+
   it('captures console.warn and console.error events', () => {
     const postSpy = vi.spyOn(window, 'postMessage');
     const cleanup = installInjectedCapture({ win: window });

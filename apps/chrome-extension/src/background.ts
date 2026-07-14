@@ -119,6 +119,7 @@ interface CapturePingResponse {
 }
 
 interface CaptureConfigUpdatePayload {
+  captureEnabled: boolean;
   network: {
     captureBodies: boolean;
     maxBodyBytes: number;
@@ -3729,7 +3730,14 @@ async function executeRetriableGenericCapture(
 
 function buildCaptureConfigUpdatePayload(sessionId?: string): CaptureConfigUpdatePayload {
   const automationStatus = getAutomationStatus();
+  const sessionState = sessionManager.getState();
   return {
+    captureEnabled: Boolean(
+      sessionId
+      && sessionState.sessionId === sessionId
+      && sessionState.isActive
+      && !sessionState.isPaused,
+    ),
     network: {
       captureBodies: captureConfig.network.captureBodies === true,
       maxBodyBytes: captureConfig.network.maxBodyBytes,
@@ -4548,7 +4556,7 @@ async function executeCaptureCommand(
   }
 
   try {
-    await sendCaptureConfigUpdateToTab(tabId, buildCaptureConfigUpdatePayload());
+    await sendCaptureConfigUpdateToTab(tabId, buildCaptureConfigUpdatePayload(context.sessionId));
   } catch {
     // Best effort; capture can continue with injected defaults.
   }
@@ -5172,6 +5180,7 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
 
         await overridePocController.disable().catch(() => undefined);
         const paused = sessionManager.pauseSession();
+        await syncCaptureConfigToSessionTabs(state.sessionId).catch(() => undefined);
         syncAutomationBadge();
         return { ok: true as const, state: paused };
       }).catch((error) => ({
@@ -5222,7 +5231,6 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
             if (!contentReady) {
               throw new Error('Content script is not available on the active tab. Reload the page and retry.');
             }
-            await syncCaptureConfigToSessionTabs(sessionId);
           }
 
           const resumeTabContext = buildSessionContextFromTab(resumeTab);
@@ -5239,6 +5247,7 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
             dpr: resumeTabContext.dpr,
             safeMode: captureConfig.safeMode,
           });
+          await syncCaptureConfigToSessionTabs(sessionId);
 
           sessionManager.queueEvent('custom', {
             marker: 'session_resumed',
@@ -5331,10 +5340,11 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
       return Promise.resolve().then(async () => {
         await overridePocController.disable().catch(() => undefined);
         const activeSessionId = sessionManager.getState().sessionId;
+        const stopped = sessionManager.stopSession();
         if (activeSessionId) {
+          await syncCaptureConfigToSessionTabs(activeSessionId).catch(() => undefined);
           cleanupSessionLocalState(activeSessionId);
         }
-        const stopped = sessionManager.stopSession();
         syncAutomationBadge();
         return { ok: true as const, state: stopped };
       });
@@ -5664,6 +5674,10 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
             baseOrigin: scope.baseOrigin,
             allowedTabIds: Array.from(scope.allowedTabIds),
           });
+          await sendCaptureConfigUpdateToTab(requestedTabId, {
+            ...buildCaptureConfigUpdatePayload(sessionState.sessionId),
+            captureEnabled: false,
+          }).catch(() => undefined);
           const remembered = captureTabBySession.get(sessionState.sessionId);
           if (remembered?.tabId === requestedTabId) {
             captureTabBySession.delete(sessionState.sessionId);
