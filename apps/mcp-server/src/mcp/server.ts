@@ -924,6 +924,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       level: { type: 'string' },
       sinceMinutes: { type: 'number' },
       limit: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
     },
   },
   get_event_summary: {
@@ -995,6 +996,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       traceId: { type: 'string' },
       includeBodies: { type: 'boolean' },
       eventLimit: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
     },
   },
   get_body_chunk: {
@@ -1778,6 +1780,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       lookbackSeconds: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
     },
   },
   get_event_correlation: {
@@ -1787,6 +1790,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       sessionId: { type: 'string' },
       eventId: { type: 'string' },
       windowSeconds: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
     },
   },
   list_snapshots: {
@@ -8918,6 +8922,7 @@ export function createV1ToolHandlers(
         ? Math.floor(input.sinceMinutes)
         : undefined;
       const limit = resolveLimit(input.limit, 10);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
 
       const where: string[] = ["type = 'console'"];
       const params: unknown[] = [];
@@ -8989,11 +8994,20 @@ export function createV1ToolHandlers(
         last_ts: number;
       }>;
 
+      const messages = topMessages.map((entry) => ({
+        level: entry.level,
+        message: entry.message,
+        count: entry.count,
+        firstSeenAt: entry.first_ts,
+        lastSeenAt: entry.last_ts,
+      }));
+      const bytePage = applyByteBudget(messages, maxResponseBytes);
+
       return {
         ...createBaseResponse(sessionId),
         limitsApplied: {
           maxResults: limit,
-          truncated: false,
+          truncated: bytePage.truncatedByBytes,
         },
         counts: {
           total: totals.total ?? 0,
@@ -9008,13 +9022,8 @@ export function createV1ToolHandlers(
         },
         firstSeenAt: totals.first_ts ?? undefined,
         lastSeenAt: totals.last_ts ?? undefined,
-        topMessages: topMessages.map((entry) => ({
-          level: entry.level,
-          message: entry.message,
-          count: entry.count,
-          firstSeenAt: entry.first_ts,
-          lastSeenAt: entry.last_ts,
-        })),
+        responseBytes: bytePage.responseBytes,
+        topMessages: bytePage.items,
       };
     },
 
@@ -9473,6 +9482,7 @@ export function createV1ToolHandlers(
       const requestId = normalizeOptionalString(input.requestId);
       const traceIdInput = normalizeOptionalString(input.traceId);
       const eventLimit = resolveLimit(input.eventLimit, DEFAULT_EVENT_LIMIT);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
 
       if (!requestId && !traceIdInput) {
         throw new Error('requestId or traceId is required');
@@ -9529,18 +9539,24 @@ export function createV1ToolHandlers(
         : [];
       const eventsTruncated = eventRows.length > eventLimit;
       const correlatedEvents = eventRows.slice(0, eventLimit).map((row) => mapEventRecord(row));
+      const taggedItems = [
+        ...networkRows.map((row) => ({ kind: 'network' as const, value: mapNetworkCallRecord(row, includeBodies) })),
+        ...correlatedEvents.map((event) => ({ kind: 'event' as const, value: event })),
+      ];
+      const bytePage = applyByteBudget(taggedItems, maxResponseBytes);
 
       return {
         ...createBaseResponse(traceSessionId),
         limitsApplied: {
           maxResults: eventLimit,
-          truncated: eventsTruncated,
+          truncated: eventsTruncated || bytePage.truncatedByBytes,
         },
         traceId: traceId ?? undefined,
         requestId: requestId ?? anchor?.request_id ?? undefined,
         anchorRequest: anchor ? mapNetworkCallRecord(anchor, includeBodies) : undefined,
-        networkCalls: networkRows.map((row) => mapNetworkCallRecord(row, includeBodies)),
-        correlatedEvents,
+        responseBytes: bytePage.responseBytes,
+        networkCalls: bytePage.items.filter((item) => item.kind === 'network').map((item) => item.value),
+        correlatedEvents: bytePage.items.filter((item) => item.kind === 'event').map((item) => item.value),
       };
     },
 
@@ -9629,6 +9645,7 @@ export function createV1ToolHandlers(
       }
 
       const lookbackSeconds = resolveWindowSeconds(input.lookbackSeconds, 30, 300);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
       const windowMs = lookbackSeconds * 1000;
 
       const latestErrorEvent = db
@@ -9745,12 +9762,13 @@ export function createV1ToolHandlers(
       }
 
       const explanation = `Latest failure at ${anchorTs} with a ${lookbackSeconds}s correlation window.`;
+      const bytePage = applyByteBudget(timeline, maxResponseBytes);
 
       return {
         ...createBaseResponse(sessionId),
         limitsApplied: {
-          maxResults: timeline.length,
-          truncated: timeline.length >= 60,
+          maxResults: 60,
+          truncated: timeline.length >= 60 || bytePage.truncatedByBytes,
         },
         explanation,
         rootCause,
@@ -9758,7 +9776,8 @@ export function createV1ToolHandlers(
           type: anchorType,
           timestamp: anchorTs,
         },
-        timeline,
+        responseBytes: bytePage.responseBytes,
+        timeline: bytePage.items,
       };
     },
 
@@ -9773,6 +9792,7 @@ export function createV1ToolHandlers(
       if (!eventId) {
         throw new Error('eventId is required');
       }
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
 
       const anchorEvent = db
         .prepare(`
@@ -9850,12 +9870,13 @@ export function createV1ToolHandlers(
           return Math.abs(a.deltaMs) - Math.abs(b.deltaMs);
         })
         .slice(0, 50);
+      const bytePage = applyByteBudget(correlations, maxResponseBytes);
 
       return {
         ...createBaseResponse(sessionId),
         limitsApplied: {
           maxResults: 50,
-          truncated: nearbyEvents.length + nearbyNetworkFailures.length > 50,
+          truncated: nearbyEvents.length + nearbyNetworkFailures.length > 50 || bytePage.truncatedByBytes,
         },
         anchorEvent: {
           eventId: anchorEvent.event_id,
@@ -9864,7 +9885,8 @@ export function createV1ToolHandlers(
           payload: readJsonPayload(anchorEvent.payload_json),
         },
         windowSeconds,
-        correlatedEvents: correlations,
+        responseBytes: bytePage.responseBytes,
+        correlatedEvents: bytePage.items,
       };
     },
 

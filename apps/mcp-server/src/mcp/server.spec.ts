@@ -949,6 +949,32 @@ describe('mcp/server V1 query tools', () => {
     db.close();
   });
 
+  it('applies maxResponseBytes to console summary messages', async () => {
+    const db = createTestDb();
+    db.prepare("INSERT INTO sessions (session_id, created_at, safe_mode) VALUES ('session-summary-budget', 1000, 0)").run();
+    const insert = db.prepare('INSERT INTO events (event_id, session_id, ts, type, payload_json) VALUES (?, ?, ?, ?, ?)');
+    for (let index = 0; index < 6; index += 1) {
+      insert.run(
+        `evt-summary-budget-${index}`,
+        'session-summary-budget',
+        1000 + index,
+        'console',
+        JSON.stringify({ level: 'info', message: `${index}-${'x'.repeat(700)}` }),
+      );
+    }
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_console_summary', {
+      sessionId: 'session-summary-budget',
+      limit: 6,
+      maxResponseBytes: 1024,
+    });
+
+    expect((response.topMessages as unknown[]).length).toBeLessThan(6);
+    expect(response.limitsApplied.truncated).toBe(true);
+    db.close();
+  });
+
   it('returns event summary grouped by event type', async () => {
     const db = createTestDb();
 
@@ -958,6 +984,7 @@ describe('mcp/server V1 query tools', () => {
         VALUES ('session-summary-events', 1000, 0)
       `
     ).run();
+
     db.prepare(
       `
         INSERT INTO events (event_id, session_id, ts, type, payload_json)
@@ -1188,6 +1215,10 @@ describe('mcp/server V1 query tools', () => {
         VALUES ('evt-ui', 'session-trace', 1001, 'ui', '{"eventType":"click","selector":"#send","traceId":"trace-ui-1"}', 7, 'http://localhost:3000')
       `
     ).run();
+    db.prepare(
+      `INSERT INTO events (event_id, session_id, ts, type, payload_json)
+       VALUES ('evt-trace-large', 'session-trace', 1002, 'console', ?)`
+    ).run(JSON.stringify({ traceId: 'trace-ui-1', message: 'x'.repeat(5000) }));
 
     db.prepare(
       `
@@ -1221,6 +1252,13 @@ describe('mcp/server V1 query tools', () => {
     expect((trace.traceId as string)).toBe('trace-ui-1');
     expect((trace.networkCalls as Array<{ requestId: string }>).map((entry) => entry.requestId)).toEqual(['req-trace']);
     expect((trace.correlatedEvents as Array<{ eventId: string }>).map((entry) => entry.eventId)).toContain('evt-ui');
+
+    const budgetedTrace = await routeToolCall(tools, 'get_request_trace', {
+      sessionId: 'session-trace',
+      requestId: 'req-trace',
+      maxResponseBytes: 1024,
+    });
+    expect(budgetedTrace.limitsApplied.truncated).toBe(true);
 
     const chunk = await routeToolCall(tools, 'get_body_chunk', {
       chunkRef: 'chunk-req-1',
