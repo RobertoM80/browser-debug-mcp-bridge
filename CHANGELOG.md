@@ -24,6 +24,13 @@
 * **mcp-server:** execute browser mock routes through the existing override fulfillment path
 * **mcp-server:** serve enabled SSR mock routes from the built-in mock endpoint
 
+## [1.14.1](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.14.0...browser-debug-mcp-bridge-v1.14.1) (2026-07-14)
+
+
+### Bug Fixes
+
+* harden production overrides and reduce MCP token cost ([24f1101](https://github.com/RobertoM80/browser-debug-mcp-bridge/commit/24f11011782090f1d197ec6cc9497002ad46d5d2))
+
 ## [1.14.0](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.13.0...browser-debug-mcp-bridge-v1.14.0) (2026-05-25)
 
 
