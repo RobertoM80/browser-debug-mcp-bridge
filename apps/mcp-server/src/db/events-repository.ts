@@ -123,7 +123,7 @@ export class EventsRepository {
       INSERT INTO error_fingerprints (
         fingerprint, session_id, count, sample_message, sample_stack, first_seen_at, last_seen_at
       ) VALUES (?, ?, 1, ?, ?, ?, ?)
-      ON CONFLICT(fingerprint) DO UPDATE SET
+      ON CONFLICT(session_id, fingerprint) DO UPDATE SET
         count = count + 1,
         last_seen_at = excluded.last_seen_at,
         sample_message = COALESCE(error_fingerprints.sample_message, excluded.sample_message),

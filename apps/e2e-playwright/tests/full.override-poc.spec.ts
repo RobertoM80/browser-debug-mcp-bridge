@@ -217,6 +217,38 @@ type OverrideResponseCaptureResult = {
   truncated?: boolean;
 };
 
+type LivePageStateResult = {
+  url?: string;
+  title?: string;
+  summary?: {
+    buttons?: number;
+    links?: number;
+    inputs?: number;
+    modals?: number;
+  };
+  links?: Array<{
+    text?: string;
+    selector?: string;
+  }>;
+};
+
+type InteractiveElementRefsResult = {
+  refs: Array<{
+    kind?: string;
+    text?: string;
+    selector?: string;
+  }>;
+  page?: {
+    url?: string;
+  };
+};
+
+type LiveDomSubtreeResult = {
+  html?: string;
+  outline?: string;
+  mode?: string;
+};
+
 type NextDataJsonPayload = {
   pageProps?: {
     signal?: {
@@ -265,6 +297,7 @@ const NEXT_FIXTURE_SOURCE_FILES = [
   'src/app/scenario-boot.tsx',
   'src/pages/legacy-data.tsx',
   'src/pages/legacy-other.tsx',
+  'src/pages/legacy-large.tsx',
 ].map((relativePath) => join(NEXT_FIXTURE_ROOT, relativePath));
 
 const TARGET_APP_DOCUMENT_HTML = `<!doctype html>
@@ -1650,6 +1683,381 @@ async function runNextLegacyDocumentRewriteScenario(): Promise<void> {
   }
 }
 
+async function runNextLargeLegacyDocumentRewriteScenario(): Promise<void> {
+  const fixtureRoot = mkdtempSync(join(tmpdir(), 'bdmcp-next-legacy-large-document-'));
+  const configPath = join(fixtureRoot, 'override-poc.local.json');
+  const sourceSnapshot = snapshotNextFixtureSources();
+  let nextApp: ManagedServerProcess | undefined;
+  let mcp: MCPClientHandle | undefined;
+  let extension: ExtensionContextHandle | undefined;
+
+  try {
+    nextApp = await startNextFixtureApp();
+    const nextBaseUrl = `http://127.0.0.1:${nextApp.port}`;
+    const targetUrl = `${nextBaseUrl}/legacy-large`;
+    const mcpPort = await getFreePort();
+    mcp = await connectMcpClient(createTempDataDir('bdmcp-e2e-next-legacy-large-document-data-'), {
+      port: mcpPort,
+      env: {
+        OVERRIDE_POC_CONFIG_PATH: configPath,
+      },
+    });
+
+    extension = await launchExtensionContext();
+    await assertExtensionInstalled(extension.context, extension.extensionId);
+    await extension.setServerBaseUrl(`http://127.0.0.1:${mcpPort}`);
+
+    const targetPage = await extension.context.newPage();
+    await targetPage.goto(targetUrl, { waitUntil: 'domcontentloaded' });
+    await expect(targetPage.locator('#legacy-large-mode')).toHaveText('original-large-next-data');
+    await expect(targetPage.locator('#legacy-large-message')).toHaveText('Original large Next document response from Pages Router.');
+    await expect(targetPage.locator('#legacy-large-badge')).toHaveText('pages-large-stable');
+
+    const popupPage = await openExtensionPage(extension.context, extension.extensionId, 'popup.html');
+    await saveAllowlist(popupPage);
+    const boundTabId = await startSessionFromTargetTab(popupPage, targetPage);
+    const sessionId = await getActiveSessionId(popupPage);
+    await expectMcpSeesLiveSession(mcp, sessionId);
+
+    const capture = await callToolJson<OverrideResponseCaptureResult & { bodyBytes?: number; capturedBytes?: number }>(
+      mcp.client,
+      'capture_override_response_body',
+      {
+        sessionId,
+        tabId: boundTabId,
+        targetUrl,
+        captureMode: 'cdp-response',
+        triggerReload: true,
+        includeBody: true,
+        maxBodyBytes: 2_000_000,
+        timeoutMs: 20_000,
+      },
+    );
+    expect(capture).toMatchObject({
+      captureMode: 'cdp-response',
+      source: 'cdp-response',
+      tabId: boundTabId,
+      ruleType: 'document',
+      bodyCaptured: true,
+      truncated: false,
+    });
+    expect(capture.bodyBytes).toBeGreaterThan(1_000_000);
+    expect(capture.capturedBytes).toBeGreaterThan(1_000_000);
+    expect(capture.bodyText).toContain('__NEXT_DATA__');
+    expect(capture.bodyText).toContain('original-large-next-data');
+
+    const plan = await callToolJson<OverrideResponsePatchPlan>(mcp.client, 'plan_override_response_patch', {
+      sessionId,
+      tabId: boundTabId,
+      targetUrl,
+      captureMode: 'cdp-response',
+      triggerReload: true,
+      maxBodyBytes: 2_000_000,
+      timeoutMs: 20_000,
+      documentPatches: [
+        {
+          operation: 'replaceJsonValue',
+          selector: '#__NEXT_DATA__',
+          path: '/props/pageProps/signal/mode',
+          value: 'override-large-next-document',
+          expectedValue: 'original-large-next-data',
+        },
+        {
+          operation: 'replaceJsonValue',
+          selector: '#__NEXT_DATA__',
+          path: '/props/pageProps/signal/message',
+          value: 'Large document override from __NEXT_DATA__ patch.',
+          expectedValue: 'Original large Next document response from Pages Router.',
+        },
+        {
+          operation: 'replaceJsonValue',
+          selector: '#__NEXT_DATA__',
+          path: '/props/pageProps/signal/badge',
+          value: 'document-large-bootstrap',
+          expectedValue: 'pages-large-stable',
+        },
+      ],
+      configPath,
+      writeConfig: true,
+      overwrite: true,
+      profileId: 'next-legacy-large-document-e2e',
+      profileName: 'Next legacy large document rewrite e2e',
+    });
+    expect(plan.configWritten).toBe(true);
+
+    const validation = await callToolJson<{ valid: boolean }>(mcp.client, 'validate_override_profile', {
+      profileId: 'next-legacy-large-document-e2e',
+    });
+    expect(validation.valid).toBe(true);
+
+    await enableOverrideForTabViaMcp(mcp, sessionId, targetPage, boundTabId);
+    await expect(targetPage.locator('#legacy-large-mode')).toHaveText('override-large-next-document');
+    await expect(targetPage.locator('#legacy-large-message')).toHaveText('Large document override from __NEXT_DATA__ patch.');
+    await expect(targetPage.locator('#legacy-large-badge')).toHaveText('document-large-bootstrap');
+  } finally {
+    expectNextFixtureSourcesUnchanged(sourceSnapshot);
+    if (extension) {
+      await extension.close().catch(() => undefined);
+    }
+    if (mcp) {
+      await mcp.close().catch(() => undefined);
+    }
+    if (nextApp) {
+      await nextApp.stop();
+    }
+    rmSync(fixtureRoot, { recursive: true, force: true });
+  }
+}
+
+async function runAppRouterLiveDomToolsScenario(): Promise<void> {
+  const sourceSnapshot = snapshotNextFixtureSources();
+  let nextApp: ManagedServerProcess | undefined;
+  let mcp: MCPClientHandle | undefined;
+  let extension: ExtensionContextHandle | undefined;
+
+  try {
+    nextApp = await startNextFixtureApp();
+    const nextBaseUrl = `http://127.0.0.1:${nextApp.port}`;
+    const mcpPort = await getFreePort();
+    mcp = await connectMcpClient(createTempDataDir('bdmcp-e2e-app-router-dom-tools-'), {
+      port: mcpPort,
+    });
+
+    extension = await launchExtensionContext();
+    await assertExtensionInstalled(extension.context, extension.extensionId);
+    await extension.setServerBaseUrl(`http://127.0.0.1:${mcpPort}`);
+
+    const targetPage = await extension.context.newPage();
+    await targetPage.goto(`${nextBaseUrl}/`, { waitUntil: 'domcontentloaded' });
+    await expect(targetPage.locator('#home-headline')).toHaveText('Original launch desk for field teams');
+
+    const popupPage = await openExtensionPage(extension.context, extension.extensionId, 'popup.html');
+    await saveAllowlist(popupPage);
+    const boundTabId = await startSessionFromTargetTab(popupPage, targetPage);
+    const sessionId = await getActiveSessionId(popupPage);
+    await expectMcpSeesLiveSession(mcp, sessionId);
+
+    await targetPage.click('#nav-rsc-lab');
+    await expect(targetPage).toHaveURL(/\/rsc-lab\/alpha$/);
+    await expect(targetPage.locator('#rsc-dynamic-title')).toHaveText('Original alpha deployment');
+    await expect(targetPage.locator('#rsc-lab-shell')).toHaveText('Original nested RSC shell');
+
+    const alphaPageState = await callToolJson<LivePageStateResult>(mcp.client, 'get_page_state', {
+      sessionId,
+      maxItems: 20,
+      maxTextLength: 120,
+    });
+    expect(alphaPageState.url).toContain('/rsc-lab/alpha');
+    expect(alphaPageState.summary?.links).toBeGreaterThan(0);
+    expect(alphaPageState.links?.some((link) => link.selector === '#rsc-bravo-link')).toBe(true);
+
+    const alphaRefs = await callToolJson<InteractiveElementRefsResult>(mcp.client, 'get_interactive_elements', {
+      sessionId,
+      kinds: ['links'],
+      maxItems: 20,
+    });
+    expect(alphaRefs.page?.url).toContain('/rsc-lab/alpha');
+    expect(alphaRefs.refs.some((ref) => ref.kind === 'links' && ref.selector === '#rsc-bravo-link' && ref.text === 'Bravo')).toBe(true);
+
+    const alphaSubtree = await callToolJson<{ html?: string; outline?: string; mode?: string }>(mcp.client, 'get_dom_subtree', {
+      sessionId,
+      selector: '#rsc-dynamic-title',
+      maxBytes: 20_000,
+    });
+    expect(alphaSubtree.html ?? alphaSubtree.outline ?? '').toContain('Original alpha deployment');
+
+    const alphaDocument = await callToolJson<{ outline?: string; mode?: string }>(mcp.client, 'get_dom_document', {
+      sessionId,
+      mode: 'outline',
+      maxDepth: 6,
+      maxBytes: 50_000,
+    });
+    expect(alphaDocument.mode).toBe('outline');
+    expect(alphaDocument.outline ?? '').toContain('rsc-dynamic-title');
+
+    await targetPage.click('#rsc-bravo-link');
+    await expect(targetPage).toHaveURL(/\/rsc-lab\/bravo$/);
+    await expect(targetPage.locator('#rsc-dynamic-title')).toHaveText('Original bravo deployment');
+    await expect(targetPage.locator('#rsc-client-prop')).toHaveText('Original client prop from bravo server data.');
+
+    const bravoPageState = await callToolJson<LivePageStateResult>(mcp.client, 'get_page_state', {
+      sessionId,
+      tabId: boundTabId,
+      maxItems: 20,
+      maxTextLength: 120,
+    });
+    expect(bravoPageState.url).toContain('/rsc-lab/bravo');
+    expect(bravoPageState.links?.some((link) => link.selector === '#rsc-alpha-link')).toBe(true);
+
+    const bravoRefs = await callToolJson<InteractiveElementRefsResult>(mcp.client, 'get_interactive_elements', {
+      sessionId,
+      tabId: boundTabId,
+      kinds: ['links'],
+      maxItems: 20,
+    });
+    expect(bravoRefs.page?.url).toContain('/rsc-lab/bravo');
+    expect(bravoRefs.refs.some((ref) => ref.kind === 'links' && ref.selector === '#rsc-alpha-link' && ref.text === 'Alpha')).toBe(true);
+
+    const bravoSubtree = await callToolJson<{ html?: string; outline?: string; mode?: string }>(mcp.client, 'get_dom_subtree', {
+      sessionId,
+      tabId: boundTabId,
+      selector: '#rsc-dynamic-title',
+      maxBytes: 20_000,
+    });
+    expect(bravoSubtree.html ?? bravoSubtree.outline ?? '').toContain('Original bravo deployment');
+
+    const bravoDocument = await callToolJson<{ outline?: string; mode?: string }>(mcp.client, 'get_dom_document', {
+      sessionId,
+      tabId: boundTabId,
+      mode: 'outline',
+      maxDepth: 6,
+      maxBytes: 50_000,
+    });
+    expect(bravoDocument.outline ?? '').toContain('rsc-bravo-link');
+    expect(bravoDocument.outline ?? '').toContain('rsc-dynamic-title');
+  } finally {
+    expectNextFixtureSourcesUnchanged(sourceSnapshot);
+    if (extension) {
+      await extension.close().catch(() => undefined);
+    }
+    if (mcp) {
+      await mcp.close().catch(() => undefined);
+    }
+    if (nextApp) {
+      await nextApp.stop();
+    }
+  }
+}
+
+async function runAppRouterSearchAndHistoryDomToolsScenario(): Promise<void> {
+  const sourceSnapshot = snapshotNextFixtureSources();
+  let nextApp: ManagedServerProcess | undefined;
+  let mcp: MCPClientHandle | undefined;
+  let extension: ExtensionContextHandle | undefined;
+
+  try {
+    nextApp = await startNextFixtureApp();
+    const nextBaseUrl = `http://127.0.0.1:${nextApp.port}`;
+    const mcpPort = await getFreePort();
+    mcp = await connectMcpClient(createTempDataDir('bdmcp-e2e-app-router-search-history-'), {
+      port: mcpPort,
+    });
+
+    extension = await launchExtensionContext();
+    await assertExtensionInstalled(extension.context, extension.extensionId);
+    await extension.setServerBaseUrl(`http://127.0.0.1:${mcpPort}`);
+
+    const targetPage = await extension.context.newPage();
+    await targetPage.goto(`${nextBaseUrl}/rsc-lab/alpha`, { waitUntil: 'domcontentloaded' });
+    await expect(targetPage.locator('#rsc-dynamic-title')).toHaveText('Original alpha deployment');
+
+    const popupPage = await openExtensionPage(extension.context, extension.extensionId, 'popup.html');
+    await saveAllowlist(popupPage);
+    const boundTabId = await startSessionFromTargetTab(popupPage, targetPage);
+    const sessionId = await getActiveSessionId(popupPage);
+    await expectMcpSeesLiveSession(mcp, sessionId);
+
+    await targetPage.click('#rsc-search-link');
+
+    await expect.poll(async () => {
+      const state = await callToolJson<LivePageStateResult>(mcp.client, 'get_page_state', {
+        sessionId,
+        tabId: boundTabId,
+        maxItems: 20,
+        maxTextLength: 120,
+      });
+      return state.url ?? '';
+    }, { timeout: 10_000 }).toContain('/rsc-lab/search?mode=calm');
+    await expect(targetPage.locator('#rsc-search-summary')).toHaveText('Original filter: calm');
+
+    const calmSubtree = await callToolJson<LiveDomSubtreeResult>(mcp.client, 'get_dom_subtree', {
+      sessionId,
+      tabId: boundTabId,
+      selector: '#rsc-search-summary',
+      maxBytes: 20_000,
+    });
+    expect(calmSubtree.html ?? calmSubtree.outline ?? '').toContain('Original filter: calm');
+
+    const calmRefs = await callToolJson<InteractiveElementRefsResult>(mcp.client, 'get_interactive_elements', {
+      sessionId,
+      tabId: boundTabId,
+      kinds: ['links'],
+      maxItems: 20,
+    });
+    expect(calmRefs.refs.some((ref) => ref.selector === '#rsc-search-loud-link' && ref.text === 'Search loud')).toBe(true);
+
+    await targetPage.click('#rsc-search-loud-link');
+
+    await expect.poll(async () => {
+      const state = await callToolJson<LivePageStateResult>(mcp.client, 'get_page_state', {
+        sessionId,
+        maxItems: 20,
+        maxTextLength: 120,
+      });
+      return state.url ?? '';
+    }, { timeout: 10_000 }).toContain('/rsc-lab/search?mode=loud');
+    await expect(targetPage.locator('#rsc-search-summary')).toHaveText('Original filter: loud');
+
+    const loudSubtree = await callToolJson<LiveDomSubtreeResult>(mcp.client, 'get_dom_subtree', {
+      sessionId,
+      selector: '#rsc-search-summary',
+      maxBytes: 20_000,
+    });
+    expect(loudSubtree.html ?? loudSubtree.outline ?? '').toContain('Original filter: loud');
+
+    await targetPage.goBack();
+
+    await expect.poll(async () => {
+      const state = await callToolJson<LivePageStateResult>(mcp.client, 'get_page_state', {
+        sessionId,
+        tabId: boundTabId,
+        maxItems: 20,
+        maxTextLength: 120,
+      });
+      return state.url ?? '';
+    }, { timeout: 10_000 }).toContain('/rsc-lab/search?mode=calm');
+    await expect(targetPage.locator('#rsc-search-summary')).toHaveText('Original filter: calm');
+
+    await targetPage.goBack();
+
+    await expect.poll(async () => {
+      const state = await callToolJson<LivePageStateResult>(mcp.client, 'get_page_state', {
+        sessionId,
+        maxItems: 20,
+        maxTextLength: 120,
+      });
+      return state.url ?? '';
+    }, { timeout: 10_000 }).toContain('/rsc-lab/alpha');
+    await expect(targetPage.locator('#rsc-dynamic-title')).toHaveText('Original alpha deployment');
+
+    await targetPage.goForward();
+    await expect(targetPage.locator('#rsc-search-summary')).toHaveText('Original filter: calm');
+    await targetPage.goForward();
+
+    await expect.poll(async () => {
+      const state = await callToolJson<LivePageStateResult>(mcp.client, 'get_page_state', {
+        sessionId,
+        tabId: boundTabId,
+        maxItems: 20,
+        maxTextLength: 120,
+      });
+      return state.url ?? '';
+    }, { timeout: 10_000 }).toContain('/rsc-lab/search?mode=loud');
+    await expect(targetPage.locator('#rsc-search-summary')).toHaveText('Original filter: loud');
+  } finally {
+    expectNextFixtureSourcesUnchanged(sourceSnapshot);
+    if (extension) {
+      await extension.close().catch(() => undefined);
+    }
+    if (mcp) {
+      await mcp.close().catch(() => undefined);
+    }
+    if (nextApp) {
+      await nextApp.stop();
+    }
+  }
+}
+
 async function runNextRscFlightOverrideScenario(): Promise<void> {
   const fixtureRoot = mkdtempSync(join(tmpdir(), 'bdmcp-next-rsc-response-'));
   const configPath = join(fixtureRoot, 'override-poc.local.json');
@@ -2502,6 +2910,18 @@ test.describe('@full override POC e2e coverage', () => {
 
   test('captures and rewrites a Next.js Pages Router document through __NEXT_DATA__', async () => {
     await runNextLegacyDocumentRewriteScenario();
+  });
+
+  test('captures and rewrites a large Next.js Pages Router document above 1 MiB through __NEXT_DATA__', async () => {
+    await runNextLargeLegacyDocumentRewriteScenario();
+  });
+
+  test('keeps live DOM tools attached to the current App Router document across client navigation', async () => {
+    await runAppRouterLiveDomToolsScenario();
+  });
+
+  test('keeps live DOM tools aligned across App Router search-param transitions and history navigation', async () => {
+    await runAppRouterSearchAndHistoryDomToolsScenario();
   });
 
   test('captures, validates, and fulfills production Next.js RSC flight response overrides through CDP and MCP', async () => {

@@ -1957,4 +1957,59 @@ test.describe('@full live automation through MCP and extension session', () => {
       },
     });
   });
+
+  test('re-arms live automation automatically after refreshing the bound page', async () => {
+    const port = await getFreePort();
+    mcp = await connectMcpClient(createTempDataDir('bdmcp-e2e-refresh-recovery-'), { port });
+
+    extension = await launchExtensionContext();
+    await assertExtensionInstalled(extension.context, extension.extensionId);
+    await extension.setServerBaseUrl(`http://127.0.0.1:${port}`);
+
+    const targetPage = await extension.context.newPage();
+    await installAutomationFixture(targetPage, `http://127.0.0.1:${port}/automation-fixture`);
+
+    const popupPage = await openExtensionPage(extension.context, extension.extensionId, 'popup.html');
+    await configureAutomation(popupPage);
+    const { sessionId, tabId } = await startSessionFromTargetTab(popupPage, targetPage);
+    await expectMcpSeesLiveSession(mcp, sessionId);
+
+    await expect(targetPage.locator('#__bdmcp_automation_indicator__')).toContainText('Automation armed');
+
+    await targetPage.reload({ waitUntil: 'domcontentloaded' });
+    await expect(targetPage.locator('h1')).toHaveText('Live automation fixture');
+    await expect.poll(
+      async () => await targetPage.locator('#__bdmcp_automation_indicator__').textContent(),
+      { timeout: 10_000 },
+    ).toContain('Automation armed');
+
+    const pageState = await callToolJson<{ buttons?: Array<Record<string, unknown>> }>(mcp.client, 'get_page_state', {
+      sessionId,
+      tabId,
+      includeButtons: true,
+      maxItems: 10,
+    });
+    expect(pageState.buttons?.some((button) => button.selector === '#increment')).toBe(true);
+
+    const defaultPageState = await callToolJson<{ buttons?: Array<Record<string, unknown>> }>(mcp.client, 'get_page_state', {
+      sessionId,
+      includeButtons: true,
+      maxItems: 10,
+    });
+    expect(defaultPageState.buttons?.some((button) => button.selector === '#increment')).toBe(true);
+
+    const click = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: { selector: '#increment', tabId },
+      waitForPageState: {
+        scope: 'page',
+        urlContains: '/automation-fixture',
+        timeoutMs: 5_000,
+      },
+    });
+    expect(click.status).toBe('succeeded');
+    expect(click.actionResult?.result?.backend).toBe('cdp-native-v2');
+    await expect(targetPage.locator('#count')).toHaveText('1');
+  });
 });

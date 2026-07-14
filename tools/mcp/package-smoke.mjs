@@ -96,11 +96,15 @@ async function main() {
   const installedPackageRoot = join(installDir, 'node_modules', 'browser-debug-mcp-bridge');
   const launcher = join(installedPackageRoot, 'scripts', 'mcp-start.cjs');
   const cliLauncher = join(installedPackageRoot, 'scripts', 'browser-debug-cli.cjs');
+  const defaultOverrideConfig = join(installedPackageRoot, 'override-poc.config.json');
   if (!existsSync(launcher)) {
     throw new Error(`Installed launcher missing: ${launcher}`);
   }
   if (!existsSync(cliLauncher)) {
     throw new Error(`Installed CLI launcher missing: ${cliLauncher}`);
+  }
+  if (!existsSync(defaultOverrideConfig)) {
+    throw new Error(`Installed default override config missing: ${defaultOverrideConfig}`);
   }
   const packagedSkill = join(installedPackageRoot, '.agents', 'skills', 'browser-debug-cli', 'SKILL.md');
   if (!existsSync(packagedSkill)) {
@@ -200,14 +204,19 @@ async function main() {
 
     const tools = await client.listTools();
     const toolNames = tools.tools.map((tool) => tool.name);
-    const requiredTools = ['list_sessions', 'run_lighthouse_report', 'get_live_console_logs', 'run_ui_steps'];
-    for (const toolName of requiredTools) {
-      if (!toolNames.includes(toolName)) {
-        throw new Error(`Installed package did not expose required MCP tool: ${toolName}`);
-      }
+    const expectedTools = ['browser_debug', 'list_sessions'];
+    if (toolNames.length !== expectedTools.length || expectedTools.some((toolName) => !toolNames.includes(toolName))) {
+      throw new Error(`Installed package exposed unexpected compact MCP catalog: ${toolNames.join(', ')}`);
     }
-    if (toolNames.length < 70) {
-      throw new Error(`Installed package exposed too few MCP tools: ${toolNames.length}`);
+
+    const discoveryResult = await client.callTool({
+      name: 'browser_debug',
+      arguments: { query: 'lighthouse report' },
+    });
+    const discoveryText = discoveryResult.content.find((entry) => entry.type === 'text')?.text;
+    const discovery = JSON.parse(discoveryText ?? '{}');
+    if (!Array.isArray(discovery.tools) || !discovery.tools.some((tool) => tool.name === 'run_lighthouse_report')) {
+      throw new Error(`browser_debug did not discover run_lighthouse_report: ${discoveryText}`);
     }
 
     const sessionsResult = await client.callTool({

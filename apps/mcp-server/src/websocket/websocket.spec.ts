@@ -120,6 +120,64 @@ describe('WebSocket Server', () => {
       ws.close();
     });
 
+    it('should reject WebSocket connections from ordinary web page origins', async () => {
+      const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+        headers: { Origin: 'https://malicious.example' },
+      });
+
+      const statusCode = await new Promise<number>((resolve, reject) => {
+        ws.on('unexpected-response', (_request, response) => resolve(response.statusCode));
+        ws.on('open', () => reject(new Error('Web page origin unexpectedly connected')));
+        ws.on('error', () => undefined);
+      });
+
+      expect(statusCode).toBe(403);
+    });
+
+    it('should route a duplicate session only through the newest connection', async () => {
+      const first = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      const second = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+      await Promise.all([
+        new Promise<void>((resolve) => first.on('open', resolve)),
+        new Promise<void>((resolve) => second.on('open', resolve)),
+      ]);
+
+      const sessionStart: SessionStartMessage = {
+        type: 'session_start',
+        sessionId: 'duplicate-session',
+        url: 'https://example.com',
+        timestamp: Date.now(),
+        safeMode: false,
+      };
+      first.send(JSON.stringify(sessionStart));
+      await wait(50);
+
+      const firstClosed = new Promise<void>((resolve) => first.on('close', () => resolve()));
+      second.send(JSON.stringify(sessionStart));
+      await firstClosed;
+
+      const commandPromise = wsManager!.sendCaptureCommand(
+        'duplicate-session',
+        'CAPTURE_GET_PAGE_STATE',
+        {},
+        2000,
+      );
+      const command = await waitForMessage(second) as CaptureCommandMessage;
+      expect(command.type).toBe('capture_command');
+      expect(wsManager!.getSessionConnectionState('duplicate-session')?.connected).toBe(true);
+
+      second.send(JSON.stringify({
+        type: 'capture_result',
+        commandId: command.commandId,
+        sessionId: 'duplicate-session',
+        ok: true,
+        payload: {},
+        timestamp: Date.now(),
+      }));
+      await expect(commandPromise).resolves.toMatchObject({ ok: true });
+      second.close();
+    });
+
     it('should track connection stats', async () => {
       const ws1 = new WebSocket(`ws://127.0.0.1:${port}/ws`);
       const ws2 = new WebSocket(`ws://127.0.0.1:${port}/ws`);

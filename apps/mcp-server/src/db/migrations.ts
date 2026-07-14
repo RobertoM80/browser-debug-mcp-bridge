@@ -1152,6 +1152,85 @@ const migrations: Migration[] = [
       ensureLighthouseReportTables(db);
     },
   },
+  {
+    version: 20,
+    name: 'session_scoped_error_fingerprints',
+    up: (db) => {
+      if (!tableExists(db, 'error_fingerprints')) {
+        db.exec(`
+          CREATE TABLE error_fingerprints (
+            fingerprint TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 1,
+            sample_message TEXT NOT NULL,
+            sample_stack TEXT,
+            first_seen_at INTEGER NOT NULL,
+            last_seen_at INTEGER NOT NULL,
+            PRIMARY KEY (session_id, fingerprint),
+            FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+          );
+          CREATE INDEX idx_error_fingerprints_session_id ON error_fingerprints(session_id);
+          CREATE INDEX idx_error_fingerprints_count ON error_fingerprints(count);
+          CREATE INDEX idx_error_fingerprints_last_seen ON error_fingerprints(last_seen_at);
+        `);
+        return;
+      }
+
+      const migrate = db.transaction(() => {
+        db.exec(`
+          ALTER TABLE error_fingerprints RENAME TO error_fingerprints_legacy;
+
+          CREATE TABLE error_fingerprints (
+            fingerprint TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 1,
+            sample_message TEXT NOT NULL,
+            sample_stack TEXT,
+            first_seen_at INTEGER NOT NULL,
+            last_seen_at INTEGER NOT NULL,
+            PRIMARY KEY (session_id, fingerprint),
+            FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
+          );
+
+          INSERT INTO error_fingerprints (
+            fingerprint, session_id, count, sample_message, sample_stack, first_seen_at, last_seen_at
+          )
+          SELECT fingerprint, session_id, count, sample_message, sample_stack, first_seen_at, last_seen_at
+          FROM error_fingerprints_legacy;
+
+          DROP TABLE error_fingerprints_legacy;
+
+          CREATE INDEX idx_error_fingerprints_session_id ON error_fingerprints(session_id);
+          CREATE INDEX idx_error_fingerprints_count ON error_fingerprints(count);
+          CREATE INDEX idx_error_fingerprints_last_seen ON error_fingerprints(last_seen_at);
+        `);
+      });
+      migrate();
+    },
+  },
+  {
+    version: 21,
+    name: 'diagnostic_query_covering_indexes',
+    up: (db) => {
+      if (tableExists(db, 'events')) {
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_events_session_ts
+            ON events(session_id, ts DESC);
+          CREATE INDEX IF NOT EXISTS idx_events_session_type_ts
+            ON events(session_id, type, ts DESC);
+        `);
+      }
+      if (tableExists(db, 'network')) {
+        db.exec('CREATE INDEX IF NOT EXISTS idx_network_session_ts ON network(session_id, ts_start DESC);');
+      }
+      if (tableExists(db, 'error_fingerprints')) {
+        db.exec(`
+          CREATE INDEX IF NOT EXISTS idx_error_fingerprints_session_rank
+            ON error_fingerprints(session_id, count DESC, last_seen_at DESC);
+        `);
+      }
+    },
+  },
 ];
 
 export function runMigrations(db: Database): void {

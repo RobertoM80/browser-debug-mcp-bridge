@@ -9,6 +9,7 @@ The MV3 extension contains:
 
 ## Session tab isolation
 
+- Page hooks and content-script event processing remain dormant until a bound session is active, and return to dormant on pause or stop.
 - Starting a session binds capture to the current active tab.
 - Events from other tabs are ignored unless explicitly added.
 - The popup `Session Tabs` panel lets you add/remove tabs for the active session.

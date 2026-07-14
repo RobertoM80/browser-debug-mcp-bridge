@@ -22,6 +22,30 @@ describe('content-script capture', () => {
     history.replaceState({}, '', '/start');
   });
 
+  it('does not process page events while capture is inactive', () => {
+    document.body.innerHTML = '<button id="inactive-button">Ignored</button>';
+    const sendMessage = vi.fn((_message: unknown, callback?: () => void) => callback?.());
+    const cleanup = installContentCapture({
+      runtime: createRuntimeMock(sendMessage),
+      captureEnabled: false,
+    });
+
+    document.getElementById('inactive-button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    history.pushState({}, '', '/inactive');
+    window.dispatchEvent(new MessageEvent('message', {
+      data: {
+        source: BRIDGE_SOURCE,
+        kind: BRIDGE_KIND,
+        eventType: 'console',
+        data: { level: 'error', message: 'ignored' },
+      },
+      source: window,
+    }));
+
+    expect(sendMessage).not.toHaveBeenCalled();
+    cleanup();
+  });
+
   it('captures navigation events from history updates', () => {
     const sendMessage = vi.fn((_message: unknown, callback?: () => void) => {
       callback?.();

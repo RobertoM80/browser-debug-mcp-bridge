@@ -13,6 +13,7 @@ interface BridgePayload {
 
 interface InjectedCaptureOptions {
   win?: Window;
+  captureEnabled?: boolean;
 }
 
 type ConsoleLevel = 'log' | 'info' | 'warn' | 'error' | 'debug' | 'trace';
@@ -440,10 +441,11 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
     captureBodies: false,
     maxBodyBytes: DEFAULT_MAX_BODY_BYTES,
   };
+  let captureEnabled = options.captureEnabled ?? true;
   let lastTraceHint: TraceHint | null = null;
   let lastUrl = win.location.href;
 
-  const emit = (eventType: string, data: Record<string, unknown>): void => {
+  const post = (eventType: string, data: Record<string, unknown>): void => {
     const payload: BridgePayload = {
       source: BRIDGE_SOURCE,
       kind: BRIDGE_KIND,
@@ -451,6 +453,11 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
       data,
     };
     win.postMessage(payload, '*');
+  };
+  const emit = (eventType: string, data: Record<string, unknown>): void => {
+    if (captureEnabled) {
+      post(eventType, data);
+    }
   };
 
   const resolveTraceContext = (startedAt: number): { traceId: string; eventType?: string; selector?: string } => {
@@ -471,6 +478,10 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
     originalFn: T
   ): T => {
     const wrapped = (...args: unknown[]): void => {
+      if (!captureEnabled) {
+        originalFn.apply(console, args);
+        return;
+      }
       emit('console', {
         level,
         args: args.map(serializeArg),
@@ -483,6 +494,9 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
   };
 
   const onRuntimeError = (event: ErrorEvent): void => {
+    if (!captureEnabled) {
+      return;
+    }
     const details = extractErrorDetails(event.error ?? event.message);
     emit('error', {
       message: details.message,
@@ -496,6 +510,9 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
   };
 
   const onUnhandledRejection = (event: Event): void => {
+    if (!captureEnabled) {
+      return;
+    }
     const reason = (event as Event & { reason?: unknown }).reason;
     const details = extractErrorDetails(reason);
     emit('error', {
@@ -538,6 +555,9 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
 
     if (payload.controlType === 'network_config') {
       const data = payload.data ?? {};
+      if (typeof data.captureEnabled === 'boolean') {
+        captureEnabled = data.captureEnabled;
+      }
       networkConfig = {
         captureBodies: data.captureBodies === true,
         maxBodyBytes: normalizeMaxBodyBytes(data.maxBodyBytes),
@@ -605,6 +625,9 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
 
   if (originalFetch) {
     win.fetch = (async (...args: Parameters<typeof fetch>) => {
+      if (!captureEnabled) {
+        return originalFetch(...args);
+      }
       const startedAt = Date.now();
       const [input, init] = args;
       const method = parseFetchMethod(input, init);
@@ -671,6 +694,10 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
       username?: string | null,
       password?: string | null
     ): void {
+      if (!captureEnabled) {
+        originalXhrOpen.call(this, method, url, async ?? true, username ?? null, password ?? null);
+        return;
+      }
       const startedAt = Date.now();
       const requestId = makeRequestId(requestCounter);
       const trace = resolveTraceContext(startedAt);
@@ -696,6 +723,11 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
     };
 
     xhrPrototype.send = function send(body?: Document | XMLHttpRequestBodyInit | null): void {
+      if (!captureEnabled) {
+        xhrCaptures.delete(this);
+        originalXhrSend.call(this, body ?? null);
+        return;
+      }
       const capture = xhrCaptures.get(this);
       if (capture) {
         capture.startedAt = Date.now();
@@ -766,7 +798,7 @@ export function installInjectedCapture(options: InjectedCaptureOptions = {}): ()
   win.addEventListener('popstate', onPopState);
   win.addEventListener('hashchange', onHashChange);
 
-  emit('custom', {
+  post('custom', {
     marker: 'injected_script_loaded',
     url: win.location.href,
     timestamp: Date.now(),
@@ -801,7 +833,7 @@ if (typeof window !== 'undefined') {
   const guard = window as Window & { __BDMCP_INJECTED_CAPTURE_INSTALLED__?: boolean };
   if (!guard.__BDMCP_INJECTED_CAPTURE_INSTALLED__) {
     guard.__BDMCP_INJECTED_CAPTURE_INSTALLED__ = true;
-    installInjectedCapture();
+    installInjectedCapture({ captureEnabled: false });
   }
   console.log('[BrowserDebug][InjectedScript] Loaded');
 }

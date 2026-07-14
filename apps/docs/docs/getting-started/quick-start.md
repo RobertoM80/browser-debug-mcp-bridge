@@ -8,7 +8,7 @@
 
 ## Fast path (no repo clone, recommended)
 
-Studio or MCPS is not required for this path. Configure any MCP host that supports command/args stdio with the launcher below and it will expose the same Browser Debug MCP Bridge tools.
+Studio or MCPS is not required for this path. Configure any MCP host that supports command/args stdio with the launcher below. The default compact catalog exposes `list_sessions` and `browser_debug`; use `browser_debug` to discover and execute every other tool. Set `MCP_TOOL_CATALOG=full` for the legacy all-tools catalog.
 
 ```bash
 npm i -g browser-debug-mcp-bridge

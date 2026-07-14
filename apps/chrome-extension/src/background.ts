@@ -30,6 +30,9 @@ import {
   SnapshotPngUsage,
 } from './snapshot-capture';
 import { OverridePocController, type OverridePocStatus } from './override-poc';
+import {
+  normalizeOverrideResponseCaptureBytes,
+} from './override-response-capture-limits';
 import { redactSnapshotRecord } from '../../../libs/redaction/src';
 import {
   executeNativeBlurAction,
@@ -41,6 +44,11 @@ import {
   executeNativeScrollAction,
   executeNativeSubmitAction,
 } from './automation-native';
+import {
+  buildPreferredCaptureTabIds,
+  shouldRetryGenericCaptureResult,
+  type GenericCaptureCommand,
+} from './live-capture-routing';
 
 type RuntimeRequest =
   | { type: 'SESSION_GET_STATE' }
@@ -111,6 +119,7 @@ interface CapturePingResponse {
 }
 
 interface CaptureConfigUpdatePayload {
+  captureEnabled: boolean;
   network: {
     captureBodies: boolean;
     maxBodyBytes: number;
@@ -158,6 +167,7 @@ const snapshotPngUsageBySession = new Map<string, SnapshotPngUsage>();
 const captureTabBySession = new Map<string, { tabId: number; windowId?: number }>();
 const sessionTabScopeBySession = new Map<string, SessionTabScope>();
 const overridePocTargetTabBySession = new Map<string, number>();
+const sessionTabRecoveryTimers = new Map<number, ReturnType<typeof setTimeout>>();
 const liveConsoleBufferStore = new LiveConsoleBufferStore();
 let overridePocDiagnosisCache: {
   key: string;
@@ -624,6 +634,16 @@ function isTabAllowedForSession(sessionId: string, tabId?: number): boolean {
 
 function cleanupSessionLocalState(sessionId: string): void {
   snapshotPngUsageBySession.delete(sessionId);
+  const remembered = captureTabBySession.get(sessionId);
+  if (remembered) {
+    clearSessionTabRecoveryTimer(remembered.tabId);
+  }
+  const scope = sessionTabScopeBySession.get(sessionId);
+  if (scope) {
+    for (const tabId of scope.allowedTabIds) {
+      clearSessionTabRecoveryTimer(tabId);
+    }
+  }
   captureTabBySession.delete(sessionId);
   sessionTabScopeBySession.delete(sessionId);
   overridePocTargetTabBySession.delete(sessionId);
@@ -1122,8 +1142,6 @@ async function executeScriptInTab<T>(
   return firstResult.result as T;
 }
 
-const DEFAULT_OVERRIDE_RESPONSE_CAPTURE_BYTES = 256 * 1024;
-const MAX_OVERRIDE_RESPONSE_CAPTURE_BYTES = 1024 * 1024;
 const DEFAULT_OVERRIDE_RESPONSE_CAPTURE_TIMEOUT_MS = 10_000;
 const MAX_OVERRIDE_RESPONSE_CAPTURE_TIMEOUT_MS = 60_000;
 const BLOCKED_OVERRIDE_CAPTURE_HEADERS = new Set([
@@ -1211,18 +1229,6 @@ interface CdpDownloadProgressPayload {
   totalBytes?: number;
   receivedBytes?: number;
   state?: 'inProgress' | 'completed' | 'canceled';
-}
-
-function normalizeOverrideResponseCaptureBytes(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return DEFAULT_OVERRIDE_RESPONSE_CAPTURE_BYTES;
-  }
-
-  const floored = Math.floor(value);
-  if (floored < 1024) {
-    return DEFAULT_OVERRIDE_RESPONSE_CAPTURE_BYTES;
-  }
-  return Math.min(floored, MAX_OVERRIDE_RESPONSE_CAPTURE_BYTES);
 }
 
 function normalizeOverrideResponseCaptureTimeoutMs(value: unknown): number {
@@ -3051,21 +3057,18 @@ async function resolveCaptureTab(sessionId: string): Promise<chrome.tabs.Tab | u
   const scope = getSessionTabScope(sessionId);
   const allowedTabIds = scope ? Array.from(scope.allowedTabIds) : [];
 
+  const active = await getActiveTab();
   const remembered = captureTabBySession.get(sessionId);
-  if (remembered && (!scope || scope.allowedTabIds.has(remembered.tabId))) {
-    try {
-      const tab = await chrome.tabs.get(remembered.tabId);
-      if (tab && typeof tab.id === 'number') {
-        rememberCaptureTabForSession(sessionId, tab);
-        return tab;
-      }
-    } catch {
-      captureTabBySession.delete(sessionId);
-      void persistSessionBindings(chrome.storage.local);
-    }
-  }
+  const candidateTabIds = buildPreferredCaptureTabIds({
+    activeTabId: typeof active?.id === 'number' ? active.id : undefined,
+    rememberedTabId: remembered?.tabId,
+    allowedTabIds,
+  });
 
-  for (const candidateTabId of allowedTabIds) {
+  for (const candidateTabId of candidateTabIds) {
+    if (scope && !scope.allowedTabIds.has(candidateTabId)) {
+      continue;
+    }
     try {
       const tab = await chrome.tabs.get(candidateTabId);
       if (tab && typeof tab.id === 'number') {
@@ -3078,12 +3081,6 @@ async function resolveCaptureTab(sessionId: string): Promise<chrome.tabs.Tab | u
         void persistSessionBindings(chrome.storage.local);
       }
     }
-  }
-
-  const active = await getActiveTab();
-  if (active && typeof active.id === 'number' && (!scope || scope.allowedTabIds.has(active.id))) {
-    rememberCaptureTabForSession(sessionId, active);
-    return active;
   }
 
   return undefined;
@@ -3704,9 +3701,43 @@ async function capturePageStateAcrossFrames(
   return mergeFramePageStates(captures, maxItems);
 }
 
+async function executeRetriableGenericCapture(
+  tabId: number,
+  command: GenericCaptureCommand,
+  payload: Record<string, unknown>,
+  frameId?: number,
+): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
+  let capture = command === 'CAPTURE_PAGE_STATE'
+    ? await capturePageStateAcrossFrames(tabId, payload)
+    : await sendCaptureCommandToTab(tabId, command, payload, true, frameId);
+
+  if (!shouldRetryGenericCaptureResult(command, capture.payload)) {
+    return capture;
+  }
+
+  await sleep(150);
+  const contentReady = await ensureContentScriptReady(tabId);
+  if (!contentReady) {
+    return capture;
+  }
+
+  capture = command === 'CAPTURE_PAGE_STATE'
+    ? await capturePageStateAcrossFrames(tabId, payload)
+    : await sendCaptureCommandToTab(tabId, command, payload, true, frameId);
+
+  return capture;
+}
+
 function buildCaptureConfigUpdatePayload(sessionId?: string): CaptureConfigUpdatePayload {
   const automationStatus = getAutomationStatus();
+  const sessionState = sessionManager.getState();
   return {
+    captureEnabled: Boolean(
+      sessionId
+      && sessionState.sessionId === sessionId
+      && sessionState.isActive
+      && !sessionState.isPaused,
+    ),
     network: {
       captureBodies: captureConfig.network.captureBodies === true,
       maxBodyBytes: captureConfig.network.maxBodyBytes,
@@ -3742,6 +3773,20 @@ async function sendCaptureConfigUpdateToTab(tabId: number, payload: CaptureConfi
   });
 }
 
+async function syncCaptureConfigToTab(sessionId: string, tabId: number): Promise<boolean> {
+  const ready = await ensureContentScriptReady(tabId);
+  if (!ready) {
+    return false;
+  }
+
+  try {
+    await sendCaptureConfigUpdateToTab(tabId, buildCaptureConfigUpdatePayload(sessionId));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function getSessionBoundTabIds(sessionId: string): number[] {
   const scope = getSessionTabScope(sessionId);
   const tabIds = new Set<number>();
@@ -3761,7 +3806,6 @@ function getSessionBoundTabIds(sessionId: string): number[] {
 }
 
 async function syncCaptureConfigToSessionTabs(sessionId: string): Promise<void> {
-  const payload = buildCaptureConfigUpdatePayload(sessionId);
   const tabIds = getSessionBoundTabIds(sessionId);
   if (tabIds.length === 0) {
     return;
@@ -3769,18 +3813,71 @@ async function syncCaptureConfigToSessionTabs(sessionId: string): Promise<void> 
 
   await Promise.all(
     tabIds.map(async (tabId) => {
-      const ready = await ensureContentScriptReady(tabId);
-      if (!ready) {
+      await syncCaptureConfigToTab(sessionId, tabId);
+    }),
+  );
+}
+
+function clearSessionTabRecoveryTimer(tabId: number): void {
+  const existing = sessionTabRecoveryTimers.get(tabId);
+  if (!existing) {
+    return;
+  }
+
+  clearTimeout(existing);
+  sessionTabRecoveryTimers.delete(tabId);
+}
+
+function scheduleBoundTabRecovery(tabId: number, tab?: chrome.tabs.Tab): void {
+  const state = sessionManager.getState();
+  if (!state.sessionId || !state.isActive || state.isPaused) {
+    clearSessionTabRecoveryTimer(tabId);
+    return;
+  }
+
+  if (!isTabAllowedForSession(state.sessionId, tabId)) {
+    clearSessionTabRecoveryTimer(tabId);
+    return;
+  }
+
+  const tabUrl = tab?.url ?? '';
+  if (tabUrl && !isUrlAllowed(tabUrl, captureConfig.allowlist)) {
+    clearSessionTabRecoveryTimer(tabId);
+    return;
+  }
+
+  clearSessionTabRecoveryTimer(tabId);
+  const timer = setTimeout(() => {
+    sessionTabRecoveryTimers.delete(tabId);
+    void (async () => {
+      const latestState = sessionManager.getState();
+      if (!latestState.sessionId || !latestState.isActive || latestState.isPaused) {
+        return;
+      }
+
+      if (!isTabAllowedForSession(latestState.sessionId, tabId)) {
         return;
       }
 
       try {
-        await sendCaptureConfigUpdateToTab(tabId, payload);
+        const latestTab = await chrome.tabs.get(tabId);
+        if (!latestTab || typeof latestTab.id !== 'number') {
+          return;
+        }
+
+        if (!isUrlAllowed(latestTab.url ?? '', captureConfig.allowlist)) {
+          return;
+        }
+
+        rememberCaptureTabForSession(latestState.sessionId, latestTab);
+        await syncCaptureConfigToTab(latestState.sessionId, tabId);
       } catch {
-        // Ignore per-tab config update failures; tab may have navigated/disconnected.
+        // Tab may have navigated away or been closed while recovery was pending.
       }
-    }),
-  );
+    })();
+  }, 250);
+
+  sessionTabRecoveryTimers.set(tabId, timer);
 }
 
 async function executeCaptureCommand(
@@ -4433,9 +4530,21 @@ async function executeCaptureCommand(
     };
   }
 
-  const tab = await resolveCaptureTab(context.sessionId);
+  const requestedTabId = resolveLiveConsoleTabId(payload.tabId);
+  const sessionScope = getSessionTabScope(context.sessionId);
+  if (requestedTabId !== undefined && sessionScope && !sessionScope.allowedTabIds.has(requestedTabId)) {
+    throw new Error(`tabId ${requestedTabId} is not bound to this session`);
+  }
+
+  const tab = requestedTabId !== undefined
+    ? await chrome.tabs.get(requestedTabId).catch(() => undefined)
+    : await resolveCaptureTab(context.sessionId);
   if (!tab || tab.id === undefined) {
     throw new Error('No tab available for this session capture');
+  }
+
+  if (!isTabAllowedForSession(context.sessionId, tab.id)) {
+    throw new Error(`tabId ${tab.id} is not bound to this session`);
   }
 
   rememberCaptureTabForSession(context.sessionId, tab);
@@ -4447,7 +4556,7 @@ async function executeCaptureCommand(
   }
 
   try {
-    await sendCaptureConfigUpdateToTab(tabId, buildCaptureConfigUpdatePayload());
+    await sendCaptureConfigUpdateToTab(tabId, buildCaptureConfigUpdatePayload(context.sessionId));
   } catch {
     // Best effort; capture can continue with injected defaults.
   }
@@ -4487,7 +4596,7 @@ async function executeCaptureCommand(
   }
 
   if (command === 'CAPTURE_PAGE_STATE') {
-    return capturePageStateAcrossFrames(tabId, payload);
+    return executeRetriableGenericCapture(tabId, 'CAPTURE_PAGE_STATE', payload);
   }
 
   if (command === 'CAPTURE_UI_SNAPSHOT') {
@@ -4641,6 +4750,10 @@ async function executeCaptureCommand(
       payload: responseSnapshot,
       truncated: truncated || redactedSnapshot.metadata.blockedPng,
     };
+  }
+
+  if (command === 'CAPTURE_DOM_DOCUMENT' || command === 'CAPTURE_DOM_SUBTREE') {
+    return executeRetriableGenericCapture(tabId, command, payload, resolveCaptureFrameId(payload.frameId));
   }
 
   return sendCaptureCommandToTab(tabId, command, payload, true, resolveCaptureFrameId(payload.frameId));
@@ -5067,6 +5180,7 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
 
         await overridePocController.disable().catch(() => undefined);
         const paused = sessionManager.pauseSession();
+        await syncCaptureConfigToSessionTabs(state.sessionId).catch(() => undefined);
         syncAutomationBadge();
         return { ok: true as const, state: paused };
       }).catch((error) => ({
@@ -5117,7 +5231,6 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
             if (!contentReady) {
               throw new Error('Content script is not available on the active tab. Reload the page and retry.');
             }
-            await syncCaptureConfigToSessionTabs(sessionId);
           }
 
           const resumeTabContext = buildSessionContextFromTab(resumeTab);
@@ -5134,6 +5247,7 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
             dpr: resumeTabContext.dpr,
             safeMode: captureConfig.safeMode,
           });
+          await syncCaptureConfigToSessionTabs(sessionId);
 
           sessionManager.queueEvent('custom', {
             marker: 'session_resumed',
@@ -5226,10 +5340,11 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
       return Promise.resolve().then(async () => {
         await overridePocController.disable().catch(() => undefined);
         const activeSessionId = sessionManager.getState().sessionId;
+        const stopped = sessionManager.stopSession();
         if (activeSessionId) {
+          await syncCaptureConfigToSessionTabs(activeSessionId).catch(() => undefined);
           cleanupSessionLocalState(activeSessionId);
         }
-        const stopped = sessionManager.stopSession();
         syncAutomationBadge();
         return { ok: true as const, state: stopped };
       });
@@ -5559,6 +5674,10 @@ function handleRequest(request: RuntimeRequest, sender: chrome.runtime.MessageSe
             baseOrigin: scope.baseOrigin,
             allowedTabIds: Array.from(scope.allowedTabIds),
           });
+          await sendCaptureConfigUpdateToTab(requestedTabId, {
+            ...buildCaptureConfigUpdatePayload(sessionState.sessionId),
+            captureEnabled: false,
+          }).catch(() => undefined);
           const remembered = captureTabBySession.get(sessionState.sessionId);
           if (remembered?.tabId === requestedTabId) {
             captureTabBySession.delete(sessionState.sessionId);
@@ -5716,7 +5835,16 @@ chrome.runtime.onMessage.addListener((request: RuntimeRequest, _sender, sendResp
   return true;
 });
 
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (changeInfo.status !== 'complete') {
+    return;
+  }
+
+  scheduleBoundTabRecovery(tabId, tab);
+});
+
 chrome.tabs.onRemoved.addListener((tabId) => {
+  clearSessionTabRecoveryTimer(tabId);
   const state = sessionManager.getState();
   if (!state.sessionId || !state.isActive) {
     return;

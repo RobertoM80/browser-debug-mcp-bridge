@@ -108,6 +108,7 @@ export interface MCPServerOptions {
   logger?: MCPLogger;
   getSessionConnectionState?: (sessionId: string) => SessionConnectionLookupResult | undefined;
   loopGuard?: ToolLoopGuard | false;
+  toolCatalog?: 'compact' | 'full';
 }
 
 export interface MCPLogger {
@@ -845,6 +846,15 @@ const AUTOMATION_WAIT_TOOL_SCHEMA = {
 };
 
 const TOOL_SCHEMAS: Record<string, object> = {
+  browser_debug: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Find tools by capability, name, or description.' },
+      tool: { type: 'string', description: 'Execute a tool returned by a query.' },
+      arguments: { type: 'object', description: 'Arguments for the selected tool.' },
+      limit: { type: 'number', description: 'Maximum search results (default 5, max 10).' },
+    },
+  },
   list_sessions: {
     type: 'object',
     properties: {
@@ -914,6 +924,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       level: { type: 'string' },
       sinceMinutes: { type: 'number' },
       limit: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
     },
   },
   get_event_summary: {
@@ -985,6 +996,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       traceId: { type: 'string' },
       includeBodies: { type: 'boolean' },
       eventLimit: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
     },
   },
   get_body_chunk: {
@@ -1013,6 +1025,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     required: ['sessionId', 'selector'],
     properties: {
       sessionId: { type: 'string' },
+      tabId: { type: 'number' },
       selector: { type: 'string' },
       maxDepth: { type: 'number' },
       maxBytes: { type: 'number' },
@@ -1023,7 +1036,10 @@ const TOOL_SCHEMAS: Record<string, object> = {
     required: ['sessionId'],
     properties: {
       sessionId: { type: 'string' },
+      tabId: { type: 'number' },
       mode: { type: 'string' },
+      maxBytes: { type: 'number' },
+      maxDepth: { type: 'number' },
     },
   },
   get_computed_styles: {
@@ -1050,6 +1066,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     required: ['sessionId'],
     properties: {
       sessionId: { type: 'string' },
+      tabId: { type: 'number' },
       maxItems: { type: 'number' },
       maxTextLength: { type: 'number' },
       includeButtons: { type: 'boolean' },
@@ -1063,6 +1080,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     required: ['sessionId'],
     properties: {
       sessionId: { type: 'string' },
+      tabId: { type: 'number' },
       kinds: {
         type: 'array',
         items: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused'] },
@@ -1762,6 +1780,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       lookbackSeconds: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
     },
   },
   get_event_correlation: {
@@ -1771,6 +1790,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       sessionId: { type: 'string' },
       eventId: { type: 'string' },
       windowSeconds: { type: 'number' },
+      maxResponseBytes: { type: 'number' },
     },
   },
   list_snapshots: {
@@ -2124,6 +2144,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
 };
 
 const TOOL_DESCRIPTIONS: Record<string, string> = {
+  browser_debug: 'Find and execute any Browser Debug tool on demand. Use query to discover a tool and its schema, then tool plus arguments to execute it.',
   list_sessions: 'List captured debugging sessions',
   get_session_summary: 'Get summary counters for one session',
   get_recent_events: 'Read recent events from a session',
@@ -2209,6 +2230,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 };
 
 const ALL_TOOLS = Object.keys(TOOL_SCHEMAS);
+const COMPACT_MCP_TOOL_NAMES = new Set(['browser_debug', 'list_sessions']);
 
 const DEFAULT_REDACTION_SUMMARY: RedactionSummary = {
   totalFields: 0,
@@ -2851,7 +2873,8 @@ function buildOverrideProfileRecords(): Record<string, unknown>[] {
 
 function resolveOverrideProfileRecord(value: unknown): Record<string, unknown> {
   const profiles = buildOverrideProfileRecords();
-  const fallbackProfileId = typeof profiles[0]?.profileId === 'string' ? profiles[0].profileId : 'poc';
+  const activeProfile = profiles.find((profile) => profile.active === true) ?? profiles[0];
+  const fallbackProfileId = typeof activeProfile?.profileId === 'string' ? activeProfile.profileId : 'poc';
   const requestedProfileId = typeof value === 'string' && value.trim().length > 0 ? value.trim() : fallbackProfileId;
   const profile = profiles.find((candidate) => candidate.profileId === requestedProfileId);
   if (!profile) {
@@ -3506,8 +3529,21 @@ function buildOverridePreflight(options: {
     || observedAssetsWithKnownTabs.length === 0
     || observedAssetsWithKnownTabs.some((asset) => asset.tabId === sessionTabId);
 
+  if (profile.active !== true) {
+    pushOverridePreflightIssue(issues, {
+      code: 'PROFILE_NOT_ACTIVE',
+      severity: 'error',
+      source: 'profile',
+      message: `Profile ${String(profile.profileId ?? 'unknown')} is not active; activate it in the override config before enabling it.`,
+    });
+  }
+
   for (const issue of buildOverrideProfileIssues(profile)) {
-    pushOverridePreflightIssue(issues, { ...issue, source: 'profile' });
+    pushOverridePreflightIssue(issues, {
+      ...issue,
+      severity: issue.code === 'PROFILE_DISABLED' ? 'error' : issue.severity,
+      source: 'profile',
+    });
   }
 
   if (!session) {
@@ -8886,6 +8922,7 @@ export function createV1ToolHandlers(
         ? Math.floor(input.sinceMinutes)
         : undefined;
       const limit = resolveLimit(input.limit, 10);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
 
       const where: string[] = ["type = 'console'"];
       const params: unknown[] = [];
@@ -8957,11 +8994,20 @@ export function createV1ToolHandlers(
         last_ts: number;
       }>;
 
+      const messages = topMessages.map((entry) => ({
+        level: entry.level,
+        message: entry.message,
+        count: entry.count,
+        firstSeenAt: entry.first_ts,
+        lastSeenAt: entry.last_ts,
+      }));
+      const bytePage = applyByteBudget(messages, maxResponseBytes);
+
       return {
         ...createBaseResponse(sessionId),
         limitsApplied: {
           maxResults: limit,
-          truncated: false,
+          truncated: bytePage.truncatedByBytes,
         },
         counts: {
           total: totals.total ?? 0,
@@ -8976,13 +9022,8 @@ export function createV1ToolHandlers(
         },
         firstSeenAt: totals.first_ts ?? undefined,
         lastSeenAt: totals.last_ts ?? undefined,
-        topMessages: topMessages.map((entry) => ({
-          level: entry.level,
-          message: entry.message,
-          count: entry.count,
-          firstSeenAt: entry.first_ts,
-          lastSeenAt: entry.last_ts,
-        })),
+        responseBytes: bytePage.responseBytes,
+        topMessages: bytePage.items,
       };
     },
 
@@ -9441,6 +9482,7 @@ export function createV1ToolHandlers(
       const requestId = normalizeOptionalString(input.requestId);
       const traceIdInput = normalizeOptionalString(input.traceId);
       const eventLimit = resolveLimit(input.eventLimit, DEFAULT_EVENT_LIMIT);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
 
       if (!requestId && !traceIdInput) {
         throw new Error('requestId or traceId is required');
@@ -9497,18 +9539,24 @@ export function createV1ToolHandlers(
         : [];
       const eventsTruncated = eventRows.length > eventLimit;
       const correlatedEvents = eventRows.slice(0, eventLimit).map((row) => mapEventRecord(row));
+      const taggedItems = [
+        ...networkRows.map((row) => ({ kind: 'network' as const, value: mapNetworkCallRecord(row, includeBodies) })),
+        ...correlatedEvents.map((event) => ({ kind: 'event' as const, value: event })),
+      ];
+      const bytePage = applyByteBudget(taggedItems, maxResponseBytes);
 
       return {
         ...createBaseResponse(traceSessionId),
         limitsApplied: {
           maxResults: eventLimit,
-          truncated: eventsTruncated,
+          truncated: eventsTruncated || bytePage.truncatedByBytes,
         },
         traceId: traceId ?? undefined,
         requestId: requestId ?? anchor?.request_id ?? undefined,
         anchorRequest: anchor ? mapNetworkCallRecord(anchor, includeBodies) : undefined,
-        networkCalls: networkRows.map((row) => mapNetworkCallRecord(row, includeBodies)),
-        correlatedEvents,
+        responseBytes: bytePage.responseBytes,
+        networkCalls: bytePage.items.filter((item) => item.kind === 'network').map((item) => item.value),
+        correlatedEvents: bytePage.items.filter((item) => item.kind === 'event').map((item) => item.value),
       };
     },
 
@@ -9597,6 +9645,7 @@ export function createV1ToolHandlers(
       }
 
       const lookbackSeconds = resolveWindowSeconds(input.lookbackSeconds, 30, 300);
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
       const windowMs = lookbackSeconds * 1000;
 
       const latestErrorEvent = db
@@ -9713,12 +9762,13 @@ export function createV1ToolHandlers(
       }
 
       const explanation = `Latest failure at ${anchorTs} with a ${lookbackSeconds}s correlation window.`;
+      const bytePage = applyByteBudget(timeline, maxResponseBytes);
 
       return {
         ...createBaseResponse(sessionId),
         limitsApplied: {
-          maxResults: timeline.length,
-          truncated: timeline.length >= 60,
+          maxResults: 60,
+          truncated: timeline.length >= 60 || bytePage.truncatedByBytes,
         },
         explanation,
         rootCause,
@@ -9726,7 +9776,8 @@ export function createV1ToolHandlers(
           type: anchorType,
           timestamp: anchorTs,
         },
-        timeline,
+        responseBytes: bytePage.responseBytes,
+        timeline: bytePage.items,
       };
     },
 
@@ -9741,6 +9792,7 @@ export function createV1ToolHandlers(
       if (!eventId) {
         throw new Error('eventId is required');
       }
+      const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
 
       const anchorEvent = db
         .prepare(`
@@ -9818,12 +9870,13 @@ export function createV1ToolHandlers(
           return Math.abs(a.deltaMs) - Math.abs(b.deltaMs);
         })
         .slice(0, 50);
+      const bytePage = applyByteBudget(correlations, maxResponseBytes);
 
       return {
         ...createBaseResponse(sessionId),
         limitsApplied: {
           maxResults: 50,
-          truncated: nearbyEvents.length + nearbyNetworkFailures.length > 50,
+          truncated: nearbyEvents.length + nearbyNetworkFailures.length > 50 || bytePage.truncatedByBytes,
         },
         anchorEvent: {
           eventId: anchorEvent.event_id,
@@ -9832,7 +9885,8 @@ export function createV1ToolHandlers(
           payload: readJsonPayload(anchorEvent.payload_json),
         },
         windowSeconds,
-        correlatedEvents: correlations,
+        responseBytes: bytePage.responseBytes,
+        correlatedEvents: bytePage.items,
       };
     },
 
@@ -10401,6 +10455,7 @@ export function createV2ToolHandlers(
         includeLinks,
         includeInputs,
         includeModals,
+        tabId: resolveOptionalTabId(input.tabId),
       },
       4_000,
     );
@@ -11084,7 +11139,7 @@ export function createV2ToolHandlers(
         captureClient,
         sessionId,
         'CAPTURE_DOM_SUBTREE',
-        { selector, maxDepth, maxBytes },
+        { selector, maxDepth, maxBytes, tabId: resolveOptionalTabId(input.tabId) },
         4_000,
       );
 
@@ -11113,7 +11168,7 @@ export function createV2ToolHandlers(
           captureClient,
           sessionId,
           'CAPTURE_DOM_DOCUMENT',
-          { mode, maxBytes, maxDepth },
+          { mode, maxBytes, maxDepth, tabId: resolveOptionalTabId(input.tabId) },
           4_000,
         );
 
@@ -11135,7 +11190,7 @@ export function createV2ToolHandlers(
           captureClient,
           sessionId,
           'CAPTURE_DOM_DOCUMENT',
-          { mode: 'outline', maxBytes, maxDepth },
+          { mode: 'outline', maxBytes, maxDepth, tabId: resolveOptionalTabId(input.tabId) },
           4_000,
         );
 
@@ -12337,6 +12392,56 @@ export async function routeToolCall(
   input: unknown,
   options: { loopGuard?: ToolLoopGuard } = {},
 ): Promise<ToolResponse> {
+  if (toolName === 'browser_debug') {
+    const normalizedInput = isRecord(input) ? input : {};
+    const query = typeof normalizedInput.query === 'string' ? normalizedInput.query.trim().toLowerCase() : '';
+    const selectedTool = typeof normalizedInput.tool === 'string' ? normalizedInput.tool.trim() : '';
+
+    if ((query && selectedTool) || (!query && !selectedTool)) {
+      throw new Error('browser_debug requires exactly one of query or tool');
+    }
+
+    if (selectedTool) {
+      if (selectedTool === 'browser_debug') {
+        throw new Error('browser_debug cannot execute itself');
+      }
+      if (normalizedInput.arguments !== undefined && !isRecord(normalizedInput.arguments)) {
+        throw new Error('browser_debug arguments must be an object');
+      }
+      return routeToolCall(tools, selectedTool, normalizedInput.arguments ?? {}, options);
+    }
+
+    const queryWords = query.split(/\s+/);
+    const requestedLimit = typeof normalizedInput.limit === 'number' && Number.isFinite(normalizedInput.limit)
+      ? Math.floor(normalizedInput.limit)
+      : 5;
+    const limit = Math.max(1, Math.min(requestedLimit, 10));
+    const matchingTools = tools
+      .filter((tool) => tool.name !== 'browser_debug')
+      .filter((tool) => {
+        const haystack = `${tool.name} ${tool.description}`.toLowerCase();
+        return queryWords.every((word) => haystack.includes(word));
+      })
+      .sort((left, right) => {
+        const leftRank = left.name === query ? 0 : left.name.includes(query) ? 1 : 2;
+        const rightRank = right.name === query ? 0 : right.name.includes(query) ? 1 : 2;
+        return leftRank - rightRank || left.name.localeCompare(right.name);
+      });
+    const matches = matchingTools
+      .slice(0, limit)
+      .map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
+
+    return attachResponseBytes({
+      ...createBaseResponse(),
+      limitsApplied: {
+        maxResults: limit,
+        truncated: matchingTools.length > matches.length,
+      },
+      query,
+      tools: matches,
+    });
+  }
+
   const tool = tools.find((candidate) => candidate.name === toolName);
   if (!tool) {
     throw new Error(`Unknown tool: ${toolName}`);
@@ -12383,6 +12488,10 @@ export function createMCPServer(
     ...v2Handlers,
     ...overrides,
   });
+  const toolCatalog = options.toolCatalog ?? (process.env.MCP_TOOL_CATALOG === 'full' ? 'full' : 'compact');
+  const advertisedTools = toolCatalog === 'full'
+    ? tools
+    : tools.filter((tool) => COMPACT_MCP_TOOL_NAMES.has(tool.name));
   const loopGuard = options.loopGuard === false
     ? undefined
     : options.loopGuard ?? createToolLoopGuard({
@@ -12412,7 +12521,7 @@ export function createMCPServer(
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     logger.debug({ component: 'mcp', event: 'list_tools' }, '[MCPServer][MCP] list_tools request');
     return {
-      tools: tools.map((tool) => ({
+      tools: advertisedTools.map((tool) => ({
         name: tool.name,
         description: tool.description,
         inputSchema: tool.inputSchema,
@@ -12477,7 +12586,7 @@ export function createMCPServer(
   return {
     server,
     transport,
-    tools,
+    tools: advertisedTools,
     start: async () => {
       await server.connect(transport);
     },

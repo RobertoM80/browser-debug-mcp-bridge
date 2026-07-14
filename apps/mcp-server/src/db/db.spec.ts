@@ -469,6 +469,18 @@ describe('Database Migrations', () => {
       expect(indexNames).toContain('idx_network_tab_id');
     });
 
+    it('should include covering indexes for time-ordered diagnostic queries', () => {
+      initializeDatabase(db);
+      const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index'").all() as { name: string }[];
+      const indexNames = indexes.map((index) => index.name);
+      expect(indexNames).toEqual(expect.arrayContaining([
+        'idx_events_session_ts',
+        'idx_events_session_type_ts',
+        'idx_network_session_ts',
+        'idx_error_fingerprints_session_rank',
+      ]));
+    });
+
     it('should include paused session index after all migrations', () => {
       initializeDatabase(db);
       const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='sessions'").all() as { name: string }[];

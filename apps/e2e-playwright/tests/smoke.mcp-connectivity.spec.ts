@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { writeFileSync } from 'node:fs';
 import { createTempDataDir, getFreePort, REPO_ROOT } from './utils/runtime';
-import { connectMcpClient, EXPECTED_TOOL_NAMES, callToolJson } from './utils/mcp-client';
+import { connectMcpClient, callToolJson } from './utils/mcp-client';
 
 test.describe('@smoke mcp stdio connectivity', () => {
   test('initializes stdio bridge, exposes tools, and responds to query calls', async () => {
@@ -14,7 +14,13 @@ test.describe('@smoke mcp stdio connectivity', () => {
     try {
       const tools = await mcp.client.listTools();
       const toolNames = tools.tools.map((tool) => tool.name).sort();
-      expect(toolNames).toEqual([...EXPECTED_TOOL_NAMES].sort());
+      expect(toolNames).toEqual(['browser_debug', 'list_sessions']);
+
+      const discovery = await callToolJson<{
+        tools: Array<{ name: string; inputSchema: object }>;
+      }>(mcp.client, 'browser_debug', { query: 'page state' });
+
+      expect(discovery.tools.some((tool) => tool.name === 'get_page_state')).toBe(true);
 
       const sessions = await callToolJson<{
         sessions: Array<{ sessionId: string }>;

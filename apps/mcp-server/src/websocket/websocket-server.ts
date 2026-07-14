@@ -36,6 +36,18 @@ function createConsoleLogger(): StructuredLogger {
   };
 }
 
+export function isAllowedWebSocketOrigin(origin: string | undefined): boolean {
+  if (!origin) {
+    return true;
+  }
+  try {
+    const parsed = new URL(origin);
+    return parsed.protocol === 'chrome-extension:' && parsed.hostname.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 interface ConnectionInfo {
   ws: WebSocket;
   sessionId?: string;
@@ -118,6 +130,13 @@ export class WebSocketManager {
     this.wss = new WebSocketServer({
       server: server.server,
       path: '/ws',
+      verifyClient: ({ origin }, done) => {
+        if (isAllowedWebSocketOrigin(origin)) {
+          done(true);
+          return;
+        }
+        done(false, 403, 'Forbidden');
+      },
     });
 
     this.wss.on('connection', (ws: WebSocket) => {
@@ -215,9 +234,14 @@ export class WebSocketManager {
           connectionInfo.lastPingAt = Date.now();
           break;
 
-        case 'session_start':
-          this.getRepository().createSession(message);
-          connectionInfo.sessionId = message.sessionId;
+        case 'session_start': {
+          const repository = this.getRepository();
+          if (repository.sessionExists(message.sessionId)) {
+            repository.resumeSession({ ...message, type: 'session_resume' });
+          } else {
+            repository.createSession(message);
+          }
+          this.claimSession(ws, message.sessionId);
           this.sessionStates.set(message.sessionId, {
             sessionId: message.sessionId,
             connected: true,
@@ -225,6 +249,7 @@ export class WebSocketManager {
             lastHeartbeatAt: connectionInfo.lastPingAt,
           });
           break;
+        }
 
         case 'session_pause':
           this.getRepository().pauseSession(message);
@@ -235,7 +260,7 @@ export class WebSocketManager {
 
         case 'session_resume': {
           this.getRepository().resumeSession(message);
-          connectionInfo.sessionId = message.sessionId;
+          this.claimSession(ws, message.sessionId);
           const previous = this.sessionStates.get(message.sessionId);
           this.sessionStates.set(message.sessionId, {
             sessionId: message.sessionId,
@@ -292,6 +317,21 @@ export class WebSocketManager {
         'INTERNAL_ERROR'
       )));
     }
+  }
+
+  private claimSession(ws: WebSocket, sessionId: string): void {
+    const connection = this.connections.get(ws);
+    if (!connection) {
+      return;
+    }
+
+    const previous = this.findConnectionBySession(sessionId);
+    if (previous && previous.ws !== ws) {
+      this.rejectPendingForSession(sessionId, 'Session connection was replaced');
+      previous.sessionId = undefined;
+      previous.ws.close(4001, 'Session replaced');
+    }
+    connection.sessionId = sessionId;
   }
 
   private handleDisconnect(ws: WebSocket, closeCode?: number, closeReasonRaw?: Buffer): void {

@@ -338,6 +338,7 @@ interface CapturePingRequest {
 interface CaptureConfigUpdateRequest {
   type: 'CAPTURE_CONFIG_UPDATE';
   payload?: {
+    captureEnabled?: unknown;
     network?: {
       captureBodies?: unknown;
       maxBodyBytes?: unknown;
@@ -1583,6 +1584,7 @@ export function applyAutomationIndicatorUpdate(
 interface ContentCaptureOptions {
   win?: Window;
   runtime?: RuntimeMessenger;
+  captureEnabled?: boolean;
 }
 
 interface RuntimeMessenger {
@@ -2161,6 +2163,8 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
   const runtime = options.runtime ?? chrome.runtime;
   const originalPushState = win.history.pushState.bind(win.history);
   const originalReplaceState = win.history.replaceState.bind(win.history);
+  let captureEnabled = options.captureEnabled ?? true;
+  let latestCaptureConfig: CaptureConfigUpdateRequest['payload'];
   let lastUrl = win.location.href;
   let lastScrollEmitAt = 0;
   let lastScrollX = win.scrollX;
@@ -2168,6 +2172,9 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
   let lastKeydownEmitAt = 0;
 
   const emitNavigation = (trigger: string): void => {
+    if (!captureEnabled) {
+      return;
+    }
     const nextUrl = win.location.href;
     sendToBackground(runtime, 'navigation', {
       from: lastUrl,
@@ -2232,6 +2239,14 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
       return;
     }
 
+    if (payload.eventType === 'custom' && payload.data.marker === 'injected_script_loaded') {
+      postNetworkCaptureConfigToInjectedScript(latestCaptureConfig);
+    }
+
+    if (!captureEnabled) {
+      return;
+    }
+
     sendToBackground(runtime, payload.eventType, payload.data);
   };
   const postNetworkCaptureConfigToInjectedScript = (payload: CaptureConfigUpdateRequest['payload']): void => {
@@ -2248,6 +2263,7 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
       kind: BRIDGE_CONTROL_KIND,
       controlType: 'network_config',
       data: {
+        captureEnabled,
         captureBodies,
         maxBodyBytes,
       },
@@ -2271,6 +2287,9 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
     win.postMessage(controlPayload, '*');
   };
   const emitUiEventWithTrace = (eventType: string, data: Record<string, unknown>): void => {
+    if (!captureEnabled) {
+      return;
+    }
     const traceId = createTraceId('ui');
     const selector = typeof data.selector === 'string' ? data.selector : undefined;
     sendToBackground(runtime, eventType, {
@@ -2280,6 +2299,9 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
     postTraceHintToInjectedScript(traceId, eventType, selector);
   };
   const onClick = (event: MouseEvent): void => {
+    if (!captureEnabled) {
+      return;
+    }
     const target = getClickableTarget(event);
     if (!target) {
       return;
@@ -2298,6 +2320,9 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
   };
 
   const onScroll = (event: Event): void => {
+    if (!captureEnabled) {
+      return;
+    }
     const now = Date.now();
     if (now - lastScrollEmitAt < 350) {
       return;
@@ -2328,6 +2353,9 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
   };
 
   const emitFormEvent = (eventType: 'input' | 'change', event: Event): void => {
+    if (!captureEnabled) {
+      return;
+    }
     const target = getEventTargetElement(event);
     if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement)) {
       return;
@@ -2354,6 +2382,9 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
   const onChangeCapture = (event: Event): void => emitFormEvent('change', event);
 
   const onSubmit = (event: SubmitEvent): void => {
+    if (!captureEnabled) {
+      return;
+    }
     const target = event.target;
     if (!(target instanceof HTMLFormElement)) {
       return;
@@ -2369,6 +2400,9 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
   };
 
   const emitFocusEvent = (eventType: 'focus' | 'blur', event: FocusEvent): void => {
+    if (!captureEnabled) {
+      return;
+    }
     const target = getEventTargetElement(event);
     if (!target) {
       return;
@@ -2393,6 +2427,9 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
   const onFocusOutCapture = (event: FocusEvent): void => emitFocusEvent('blur', event);
 
   const onKeydown = (event: KeyboardEvent): void => {
+    if (!captureEnabled) {
+      return;
+    }
     const now = Date.now();
     if (now - lastKeydownEmitAt < 120) {
       return;
@@ -2435,6 +2472,8 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
     }
 
     if (request && request.type === 'CAPTURE_CONFIG_UPDATE') {
+      latestCaptureConfig = request.payload;
+      captureEnabled = request.payload?.captureEnabled === true;
       postNetworkCaptureConfigToInjectedScript(request.payload);
       applyAutomationIndicatorUpdate(win, runtime, request.payload);
       sendResponse({ ok: true, updated: true });
@@ -2488,18 +2527,20 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
     chrome.runtime.onMessage.addListener(onRuntimeCommand);
   }
 
-  sendToBackground(runtime, 'navigation', {
-    from: null,
-    to: win.location.href,
-    trigger: 'init',
-    timestamp: Date.now(),
-  });
+  if (captureEnabled) {
+    sendToBackground(runtime, 'navigation', {
+      from: null,
+      to: win.location.href,
+      trigger: 'init',
+      timestamp: Date.now(),
+    });
 
-  sendToBackground(runtime, 'custom', {
-    marker: 'content_script_loaded',
-    url: win.location.href,
-    timestamp: Date.now(),
-  });
+    sendToBackground(runtime, 'custom', {
+      marker: 'content_script_loaded',
+      url: win.location.href,
+      timestamp: Date.now(),
+    });
+  }
 
   return () => {
     win.history.pushState = originalPushState;
@@ -2526,7 +2567,7 @@ if (typeof window !== 'undefined' && typeof chrome !== 'undefined' && !!chrome.r
   const guard = window as Window & { __BDMCP_CONTENT_CAPTURE_INSTALLED__?: boolean };
   if (!guard.__BDMCP_CONTENT_CAPTURE_INSTALLED__) {
     guard.__BDMCP_CONTENT_CAPTURE_INSTALLED__ = true;
-    installContentCapture();
+    installContentCapture({ captureEnabled: false });
   }
   console.log('[BrowserDebug][ContentScript] Loaded');
 }

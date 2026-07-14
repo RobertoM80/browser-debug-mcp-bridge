@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { initializeDatabase } from '../db/migrations';
 import {
+  createBaseResponse,
   createMCPServer,
   createToolRegistry,
   createV1ToolHandlers,
@@ -22,6 +23,14 @@ describe('mcp/server foundation', () => {
     expect(runtime.server).toBeDefined();
     expect(runtime.transport).toBeDefined();
     expect(runtime.tools.length).toBeGreaterThan(0);
+    expect(runtime.tools.map((tool) => tool.name)).toEqual(['browser_debug', 'list_sessions']);
+  });
+
+  it('can advertise the full legacy tool catalog', () => {
+    const runtime = createMCPServer({}, { toolCatalog: 'full' });
+
+    expect(runtime.tools.length).toBeGreaterThan(80);
+    expect(runtime.tools.some((tool) => tool.name === 'execute_ui_action')).toBe(true);
   });
 
   it('registers known tools with input schemas', () => {
@@ -57,6 +66,25 @@ describe('mcp/server foundation', () => {
     expect(response.sessionId).toBe('s-1');
     expect(response.limitsApplied.maxResults).toBe(25);
     expect(response.redactionSummary.redactedFields).toBe(1);
+  });
+
+  it('discovers and executes tools through the compact browser_debug entry point', async () => {
+    const handler: ToolHandler = async (input) => ({
+      ...createBaseResponse(typeof input.sessionId === 'string' ? input.sessionId : undefined),
+      ok: true,
+    });
+    const tools = createToolRegistry({ get_page_state: handler });
+
+    const discovery = await routeToolCall(tools, 'browser_debug', { query: 'page state' });
+    const matches = discovery.tools as Array<{ name: string; inputSchema: object }>;
+    const response = await routeToolCall(tools, 'browser_debug', {
+      tool: 'get_page_state',
+      arguments: { sessionId: 's-compact' },
+    });
+
+    expect(matches.some((tool) => tool.name === 'get_page_state')).toBe(true);
+    expect(matches.find((tool) => tool.name === 'get_page_state')?.inputSchema).toMatchObject({ type: 'object' });
+    expect(response).toMatchObject({ sessionId: 's-compact', ok: true });
   });
 
   it('warns and then blocks repeated same failing tool attempts before side effects', async () => {
@@ -921,6 +949,32 @@ describe('mcp/server V1 query tools', () => {
     db.close();
   });
 
+  it('applies maxResponseBytes to console summary messages', async () => {
+    const db = createTestDb();
+    db.prepare("INSERT INTO sessions (session_id, created_at, safe_mode) VALUES ('session-summary-budget', 1000, 0)").run();
+    const insert = db.prepare('INSERT INTO events (event_id, session_id, ts, type, payload_json) VALUES (?, ?, ?, ?, ?)');
+    for (let index = 0; index < 6; index += 1) {
+      insert.run(
+        `evt-summary-budget-${index}`,
+        'session-summary-budget',
+        1000 + index,
+        'console',
+        JSON.stringify({ level: 'info', message: `${index}-${'x'.repeat(700)}` }),
+      );
+    }
+
+    const tools = createToolRegistry(createV1ToolHandlers(() => db));
+    const response = await routeToolCall(tools, 'get_console_summary', {
+      sessionId: 'session-summary-budget',
+      limit: 6,
+      maxResponseBytes: 1024,
+    });
+
+    expect((response.topMessages as unknown[]).length).toBeLessThan(6);
+    expect(response.limitsApplied.truncated).toBe(true);
+    db.close();
+  });
+
   it('returns event summary grouped by event type', async () => {
     const db = createTestDb();
 
@@ -930,6 +984,7 @@ describe('mcp/server V1 query tools', () => {
         VALUES ('session-summary-events', 1000, 0)
       `
     ).run();
+
     db.prepare(
       `
         INSERT INTO events (event_id, session_id, ts, type, payload_json)
@@ -1160,6 +1215,10 @@ describe('mcp/server V1 query tools', () => {
         VALUES ('evt-ui', 'session-trace', 1001, 'ui', '{"eventType":"click","selector":"#send","traceId":"trace-ui-1"}', 7, 'http://localhost:3000')
       `
     ).run();
+    db.prepare(
+      `INSERT INTO events (event_id, session_id, ts, type, payload_json)
+       VALUES ('evt-trace-large', 'session-trace', 1002, 'console', ?)`
+    ).run(JSON.stringify({ traceId: 'trace-ui-1', message: 'x'.repeat(5000) }));
 
     db.prepare(
       `
@@ -1193,6 +1252,13 @@ describe('mcp/server V1 query tools', () => {
     expect((trace.traceId as string)).toBe('trace-ui-1');
     expect((trace.networkCalls as Array<{ requestId: string }>).map((entry) => entry.requestId)).toEqual(['req-trace']);
     expect((trace.correlatedEvents as Array<{ eventId: string }>).map((entry) => entry.eventId)).toContain('evt-ui');
+
+    const budgetedTrace = await routeToolCall(tools, 'get_request_trace', {
+      sessionId: 'session-trace',
+      requestId: 'req-trace',
+      maxResponseBytes: 1024,
+    });
+    expect(budgetedTrace.limitsApplied.truncated).toBe(true);
 
     const chunk = await routeToolCall(tools, 'get_body_chunk', {
       chunkRef: 'chunk-req-1',
@@ -2801,6 +2867,134 @@ describe('mcp/server V2 capture tools', () => {
     });
   }
 
+  it('preflights the active profile by default and blocks explicitly inactive profiles', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-v2-active-profile-'));
+    const localAssetPath = join(tempRoot, 'active.js');
+    const configPath = join(tempRoot, 'override-poc.local.json');
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+
+    try {
+      writeFileSync(localAssetPath, 'console.log("active");', 'utf8');
+      writeFileSync(configPath, JSON.stringify({
+        enabled: false,
+        activeProfileId: 'active-profile',
+        profiles: [
+          {
+            profileId: 'inactive-profile',
+            name: 'Inactive profile',
+            enabled: true,
+            autoReload: false,
+            rules: [{
+              ruleId: 'inactive-rule',
+              enabled: true,
+              ruleType: 'asset',
+              requestMethod: 'GET',
+              matchMode: 'exact',
+              targetAssetUrl: 'https://example.com/inactive.js',
+              localFilePath: localAssetPath,
+              contentType: 'application/javascript; charset=utf-8',
+            }],
+          },
+          {
+            profileId: 'active-profile',
+            name: 'Active profile',
+            enabled: true,
+            autoReload: false,
+            rules: [{
+              ruleId: 'active-rule',
+              enabled: true,
+              ruleType: 'asset',
+              requestMethod: 'GET',
+              matchMode: 'exact',
+              targetAssetUrl: 'https://example.com/active.js',
+              localFilePath: localAssetPath,
+              contentType: 'application/javascript; charset=utf-8',
+            }],
+          },
+        ],
+      }), 'utf8');
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+      seedReadyOverrideSession(db);
+      persistObservedOverrideAssets(db, {
+        sessionId: 'session-live',
+        tabId: 7,
+        pageUrl: 'https://example.com/',
+        assets: [{
+          url: 'https://example.com/active.js',
+          ruleType: 'asset',
+          requestMethod: 'GET',
+          kind: 'script',
+          fromPerformance: true,
+        }],
+      });
+
+      const tools = createToolRegistry(createV2ToolHandlers(
+        { execute: async () => ({ ok: true, payload: {} }) },
+        () => db,
+        () => ({ connected: true, connectedAt: 1200, lastHeartbeatAt: 1300 }),
+      ));
+
+      const active = await routeToolCall(tools, 'preflight_overrides', { sessionId: 'session-live' });
+      const inactive = await routeToolCall(tools, 'preflight_overrides', {
+        sessionId: 'session-live',
+        profileId: 'inactive-profile',
+      });
+
+      expect(active.profile).toMatchObject({ profileId: 'active-profile', active: true });
+      expect(active.ready).toBe(true);
+      expect(inactive.ready).toBe(false);
+      expect(inactive.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'PROFILE_NOT_ACTIVE', severity: 'error' }),
+      ]));
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('blocks preflight when the active profile is disabled', async () => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-v2-disabled-profile-'));
+    const configPath = writeReadyAssetOverrideConfig(tempRoot);
+    const config = JSON.parse(readFileSync(configPath, 'utf8')) as { profiles: Array<{ enabled: boolean }> };
+    config.profiles[0].enabled = false;
+    writeFileSync(configPath, JSON.stringify(config), 'utf8');
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+
+    try {
+      process.env.OVERRIDE_POC_CONFIG_PATH = configPath;
+      seedReadyOverrideSession(db);
+      const tools = createToolRegistry(createV2ToolHandlers(
+        { execute: async () => ({ ok: true, payload: {} }) },
+        () => db,
+        () => ({ connected: true, connectedAt: 1200, lastHeartbeatAt: 1300 }),
+      ));
+
+      const preflight = await routeToolCall(tools, 'preflight_overrides', { sessionId: 'session-live' });
+
+      expect(preflight.ready).toBe(false);
+      expect(preflight.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'PROFILE_DISABLED', severity: 'error' }),
+      ]));
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it('routes override control tools through live capture commands', async () => {
     const captureCalls: Array<{ sessionId: string; command: string; payload: Record<string, unknown> }> = [];
     const tools = createToolRegistry(
@@ -3673,6 +3867,65 @@ describe('mcp/server V2 capture tools', () => {
     }
   });
 
+  it('forwards maxBodyBytes when live response patch planning captures the body internally', async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), 'mcp-response-patch-max-body-'));
+    const configPath = join(fixtureRoot, 'override-poc.local.json');
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+
+    try {
+      const tools = createToolRegistry(
+        createV2ToolHandlers({
+          execute: async (_sessionId, command, payload) => {
+            captureCalls.push({ command, payload });
+            return {
+              ok: true,
+              payload: {
+                targetUrl: payload.targetUrl,
+                requestMethod: 'GET',
+                statusCode: 200,
+                contentType: 'text/html; charset=utf-8',
+                ruleType: 'document',
+                bodyCaptured: true,
+                bodyBytes: 36,
+                capturedBytes: 36,
+                truncated: false,
+                bodyText: '<h1>Original response</h1>',
+              },
+            };
+          },
+        }),
+      );
+
+      await routeToolCall(tools, 'plan_override_response_patch', {
+        sessionId: 'session-live',
+        targetUrl: 'https://example.com/products',
+        maxBodyBytes: 2_000_000,
+        textPatches: [{ search: 'Original response', replacement: 'Patched response' }],
+        configPath,
+        writeConfig: true,
+        overwrite: false,
+      });
+
+      expect(captureCalls).toEqual([{
+        command: 'CAPTURE_OVERRIDE_RESPONSE_BODY',
+        payload: {
+          targetUrl: 'https://example.com/products',
+          tabId: undefined,
+          captureMode: undefined,
+          triggerReload: undefined,
+          matchMode: undefined,
+          requestMethod: undefined,
+          requestHeaders: undefined,
+          timeoutMs: 10_000,
+          maxBodyBytes: 2_000_000,
+          includeBody: true,
+        },
+      }]);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   it('forwards CDP response capture controls for live response patch planning', async () => {
     const fixtureRoot = mkdtempSync(join(tmpdir(), 'mcp-response-patch-cdp-'));
     const configPath = join(fixtureRoot, 'override-poc.local.json');
@@ -3967,6 +4220,66 @@ describe('mcp/server V2 capture tools', () => {
     });
     expect(response.summary).toMatchObject({ buttons: 8, inputs: 5, modals: 1 });
     expect((response.buttons as Array<Record<string, unknown>>)[0]?.text).toBe('Calcola target');
+  });
+
+  it('forwards tabId through page-state based live tools', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          return {
+            ok: true,
+            payload: {
+              url: 'http://localhost:8081/products',
+              title: 'Products',
+              summary: { buttons: 1, links: 0, inputs: 0, modals: 0 },
+              buttons: [{ text: 'Buy', selector: '#buy', elementRef: 'ref:buy' }],
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    await routeToolCall(tools, 'get_page_state', {
+      sessionId: 'session-v2',
+      tabId: 17,
+      maxItems: 5,
+    });
+
+    await routeToolCall(tools, 'get_interactive_elements', {
+      sessionId: 'session-v2',
+      tabId: 17,
+      kinds: ['buttons'],
+    });
+
+    expect(captureCalls).toEqual([
+      {
+        command: 'CAPTURE_PAGE_STATE',
+        payload: {
+          maxItems: 5,
+          maxTextLength: 80,
+          includeButtons: true,
+          includeLinks: true,
+          includeInputs: true,
+          includeModals: true,
+          tabId: 17,
+        },
+      },
+      {
+        command: 'CAPTURE_PAGE_STATE',
+        payload: {
+          maxItems: 40,
+          maxTextLength: 80,
+          includeButtons: true,
+          includeLinks: false,
+          includeInputs: false,
+          includeModals: false,
+          tabId: 17,
+        },
+      },
+    ]);
   });
 
   it('returns compact interactive element refs through the v2 capture path', async () => {
@@ -6279,6 +6592,42 @@ describe('mcp/server V2 capture tools', () => {
     expect(response.mode).toBe('outline');
     expect(response.fallbackReason).toBe('timeout');
     expect(response.limitsApplied).toEqual({ maxResults: 5000, truncated: true });
+  });
+
+  it('forwards tabId for dom document capture tools', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          return {
+            ok: true,
+            payload: {
+              mode: payload.mode ?? 'outline',
+              outline: '{"nodeCount":4,"root":{"tag":"html"}}',
+            },
+          };
+        },
+      })
+    );
+
+    await routeToolCall(tools, 'get_dom_document', {
+      sessionId: 'session-v2',
+      tabId: 42,
+      mode: 'outline',
+      maxDepth: 5,
+      maxBytes: 9000,
+    });
+
+    expect(captureCalls).toEqual([{
+      command: 'CAPTURE_DOM_DOCUMENT',
+      payload: {
+        mode: 'outline',
+        maxBytes: 9000,
+        maxDepth: 5,
+        tabId: 42,
+      },
+    }]);
   });
 
   it('requests only specified computed style properties', async () => {
