@@ -108,6 +108,7 @@ export interface MCPServerOptions {
   logger?: MCPLogger;
   getSessionConnectionState?: (sessionId: string) => SessionConnectionLookupResult | undefined;
   loopGuard?: ToolLoopGuard | false;
+  toolCatalog?: 'compact' | 'full';
 }
 
 export interface MCPLogger {
@@ -845,6 +846,15 @@ const AUTOMATION_WAIT_TOOL_SCHEMA = {
 };
 
 const TOOL_SCHEMAS: Record<string, object> = {
+  browser_debug: {
+    type: 'object',
+    properties: {
+      query: { type: 'string', description: 'Find tools by capability, name, or description.' },
+      tool: { type: 'string', description: 'Execute a tool returned by a query.' },
+      arguments: { type: 'object', description: 'Arguments for the selected tool.' },
+      limit: { type: 'number', description: 'Maximum search results (default 5, max 10).' },
+    },
+  },
   list_sessions: {
     type: 'object',
     properties: {
@@ -2130,6 +2140,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
 };
 
 const TOOL_DESCRIPTIONS: Record<string, string> = {
+  browser_debug: 'Find and execute any Browser Debug tool on demand. Use query to discover a tool and its schema, then tool plus arguments to execute it.',
   list_sessions: 'List captured debugging sessions',
   get_session_summary: 'Get summary counters for one session',
   get_recent_events: 'Read recent events from a session',
@@ -2215,6 +2226,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
 };
 
 const ALL_TOOLS = Object.keys(TOOL_SCHEMAS);
+const COMPACT_MCP_TOOL_NAMES = new Set(['browser_debug', 'list_sessions']);
 
 const DEFAULT_REDACTION_SUMMARY: RedactionSummary = {
   totalFields: 0,
@@ -12358,6 +12370,56 @@ export async function routeToolCall(
   input: unknown,
   options: { loopGuard?: ToolLoopGuard } = {},
 ): Promise<ToolResponse> {
+  if (toolName === 'browser_debug') {
+    const normalizedInput = isRecord(input) ? input : {};
+    const query = typeof normalizedInput.query === 'string' ? normalizedInput.query.trim().toLowerCase() : '';
+    const selectedTool = typeof normalizedInput.tool === 'string' ? normalizedInput.tool.trim() : '';
+
+    if ((query && selectedTool) || (!query && !selectedTool)) {
+      throw new Error('browser_debug requires exactly one of query or tool');
+    }
+
+    if (selectedTool) {
+      if (selectedTool === 'browser_debug') {
+        throw new Error('browser_debug cannot execute itself');
+      }
+      if (normalizedInput.arguments !== undefined && !isRecord(normalizedInput.arguments)) {
+        throw new Error('browser_debug arguments must be an object');
+      }
+      return routeToolCall(tools, selectedTool, normalizedInput.arguments ?? {}, options);
+    }
+
+    const queryWords = query.split(/\s+/);
+    const requestedLimit = typeof normalizedInput.limit === 'number' && Number.isFinite(normalizedInput.limit)
+      ? Math.floor(normalizedInput.limit)
+      : 5;
+    const limit = Math.max(1, Math.min(requestedLimit, 10));
+    const matchingTools = tools
+      .filter((tool) => tool.name !== 'browser_debug')
+      .filter((tool) => {
+        const haystack = `${tool.name} ${tool.description}`.toLowerCase();
+        return queryWords.every((word) => haystack.includes(word));
+      })
+      .sort((left, right) => {
+        const leftRank = left.name === query ? 0 : left.name.includes(query) ? 1 : 2;
+        const rightRank = right.name === query ? 0 : right.name.includes(query) ? 1 : 2;
+        return leftRank - rightRank || left.name.localeCompare(right.name);
+      });
+    const matches = matchingTools
+      .slice(0, limit)
+      .map(({ name, description, inputSchema }) => ({ name, description, inputSchema }));
+
+    return attachResponseBytes({
+      ...createBaseResponse(),
+      limitsApplied: {
+        maxResults: limit,
+        truncated: matchingTools.length > matches.length,
+      },
+      query,
+      tools: matches,
+    });
+  }
+
   const tool = tools.find((candidate) => candidate.name === toolName);
   if (!tool) {
     throw new Error(`Unknown tool: ${toolName}`);
@@ -12404,6 +12466,10 @@ export function createMCPServer(
     ...v2Handlers,
     ...overrides,
   });
+  const toolCatalog = options.toolCatalog ?? (process.env.MCP_TOOL_CATALOG === 'full' ? 'full' : 'compact');
+  const advertisedTools = toolCatalog === 'full'
+    ? tools
+    : tools.filter((tool) => COMPACT_MCP_TOOL_NAMES.has(tool.name));
   const loopGuard = options.loopGuard === false
     ? undefined
     : options.loopGuard ?? createToolLoopGuard({
@@ -12433,7 +12499,7 @@ export function createMCPServer(
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     logger.debug({ component: 'mcp', event: 'list_tools' }, '[MCPServer][MCP] list_tools request');
     return {
-      tools: tools.map((tool) => ({
+      tools: advertisedTools.map((tool) => ({
         name: tool.name,
         description: tool.description,
         inputSchema: tool.inputSchema,
@@ -12498,7 +12564,7 @@ export function createMCPServer(
   return {
     server,
     transport,
-    tools,
+    tools: advertisedTools,
     start: async () => {
       await server.connect(transport);
     },

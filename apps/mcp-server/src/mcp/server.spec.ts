@@ -5,6 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { initializeDatabase } from '../db/migrations';
 import {
+  createBaseResponse,
   createMCPServer,
   createToolRegistry,
   createV1ToolHandlers,
@@ -22,6 +23,14 @@ describe('mcp/server foundation', () => {
     expect(runtime.server).toBeDefined();
     expect(runtime.transport).toBeDefined();
     expect(runtime.tools.length).toBeGreaterThan(0);
+    expect(runtime.tools.map((tool) => tool.name)).toEqual(['browser_debug', 'list_sessions']);
+  });
+
+  it('can advertise the full legacy tool catalog', () => {
+    const runtime = createMCPServer({}, { toolCatalog: 'full' });
+
+    expect(runtime.tools.length).toBeGreaterThan(80);
+    expect(runtime.tools.some((tool) => tool.name === 'execute_ui_action')).toBe(true);
   });
 
   it('registers known tools with input schemas', () => {
@@ -57,6 +66,25 @@ describe('mcp/server foundation', () => {
     expect(response.sessionId).toBe('s-1');
     expect(response.limitsApplied.maxResults).toBe(25);
     expect(response.redactionSummary.redactedFields).toBe(1);
+  });
+
+  it('discovers and executes tools through the compact browser_debug entry point', async () => {
+    const handler: ToolHandler = async (input) => ({
+      ...createBaseResponse(typeof input.sessionId === 'string' ? input.sessionId : undefined),
+      ok: true,
+    });
+    const tools = createToolRegistry({ get_page_state: handler });
+
+    const discovery = await routeToolCall(tools, 'browser_debug', { query: 'page state' });
+    const matches = discovery.tools as Array<{ name: string; inputSchema: object }>;
+    const response = await routeToolCall(tools, 'browser_debug', {
+      tool: 'get_page_state',
+      arguments: { sessionId: 's-compact' },
+    });
+
+    expect(matches.some((tool) => tool.name === 'get_page_state')).toBe(true);
+    expect(matches.find((tool) => tool.name === 'get_page_state')?.inputSchema).toMatchObject({ type: 'object' });
+    expect(response).toMatchObject({ sessionId: 's-compact', ok: true });
   });
 
   it('warns and then blocks repeated same failing tool attempts before side effects', async () => {

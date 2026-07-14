@@ -46,7 +46,7 @@ Load the extension:
 
 Recommended launch method: direct `node` command pointing at the installed package script.
 
-Studio or MCPS is not required. The package launcher is a standard MCP stdio server entrypoint, so any MCP host that supports command/args server configuration can use it directly and gets the same tool surface.
+Studio or MCPS is not required. The package launcher is a standard MCP stdio server entrypoint, so any MCP host that supports command/args server configuration can use it directly. By default it advertises only `list_sessions` and the on-demand `browser_debug` tool to avoid spending roughly 11k input tokens on the full catalog; `browser_debug` can discover and execute every tool. Set `MCP_TOOL_CATALOG=full` for the legacy all-tools catalog.
 
 Find the global npm root:
 

@@ -2,7 +2,7 @@
 
 This page covers both fast no-repo setup and local development setup.
 
-Studio or MCPS is optional. The package ships a first-class stdio launcher, so any MCP host with command/args server configuration can use Browser Debug MCP Bridge directly.
+Studio or MCPS is optional. The package ships a first-class stdio launcher, so any MCP host with command/args server configuration can use Browser Debug MCP Bridge directly. Its compact catalog exposes `list_sessions` and the on-demand `browser_debug` entry point; `browser_debug` can find and execute every other tool. Set `MCP_TOOL_CATALOG=full` only for clients that require all tools to be advertised up front.
 
 ## 1) Quick setup (no repo clone, recommended)
 

@@ -1,5 +1,17 @@
 # MCP Tools Reference
 
+The MCP stdio server defaults to a compact catalog containing `list_sessions` and `browser_debug`. This cuts the initial serialized catalog from about 43 KB (roughly 10.9k tokens) to under 1 KB while preserving every operation: call `browser_debug` with `query` to receive matching tool schemas, then call it with `tool` and `arguments` to execute the selected tool. Known tool names may still be called directly. Set `MCP_TOOL_CATALOG=full` to advertise every tool for legacy clients. The packaged CLI continues to list every tool.
+
+Example:
+
+```json
+{ "query": "live console logs" }
+```
+
+```json
+{ "tool": "get_live_console_logs", "arguments": { "sessionId": "session-id", "limit": 20 } }
+```
+
 All tool responses include:
 
 - `sessionId`

@@ -17,7 +17,7 @@ This repository now exposes a single universal launcher that starts:
 
 ## Universal command
 
-This path does not require Studio or MCPS. Any MCP host that supports command/args stdio server configuration can launch the same wrapper and will see the same Browser Debug MCP Bridge tools.
+This path does not require Studio or MCPS. Any MCP host that supports command/args stdio server configuration can launch the same wrapper. The default compact catalog advertises `list_sessions` plus `browser_debug`; use `browser_debug` to find and execute every other tool on demand. Set `MCP_TOOL_CATALOG=full` only when a client requires the legacy all-tools catalog.
 
 Recommended quick setup (no repo clone):
 
