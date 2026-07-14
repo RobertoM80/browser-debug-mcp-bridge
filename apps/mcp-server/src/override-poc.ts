@@ -69,6 +69,7 @@ export interface OverridePocProfileSummary extends Omit<OverridePocProfileConfig
 
 export interface OverridePocConfigSummary {
   configEnabled: boolean;
+  profileEnabled: boolean;
   enabled: boolean;
   activeProfileId: string;
   profileId: string;
@@ -439,6 +440,7 @@ export function getOverridePocConfigSummary(configPath?: string): OverridePocCon
 
   return {
     configEnabled: config.enabled,
+    profileEnabled: activeProfile.enabled,
     enabled,
     activeProfileId: activeProfile.profileId,
     profileId: activeProfile.profileId,

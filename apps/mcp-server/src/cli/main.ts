@@ -563,6 +563,7 @@ export {
   isLiveSession,
   parseArgs,
   parseJsonObject,
+  parseToolArguments,
   resolveSessionAlias,
   withCommonLimits,
 };

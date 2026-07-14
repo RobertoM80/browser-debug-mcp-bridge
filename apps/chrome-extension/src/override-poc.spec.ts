@@ -121,6 +121,13 @@ describe('OverridePocController', () => {
       'Network.setBypassServiceWorker',
       'Network.clearBrowserCache',
     ]);
+    const fetchEnableCall = chromeMock.sendCommand.mock.calls.find((call) => call[1] === 'Fetch.enable');
+    expect(fetchEnableCall?.[2]).toEqual({
+      patterns: [{
+        urlPattern: 'https://example.com/_next/static/chunks/app/page-prod.js',
+        requestStage: 'Request',
+      }],
+    });
     expect(chromeMock.reload).toHaveBeenCalledWith(17, { bypassCache: true });
     expect(status.active).toBe(true);
     expect(status.tabId).toBe(17);
@@ -163,6 +170,43 @@ describe('OverridePocController', () => {
     expect(chromeMock.attach).toHaveBeenCalledWith({ tabId: 17 }, '1.3');
     expect(status.active).toBe(true);
     expect(status.configuredEnabled).toBe(false);
+  });
+
+  it('rejects a disabled active profile before attaching the debugger', async () => {
+    const chromeMock = new ChromeOverrideMock();
+    vi.stubGlobal('chrome', chromeMock.chrome);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url.endsWith('/overrides/poc/config')) {
+          return createJsonResponse({
+            ok: true,
+            enabled: true,
+            profileEnabled: false,
+            targetAssetUrl: 'https://example.com/app.js',
+            localFilePath: './app.js',
+            resolvedLocalFilePath: 'C:/repo/app.js',
+            contentType: 'application/javascript; charset=utf-8',
+            autoReload: false,
+            configPath: 'C:/repo/override-poc.local.json',
+            fileExists: true,
+            fileSizeBytes: 12,
+          });
+        }
+        if (isAuditEndpoint(url)) {
+          return createJsonResponse({ ok: true });
+        }
+
+        throw new Error('Unexpected fetch: ' + url);
+      }),
+    );
+
+    const controller = new OverridePocController('http://127.0.0.1:8065');
+
+    await expect(controller.enableForTab({ sessionId: 'session-1', tabId: 17 }))
+      .rejects.toThrow('Active override profile is disabled');
+    expect(chromeMock.attach).not.toHaveBeenCalled();
   });
 
   it('records precise setup failures and restores debugger toggles', async () => {

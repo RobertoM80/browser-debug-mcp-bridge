@@ -90,4 +90,35 @@ describe('Error fingerprinting', () => {
     expect(rows[0].sample_message).toBe('TypeError: undefined is not a function');
     expect(rows[0].sample_stack).toBe('at bundle.js:10:5');
   });
+
+  it('keeps identical fingerprints isolated per session', () => {
+    repository.createSession({
+      type: 'session_start',
+      sessionId: 'fp-second-session',
+      url: 'https://example.com/second',
+      safeMode: false,
+      timestamp: Date.now(),
+    });
+
+    for (const sessionId of ['fp-test-session', 'fp-second-session']) {
+      repository.insertEvent({
+        type: 'event',
+        sessionId,
+        eventType: 'error',
+        data: { message: 'Shared failure', stack: 'at shared.js:1:1' },
+        timestamp: Date.now(),
+      });
+    }
+
+    const rows = db.prepare(`
+      SELECT session_id, count
+      FROM error_fingerprints
+      ORDER BY session_id
+    `).all() as Array<{ session_id: string; count: number }>;
+
+    expect(rows).toEqual([
+      { session_id: 'fp-second-session', count: 1 },
+      { session_id: 'fp-test-session', count: 1 },
+    ]);
+  });
 });

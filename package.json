@@ -10,6 +10,7 @@
     "scripts/mcp-start.cjs",
     "scripts/browser-debug-cli.cjs",
     ".agents/skills/browser-debug-cli/**/*",
+    "override-poc.config.json",
     "apps/mcp-server/dist/**/*",
     "apps/mcp-server/package.json",
     "README.md",

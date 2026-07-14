@@ -13,7 +13,7 @@ import {
   SSR_MOCK_AUDIT_STATUSES,
 } from '../override-audit-contract.js';
 
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 21;
 
 const OVERRIDE_POC_RUN_STATUS_SQL = OVERRIDE_POC_RUN_STATUSES.map((value) => `'${value}'`).join(', ');
 const OVERRIDE_POC_REQUEST_STATUS_SQL = OVERRIDE_POC_REQUEST_STATUSES.map((value) => `'${value}'`).join(', ');
@@ -87,6 +87,8 @@ CREATE INDEX IF NOT EXISTS idx_events_session_id ON events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(type);
 CREATE INDEX IF NOT EXISTS idx_events_session_type ON events(session_id, type);
+CREATE INDEX IF NOT EXISTS idx_events_session_ts ON events(session_id, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_events_session_type_ts ON events(session_id, type, ts DESC);
 
 -- Network table
 CREATE TABLE IF NOT EXISTS network (
@@ -122,6 +124,7 @@ CREATE INDEX IF NOT EXISTS idx_network_url ON network(url);
 CREATE INDEX IF NOT EXISTS idx_network_ts_start ON network(ts_start);
 CREATE INDEX IF NOT EXISTS idx_network_error_class ON network(error_class);
 CREATE INDEX IF NOT EXISTS idx_network_session_error ON network(session_id, error_class);
+CREATE INDEX IF NOT EXISTS idx_network_session_ts ON network(session_id, ts_start DESC);
 
 CREATE TABLE IF NOT EXISTS body_chunks (
   chunk_ref TEXT PRIMARY KEY,
@@ -143,19 +146,21 @@ CREATE INDEX IF NOT EXISTS idx_body_chunks_trace_id ON body_chunks(trace_id);
 
 -- Error fingerprints table
 CREATE TABLE IF NOT EXISTS error_fingerprints (
-  fingerprint TEXT PRIMARY KEY,
+  fingerprint TEXT NOT NULL,
   session_id TEXT NOT NULL,
   count INTEGER NOT NULL DEFAULT 1,
   sample_message TEXT NOT NULL,
   sample_stack TEXT,
   first_seen_at INTEGER NOT NULL,
   last_seen_at INTEGER NOT NULL,
+  PRIMARY KEY (session_id, fingerprint),
   FOREIGN KEY (session_id) REFERENCES sessions(session_id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_error_fingerprints_session_id ON error_fingerprints(session_id);
 CREATE INDEX IF NOT EXISTS idx_error_fingerprints_count ON error_fingerprints(count);
 CREATE INDEX IF NOT EXISTS idx_error_fingerprints_last_seen ON error_fingerprints(last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_error_fingerprints_session_rank ON error_fingerprints(session_id, count DESC, last_seen_at DESC);
 
 -- UI snapshots table
 CREATE TABLE IF NOT EXISTS snapshots (

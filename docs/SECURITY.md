@@ -20,6 +20,13 @@ The `libs/redaction` package handles sensitive data removal:
 
 Always use redaction utilities before logging or sending data over MCP.
 
+## Local transport
+
+- The bridge binds to `127.0.0.1` by default.
+- Browser WebSocket upgrades are accepted only from Chrome extension origins; ordinary `http:` and `https:` page origins are rejected.
+- When an extension reconnects with an existing session ID, the newest connection becomes the sole owner and the stale socket is closed.
+- The packaged CLI gateway requires its user-local bearer token.
+
 ## Live automation guardrails
 
 - Live automation is OFF by default and must be armed explicitly from the extension popup

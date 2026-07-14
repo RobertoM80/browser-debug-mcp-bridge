@@ -1013,6 +1013,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     required: ['sessionId', 'selector'],
     properties: {
       sessionId: { type: 'string' },
+      tabId: { type: 'number' },
       selector: { type: 'string' },
       maxDepth: { type: 'number' },
       maxBytes: { type: 'number' },
@@ -1023,7 +1024,10 @@ const TOOL_SCHEMAS: Record<string, object> = {
     required: ['sessionId'],
     properties: {
       sessionId: { type: 'string' },
+      tabId: { type: 'number' },
       mode: { type: 'string' },
+      maxBytes: { type: 'number' },
+      maxDepth: { type: 'number' },
     },
   },
   get_computed_styles: {
@@ -1050,6 +1054,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     required: ['sessionId'],
     properties: {
       sessionId: { type: 'string' },
+      tabId: { type: 'number' },
       maxItems: { type: 'number' },
       maxTextLength: { type: 'number' },
       includeButtons: { type: 'boolean' },
@@ -1063,6 +1068,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     required: ['sessionId'],
     properties: {
       sessionId: { type: 'string' },
+      tabId: { type: 'number' },
       kinds: {
         type: 'array',
         items: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused'] },
@@ -2851,7 +2857,8 @@ function buildOverrideProfileRecords(): Record<string, unknown>[] {
 
 function resolveOverrideProfileRecord(value: unknown): Record<string, unknown> {
   const profiles = buildOverrideProfileRecords();
-  const fallbackProfileId = typeof profiles[0]?.profileId === 'string' ? profiles[0].profileId : 'poc';
+  const activeProfile = profiles.find((profile) => profile.active === true) ?? profiles[0];
+  const fallbackProfileId = typeof activeProfile?.profileId === 'string' ? activeProfile.profileId : 'poc';
   const requestedProfileId = typeof value === 'string' && value.trim().length > 0 ? value.trim() : fallbackProfileId;
   const profile = profiles.find((candidate) => candidate.profileId === requestedProfileId);
   if (!profile) {
@@ -3506,8 +3513,21 @@ function buildOverridePreflight(options: {
     || observedAssetsWithKnownTabs.length === 0
     || observedAssetsWithKnownTabs.some((asset) => asset.tabId === sessionTabId);
 
+  if (profile.active !== true) {
+    pushOverridePreflightIssue(issues, {
+      code: 'PROFILE_NOT_ACTIVE',
+      severity: 'error',
+      source: 'profile',
+      message: `Profile ${String(profile.profileId ?? 'unknown')} is not active; activate it in the override config before enabling it.`,
+    });
+  }
+
   for (const issue of buildOverrideProfileIssues(profile)) {
-    pushOverridePreflightIssue(issues, { ...issue, source: 'profile' });
+    pushOverridePreflightIssue(issues, {
+      ...issue,
+      severity: issue.code === 'PROFILE_DISABLED' ? 'error' : issue.severity,
+      source: 'profile',
+    });
   }
 
   if (!session) {
@@ -10401,6 +10421,7 @@ export function createV2ToolHandlers(
         includeLinks,
         includeInputs,
         includeModals,
+        tabId: resolveOptionalTabId(input.tabId),
       },
       4_000,
     );
@@ -11084,7 +11105,7 @@ export function createV2ToolHandlers(
         captureClient,
         sessionId,
         'CAPTURE_DOM_SUBTREE',
-        { selector, maxDepth, maxBytes },
+        { selector, maxDepth, maxBytes, tabId: resolveOptionalTabId(input.tabId) },
         4_000,
       );
 
@@ -11113,7 +11134,7 @@ export function createV2ToolHandlers(
           captureClient,
           sessionId,
           'CAPTURE_DOM_DOCUMENT',
-          { mode, maxBytes, maxDepth },
+          { mode, maxBytes, maxDepth, tabId: resolveOptionalTabId(input.tabId) },
           4_000,
         );
 
@@ -11135,7 +11156,7 @@ export function createV2ToolHandlers(
           captureClient,
           sessionId,
           'CAPTURE_DOM_DOCUMENT',
-          { mode: 'outline', maxBytes, maxDepth },
+          { mode: 'outline', maxBytes, maxDepth, tabId: resolveOptionalTabId(input.tabId) },
           4_000,
         );
 

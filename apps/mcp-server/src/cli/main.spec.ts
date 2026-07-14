@@ -1,5 +1,8 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { getBaseUrl, isLiveSession, parseArgs, parseJsonObject, withCommonLimits } from './main';
+import { getBaseUrl, isLiveSession, parseArgs, parseJsonObject, parseToolArguments, withCommonLimits } from './main';
 
 describe('bdmcp CLI parsing', () => {
   it('parses command words and long options', () => {
@@ -21,6 +24,22 @@ describe('bdmcp CLI parsing', () => {
       sessionId: 's1',
       limit: 3,
       maxResponseBytes: 1024,
+    });
+  });
+
+  it('reads tool arguments from --args-file without dropping numeric values', () => {
+    const tempRoot = mkdtempSync(join(tmpdir(), 'bdmcp-cli-'));
+    const argsFile = join(tempRoot, 'args.json');
+    writeFileSync(argsFile, JSON.stringify({
+      sessionId: 'sess-1',
+      targetUrl: 'https://example.com/products',
+      maxBodyBytes: 2_000_000,
+    }), 'utf8');
+
+    expect(parseToolArguments({ 'args-file': argsFile })).toEqual({
+      sessionId: 'sess-1',
+      targetUrl: 'https://example.com/products',
+      maxBodyBytes: 2_000_000,
     });
   });
 

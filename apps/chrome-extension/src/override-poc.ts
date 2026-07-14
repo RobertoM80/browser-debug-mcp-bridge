@@ -41,6 +41,7 @@ interface OverridePocRscFlightRuleMetadata {
 
 interface OverridePocServerConfig {
   enabled: boolean;
+  profileEnabled: boolean;
   activeProfileId?: string;
   profileId?: string;
   profileName?: string;
@@ -518,6 +519,7 @@ function parseOverridePocConfig(value: unknown): OverridePocServerConfig {
 
   return {
     enabled: requiredBoolean('enabled'),
+    profileEnabled: value.profileEnabled !== false,
     activeProfileId: typeof value.activeProfileId === 'string' ? value.activeProfileId.trim() : undefined,
     profileId: typeof value.profileId === 'string' ? value.profileId.trim() : undefined,
     profileName: typeof value.profileName === 'string' ? value.profileName.trim() : undefined,
@@ -674,6 +676,20 @@ export class OverridePocController {
     const startedAt = Date.now();
     const { sessionId, tabId, selectedTabId } = options;
     const config = await this.fetchConfig();
+    if (!config.profileEnabled) {
+      const failure = new OverridePocControllerError('CONFIG_DISABLED', 'Active override profile is disabled.');
+      await this.persistTerminalRun({
+        runId,
+        sessionId,
+        startedAt,
+        tabId,
+        selectedTabId,
+        config,
+        failure,
+      });
+      throw failure;
+    }
+
     if (!config.fileExists) {
       const failure = new OverridePocControllerError('LOCAL_FILE_MISSING', `Configured local file does not exist: ${config.resolvedLocalFilePath}`);
       await this.persistTerminalRun({
@@ -879,16 +895,24 @@ export class OverridePocController {
   }
 
   private buildFetchPatterns(rules: OverridePocServerRuleConfig[]): Array<{ urlPattern: string; requestStage: 'Request' | 'Response' }> {
-    const patterns: Array<{ urlPattern: string; requestStage: 'Request' | 'Response' }> = [
-      { urlPattern: '*', requestStage: 'Request' },
-    ];
+    const patterns: Array<{ urlPattern: string; requestStage: 'Request' | 'Response' }> = [];
+    const seen = new Set<string>();
+    const addPattern = (urlPattern: string, requestStage: 'Request' | 'Response'): void => {
+      const key = `${requestStage}:${urlPattern}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        patterns.push({ urlPattern, requestStage });
+      }
+    };
 
     for (const rule of rules) {
-      if (rule.enabled && isProductionRscFlightRule(rule)) {
-        patterns.push({
-          urlPattern: toFetchUrlPattern(rule),
-          requestStage: 'Response',
-        });
+      if (!rule.enabled) {
+        continue;
+      }
+      const urlPattern = toFetchUrlPattern(rule);
+      addPattern(urlPattern, 'Request');
+      if (isProductionRscFlightRule(rule)) {
+        addPattern(urlPattern, 'Response');
       }
     }
 

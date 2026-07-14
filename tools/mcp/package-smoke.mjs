@@ -96,11 +96,15 @@ async function main() {
   const installedPackageRoot = join(installDir, 'node_modules', 'browser-debug-mcp-bridge');
   const launcher = join(installedPackageRoot, 'scripts', 'mcp-start.cjs');
   const cliLauncher = join(installedPackageRoot, 'scripts', 'browser-debug-cli.cjs');
+  const defaultOverrideConfig = join(installedPackageRoot, 'override-poc.config.json');
   if (!existsSync(launcher)) {
     throw new Error(`Installed launcher missing: ${launcher}`);
   }
   if (!existsSync(cliLauncher)) {
     throw new Error(`Installed CLI launcher missing: ${cliLauncher}`);
+  }
+  if (!existsSync(defaultOverrideConfig)) {
+    throw new Error(`Installed default override config missing: ${defaultOverrideConfig}`);
   }
   const packagedSkill = join(installedPackageRoot, '.agents', 'skills', 'browser-debug-cli', 'SKILL.md');
   if (!existsSync(packagedSkill)) {
