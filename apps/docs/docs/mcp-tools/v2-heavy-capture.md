@@ -2,12 +2,33 @@
 
 Heavy capture is server-orchestrated and extension-executed through command/response messages.
 
+## Frame targeting
+
+Single-document DOM, style, and layout captures default to the top frame (`frameId: 0`). This prevents
+multi-frame pages from returning whichever content-script response happens to arrive first.
+
+Use either `frameId` or a case-insensitive `frameUrlContains` substring to capture a child frame.
+The URL substring must match exactly one frame; zero or multiple matches return an explicit error.
+You can supply both fields to verify that a remembered frame ID still belongs to the expected URL.
+Frame targeting keeps the existing session binding and top-tab allowlist checks.
+
+`get_page_state` and `get_interactive_elements` aggregate all frames when no frame target is
+provided. Passing either targeting field limits the result to one frame.
+For `assert_page_state` and `wait_for_page_state`, `frameUrlContains` remains an item matcher over
+the aggregate page model.
+
 ## `get_dom_subtree`
 
 ```json
 {
   "name": "get_dom_subtree",
-  "arguments": { "sessionId": "sess_123", "selector": "#checkout-form", "maxDepth": 5, "maxBytes": 120000 }
+  "arguments": {
+    "sessionId": "sess_123",
+    "selector": "#checkout-form",
+    "frameUrlContains": "checkout.example.com",
+    "maxDepth": 5,
+    "maxBytes": 120000
+  }
 }
 ```
 
@@ -22,14 +43,26 @@ Heavy capture is server-orchestrated and extension-executed through command/resp
 ```json
 {
   "name": "get_computed_styles",
-  "arguments": { "sessionId": "sess_123", "selector": ".submit-button", "properties": ["display", "visibility", "opacity"] }
+  "arguments": {
+    "sessionId": "sess_123",
+    "selector": ".submit-button",
+    "frameUrlContains": "checkout.example.com",
+    "properties": ["display", "visibility", "opacity"]
+  }
 }
 ```
 
 ## `get_layout_metrics`
 
 ```json
-{ "name": "get_layout_metrics", "arguments": { "sessionId": "sess_123", "selector": ".modal" } }
+{
+  "name": "get_layout_metrics",
+  "arguments": {
+    "sessionId": "sess_123",
+    "selector": ".modal",
+    "frameUrlContains": "checkout.example.com"
+  }
+}
 ```
 
 ## `get_page_state`
@@ -41,6 +74,7 @@ Use this before raw DOM capture when you need a compact page model for buttons, 
   "name": "get_page_state",
   "arguments": {
     "sessionId": "sess_123",
+    "frameId": 0,
     "maxItems": 40,
     "maxTextLength": 80,
     "includeButtons": true,
@@ -67,6 +101,7 @@ Returns compact live refs for interactive elements so later automation can targe
   "name": "get_interactive_elements",
   "arguments": {
     "sessionId": "sess_123",
+    "frameUrlContains": "checkout.example.com",
     "kinds": ["buttons", "inputs", "focused"],
     "maxItems": 20
   }
