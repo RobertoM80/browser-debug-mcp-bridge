@@ -3514,13 +3514,30 @@ async function listTabFrames(tabId: number): Promise<FrameCaptureMetadata[]> {
 async function resolveCaptureCommandFrame(
   tabId: number,
   payload: Record<string, unknown>,
+  topFrame: FrameCaptureMetadata = { frameId: 0 },
 ): Promise<FrameCaptureMetadata> {
   if (!hasExplicitCaptureFrameTarget(payload)) {
-    return { frameId: 0 };
+    return topFrame;
   }
 
   const frames = await listTabFrames(tabId);
   return resolveCaptureFrameTarget(frames, payload);
+}
+
+function withResolvedFrame(
+  capture: { payload: Record<string, unknown>; truncated?: boolean },
+  frame: FrameCaptureMetadata,
+): { payload: Record<string, unknown>; truncated?: boolean } {
+  return {
+    ...capture,
+    payload: {
+      ...capture.payload,
+      resolvedFrame: {
+        frameId: frame.frameId,
+        url: resolveFrameMetadataUrl(frame),
+      },
+    },
+  };
 }
 
 function mergeFramePageStates(
@@ -3709,19 +3726,15 @@ async function executeRetriableGenericCapture(
   };
   let capture = await captureOnce();
 
-  if (!shouldRetryGenericCaptureResult(command, capture.payload)) {
-    return capture;
+  if (shouldRetryGenericCaptureResult(command, capture.payload)) {
+    await sleep(150);
+    const contentReady = await ensureContentScriptReady(tabId, frame?.frameId ?? 0);
+    if (contentReady) {
+      capture = await captureOnce();
+    }
   }
 
-  await sleep(150);
-  const contentReady = await ensureContentScriptReady(tabId, frame?.frameId ?? 0);
-  if (!contentReady) {
-    return capture;
-  }
-
-  capture = await captureOnce();
-
-  return capture;
+  return frame ? withResolvedFrame(capture, frame) : capture;
 }
 
 function buildCaptureConfigUpdatePayload(sessionId?: string): CaptureConfigUpdatePayload {
@@ -4550,6 +4563,12 @@ async function executeCaptureCommand(
   rememberCaptureTabForSession(context.sessionId, tab);
 
   const tabId = tab.id;
+  const topFrame: FrameCaptureMetadata = {
+    frameId: 0,
+    url: tab.url,
+    title: tab.title,
+    origin: normalizeHttpOrigin(tab.url),
+  };
   const contentReady = await ensureContentScriptReady(tabId);
   if (!contentReady) {
     throw new Error('Target tab for this session is unavailable for live capture');
@@ -4597,7 +4616,7 @@ async function executeCaptureCommand(
 
   if (command === 'CAPTURE_PAGE_STATE') {
     const frame = hasExplicitCaptureFrameTarget(payload)
-      ? await resolveCaptureCommandFrame(tabId, payload)
+      ? await resolveCaptureCommandFrame(tabId, payload, topFrame)
       : undefined;
     return executeRetriableGenericCapture(tabId, 'CAPTURE_PAGE_STATE', payload, frame);
   }
@@ -4756,12 +4775,15 @@ async function executeCaptureCommand(
   }
 
   if (command === 'CAPTURE_DOM_DOCUMENT' || command === 'CAPTURE_DOM_SUBTREE') {
-    const frame = await resolveCaptureCommandFrame(tabId, payload);
+    const frame = await resolveCaptureCommandFrame(tabId, payload, topFrame);
     return executeRetriableGenericCapture(tabId, command, payload, frame);
   }
 
-  const frame = await resolveCaptureCommandFrame(tabId, payload);
-  return sendCaptureCommandToTab(tabId, command, payload, true, frame.frameId);
+  const frame = await resolveCaptureCommandFrame(tabId, payload, topFrame);
+  return withResolvedFrame(
+    await sendCaptureCommandToTab(tabId, command, payload, true, frame.frameId),
+    frame,
+  );
 }
 
 const sessionManager = new SessionManager({

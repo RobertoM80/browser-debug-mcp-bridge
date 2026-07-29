@@ -48,6 +48,28 @@ describe('MCP Server', () => {
     expect(body.websocket).toBeDefined();
   });
 
+  it('should reject unknown capture payload keys with accepted-key guidance', async () => {
+    const response = await fastify.inject({
+      method: 'POST',
+      url: '/internal/capture-command',
+      payload: {
+        sessionId: 'strict-capture-payload-test',
+        command: 'CAPTURE_PAGE_STATE',
+        payload: {
+          frameURLContains: 'checkout.example.com',
+        },
+      },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.body)).toEqual({
+      ok: false,
+      error: expect.stringContaining(
+        'Unknown payload key for CAPTURE_PAGE_STATE: frameURLContains. Accepted keys:',
+      ),
+    });
+  });
+
   it('should expose CLI tool discovery and protect generic tool execution', async () => {
     initializeDatabase(getConnection().db);
 

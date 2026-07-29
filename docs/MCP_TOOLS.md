@@ -285,6 +285,32 @@ no frame target is supplied. Passing `frameId` or `frameUrlContains` limits eith
 single frame. For `assert_page_state` and `wait_for_page_state`, `frameUrlContains` remains an item
 matcher over the aggregate page model.
 
+Single-frame DOM, style, layout, and targeted page-state responses include
+`resolvedFrame: { frameId, url }`. Untargeted page-state responses describe every contributing
+frame in `frames`.
+
+### Targeting capability matrix
+
+`✓` means supported. `—` means unsupported and rejected as an unknown payload key.
+
+| Raw command | `tabId` | `frameId` | `frameUrlContains` | Default scope |
+| --- | --- | --- | --- | --- |
+| `CAPTURE_DOM_SUBTREE` | ✓ | ✓ | ✓ | Top frame |
+| `CAPTURE_DOM_DOCUMENT` | ✓ | ✓ | ✓ | Top frame |
+| `CAPTURE_COMPUTED_STYLES` | ✓ | ✓ | ✓ | Top frame |
+| `CAPTURE_LAYOUT_METRICS` | ✓ | ✓ | ✓ | Top frame |
+| `CAPTURE_PAGE_STATE` | ✓ | ✓ | ✓ | All frames |
+| `CAPTURE_UI_SNAPSHOT`, `SET_VIEWPORT` | ✓ | — | — | Top frame |
+| `CAPTURE_GET_LIVE_CONSOLE_LOGS` | ✓ | — | — | Session buffer |
+| Navigation, dialog, stable-layout, and download waits | ✓ | — | — | Bound session tab |
+| `CAPTURE_WAIT_FOR_POPUP` | `openerTabId` | — | — | Bound opener tab |
+| Override observe, response-body, and enable commands | ✓ | — | — | Bound override tab |
+| Override status and disable commands | — | — | — | Active override |
+| `EXECUTE_UI_ACTION` | `target.tabId` | `target.frameId` | `target.frameUrlContains` | Bound session tab |
+
+The raw `/internal/capture-command` boundary is strict for every command: an unknown payload key
+returns HTTP 400 with the offending and accepted keys. No payload key is silently ignored.
+
 ### get_dom_subtree
 
 Captures a reduced DOM subtree for a selector.

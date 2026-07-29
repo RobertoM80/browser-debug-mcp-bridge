@@ -53,6 +53,7 @@ import {
   listActiveBrowserMockRoutes,
 } from './mock-store.js';
 import { registerCliGateway } from './cli/gateway.js';
+import { CaptureCommandSchema, type CaptureCommand } from './websocket/messages.js';
 
 const fastify = Fastify({
   logger: process.env.MCP_STDIO_MODE === '1' ? false : true
@@ -70,9 +71,125 @@ let cleanupInterval: NodeJS.Timeout | null = null;
 let lastCleanupResult: ReturnType<typeof runRetentionCleanup> | null = null;
 const MAX_SESSION_IMPORT_BYTES = 10 * 1024 * 1024;
 const MOCK_ROUTE_LOCAL_PATH_PREFIX = 'bdmcp-mock-route:';
+const CAPTURE_PAYLOAD_KEYS: Record<CaptureCommand, readonly string[]> = {
+  CAPTURE_DOM_SUBTREE: ['selector', 'maxDepth', 'maxBytes', 'tabId', 'frameId', 'frameUrlContains'],
+  CAPTURE_DOM_DOCUMENT: ['mode', 'maxDepth', 'maxBytes', 'tabId', 'frameId', 'frameUrlContains'],
+  CAPTURE_COMPUTED_STYLES: ['selector', 'properties', 'tabId', 'frameId', 'frameUrlContains'],
+  CAPTURE_LAYOUT_METRICS: ['selector', 'tabId', 'frameId', 'frameUrlContains'],
+  CAPTURE_PAGE_STATE: [
+    'maxItems',
+    'maxTextLength',
+    'includeButtons',
+    'includeLinks',
+    'includeInputs',
+    'includeModals',
+    'tabId',
+    'frameId',
+    'frameUrlContains',
+  ],
+  CAPTURE_UI_SNAPSHOT: [
+    'selector',
+    'trigger',
+    'mode',
+    'styleMode',
+    'explicitStyleMode',
+    'maxDepth',
+    'maxBytes',
+    'maxAncestors',
+    'includeDom',
+    'includeStyles',
+    'includePngDataUrl',
+    'llmRequested',
+    'tabId',
+  ],
+  CAPTURE_GET_LIVE_CONSOLE_LOGS: [
+    'origin',
+    'url',
+    'tabId',
+    'levels',
+    'contains',
+    'sinceTs',
+    'includeRuntimeErrors',
+    'dedupeWindowMs',
+    'limit',
+  ],
+  CAPTURE_WAIT_FOR_NAVIGATION_LIFECYCLE: [
+    'state',
+    'urlContains',
+    'urlRegex',
+    'exactUrl',
+    'tabId',
+    'timeoutMs',
+  ],
+  CAPTURE_WAIT_FOR_DIALOG: [
+    'type',
+    'messageContains',
+    'urlContains',
+    'action',
+    'promptText',
+    'tabId',
+    'timeoutMs',
+  ],
+  CAPTURE_WAIT_FOR_STABLE_LAYOUT: ['selector', 'stableMs', 'tabId', 'timeoutMs', 'pollIntervalMs'],
+  CAPTURE_WAIT_FOR_DOWNLOAD: [
+    'urlContains',
+    'urlRegex',
+    'exactUrl',
+    'filenameContains',
+    'filenameRegex',
+    'state',
+    'tabId',
+    'timeoutMs',
+  ],
+  CAPTURE_WAIT_FOR_POPUP: ['urlContains', 'urlRegex', 'exactUrl', 'openerTabId', 'timeoutMs'],
+  CAPTURE_OVERRIDE_OBSERVE_ASSETS: ['tabId', 'includePerformance'],
+  CAPTURE_OVERRIDE_RESPONSE_BODY: [
+    'targetUrl',
+    'targetAssetUrl',
+    'tabId',
+    'captureMode',
+    'triggerReload',
+    'matchMode',
+    'ruleType',
+    'requestMethod',
+    'requestHeaders',
+    'timeoutMs',
+    'maxBodyBytes',
+    'includeBody',
+  ],
+  CAPTURE_OVERRIDE_POC_GET_STATUS: [],
+  CAPTURE_OVERRIDE_POC_ENABLE: ['tabId'],
+  CAPTURE_OVERRIDE_POC_DISABLE: [],
+  SET_VIEWPORT: ['width', 'height', 'tabId'],
+  EXECUTE_UI_ACTION: ['action', 'input', 'target', 'traceId'],
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validateCapturePayload(
+  command: CaptureCommand,
+  payload: unknown,
+): Record<string, unknown> {
+  if (payload === undefined) {
+    return {};
+  }
+  if (!isRecord(payload)) {
+    throw new Error('payload must be an object');
+  }
+
+  const acceptedKeys = CAPTURE_PAYLOAD_KEYS[command];
+
+  const unknownKeys = Object.keys(payload).filter((key) => !acceptedKeys.includes(key));
+  if (unknownKeys.length > 0) {
+    throw new Error(
+      `Unknown payload key${unknownKeys.length === 1 ? '' : 's'} for ${command}: ${unknownKeys.join(', ')}. `
+      + `Accepted keys: ${acceptedKeys.join(', ') || '(none)'}`,
+    );
+  }
+
+  return payload;
 }
 
 function hasSession(sessionId: string): boolean {
@@ -658,26 +775,39 @@ fastify.get('/internal/session-connection/:sessionId', async (request, reply) =>
 fastify.post('/internal/capture-command', async (request, reply) => {
   const body = (request.body ?? {}) as Partial<{
     sessionId: string;
-    command: string;
-    payload: Record<string, unknown>;
+    command: unknown;
+    payload: unknown;
     timeoutMs: number;
   }>;
 
-  if (!wsManager) {
-    return reply.code(503).send({ ok: false, error: 'WebSocket manager unavailable' });
-  }
   if (typeof body.sessionId !== 'string' || body.sessionId.trim().length === 0) {
     return reply.code(400).send({ ok: false, error: 'sessionId is required' });
   }
-  if (typeof body.command !== 'string' || body.command.trim().length === 0) {
-    return reply.code(400).send({ ok: false, error: 'command is required' });
+
+  const command = CaptureCommandSchema.safeParse(body.command);
+  if (!command.success) {
+    return reply.code(400).send({ ok: false, error: 'command must be a supported capture command' });
+  }
+
+  let payload: Record<string, unknown>;
+  try {
+    payload = validateCapturePayload(command.data, body.payload);
+  } catch (error) {
+    return reply.code(400).send({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Invalid capture payload',
+    });
+  }
+
+  if (!wsManager) {
+    return reply.code(503).send({ ok: false, error: 'WebSocket manager unavailable' });
   }
 
   try {
     const result = await wsManager.sendCaptureCommand(
       body.sessionId,
-      body.command as Parameters<WebSocketManager['sendCaptureCommand']>[1],
-      body.payload && typeof body.payload === 'object' && !Array.isArray(body.payload) ? body.payload : {},
+      command.data,
+      payload,
       typeof body.timeoutMs === 'number' && Number.isFinite(body.timeoutMs) ? Math.floor(body.timeoutMs) : 4000,
     );
     return result;
