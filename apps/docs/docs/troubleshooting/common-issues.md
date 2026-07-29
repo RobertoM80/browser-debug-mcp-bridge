@@ -53,6 +53,17 @@ Actions:
 - If using `npx`, keep `-y` in args, for example `["-y", "browser-debug-mcp-bridge"]`
 - Without `-y`, npm can wait for interactive install confirmation; VS Code Copilot and other MCP hosts cannot answer that prompt, so startup stalls before tools are registered
 
+## `bdmcp` command is not found
+
+- Install the package that provides it: `npm i -g browser-debug-mcp-bridge`
+- Verify with `bdmcp --help`
+- From a local clone, use `node scripts/browser-debug-cli.cjs` in place of `bdmcp`
+
+## Snapshot capture is refused
+
+- If the error says snapshots are disabled, open the extension popup and enable **Capture Settings > Snapshot capture > Enable snapshots (manual)**, then save settings
+- If the error says request opt-in is required, use the `capture_ui_snapshot` MCP tool or `bdmcp snapshot`; raw `CAPTURE_UI_SNAPSHOT` callers must set `llmRequested: true`
+
 ## MCP process remains alive after host closes
 
 - In `mcp-stdio` mode, process should stop when host transport closes

@@ -9,7 +9,22 @@ applyTo: "**"
 
 When browser debugging evidence is needed and MCP tools are unavailable, use the packaged CLI instead of guessing from source alone.
 
-Start with:
+First verify that the packaged CLI is installed:
+
+\`\`\`bash
+bdmcp --help
+\`\`\`
+
+If the command is not found, install the package that provides it:
+
+\`\`\`bash
+npm i -g browser-debug-mcp-bridge
+\`\`\`
+
+From a local repo clone without a global install, use \`node scripts/browser-debug-cli.cjs\`
+in place of \`bdmcp\`.
+
+Then start with:
 
 \`\`\`bash
 bdmcp health
@@ -46,7 +61,22 @@ description: Use when MCP tools are unavailable or blocked but terminal commands
 
 Use \`bdmcp\` when Browser Debug MCP Bridge evidence is needed and MCP tools are not available.
 
-Start with:
+First verify that the packaged CLI is installed:
+
+\`\`\`bash
+bdmcp --help
+\`\`\`
+
+If the command is not found, install the package that provides it:
+
+\`\`\`bash
+npm i -g browser-debug-mcp-bridge
+\`\`\`
+
+From a local repo clone without a global install, use \`node scripts/browser-debug-cli.cjs\`
+in place of \`bdmcp\`.
+
+Then start with:
 
 \`\`\`bash
 bdmcp health

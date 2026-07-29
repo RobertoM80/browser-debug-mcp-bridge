@@ -12,6 +12,12 @@ Install runtime:
 npm i -g browser-debug-mcp-bridge
 ```
 
+This install provides both `browser-debug-mcp-bridge` and `bdmcp`. Verify the CLI before use:
+
+```bash
+bdmcp --help
+```
+
 Download extension asset `chrome-extension-dist.tgz` from latest release and load unpacked in Chrome:
 
 1. Open `chrome://extensions`
@@ -32,6 +38,13 @@ Configure MCP host with direct Node launch:
 git clone https://github.com/<ORG_OR_USER>/browser-debug-mcp-bridge.git
 cd browser-debug-mcp-bridge
 pnpm install
+```
+
+A clone is not added to `PATH`. Build and invoke its CLI directly:
+
+```bash
+pnpm build:mcp-runtime
+node scripts/browser-debug-cli.cjs health
 ```
 
 ## 3) Build extension and load in Chrome
@@ -74,6 +87,7 @@ GitHub fallback (if registry package is not available):
 If Copilot MCP servers are disabled by organization policy but terminal commands are allowed, use the packaged CLI workflow:
 
 ```bash
+bdmcp --help
 browser-debug-mcp-bridge --standalone
 bdmcp init-copilot
 bdmcp health
