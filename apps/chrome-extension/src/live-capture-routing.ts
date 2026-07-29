@@ -3,6 +3,16 @@ export type GenericCaptureCommand =
   | 'CAPTURE_DOM_DOCUMENT'
   | 'CAPTURE_PAGE_STATE';
 
+export type CaptureFrameCandidate = {
+  frameId: number;
+  url?: string;
+};
+
+export type CaptureFrameTarget = {
+  frameId?: unknown;
+  frameUrlContains?: unknown;
+};
+
 type CaptureTabPreferenceOptions = {
   activeTabId?: number;
   rememberedTabId?: number;
@@ -61,6 +71,69 @@ function hasFrameCaptureError(frames: unknown): boolean {
   }
 
   return frames.some((frame) => asRecord(frame)?.frameCaptureError === true);
+}
+
+export function hasExplicitCaptureFrameTarget(target: CaptureFrameTarget): boolean {
+  return target.frameId !== undefined || target.frameUrlContains !== undefined;
+}
+
+export function resolveCaptureFrameTarget<T extends CaptureFrameCandidate>(
+  frames: T[],
+  target: CaptureFrameTarget,
+): T {
+  let frameId: number | undefined;
+  if (target.frameId !== undefined) {
+    if (typeof target.frameId !== 'number' || !Number.isInteger(target.frameId) || target.frameId < 0) {
+      throw new Error('frameId must be a non-negative integer');
+    }
+    frameId = target.frameId;
+  }
+
+  let frameUrlContains: string | undefined;
+  if (target.frameUrlContains !== undefined) {
+    if (typeof target.frameUrlContains !== 'string' || target.frameUrlContains.trim().length === 0) {
+      throw new Error('frameUrlContains must be a non-empty string');
+    }
+    frameUrlContains = target.frameUrlContains.trim();
+  }
+
+  if (!frameUrlContains) {
+    const frame = frameId === undefined
+      ? frames.find((candidate) => candidate.frameId === 0)
+      : frames.find((candidate) => candidate.frameId === frameId);
+    if (!frame) {
+      throw new Error(frameId === undefined ? 'No top frame found' : `No frame found for frameId ${frameId}`);
+    }
+    return frame;
+  }
+
+  const normalizedUrl = frameUrlContains.toLowerCase();
+  const candidates = frameId === undefined
+    ? frames
+    : frames.filter((frame) => frame.frameId === frameId);
+  if (frameId !== undefined && candidates.length === 0) {
+    throw new Error(`No frame found for frameId ${frameId}`);
+  }
+
+  const matches = candidates.filter((frame) => frame.url?.toLowerCase().includes(normalizedUrl));
+  if (frameId !== undefined) {
+    if (matches.length === 0) {
+      throw new Error(`frameId ${frameId} does not match frameUrlContains "${frameUrlContains}"`);
+    }
+    return matches[0];
+  }
+
+  if (matches.length === 0) {
+    throw new Error(`No frame matches frameUrlContains "${frameUrlContains}"`);
+  }
+  if (matches.length > 1) {
+    const frameIds = matches.map((frame) => frame.frameId).join(', ');
+    throw new Error(
+      `frameUrlContains "${frameUrlContains}" matched ${matches.length} frames (${frameIds}); specify frameId`,
+    );
+  }
+
+  return matches[0];
 }
 
 export function buildPreferredCaptureTabIds(options: CaptureTabPreferenceOptions): number[] {

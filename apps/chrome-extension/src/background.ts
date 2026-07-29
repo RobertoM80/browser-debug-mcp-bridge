@@ -46,6 +46,8 @@ import {
 } from './automation-native';
 import {
   buildPreferredCaptureTabIds,
+  hasExplicitCaptureFrameTarget,
+  resolveCaptureFrameTarget,
   shouldRetryGenericCaptureResult,
   type GenericCaptureCommand,
 } from './live-capture-routing';
@@ -368,23 +370,6 @@ function resolveLiveConsoleTabId(value: unknown): number | undefined {
   }
 
   return tabId;
-}
-
-function resolveCaptureFrameId(value: unknown): number | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    throw new Error('frameId must be an integer');
-  }
-
-  const frameId = Math.floor(value);
-  if (!Number.isInteger(frameId) || frameId < 0) {
-    throw new Error('frameId must be an integer');
-  }
-
-  return frameId;
 }
 
 function resolveLiveConsoleSinceTs(value: unknown): number | undefined {
@@ -3143,7 +3128,7 @@ async function sendCaptureCommandToTab(
       throw error;
     }
 
-    const recovered = await ensureContentScriptReady(tabId);
+    const recovered = await ensureContentScriptReady(tabId, frameId ?? 0);
     if (!recovered) {
       throw new Error('Extension target is unavailable after recovery attempt');
     }
@@ -3525,6 +3510,18 @@ async function listTabFrames(tabId: number): Promise<FrameCaptureMetadata[]> {
   return mergeFrameElementMetadata(frames, frameElements);
 }
 
+async function resolveCaptureCommandFrame(
+  tabId: number,
+  payload: Record<string, unknown>,
+): Promise<FrameCaptureMetadata> {
+  if (!hasExplicitCaptureFrameTarget(payload)) {
+    return { frameId: 0 };
+  }
+
+  const frames = await listTabFrames(tabId);
+  return resolveCaptureFrameTarget(frames, payload);
+}
+
 function mergeFramePageStates(
   captures: Array<{ frame: FrameCaptureMetadata; payload: Record<string, unknown>; truncated?: boolean }>,
   maxItems: number,
@@ -3655,16 +3652,13 @@ function classifyFrameCaptureError(frame: FrameCaptureMetadata, error: unknown):
 async function capturePageStateAcrossFrames(
   tabId: number,
   payload: Record<string, unknown>,
+  targetFrame?: FrameCaptureMetadata,
 ): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
-  const frames = await listTabFrames(tabId);
+  const frames = targetFrame ? [targetFrame] : await listTabFrames(tabId);
   const maxItems = typeof payload.maxItems === 'number' && Number.isFinite(payload.maxItems)
     ? Math.max(1, Math.floor(payload.maxItems))
     : 40;
   const captures: Array<{ frame: FrameCaptureMetadata; payload: Record<string, unknown>; truncated?: boolean }> = [];
-
-  if (frames.some((frame) => frame.frameId !== 0)) {
-    await injectContentScriptFallback(tabId).catch(() => false);
-  }
 
   for (const frame of frames) {
     try {
@@ -3695,7 +3689,7 @@ async function capturePageStateAcrossFrames(
   }
 
   if (captures.length === 0) {
-    return sendCaptureCommandToTab(tabId, 'CAPTURE_PAGE_STATE', payload);
+    return sendCaptureCommandToTab(tabId, 'CAPTURE_PAGE_STATE', payload, true, 0);
   }
 
   return mergeFramePageStates(captures, maxItems);
@@ -3705,25 +3699,26 @@ async function executeRetriableGenericCapture(
   tabId: number,
   command: GenericCaptureCommand,
   payload: Record<string, unknown>,
-  frameId?: number,
+  frame?: FrameCaptureMetadata,
 ): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> {
-  let capture = command === 'CAPTURE_PAGE_STATE'
-    ? await capturePageStateAcrossFrames(tabId, payload)
-    : await sendCaptureCommandToTab(tabId, command, payload, true, frameId);
+  const captureOnce = (): Promise<{ payload: Record<string, unknown>; truncated?: boolean }> => {
+    return command === 'CAPTURE_PAGE_STATE'
+      ? capturePageStateAcrossFrames(tabId, payload, frame)
+      : sendCaptureCommandToTab(tabId, command, payload, true, frame?.frameId);
+  };
+  let capture = await captureOnce();
 
   if (!shouldRetryGenericCaptureResult(command, capture.payload)) {
     return capture;
   }
 
   await sleep(150);
-  const contentReady = await ensureContentScriptReady(tabId);
+  const contentReady = await ensureContentScriptReady(tabId, frame?.frameId ?? 0);
   if (!contentReady) {
     return capture;
   }
 
-  capture = command === 'CAPTURE_PAGE_STATE'
-    ? await capturePageStateAcrossFrames(tabId, payload)
-    : await sendCaptureCommandToTab(tabId, command, payload, true, frameId);
+  capture = await captureOnce();
 
   return capture;
 }
@@ -4547,6 +4542,10 @@ async function executeCaptureCommand(
     throw new Error(`tabId ${tab.id} is not bound to this session`);
   }
 
+  if (!isUrlAllowed(tab.url ?? '', captureConfig.allowlist)) {
+    throw new Error('Live capture is blocked because the target tab is no longer allowlisted.');
+  }
+
   rememberCaptureTabForSession(context.sessionId, tab);
 
   const tabId = tab.id;
@@ -4579,7 +4578,7 @@ async function executeCaptureCommand(
     const height = Math.floor(rawHeight);
     await updateWindowViewport(tab.windowId, width, height);
     await sleep(150);
-    const metrics = await sendCaptureCommandToTab(tabId, 'CAPTURE_LAYOUT_METRICS', {}, false);
+    const metrics = await sendCaptureCommandToTab(tabId, 'CAPTURE_LAYOUT_METRICS', {}, false, 0);
 
     return {
       payload: {
@@ -4596,7 +4595,10 @@ async function executeCaptureCommand(
   }
 
   if (command === 'CAPTURE_PAGE_STATE') {
-    return executeRetriableGenericCapture(tabId, 'CAPTURE_PAGE_STATE', payload);
+    const frame = hasExplicitCaptureFrameTarget(payload)
+      ? await resolveCaptureCommandFrame(tabId, payload)
+      : undefined;
+    return executeRetriableGenericCapture(tabId, 'CAPTURE_PAGE_STATE', payload, frame);
   }
 
   if (command === 'CAPTURE_UI_SNAPSHOT') {
@@ -4627,7 +4629,7 @@ async function executeCaptureCommand(
       includeStyles,
     };
 
-    const captured = await sendCaptureCommandToTab(tabId, 'CAPTURE_UI_SNAPSHOT', contentPayload);
+    const captured = await sendCaptureCommandToTab(tabId, 'CAPTURE_UI_SNAPSHOT', contentPayload, true, 0);
 
     const basePayload = captured.payload;
     const now = Date.now();
@@ -4753,10 +4755,12 @@ async function executeCaptureCommand(
   }
 
   if (command === 'CAPTURE_DOM_DOCUMENT' || command === 'CAPTURE_DOM_SUBTREE') {
-    return executeRetriableGenericCapture(tabId, command, payload, resolveCaptureFrameId(payload.frameId));
+    const frame = await resolveCaptureCommandFrame(tabId, payload);
+    return executeRetriableGenericCapture(tabId, command, payload, frame);
   }
 
-  return sendCaptureCommandToTab(tabId, command, payload, true, resolveCaptureFrameId(payload.frameId));
+  const frame = await resolveCaptureCommandFrame(tabId, payload);
+  return sendCaptureCommandToTab(tabId, command, payload, true, frame.frameId);
 }
 
 const sessionManager = new SessionManager({
@@ -4892,23 +4896,28 @@ async function getActiveTab(): Promise<chrome.tabs.Tab | undefined> {
   return preferred[0] ?? currentWindowTabs[0];
 }
 
-async function pingContentScript(tabId: number): Promise<boolean> {
+async function pingContentScript(tabId: number, frameId: number = 0): Promise<boolean> {
   return new Promise((resolve) => {
-    chrome.tabs.sendMessage(tabId, { type: 'CAPTURE_PING' }, (response?: CapturePingResponse) => {
-      if (chrome.runtime.lastError) {
-        resolve(false);
-        return;
-      }
+    chrome.tabs.sendMessage(
+      tabId,
+      { type: 'CAPTURE_PING' },
+      { frameId },
+      (response?: CapturePingResponse) => {
+        if (chrome.runtime.lastError) {
+          resolve(false);
+          return;
+        }
 
-      resolve(Boolean(response?.ok));
-    });
+        resolve(Boolean(response?.ok));
+      },
+    );
   });
 }
 
-async function injectContentScriptFallback(tabId: number): Promise<boolean> {
+async function injectContentScriptFallback(tabId: number, frameId: number = 0): Promise<boolean> {
   try {
     await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
+      target: { tabId, frameIds: [frameId] },
       files: ['content-script.js'],
       world: 'ISOLATED',
     });
@@ -4922,20 +4931,20 @@ async function injectContentScriptFallback(tabId: number): Promise<boolean> {
   }
 }
 
-async function ensureContentScriptReady(tabId: number): Promise<boolean> {
-  const initial = await pingContentScript(tabId);
+async function ensureContentScriptReady(tabId: number, frameId: number = 0): Promise<boolean> {
+  const initial = await pingContentScript(tabId, frameId);
   if (initial) {
     captureDiagnostics.contentScriptReady = true;
     return true;
   }
 
-  const injected = await injectContentScriptFallback(tabId);
+  const injected = await injectContentScriptFallback(tabId, frameId);
   if (!injected) {
     captureDiagnostics.contentScriptReady = false;
     return false;
   }
 
-  const afterInject = await pingContentScript(tabId);
+  const afterInject = await pingContentScript(tabId, frameId);
   captureDiagnostics.contentScriptReady = afterInject;
   return afterInject;
 }
