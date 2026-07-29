@@ -660,25 +660,35 @@ test.describe('@full live automation through MCP and extension session', () => {
     }
 
     for (let attempt = 0; attempt < 8; attempt += 1) {
-      const subtree = await callToolJson<{ html?: string }>(mcp.client, 'get_dom_subtree', {
+      const subtree = await callToolJson<{
+        html?: string;
+        resolvedFrame?: { frameId?: number; url?: string };
+      }>(mcp.client, 'get_dom_subtree', {
         sessionId,
         selector: '#cross-origin-action',
         frameUrlContains: '/automation-cross-origin-frame',
         maxBytes: 1500,
       });
       expect(subtree.html).toContain('id="cross-origin-action"');
+      expect(subtree.resolvedFrame?.frameId).toBeGreaterThan(0);
+      expect(subtree.resolvedFrame?.url).toContain('/automation-cross-origin-frame');
     }
 
-    const documentCapture = await callToolJson<{ outline?: string }>(mcp.client, 'get_dom_document', {
+    const documentCapture = await callToolJson<{
+      outline?: string;
+      resolvedFrame?: { frameId?: number; url?: string };
+    }>(mcp.client, 'get_dom_document', {
       sessionId,
       frameUrlContains: '/automation-cross-origin-frame',
       mode: 'outline',
       maxDepth: 4,
     });
     expect(documentCapture.outline).toContain('cross-origin-action');
+    expect(documentCapture.resolvedFrame?.url).toContain('/automation-cross-origin-frame');
 
     const layout = await callToolJson<{
       element?: { width?: number; height?: number };
+      resolvedFrame?: { frameId?: number; url?: string };
     }>(mcp.client, 'get_layout_metrics', {
       sessionId,
       selector: '#cross-origin-action',
@@ -686,9 +696,11 @@ test.describe('@full live automation through MCP and extension session', () => {
     });
     expect(layout.element?.width).toBeGreaterThan(0);
     expect(layout.element?.height).toBeGreaterThan(0);
+    expect(layout.resolvedFrame?.url).toContain('/automation-cross-origin-frame');
 
     const styles = await callToolJson<{
       properties?: { display?: string };
+      resolvedFrame?: { frameId?: number; url?: string };
     }>(mcp.client, 'get_computed_styles', {
       sessionId,
       selector: '#cross-origin-action',
@@ -697,9 +709,11 @@ test.describe('@full live automation through MCP and extension session', () => {
     });
     expect(styles.properties?.display).toEqual(expect.any(String));
     expect(styles.properties?.display).not.toBe('none');
+    expect(styles.resolvedFrame?.url).toContain('/automation-cross-origin-frame');
 
     const pageState = await callToolJson<{
       buttons?: Array<{ selector?: string; elementRef?: string; frameId?: number }>;
+      resolvedFrame?: { frameId?: number; url?: string };
     }>(mcp.client, 'get_page_state', {
       sessionId,
       frameUrlContains: '/automation-cross-origin-frame',
@@ -711,6 +725,8 @@ test.describe('@full live automation through MCP and extension session', () => {
     const targetButton = pageState.buttons?.find((button) => button.selector === '#cross-origin-action');
     expect(targetButton?.elementRef).toEqual(expect.any(String));
     expect(targetButton?.frameId).toEqual(expect.any(Number));
+    expect(pageState.resolvedFrame?.frameId).toBe(targetButton?.frameId);
+    expect(pageState.resolvedFrame?.url).toContain('/automation-cross-origin-frame');
 
     const click = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
       sessionId,
