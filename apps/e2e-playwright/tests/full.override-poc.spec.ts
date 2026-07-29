@@ -773,7 +773,7 @@ async function enableOverrideForTabViaMcp(
   if (!reloadResult.navigated) {
     throw new Error(`Target page did not reload after enabling override through MCP: ${reloadResult.error}`);
   }
-  await targetPage.waitForLoadState('domcontentloaded');
+  await targetPage.waitForLoadState('networkidle');
 }
 
 async function expectMcpOverrideRequestLogForUrlStatus(
@@ -886,7 +886,7 @@ async function enableOverrideForTab(popupPage: Page, targetPage: Page, tabId: nu
   if (!reloadResult.navigated) {
     throw new Error(`Target page did not reload after enabling override: ${reloadResult.error}`);
   }
-  await targetPage.waitForLoadState('domcontentloaded');
+  await targetPage.waitForLoadState('networkidle');
 }
 
 async function stopHarness(
