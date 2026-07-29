@@ -120,21 +120,21 @@ export function requiresSensitiveAutomationOptIn(target: {
   return target.action === 'input' && selector.length === 0;
 }
 
-export function canCaptureSnapshot(
+export function getSnapshotCaptureBlockReason(
   config: CaptureConfig,
   context: {
     llmRequested: boolean;
   }
-): boolean {
+): 'snapshots_disabled' | 'request_opt_in_required' | undefined {
   if (!config.snapshots.enabled) {
-    return false;
+    return 'snapshots_disabled';
   }
 
   if (config.snapshots.requireOptIn && !context.llmRequested) {
-    return false;
+    return 'request_opt_in_required';
   }
 
-  return true;
+  return undefined;
 }
 
 function normalizeSnapshotCaptureConfig(value: unknown): SnapshotCaptureConfig {
