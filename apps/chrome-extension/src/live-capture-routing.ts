@@ -17,6 +17,7 @@ type CaptureTabPreferenceOptions = {
   activeTabId?: number;
   rememberedTabId?: number;
   allowedTabIds?: number[];
+  allowActiveTab?: boolean;
 };
 
 type DomDocumentPayload = {
@@ -148,7 +149,9 @@ export function buildPreferredCaptureTabIds(options: CaptureTabPreferenceOptions
     ordered.push(value);
   };
 
-  push(options.activeTabId);
+  if (options.allowActiveTab !== false) {
+    push(options.activeTabId);
+  }
   push(options.rememberedTabId);
   for (const tabId of options.allowedTabIds ?? []) {
     push(tabId);

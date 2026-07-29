@@ -15,6 +15,15 @@ describe('live capture routing helpers', () => {
     })).toEqual([9, 4, 12]);
   });
 
+  it('ignores the active tab when session scope is unavailable', () => {
+    expect(buildPreferredCaptureTabIds({
+      activeTabId: 9,
+      rememberedTabId: 4,
+      allowedTabIds: [],
+      allowActiveTab: false,
+    })).toEqual([4]);
+  });
+
   it('retries empty outline document captures', () => {
     expect(shouldRetryGenericCaptureResult('CAPTURE_DOM_DOCUMENT', {
       mode: 'outline',

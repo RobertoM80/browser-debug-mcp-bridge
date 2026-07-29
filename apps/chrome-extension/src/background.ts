@@ -3048,6 +3048,7 @@ async function resolveCaptureTab(sessionId: string): Promise<chrome.tabs.Tab | u
     activeTabId: typeof active?.id === 'number' ? active.id : undefined,
     rememberedTabId: remembered?.tabId,
     allowedTabIds,
+    allowActiveTab: scope !== undefined,
   });
 
   for (const candidateTabId of candidateTabIds) {
