@@ -9,9 +9,9 @@ import {
 import {
   applySafeModeRestrictions,
   canExecuteLiveAutomation,
-  canCaptureSnapshot,
   CaptureConfig,
   DEFAULT_CAPTURE_CONFIG,
+  getSnapshotCaptureBlockReason,
   isUrlAllowed,
   loadCaptureConfig,
   requiresSensitiveAutomationOptIn,
@@ -4623,8 +4623,18 @@ async function executeCaptureCommand(
 
   if (command === 'CAPTURE_UI_SNAPSHOT') {
     const llmRequested = payload.llmRequested === true;
-    if (!canCaptureSnapshot(captureConfig, { llmRequested })) {
-      throw new Error('Snapshot capture is disabled or requires request opt-in');
+    const blockReason = getSnapshotCaptureBlockReason(captureConfig, { llmRequested });
+    if (blockReason === 'snapshots_disabled') {
+      throw new Error(
+        'Snapshot capture is disabled in extension settings. Open the extension popup, enable '
+        + 'Capture Settings > Snapshot capture > Enable snapshots (manual), then save settings.',
+      );
+    }
+    if (blockReason === 'request_opt_in_required') {
+      throw new Error(
+        'Snapshot capture requires request opt-in. Set llmRequested: true in the CAPTURE_UI_SNAPSHOT '
+        + 'payload, or use capture_ui_snapshot/bdmcp snapshot, which opts in automatically.',
+      );
     }
 
     const trigger = normalizeSnapshotTrigger(payload.trigger);

@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   applySafeModeRestrictions,
   canExecuteLiveAutomation,
-  canCaptureSnapshot,
   DEFAULT_CAPTURE_CONFIG,
+  getSnapshotCaptureBlockReason,
   isUrlAllowed,
   loadCaptureConfig,
   normalizeCaptureConfig,
@@ -223,9 +223,9 @@ describe('capture controls', () => {
     expect(standard.snapshots.privacy.profile).toBe('standard');
   });
 
-  it('enforces manual toggle and opt-in gate for snapshot capture', () => {
+  it('identifies the snapshot capture gate that blocked a request', () => {
     expect(
-      canCaptureSnapshot(
+      getSnapshotCaptureBlockReason(
         {
           ...DEFAULT_CAPTURE_CONFIG,
           snapshots: {
@@ -235,10 +235,10 @@ describe('capture controls', () => {
         },
         { llmRequested: true }
       )
-    ).toBe(false);
+    ).toBe('snapshots_disabled');
 
     expect(
-      canCaptureSnapshot(
+      getSnapshotCaptureBlockReason(
         {
           ...DEFAULT_CAPTURE_CONFIG,
           snapshots: {
@@ -249,10 +249,10 @@ describe('capture controls', () => {
         },
         { llmRequested: false }
       )
-    ).toBe(false);
+    ).toBe('request_opt_in_required');
 
     expect(
-      canCaptureSnapshot(
+      getSnapshotCaptureBlockReason(
         {
           ...DEFAULT_CAPTURE_CONFIG,
           snapshots: {
@@ -263,7 +263,7 @@ describe('capture controls', () => {
         },
         { llmRequested: false }
       )
-    ).toBe(true);
+    ).toBeUndefined();
   });
 
   it('keeps computed-full only when explicitly selected', () => {

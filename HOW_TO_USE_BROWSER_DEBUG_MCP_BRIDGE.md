@@ -99,11 +99,16 @@ Keep `-y` in `npx` MCP host configs. Without it, npm can wait for interactive in
 If Copilot MCP servers are disabled by organization policy but terminal commands are allowed, use the packaged CLI:
 
 ```bash
+bdmcp --help
 browser-debug-mcp-bridge --standalone
 bdmcp init-copilot
 bdmcp health
 bdmcp sessions --live
 ```
+
+The global `npm i -g browser-debug-mcp-bridge` install above provides `bdmcp`. If the check fails,
+rerun that install. A local clone does not add `bdmcp` to `PATH`; use
+`node scripts/browser-debug-cli.cjs` in place of `bdmcp`.
 
 ### 1B) Local clone mode
 
@@ -111,6 +116,13 @@ bdmcp sessions --live
 git clone https://github.com/<ORG_OR_USER>/browser-debug-mcp-bridge.git
 cd browser-debug-mcp-bridge
 pnpm install
+```
+
+Build and invoke the CLI from a clone without installing it globally:
+
+```bash
+pnpm build:mcp-runtime
+node scripts/browser-debug-cli.cjs health
 ```
 
 Important:

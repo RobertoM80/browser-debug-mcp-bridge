@@ -2,9 +2,19 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { getSkillInstructions } from './agent-instructions';
 import { getBaseUrl, isLiveSession, parseArgs, parseJsonObject, parseToolArguments, withCommonLimits } from './main';
 
 describe('bdmcp CLI parsing', () => {
+  it('tells agents which package installs bdmcp before using it', () => {
+    const instructions = getSkillInstructions();
+
+    expect(instructions).toContain('bdmcp --help');
+    expect(instructions).toContain('npm i -g browser-debug-mcp-bridge');
+    expect(instructions.indexOf('npm i -g browser-debug-mcp-bridge')).toBeLessThan(instructions.indexOf('bdmcp health'));
+    expect(instructions).toContain('node scripts/browser-debug-cli.cjs');
+  });
+
   it('parses command words and long options', () => {
     const parsed = parseArgs(['tool', 'run', 'list_sessions', '--json-args', '{"limit":10}', '--json']);
 

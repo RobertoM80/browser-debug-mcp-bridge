@@ -10,11 +10,24 @@ Use it when an AI environment cannot use MCP tools, for example when a Copilot o
 npm i -g browser-debug-mcp-bridge
 ```
 
+Verify the install before starting a debugging workflow:
+
+```bash
+bdmcp --help
+```
+
 The package provides these commands:
 
 - `browser-debug-mcp-bridge`: MCP stdio launcher
 - `bdmcp`: browser-debug CLI
 - `browser-debug-cli`: alias for `bdmcp`
+
+From a local repo clone, `pnpm install` does not add the project itself to `PATH`. Use:
+
+```bash
+pnpm build:mcp-runtime
+node scripts/browser-debug-cli.cjs health
+```
 
 Start the bridge in a terminal:
 
@@ -107,6 +120,22 @@ Example `browser-debug-args.json`:
   "limit": 10
 }
 ```
+
+## Direct HTTP fallback
+
+The loopback HTTP surface supports terminal or script clients even when MCP and `bdmcp` are
+unavailable:
+
+```bash
+curl http://127.0.0.1:8065/health
+curl http://127.0.0.1:8065/stats
+curl http://127.0.0.1:8065/cli/tools
+```
+
+Generic tool execution uses `POST /cli/tools/:toolName` and requires
+`x-browser-debug-cli-token`. The token is in `cli-token.json` under the runtime data directory
+(`DATA_DIR` when set, otherwise the platform app-data directory). Keep it local and do not paste
+it into logs or chat. The packaged CLI reads it automatically and is the preferred interface.
 
 ## Security
 
