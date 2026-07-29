@@ -4222,7 +4222,7 @@ describe('mcp/server V2 capture tools', () => {
     expect((response.buttons as Array<Record<string, unknown>>)[0]?.text).toBe('Calcola target');
   });
 
-  it('forwards tabId through page-state based live tools', async () => {
+  it('forwards tab and frame targeting through page-state based live tools', async () => {
     const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
     const tools = createToolRegistry(
       createV2ToolHandlers({
@@ -4245,12 +4245,15 @@ describe('mcp/server V2 capture tools', () => {
     await routeToolCall(tools, 'get_page_state', {
       sessionId: 'session-v2',
       tabId: 17,
+      frameId: 181,
+      frameUrlContains: 'player.hotmart.com',
       maxItems: 5,
     });
 
     await routeToolCall(tools, 'get_interactive_elements', {
       sessionId: 'session-v2',
       tabId: 17,
+      frameUrlContains: 'js.stripe.com',
       kinds: ['buttons'],
     });
 
@@ -4265,6 +4268,8 @@ describe('mcp/server V2 capture tools', () => {
           includeInputs: true,
           includeModals: true,
           tabId: 17,
+          frameId: 181,
+          frameUrlContains: 'player.hotmart.com',
         },
       },
       {
@@ -4277,6 +4282,7 @@ describe('mcp/server V2 capture tools', () => {
           includeInputs: false,
           includeModals: false,
           tabId: 17,
+          frameUrlContains: 'js.stripe.com',
         },
       },
     ]);
@@ -4372,9 +4378,11 @@ describe('mcp/server V2 capture tools', () => {
   });
 
   it('asserts structured page-state conditions through the v2 capture path', async () => {
+    const capturePayloads: Record<string, unknown>[] = [];
     const tools = createToolRegistry(
       createV2ToolHandlers({
-        execute: async () => {
+        execute: async (_sessionId, _command, payload) => {
+          capturePayloads.push(payload);
           return {
             ok: true,
             payload: {
@@ -4385,7 +4393,12 @@ describe('mcp/server V2 capture tools', () => {
               summary: { buttons: 8, inputs: 5, modals: 0 },
               buttons: [
                 { text: 'Calcola target', selector: '#build', disabled: false },
-                { text: 'Settimana', selector: '#week', disabled: true },
+                {
+                  text: 'Settimana',
+                  selector: '#week',
+                  disabled: true,
+                  frameUrl: 'https://player.hotmart.com/embed',
+                },
               ],
             },
             truncated: false,
@@ -4398,20 +4411,24 @@ describe('mcp/server V2 capture tools', () => {
       sessionId: 'session-v2',
       scope: 'buttons',
       textContains: 'Settimana',
+      frameUrlContains: 'player.hotmart.com',
       disabled: true,
     });
 
     expect(response.matched).toBe(true);
     expect(response.matchCount).toBe(1);
     expect((response.sampledMatches as Array<Record<string, unknown>>)[0]?.selector).toBe('#week');
+    expect(capturePayloads[0]).not.toHaveProperty('frameUrlContains');
   });
 
   it('waits for a structured page-state condition to become true', async () => {
     let attempt = 0;
+    const capturePayloads: Record<string, unknown>[] = [];
     const tools = createToolRegistry(
       createV2ToolHandlers({
-        execute: async () => {
+        execute: async (_sessionId, _command, payload) => {
           attempt += 1;
+          capturePayloads.push(payload);
           return {
             ok: true,
             payload: {
@@ -4422,7 +4439,13 @@ describe('mcp/server V2 capture tools', () => {
               summary: { buttons: 2, inputs: 1, modals: attempt >= 2 ? 1 : 0 },
               modals:
                 attempt >= 2
-                  ? [{ title: 'Day plan', selector: '[role="dialog"]', buttonCount: 2, fieldCount: 0 }]
+                  ? [{
+                      title: 'Day plan',
+                      selector: '[role="dialog"]',
+                      buttonCount: 2,
+                      fieldCount: 0,
+                      frameUrl: 'https://player.hotmart.com/embed',
+                    }]
                   : [],
             },
             truncated: false,
@@ -4435,6 +4458,7 @@ describe('mcp/server V2 capture tools', () => {
       sessionId: 'session-v2',
       scope: 'modals',
       titleContains: 'Day plan',
+      frameUrlContains: 'player.hotmart.com',
       timeoutMs: 500,
       pollIntervalMs: 10,
     });
@@ -4442,6 +4466,7 @@ describe('mcp/server V2 capture tools', () => {
     expect(response.matched).toBe(true);
     expect(response.attempts).toBeGreaterThanOrEqual(2);
     expect(response.waitedMs).toBeGreaterThanOrEqual(0);
+    expect(capturePayloads.every((payload) => !('frameUrlContains' in payload))).toBe(true);
   });
 
   it('preflights production-like automation flows with session, page, and risk diagnostics', async () => {
@@ -6594,7 +6619,7 @@ describe('mcp/server V2 capture tools', () => {
     expect(response.limitsApplied).toEqual({ maxResults: 5000, truncated: true });
   });
 
-  it('forwards tabId for dom document capture tools', async () => {
+  it('forwards tab and frame targeting for DOM and layout capture tools', async () => {
     const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
     const tools = createToolRegistry(
       createV2ToolHandlers({
@@ -6614,20 +6639,73 @@ describe('mcp/server V2 capture tools', () => {
     await routeToolCall(tools, 'get_dom_document', {
       sessionId: 'session-v2',
       tabId: 42,
+      frameUrlContains: 'player.hotmart.com',
       mode: 'outline',
       maxDepth: 5,
       maxBytes: 9000,
     });
 
-    expect(captureCalls).toEqual([{
-      command: 'CAPTURE_DOM_DOCUMENT',
-      payload: {
-        mode: 'outline',
-        maxBytes: 9000,
-        maxDepth: 5,
-        tabId: 42,
+    await routeToolCall(tools, 'get_dom_subtree', {
+      sessionId: 'session-v2',
+      tabId: 42,
+      frameId: 181,
+      selector: 'video',
+      maxDepth: 3,
+      maxBytes: 1500,
+    });
+
+    await routeToolCall(tools, 'get_layout_metrics', {
+      sessionId: 'session-v2',
+      selector: 'video',
+      frameUrlContains: 'player.hotmart.com',
+    });
+
+    expect(captureCalls).toEqual([
+      {
+        command: 'CAPTURE_DOM_DOCUMENT',
+        payload: {
+          mode: 'outline',
+          maxBytes: 9000,
+          maxDepth: 5,
+          tabId: 42,
+          frameUrlContains: 'player.hotmart.com',
+        },
       },
-    }]);
+      {
+        command: 'CAPTURE_DOM_SUBTREE',
+        payload: {
+          selector: 'video',
+          maxDepth: 3,
+          maxBytes: 1500,
+          tabId: 42,
+          frameId: 181,
+        },
+      },
+      {
+        command: 'CAPTURE_LAYOUT_METRICS',
+        payload: {
+          selector: 'video',
+          frameUrlContains: 'player.hotmart.com',
+        },
+      },
+    ]);
+  });
+
+  it('rejects malformed capture frame targets', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async () => ({ ok: true, payload: {} }),
+      }),
+    );
+
+    await expect(routeToolCall(tools, 'get_layout_metrics', {
+      sessionId: 'session-v2',
+      frameId: 1.5,
+    })).rejects.toThrow('frameId must be a non-negative integer');
+    await expect(routeToolCall(tools, 'get_layout_metrics', {
+      sessionId: 'session-v2',
+      frameUrlContains: ' ',
+    })).rejects.toThrow('frameUrlContains must be a non-empty string');
   });
 
   it('requests only specified computed style properties', async () => {
@@ -6636,6 +6714,7 @@ describe('mcp/server V2 capture tools', () => {
         execute: async (_sessionId, command, payload) => {
           expect(command).toBe('CAPTURE_COMPUTED_STYLES');
           expect(payload.properties).toEqual(['display', 'visibility']);
+          expect(payload.frameUrlContains).toBe('player.hotmart.com');
 
           return {
             ok: true,
@@ -6655,6 +6734,7 @@ describe('mcp/server V2 capture tools', () => {
       sessionId: 'session-v2',
       selector: '.target',
       properties: ['display', 'visibility'],
+      frameUrlContains: 'player.hotmart.com',
     });
 
     expect(response.selector).toBe('.target');

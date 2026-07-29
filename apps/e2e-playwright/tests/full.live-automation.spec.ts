@@ -632,6 +632,105 @@ test.describe('@full live automation through MCP and extension session', () => {
     }
   });
 
+  test('routes repeated DOM captures deterministically on multi-frame pages', async () => {
+    const port = await getFreePort();
+    mcp = await connectMcpClient(createTempDataDir('bdmcp-e2e-frame-capture-routing-'), {
+      port,
+      env: { MCP_LOOP_GUARD: '0' },
+    });
+
+    extension = await launchExtensionContext();
+    await assertExtensionInstalled(extension.context, extension.extensionId);
+    await extension.setServerBaseUrl(`http://127.0.0.1:${port}`);
+
+    const targetPage = await extension.context.newPage();
+    await installAutomationFixture(targetPage, `http://127.0.0.1:${port}/automation-fixture`);
+
+    const popupPage = await openExtensionPage(extension.context, extension.extensionId, 'popup.html');
+    await configureAutomation(popupPage);
+    const { sessionId, tabId } = await startSessionFromTargetTab(popupPage, targetPage);
+    await expectMcpSeesLiveSession(mcp, sessionId);
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      await expect(callToolJson(mcp.client, 'get_dom_subtree', {
+        sessionId,
+        selector: '#cross-origin-action',
+        maxBytes: 1500,
+      })).rejects.toThrow(/No element found for selector: #cross-origin-action/);
+    }
+
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const subtree = await callToolJson<{ html?: string }>(mcp.client, 'get_dom_subtree', {
+        sessionId,
+        selector: '#cross-origin-action',
+        frameUrlContains: '/automation-cross-origin-frame',
+        maxBytes: 1500,
+      });
+      expect(subtree.html).toContain('id="cross-origin-action"');
+    }
+
+    const documentCapture = await callToolJson<{ outline?: string }>(mcp.client, 'get_dom_document', {
+      sessionId,
+      frameUrlContains: '/automation-cross-origin-frame',
+      mode: 'outline',
+      maxDepth: 4,
+    });
+    expect(documentCapture.outline).toContain('cross-origin-action');
+
+    const layout = await callToolJson<{
+      element?: { width?: number; height?: number };
+    }>(mcp.client, 'get_layout_metrics', {
+      sessionId,
+      selector: '#cross-origin-action',
+      frameUrlContains: '/automation-cross-origin-frame',
+    });
+    expect(layout.element?.width).toBeGreaterThan(0);
+    expect(layout.element?.height).toBeGreaterThan(0);
+
+    const styles = await callToolJson<{
+      properties?: { display?: string };
+    }>(mcp.client, 'get_computed_styles', {
+      sessionId,
+      selector: '#cross-origin-action',
+      frameUrlContains: '/automation-cross-origin-frame',
+      properties: ['display'],
+    });
+    expect(styles.properties?.display).toEqual(expect.any(String));
+    expect(styles.properties?.display).not.toBe('none');
+
+    const pageState = await callToolJson<{
+      buttons?: Array<{ selector?: string; elementRef?: string; frameId?: number }>;
+    }>(mcp.client, 'get_page_state', {
+      sessionId,
+      frameUrlContains: '/automation-cross-origin-frame',
+      includeButtons: true,
+      includeLinks: false,
+      includeInputs: false,
+      includeModals: false,
+    });
+    const targetButton = pageState.buttons?.find((button) => button.selector === '#cross-origin-action');
+    expect(targetButton?.elementRef).toEqual(expect.any(String));
+    expect(targetButton?.frameId).toEqual(expect.any(Number));
+
+    const click = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'click',
+      target: {
+        elementRef: targetButton?.elementRef,
+        tabId,
+      },
+    });
+    expect(click.status).toBe('succeeded');
+    expect(click.target?.frameId).toBe(targetButton?.frameId);
+    await expect(targetPage.frameLocator('#cross-origin-frame').locator('#cross-origin-count')).toHaveText('1');
+
+    await targetPage.goto(`http://localhost:${port}/automation-cross-origin-frame`);
+    await expect(callToolJson(mcp.client, 'get_dom_document', {
+      sessionId,
+      mode: 'outline',
+    })).rejects.toThrow(/target tab is no longer allowlisted/);
+  });
+
   test('executes native top-document and same-origin iframe actions through the bound browser tab', async () => {
     const port = await getFreePort();
     mcp = await connectMcpClient(createTempDataDir('bdmcp-e2e-live-automation-'), { port });

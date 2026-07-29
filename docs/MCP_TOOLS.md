@@ -273,6 +273,18 @@ Returns selector references associated with captured UI events.
 
 ## V2 Heavy on-demand tools
 
+DOM, style, and layout captures default to Chrome's top frame (`frameId: 0`) instead of accepting
+whichever frame replies first. To capture a child frame, pass either its numeric `frameId` or a
+case-insensitive `frameUrlContains` substring. URL targeting must identify exactly one frame;
+zero or multiple matches return an explicit error. Supplying both fields verifies that the frame
+ID still belongs to the expected URL. Frame targeting keeps the existing session binding and
+top-tab allowlist checks.
+
+`get_page_state` and `get_interactive_elements` keep their aggregate-across-frames behavior when
+no frame target is supplied. Passing `frameId` or `frameUrlContains` limits either tool to that
+single frame. For `assert_page_state` and `wait_for_page_state`, `frameUrlContains` remains an item
+matcher over the aggregate page model.
+
 ### get_dom_subtree
 
 Captures a reduced DOM subtree for a selector.
@@ -283,6 +295,7 @@ Captures a reduced DOM subtree for a selector.
   "arguments": {
     "sessionId": "sess_123",
     "selector": "#checkout-form",
+    "frameUrlContains": "checkout.example.com",
     "maxDepth": 5,
     "maxBytes": 120000
   }
@@ -307,6 +320,7 @@ Returns only requested CSS properties.
   "arguments": {
     "sessionId": "sess_123",
     "selector": ".submit-button",
+    "frameUrlContains": "checkout.example.com",
     "properties": ["display", "visibility", "opacity", "z-index"]
   }
 }
@@ -317,7 +331,14 @@ Returns only requested CSS properties.
 Returns layout and bounding-box metrics for a selector.
 
 ```json
-{ "name": "get_layout_metrics", "arguments": { "sessionId": "sess_123", "selector": ".modal" } }
+{
+  "name": "get_layout_metrics",
+  "arguments": {
+    "sessionId": "sess_123",
+    "selector": ".modal",
+    "frameUrlContains": "checkout.example.com"
+  }
+}
 ```
 
 ### get_page_state
@@ -329,6 +350,7 @@ Returns a compact structured page model so flows can avoid repeated large DOM ca
   "name": "get_page_state",
   "arguments": {
     "sessionId": "sess_123",
+    "frameId": 0,
     "maxItems": 40,
     "maxTextLength": 80,
     "includeButtons": true,
@@ -359,6 +381,7 @@ Returns compact live refs for interactive elements so automation can reuse `elem
   "name": "get_interactive_elements",
   "arguments": {
     "sessionId": "sess_123",
+    "frameUrlContains": "checkout.example.com",
     "kinds": ["buttons", "inputs", "focused"],
     "maxItems": 20
   }

@@ -1026,6 +1026,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       tabId: { type: 'number' },
+      frameId: { type: 'integer', minimum: 0 },
+      frameUrlContains: { type: 'string', minLength: 1 },
       selector: { type: 'string' },
       maxDepth: { type: 'number' },
       maxBytes: { type: 'number' },
@@ -1037,6 +1039,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       tabId: { type: 'number' },
+      frameId: { type: 'integer', minimum: 0 },
+      frameUrlContains: { type: 'string', minLength: 1 },
       mode: { type: 'string' },
       maxBytes: { type: 'number' },
       maxDepth: { type: 'number' },
@@ -1048,7 +1052,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       selector: { type: 'string' },
-      frameId: { type: 'number' },
+      frameId: { type: 'integer', minimum: 0 },
+      frameUrlContains: { type: 'string', minLength: 1 },
       properties: { type: 'array', items: { type: 'string' } },
     },
   },
@@ -1058,7 +1063,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       selector: { type: 'string' },
-      frameId: { type: 'number' },
+      frameId: { type: 'integer', minimum: 0 },
+      frameUrlContains: { type: 'string', minLength: 1 },
     },
   },
   get_page_state: {
@@ -1067,6 +1073,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       tabId: { type: 'number' },
+      frameId: { type: 'integer', minimum: 0 },
+      frameUrlContains: { type: 'string', minLength: 1 },
       maxItems: { type: 'number' },
       maxTextLength: { type: 'number' },
       includeButtons: { type: 'boolean' },
@@ -1081,6 +1089,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       tabId: { type: 'number' },
+      frameId: { type: 'integer', minimum: 0 },
+      frameUrlContains: { type: 'string', minLength: 1 },
       kinds: {
         type: 'array',
         items: { type: 'string', enum: ['buttons', 'links', 'inputs', 'modals', 'focused'] },
@@ -2159,12 +2169,12 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_request_trace: 'Get correlated UI/events/network chain by requestId or traceId',
   get_body_chunk: 'Retrieve a chunk from a stored large body payload',
   get_element_refs: 'Get element references by selector',
-  get_dom_subtree: 'Capture a bounded DOM subtree',
-  get_dom_document: 'Capture full document as outline or html',
-  get_computed_styles: 'Read computed CSS styles for an element',
-  get_layout_metrics: 'Read viewport and element layout metrics',
-  get_page_state: 'Read a compact structured page model for forms, buttons, modals, and viewport state',
-  get_interactive_elements: 'Read compact live element references for buttons, links, inputs, modals, and focused elements',
+  get_dom_subtree: 'Capture a bounded DOM subtree in the top document or one explicitly targeted frame',
+  get_dom_document: 'Capture the top document or one explicitly targeted frame as outline or html',
+  get_computed_styles: 'Read computed CSS styles for an element in the top document or one explicitly targeted frame',
+  get_layout_metrics: 'Read viewport and element layout metrics in the top document or one explicitly targeted frame',
+  get_page_state: 'Read an aggregate or frame-targeted compact page model for forms, buttons, modals, and viewport state',
+  get_interactive_elements: 'Read aggregate or frame-targeted live refs for buttons, links, inputs, modals, and focused elements',
   get_live_session_health: 'Read live transport health and session binding details for one session',
   set_viewport: 'Resize the live browser window for a session and return the resulting viewport metrics',
   assert_page_state: 'Assert compact page-state conditions without pulling raw DOM payloads',
@@ -7087,6 +7097,46 @@ function resolveOptionalTabId(value: unknown): number | undefined {
   return tabId;
 }
 
+function resolveOptionalFrameId(value: unknown): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new Error('frameId must be a non-negative integer');
+  }
+
+  return value;
+}
+
+function resolveOptionalFrameUrlContains(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error('frameUrlContains must be a non-empty string');
+  }
+
+  return value.trim();
+}
+
+function resolveCaptureFrameTarget(
+  input: ToolInput,
+  options: { defaultFrameId?: number } = {},
+): Record<string, unknown> {
+  const frameId = resolveOptionalFrameId(input.frameId);
+  const frameUrlContains = resolveOptionalFrameUrlContains(input.frameUrlContains);
+
+  return {
+    ...(frameId !== undefined
+      ? { frameId }
+      : frameUrlContains === undefined && options.defaultFrameId !== undefined
+        ? { frameId: options.defaultFrameId }
+        : {}),
+    ...(frameUrlContains !== undefined ? { frameUrlContains } : {}),
+  };
+}
+
 function isLiveSessionDisconnectedMessage(message: string): boolean {
   const normalized = message.toLowerCase();
   return normalized.includes('no active extension connection')
@@ -10437,6 +10487,7 @@ export function createV2ToolHandlers(
   const capturePageState = async (
     sessionId: string,
     input: ToolInput,
+    includeFrameTarget = false,
   ): Promise<{ limitsApplied: { maxResults: number; truncated: boolean }; payload: Record<string, unknown> }> => {
     const maxItems = resolveStructuredMaxItems(input.maxItems, 40);
     const maxTextLength = resolveStructuredTextLength(input.maxTextLength, 80);
@@ -10456,6 +10507,7 @@ export function createV2ToolHandlers(
         includeInputs,
         includeModals,
         tabId: resolveOptionalTabId(input.tabId),
+        ...(includeFrameTarget ? resolveCaptureFrameTarget(input) : {}),
       },
       4_000,
     );
@@ -11139,7 +11191,13 @@ export function createV2ToolHandlers(
         captureClient,
         sessionId,
         'CAPTURE_DOM_SUBTREE',
-        { selector, maxDepth, maxBytes, tabId: resolveOptionalTabId(input.tabId) },
+        {
+          selector,
+          maxDepth,
+          maxBytes,
+          tabId: resolveOptionalTabId(input.tabId),
+          ...resolveCaptureFrameTarget(input),
+        },
         4_000,
       );
 
@@ -11168,7 +11226,13 @@ export function createV2ToolHandlers(
           captureClient,
           sessionId,
           'CAPTURE_DOM_DOCUMENT',
-          { mode, maxBytes, maxDepth, tabId: resolveOptionalTabId(input.tabId) },
+          {
+            mode,
+            maxBytes,
+            maxDepth,
+            tabId: resolveOptionalTabId(input.tabId),
+            ...resolveCaptureFrameTarget(input),
+          },
           4_000,
         );
 
@@ -11190,7 +11254,13 @@ export function createV2ToolHandlers(
           captureClient,
           sessionId,
           'CAPTURE_DOM_DOCUMENT',
-          { mode: 'outline', maxBytes, maxDepth, tabId: resolveOptionalTabId(input.tabId) },
+          {
+            mode: 'outline',
+            maxBytes,
+            maxDepth,
+            tabId: resolveOptionalTabId(input.tabId),
+            ...resolveCaptureFrameTarget(input),
+          },
           4_000,
         );
 
@@ -11218,14 +11288,15 @@ export function createV2ToolHandlers(
       }
 
       const properties = asStringArray(input.properties, 64);
-      const frameId = typeof input.frameId === 'number' && Number.isFinite(input.frameId)
-        ? Math.max(0, Math.floor(input.frameId))
-        : 0;
       const capture = await executeLiveCapture(
         captureClient,
         sessionId,
         'CAPTURE_COMPUTED_STYLES',
-        { selector, frameId, properties },
+        {
+          selector,
+          properties,
+          ...resolveCaptureFrameTarget(input, { defaultFrameId: 0 }),
+        },
         3_000,
       );
 
@@ -11246,14 +11317,14 @@ export function createV2ToolHandlers(
       }
 
       const selector = typeof input.selector === 'string' ? input.selector : undefined;
-      const frameId = typeof input.frameId === 'number' && Number.isFinite(input.frameId)
-        ? Math.max(0, Math.floor(input.frameId))
-        : 0;
       const capture = await executeLiveCapture(
         captureClient,
         sessionId,
         'CAPTURE_LAYOUT_METRICS',
-        { selector, frameId },
+        {
+          selector,
+          ...resolveCaptureFrameTarget(input, { defaultFrameId: 0 }),
+        },
         3_000,
       );
 
@@ -11273,7 +11344,7 @@ export function createV2ToolHandlers(
         throw new Error('sessionId is required');
       }
 
-      const capture = await capturePageState(sessionId, input);
+      const capture = await capturePageState(sessionId, input, true);
 
       return {
         ...createBaseResponse(sessionId),
@@ -11296,7 +11367,7 @@ export function createV2ToolHandlers(
         includeInputs: kinds.includes('inputs'),
         includeModals: kinds.includes('modals'),
       };
-      const capture = await capturePageState(sessionId, normalizedInput);
+      const capture = await capturePageState(sessionId, normalizedInput, true);
       const refs = collectInteractiveElementRefs(capture.payload, kinds, capture.limitsApplied.maxResults);
 
       return {
