@@ -4162,13 +4162,15 @@ export async function executeNativePressKeyAction(options: NativePressKeyExecuti
       },
     };
   } catch (error) {
+    const detail = error instanceof Error ? error.message : 'Unknown Chrome debugger error.';
+    const targetUrl = tab.url ? ` (${tab.url})` : '';
     return buildFailedResult(
       request,
       tab,
       startedAt,
       traceId,
       'native_key_dispatch_failed',
-      error instanceof Error ? error.message : 'Native key dispatch failed.',
+      `Native key dispatch failed for tabId ${tab.id}${targetUrl}: ${detail}`,
     );
   }
 }

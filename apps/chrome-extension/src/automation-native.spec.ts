@@ -1596,6 +1596,40 @@ describe('native automation backend', () => {
     );
   });
 
+  it('reports the resolved tab when native key dispatch fails', async () => {
+    const chromeMock = installChromeMock();
+    chromeMock.attach.mockRejectedValueOnce(
+      new Error('Cannot access a chrome-extension:// URL of different extension'),
+    );
+    const request: Extract<LiveUIActionRequest, { action: 'press_key' }> = {
+      action: 'press_key',
+      traceId: 'trace-key-failed',
+      input: {
+        key: 'k',
+      },
+    };
+
+    const result = await executeNativePressKeyAction({
+      request,
+      tab: {
+        id: 7,
+        url: 'https://example.com/settings',
+      } as chrome.tabs.Tab & { id: number },
+      startedAt: 1000,
+      traceId: 'trace-key-failed',
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.target).toMatchObject({
+      tabId: 7,
+      url: 'https://example.com/settings',
+    });
+    expect(result.failureReason).toEqual({
+      code: 'native_key_dispatch_failed',
+      message: 'Native key dispatch failed for tabId 7 (https://example.com/settings): Cannot access a chrome-extension:// URL of different extension',
+    });
+  });
+
   it('focuses and blurs native targets through the page context', async () => {
     const chromeMock = installChromeMock([
       targetSnapshot,
