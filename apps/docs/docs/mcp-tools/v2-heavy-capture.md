@@ -60,8 +60,12 @@ returns HTTP 400 with the offending and accepted keys. No payload key is silentl
 
 ## `get_dom_document`
 
+Outline mode accepts `maxDepth` from 1 to 10 (default 4). Its JSON reports the serialized
+`nodeCount` plus depth or node-cap truncation; the tool-level `limitsApplied.truncated` also covers
+byte truncation.
+
 ```json
-{ "name": "get_dom_document", "arguments": { "sessionId": "sess_123", "mode": "outline", "maxBytes": 200000 } }
+{ "name": "get_dom_document", "arguments": { "sessionId": "sess_123", "mode": "outline", "maxDepth": 6, "maxBytes": 200000 } }
 ```
 
 ## `get_computed_styles`
