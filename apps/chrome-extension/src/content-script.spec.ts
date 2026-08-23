@@ -324,6 +324,43 @@ describe('content-script capture', () => {
     expect(output.result.fallbackReason).toBe('maxBytes');
   });
 
+  it('reports the serialized node count and depth truncation for document outlines', () => {
+    document.body.innerHTML = '<main><section><iframe src="https://player.example.com"></iframe></section></main>';
+
+    const output = executeCaptureCommand(window, 'CAPTURE_DOM_DOCUMENT', {
+      mode: 'outline',
+      maxDepth: 2,
+      maxBytes: 10000,
+    });
+    const outline = JSON.parse(output.result.outline as string) as {
+      nodeCount: number;
+      truncated: boolean;
+      root: Record<string, unknown>;
+    };
+
+    expect(outline.nodeCount).toBe(4);
+    expect(outline.truncated).toBe(true);
+    expect(output.truncated).toBe(true);
+  });
+
+  it('reports truncation when the document outline reaches the node cap', () => {
+    document.body.innerHTML = Array.from({ length: 401 }, (_, index) => `<div id="node-${index}"></div>`).join('');
+
+    const output = executeCaptureCommand(window, 'CAPTURE_DOM_DOCUMENT', {
+      mode: 'outline',
+      maxDepth: 2,
+      maxBytes: 200000,
+    });
+    const outline = JSON.parse(output.result.outline as string) as {
+      nodeCount: number;
+      truncated: boolean;
+    };
+
+    expect(outline.nodeCount).toBe(400);
+    expect(outline.truncated).toBe(true);
+    expect(output.truncated).toBe(true);
+  });
+
   it('captures only requested computed style properties', () => {
     document.body.innerHTML = '<div id="target" style="display: block; visibility: visible;"></div>';
 
