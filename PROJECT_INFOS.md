@@ -299,7 +299,7 @@ Every tool response should include:
 ## 11) MCP tools – V2 (heavy on-demand capture)
 
 9) `get_dom_subtree({ sessionId, selector, depth?: number, maxBytes?: number })`
-10) `get_dom_document({ sessionId, mode: "outline"|"html", maxBytes?: number })`
+10) `get_dom_document({ sessionId, mode: "outline"|"html", maxDepth?: number, maxBytes?: number })`
 11) `get_computed_styles({ sessionId, selector, properties: string[] })`
 12) `get_layout_metrics({ sessionId, selector })`
 13) `capture_screenshot({ sessionId, selector?: string, fullPage?: boolean, maxBytes?: number })` (optional)

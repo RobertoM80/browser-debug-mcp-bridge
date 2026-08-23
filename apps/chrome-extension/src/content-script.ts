@@ -1821,9 +1821,12 @@ function captureComputedStyleChain(
 
 function buildDomOutline(root: Element, maxDepth: number, maxNodes = 400): Record<string, unknown> {
   let visited = 0;
+  let truncatedByDepth = false;
+  let truncatedByNodes = false;
 
   const visit = (element: Element, depth: number): Record<string, unknown> | null => {
     if (visited >= maxNodes) {
+      truncatedByNodes = true;
       return null;
     }
 
@@ -1841,17 +1844,19 @@ function buildDomOutline(root: Element, maxDepth: number, maxNodes = 400): Recor
     }
 
     if (depth >= maxDepth) {
+      truncatedByDepth ||= element.children.length > 0;
       return node;
     }
 
     const children: Record<string, unknown>[] = [];
     for (const child of Array.from(element.children)) {
+      if (visited >= maxNodes) {
+        truncatedByNodes = true;
+        break;
+      }
       const next = visit(child, depth + 1);
       if (next) {
         children.push(next);
-      }
-      if (visited >= maxNodes) {
-        break;
       }
     }
 
@@ -1862,10 +1867,12 @@ function buildDomOutline(root: Element, maxDepth: number, maxNodes = 400): Recor
     return node;
   };
 
+  const outlineRoot = visit(root, 0);
+
   return {
-    truncated: visited >= maxNodes,
+    truncated: truncatedByDepth || truncatedByNodes,
     nodeCount: visited,
-    root: visit(root, 0),
+    root: outlineRoot,
   };
 }
 
@@ -1935,7 +1942,7 @@ export function executeCaptureCommand(
     const outline = root ? buildDomOutline(root, maxDepth) : { root: null, truncated: false, nodeCount: 0 };
     const serialized = serializeWithinLimit(outline, maxBytes);
     return {
-      truncated: mode === 'html' || serialized.truncated,
+      truncated: mode === 'html' || outline.truncated === true || serialized.truncated,
       result: {
         mode: 'outline',
         fallbackReason: mode === 'html' ? 'maxBytes' : undefined,

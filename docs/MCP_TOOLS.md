@@ -330,10 +330,12 @@ Captures a reduced DOM subtree for a selector.
 
 ### get_dom_document
 
-Captures full document in `outline` or `html` mode under strict limits.
+Captures the document in `outline` or `html` mode under strict limits. Outline mode accepts
+`maxDepth` (1–10, default 4). Its JSON reports the serialized `nodeCount` plus depth or node-cap
+truncation; the tool-level `limitsApplied.truncated` also covers byte truncation.
 
 ```json
-{ "name": "get_dom_document", "arguments": { "sessionId": "sess_123", "mode": "outline", "maxBytes": 200000 } }
+{ "name": "get_dom_document", "arguments": { "sessionId": "sess_123", "mode": "outline", "maxDepth": 6, "maxBytes": 200000 } }
 ```
 
 ### get_computed_styles
