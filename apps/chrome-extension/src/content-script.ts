@@ -318,6 +318,7 @@ type CaptureCommandType =
   | 'CAPTURE_DOM_DOCUMENT'
   | 'CAPTURE_COMPUTED_STYLES'
   | 'CAPTURE_LAYOUT_METRICS'
+  | 'CAPTURE_MEDIA_STATE'
   | 'CAPTURE_PAGE_STATE'
   | 'CAPTURE_UI_SNAPSHOT'
   | 'SET_VIEWPORT'
@@ -2025,6 +2026,79 @@ export function executeCaptureCommand(
           bottom: rect.bottom,
           left: rect.left,
         },
+      },
+    };
+  }
+
+  if (command === 'CAPTURE_MEDIA_STATE') {
+    const selector = typeof payload.selector === 'string' && payload.selector.trim().length > 0
+      ? payload.selector.trim()
+      : undefined;
+    const allCandidates = collectUniqueElements(selector ? [selector] : ['video', 'audio'], win.document)
+      .filter((element): element is HTMLMediaElement => element instanceof HTMLMediaElement);
+    const candidates = allCandidates.slice(0, 20);
+
+    const readRanges = (ranges: TimeRanges): Array<{ start: number; end: number }> => {
+      const result: Array<{ start: number; end: number }> = [];
+      for (let index = 0; index < Math.min(ranges.length, 20); index += 1) {
+        try {
+          result.push({ start: ranges.start(index), end: ranges.end(index) });
+        } catch {
+          break;
+        }
+      }
+      return result;
+    };
+    const finiteOrNull = (value: number): number | null => Number.isFinite(value) ? value : null;
+    const sanitizeMediaSource = (value: string): string | null => {
+      if (!value) {
+        return null;
+      }
+      try {
+        const url = new URL(value, win.location.href);
+        url.username = '';
+        url.password = '';
+        url.search = '';
+        url.hash = '';
+        return url.toString();
+      } catch {
+        return null;
+      }
+    };
+
+    const media = candidates.map((element) => ({
+      selector: getElementSelector(element),
+      tagName: element.tagName.toLowerCase(),
+      paused: element.paused,
+      ended: element.ended,
+      seeking: element.seeking,
+      muted: element.muted,
+      defaultMuted: element.defaultMuted,
+      volume: element.volume,
+      currentTime: finiteOrNull(element.currentTime),
+      duration: finiteOrNull(element.duration),
+      readyState: element.readyState,
+      networkState: element.networkState,
+      playbackRate: element.playbackRate,
+      defaultPlaybackRate: element.defaultPlaybackRate,
+      autoplay: element.autoplay,
+      controls: element.controls,
+      loop: element.loop,
+      preload: element.preload,
+      currentSrc: sanitizeMediaSource(element.currentSrc || element.src),
+      buffered: readRanges(element.buffered),
+      seekable: readRanges(element.seekable),
+      error: element.error
+        ? { code: element.error.code, message: element.error.message || undefined }
+        : null,
+    }));
+
+    return {
+      truncated: allCandidates.length > candidates.length,
+      result: {
+        selector,
+        count: media.length,
+        media,
       },
     };
   }

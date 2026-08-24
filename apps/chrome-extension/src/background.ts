@@ -428,6 +428,22 @@ function resolveLiveConsoleDedupeWindowMs(value: unknown): number {
   return Math.min(dedupeWindowMs, 60_000);
 }
 
+function resolveLiveConsoleWriteFilters(value: unknown, fieldName: string): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array of strings`);
+  }
+
+  return Array.from(new Set(value.map((entry, index) => {
+    if (typeof entry !== 'string' || entry.trim().length === 0) {
+      throw new Error(`${fieldName}[${index}] must be a non-empty string`);
+    }
+    return entry.trim().slice(0, 200);
+  }))).slice(0, 20);
+}
+
 function resolveLiveConsoleLevels(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) {
     return undefined;
@@ -4285,6 +4301,8 @@ async function executeCaptureCommand(
     const sinceTs = resolveLiveConsoleSinceTs(payload.sinceTs);
     const includeRuntimeErrors = payload.includeRuntimeErrors !== false;
     const dedupeWindowMs = resolveLiveConsoleDedupeWindowMs(payload.dedupeWindowMs);
+    const retain = resolveLiveConsoleWriteFilters(payload.retain, 'retain');
+    const mute = resolveLiveConsoleWriteFilters(payload.mute, 'mute');
     const queryResult = liveConsoleBufferStore.query(context.sessionId, {
       tabId: requestedTabId,
       origin: requestedOrigin,
@@ -4294,6 +4312,8 @@ async function executeCaptureCommand(
       limit,
       includeRuntimeErrors,
       dedupeWindowMs,
+      retain,
+      mute,
     });
 
     return {
@@ -4312,10 +4332,18 @@ async function executeCaptureCommand(
           sinceTs,
           includeRuntimeErrors,
           dedupeWindowMs,
+          retain: queryResult.retain,
+          mute: queryResult.mute,
         },
         bufferStats: {
           buffered: queryResult.buffered,
+          regularBuffered: queryResult.regularBuffered,
+          retained: queryResult.retained,
           dropped: queryResult.dropped,
+          retainedDropped: queryResult.retainedDropped,
+          muted: queryResult.muted,
+          oldestTimestamp: queryResult.oldestTimestamp,
+          newestTimestamp: queryResult.newestTimestamp,
         },
       },
       truncated: queryResult.truncated,

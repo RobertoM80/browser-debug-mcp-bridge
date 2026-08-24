@@ -95,6 +95,25 @@ byte truncation.
 }
 ```
 
+## `get_media_state`
+
+Reads structured state from `<video>` and `<audio>` elements without arbitrary page evaluation.
+Omit `selector` to inspect all media elements in the targeted frame (up to 20).
+
+```json
+{
+  "name": "get_media_state",
+  "arguments": {
+    "sessionId": "sess_123",
+    "selector": "video",
+    "frameUrlContains": "player.example.com"
+  }
+}
+```
+
+The response includes playback flags, volume and timing, readiness/network state, playback rates,
+media errors, source, and buffered/seekable ranges.
+
 ## `get_page_state`
 
 Use this before raw DOM capture when you need a compact page model for buttons, fields, and open modals.
@@ -165,6 +184,8 @@ Reads session-scoped live console logs from extension memory (non-persistent).
     "url": "http://localhost:3000",
     "levels": ["info", "error"],
     "contains": "[auth]",
+    "retain": ["MomentMark"],
+    "mute": ["Script error.", "VIDEOJS: WARN"],
     "dedupeWindowMs": 1000,
     "responseProfile": "compact",
     "maxResponseBytes": 32768,
@@ -175,6 +196,12 @@ Reads session-scoped live console logs from extension memory (non-persistent).
 ```
 
 Compact profile returns minimal rows (`timestamp`, `level`, `message`) and supports optional `includeArgs`.
+
+`retain` and `mute` replace case-insensitive future-write substring filters for the session; pass
+an empty array to clear either list. Retained matches use a separate protected ring and take
+precedence over mute matches. Existing entries are unaffected. `bufferStats.oldestTimestamp` and
+`newestTimestamp` identify the surviving evidence window, while retained/muted/drop counters show
+what happened before the read.
 
 ## `capture_ui_snapshot`
 
@@ -192,5 +219,5 @@ Use those flags to opt in to heavier payload sections when needed.
 - `maxResponseBytes` is available for high-volume live log reads.
 - Timeout fallback may return outline-style output instead of full HTML.
 - Redaction still applies before response is returned.
-- Live console logs are bounded by in-memory ring buffer size and `limit`.
+- Live console logs are bounded by ordinary and protected in-memory ring sizes plus `limit`.
 - `get_page_state` is the preferred lower-token option for common QA/state inspection flows.

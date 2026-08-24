@@ -76,6 +76,7 @@ const CAPTURE_PAYLOAD_KEYS: Record<CaptureCommand, readonly string[]> = {
   CAPTURE_DOM_DOCUMENT: ['mode', 'maxDepth', 'maxBytes', 'tabId', 'frameId', 'frameUrlContains'],
   CAPTURE_COMPUTED_STYLES: ['selector', 'properties', 'tabId', 'frameId', 'frameUrlContains'],
   CAPTURE_LAYOUT_METRICS: ['selector', 'tabId', 'frameId', 'frameUrlContains'],
+  CAPTURE_MEDIA_STATE: ['selector', 'tabId', 'frameId', 'frameUrlContains'],
   CAPTURE_PAGE_STATE: [
     'maxItems',
     'maxTextLength',
@@ -111,6 +112,8 @@ const CAPTURE_PAYLOAD_KEYS: Record<CaptureCommand, readonly string[]> = {
     'sinceTs',
     'includeRuntimeErrors',
     'dedupeWindowMs',
+    'retain',
+    'mute',
     'limit',
   ],
   CAPTURE_WAIT_FOR_NAVIGATION_LIFECYCLE: [

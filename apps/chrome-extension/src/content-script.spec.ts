@@ -376,6 +376,52 @@ describe('content-script capture', () => {
     });
   });
 
+  it('captures structured media element state without evaluating arbitrary code', () => {
+    document.body.innerHTML = '<video id="lesson" src="lesson.mp4"></video>';
+    const media = document.getElementById('lesson') as HTMLVideoElement;
+    Object.defineProperties(media, {
+      paused: { configurable: true, value: false },
+      muted: { configurable: true, value: true },
+      volume: { configurable: true, value: 0.5 },
+      currentTime: { configurable: true, value: 12.25 },
+      duration: { configurable: true, value: 120 },
+      readyState: { configurable: true, value: 4 },
+      networkState: { configurable: true, value: 1 },
+      playbackRate: { configurable: true, value: 1.25 },
+      buffered: {
+        configurable: true,
+        value: {
+          length: 1,
+          start: () => 0,
+          end: () => 30.5,
+        },
+      },
+    });
+
+    const output = executeCaptureCommand(window, 'CAPTURE_MEDIA_STATE', {
+      selector: '#lesson',
+    });
+
+    expect(output.truncated).toBe(false);
+    expect(output.result).toMatchObject({
+      selector: '#lesson',
+      count: 1,
+    });
+    expect((output.result.media as Array<Record<string, unknown>>)[0]).toMatchObject({
+      selector: '#lesson',
+      tagName: 'video',
+      paused: false,
+      muted: true,
+      volume: 0.5,
+      currentTime: 12.25,
+      duration: 120,
+      readyState: 4,
+      networkState: 1,
+      playbackRate: 1.25,
+      buffered: [{ start: 0, end: 30.5 }],
+    });
+  });
+
   it('captures UI snapshot with timestamp, trigger, and selector context', () => {
     document.body.innerHTML = '<main><button id="buy-now">Buy</button></main>';
 

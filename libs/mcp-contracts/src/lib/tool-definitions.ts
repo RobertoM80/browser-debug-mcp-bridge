@@ -40,6 +40,7 @@ export const CAPTURE_TOOLS = {
   GET_DOM_DOCUMENT: 'get_dom_document',
   GET_COMPUTED_STYLES: 'get_computed_styles',
   GET_LAYOUT_METRICS: 'get_layout_metrics',
+  GET_MEDIA_STATE: 'get_media_state',
   GET_PAGE_STATE: 'get_page_state',
   CAPTURE_UI_SNAPSHOT: 'capture_ui_snapshot',
   GET_LIVE_CONSOLE_LOGS: 'get_live_console_logs',
