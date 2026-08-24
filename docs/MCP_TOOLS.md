@@ -266,9 +266,11 @@ Tool boundaries:
 ### get_element_refs
 
 Returns selector references associated with captured UI events.
+This is a historical event query, not a live DOM selector lookup. Use `get_interactive_elements`
+or `get_page_state` to discover elements currently present on the page.
 
 ```json
-{ "name": "get_element_refs", "arguments": { "sessionId": "sess_123", "limit": 30, "offset": 0 } }
+{ "name": "get_element_refs", "arguments": { "sessionId": "sess_123", "selector": "#save", "limit": 30, "offset": 0 } }
 ```
 
 ## V2 Heavy on-demand tools
