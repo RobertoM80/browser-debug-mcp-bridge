@@ -1,9 +1,19 @@
 import { mkdtempSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { getSkillInstructions } from './agent-instructions';
-import { getBaseUrl, isLiveSession, parseArgs, parseJsonObject, parseToolArguments, withCommonLimits } from './main';
+import {
+  getBaseUrl,
+  getCliErrorGuidance,
+  isLiveSession,
+  parseArgs,
+  parseJsonObject,
+  parseToolArguments,
+  run,
+  withCommonLimits,
+} from './main';
 
 describe('bdmcp CLI parsing', () => {
   it('tells agents which package installs bdmcp before using it', () => {
@@ -57,5 +67,47 @@ describe('bdmcp CLI parsing', () => {
     expect(isLiveSession({ liveConnection: { connected: true } })).toBe(true);
     expect(isLiveSession({ liveConnection: { connected: false } })).toBe(false);
     expect(isLiveSession({})).toBe(false);
+  });
+
+  it('diagnoses a healthy legacy bridge that does not expose CLI routes', async () => {
+    const server = createServer((request, response) => {
+      response.setHeader('Content-Type', 'application/json');
+      if (request.url === '/health') {
+        response.end(JSON.stringify({ status: 'ok', database: 'connected' }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end(JSON.stringify({ statusCode: 404, error: 'Not Found' }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('Test server did not expose a TCP port');
+    }
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    try {
+      let cliError: unknown;
+      try {
+        await run(parseArgs(['tool', 'list', '--base-url', baseUrl]));
+      } catch (error) {
+        cliError = error;
+      }
+
+      expect(cliError).toBeInstanceOf(Error);
+      await expect(getCliErrorGuidance(baseUrl, cliError)).resolves.toContain(
+        'running bridge is healthy but does not expose the CLI API',
+      );
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+  });
+
+  it('keeps startup guidance for failures that are not CLI route mismatches', async () => {
+    await expect(getCliErrorGuidance('http://127.0.0.1:8065', new Error('connection refused')))
+      .resolves.toContain('If the bridge is not running');
   });
 });

@@ -23,6 +23,17 @@ interface ToolRunResult {
   error?: string;
 }
 
+class BridgeRequestError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: number,
+    readonly pathname: string,
+  ) {
+    super(message);
+    this.name = 'BridgeRequestError';
+  }
+}
+
 const DEFAULT_PORT = 8065;
 const DEFAULT_HOST = '127.0.0.1';
 const VERSION = '1.0.0';
@@ -110,9 +121,37 @@ async function fetchJson(baseUrl: string, pathname: string, init: RequestInit = 
   const text = await response.text();
   const payload = text ? JSON.parse(text) as Record<string, unknown> : {};
   if (!response.ok || payload.ok === false) {
-    throw new Error(typeof payload.error === 'string' ? payload.error : `Bridge request failed: ${pathname}`);
+    throw new BridgeRequestError(
+      typeof payload.error === 'string' ? payload.error : `Bridge request failed: ${pathname}`,
+      response.status,
+      pathname,
+    );
   }
   return payload;
+}
+
+async function getCliErrorGuidance(baseUrl: string, error: unknown): Promise<string> {
+  const startGuidance = 'If the bridge is not running, start it with: browser-debug-mcp-bridge --standalone';
+  if (
+    !(error instanceof BridgeRequestError)
+    || error.statusCode !== 404
+    || !error.pathname.startsWith('/cli/')
+  ) {
+    return startGuidance;
+  }
+
+  try {
+    const health = await fetchJson(baseUrl, '/health');
+    if (health.status !== 'ok') {
+      return startGuidance;
+    }
+  } catch {
+    return startGuidance;
+  }
+
+  return 'The running bridge is healthy but does not expose the CLI API. '
+    + 'Stop the older bridge, upgrade it with `npm i -g browser-debug-mcp-bridge@latest`, '
+    + 'then restart the bridge.';
 }
 
 function printJson(value: unknown): void {
@@ -543,7 +582,7 @@ if (entryUrl && import.meta.url === entryUrl) {
         durationMs: Date.now() - startedAt,
       });
     })
-    .catch((error) => {
+    .catch(async (error) => {
       const message = error instanceof Error ? error.message : String(error);
       appendCliAuditEvent({
         command: parsed.command.join(' ') || 'help',
@@ -553,17 +592,19 @@ if (entryUrl && import.meta.url === entryUrl) {
         error: message,
       });
       process.stderr.write(`[bdmcp] ${message}\n`);
-      process.stderr.write('[bdmcp] If the bridge is not running, start it with: browser-debug-mcp-bridge --standalone\n');
+      process.stderr.write(`[bdmcp] ${await getCliErrorGuidance(getBaseUrl(parsed.options), error)}\n`);
       process.exitCode = 1;
     });
 }
 
 export {
   getBaseUrl,
+  getCliErrorGuidance,
   isLiveSession,
   parseArgs,
   parseJsonObject,
   parseToolArguments,
   resolveSessionAlias,
+  run,
   withCommonLimits,
 };
