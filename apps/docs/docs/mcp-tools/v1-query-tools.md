@@ -214,8 +214,11 @@ Origin-only network failure query (no session filter):
 
 ## `get_element_refs`
 
+Returns selector references from previously captured UI events. It does not query the live DOM;
+use `get_interactive_elements` or `get_page_state` for current page elements.
+
 ```json
-{ "name": "get_element_refs", "arguments": { "sessionId": "sess_123", "limit": 30, "offset": 0 } }
+{ "name": "get_element_refs", "arguments": { "sessionId": "sess_123", "selector": "#save", "limit": 30, "offset": 0 } }
 ```
 
 See [limits and redaction behavior](../reference/limits-and-redaction.md).

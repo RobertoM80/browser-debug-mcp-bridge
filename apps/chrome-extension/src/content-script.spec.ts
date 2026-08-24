@@ -453,6 +453,35 @@ describe('content-script capture', () => {
     expect(typeof (output.result.modals as Array<Record<string, unknown>>)[0]?.elementRef).toBe('string');
   });
 
+  it('captures page state when element refs contain Unicode text', () => {
+    document.body.innerHTML = '<button id="play">Riproduci ▶️</button>';
+    const playButton = document.getElementById('play');
+    let clicked = false;
+    playButton?.addEventListener('click', () => {
+      clicked = true;
+    });
+
+    const output = executeCaptureCommand(window, 'CAPTURE_PAGE_STATE', {
+      maxItems: 10,
+      maxTextLength: 40,
+    });
+
+    expect((output.result.buttons as Array<Record<string, unknown>>)[0]).toMatchObject({
+      text: 'Riproduci ▶️',
+      selector: '#play',
+    });
+    const elementRef = (output.result.buttons as Array<Record<string, unknown>>)[0]?.elementRef;
+    expect(typeof elementRef).toBe('string');
+
+    const clickResult = executeCaptureCommand(window, 'EXECUTE_UI_ACTION', {
+      action: 'click',
+      target: { elementRef },
+    });
+
+    expect(clickResult.result).toMatchObject({ status: 'succeeded' });
+    expect(clicked).toBe(true);
+  });
+
   it('captures and executes actions against open shadow DOM elements', () => {
     document.body.innerHTML = '<main><div id="shadow-host"></div><output id="shadow-output"></output></main>';
     const host = document.getElementById('shadow-host');

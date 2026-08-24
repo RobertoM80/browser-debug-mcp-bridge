@@ -1,4 +1,5 @@
 import type { LiveUIActionLocator, LiveUIActionRequest, LiveUIActionResult, LiveUIActionTarget } from '../../../libs/mcp-contracts/src';
+import { decodeElementRefPayload } from './element-ref-codec';
 
 const NATIVE_AUTOMATION_BACKEND = 'cdp-native-v2';
 
@@ -179,12 +180,12 @@ interface DecodedElementRef {
 }
 
 function decodeElementRef(elementRef: string | undefined): DecodedElementRef | undefined {
-  if (!elementRef?.startsWith('ref:')) {
+  const decoded = decodeElementRefPayload(elementRef);
+  if (!decoded) {
     return undefined;
   }
 
   try {
-    const decoded = JSON.parse(atob(elementRef.slice(4))) as { selector?: unknown; frameId?: unknown };
     return {
       selector: typeof decoded.selector === 'string' && decoded.selector.length > 0 ? decoded.selector : undefined,
       frameId:
