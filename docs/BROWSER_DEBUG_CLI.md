@@ -35,6 +35,16 @@ Start the bridge in a terminal:
 browser-debug-mcp-bridge --standalone
 ```
 
+If a CLI command reports that a healthy bridge does not expose the CLI API, stop the older bridge,
+upgrade the package, and then restart it:
+
+```bash
+npm i -g browser-debug-mcp-bridge@latest
+```
+
+On Windows, stopping the bridge first is required because a running Node process can keep the
+global package directory locked and cause npm to fail with `EBUSY`.
+
 Then use the CLI from the target project:
 
 ```bash

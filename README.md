@@ -115,6 +115,10 @@ The global `npm i -g browser-debug-mcp-bridge` install above provides both
 `browser-debug-mcp-bridge` and `bdmcp`. If `bdmcp --help` is not found, rerun that install.
 From a local clone, use `node scripts/browser-debug-cli.cjs` in place of `bdmcp`.
 
+If `bdmcp` reports that a healthy bridge does not expose the CLI API, stop the older bridge,
+upgrade with `npm i -g browser-debug-mcp-bridge@latest`, and restart it. On Windows, stopping the
+bridge first also prevents npm `EBUSY` errors caused by the running process locking the package.
+
 The CLI exposes the same bridge tool handlers through local commands and a token-protected local gateway. See [Browser Debug CLI](docs/BROWSER_DEBUG_CLI.md).
 
 ## First Debug Session

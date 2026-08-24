@@ -18,6 +18,11 @@ This install provides both `browser-debug-mcp-bridge` and `bdmcp`. Verify the CL
 bdmcp --help
 ```
 
+If `bdmcp` says a healthy running bridge does not expose the CLI API, the CLI and bridge runtime
+are version-mismatched. Stop the older bridge, run
+`npm i -g browser-debug-mcp-bridge@latest`, and restart it. On Windows, stopping it before the
+upgrade also avoids npm `EBUSY` errors from the locked global package directory.
+
 Download extension asset `chrome-extension-dist.tgz` from latest release and load unpacked in Chrome:
 
 1. Open `chrome://extensions`
