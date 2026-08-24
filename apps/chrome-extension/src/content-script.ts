@@ -162,7 +162,12 @@ interface LiveElementRefPayload {
 }
 
 function encodeElementRef(payload: LiveElementRefPayload): string {
-  return `ref:${btoa(JSON.stringify(payload))}`;
+  const bytes = new TextEncoder().encode(JSON.stringify(payload));
+  let binary = '';
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return `ref:${btoa(binary)}`;
 }
 
 function decodeElementRef(value: string): LiveElementRefPayload | undefined {
@@ -170,46 +175,56 @@ function decodeElementRef(value: string): LiveElementRefPayload | undefined {
     return undefined;
   }
 
+  let decoded: Record<string, unknown>;
   try {
-    const decoded = JSON.parse(atob(value.slice(4))) as Record<string, unknown>;
-    const result: LiveElementRefPayload = {};
-    if (typeof decoded.selector === 'string' && decoded.selector.length > 0) {
-      result.selector = decoded.selector;
+    const binary = atob(value.slice(4));
+    const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    let json: string;
+    try {
+      json = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    } catch {
+      json = binary;
     }
-    if (typeof decoded.testId === 'string' && decoded.testId.length > 0) {
-      result.testId = decoded.testId;
-    }
-    if (typeof decoded.text === 'string' && decoded.text.length > 0) {
-      result.text = decoded.text;
-    }
-    if (typeof decoded.label === 'string' && decoded.label.length > 0) {
-      result.label = decoded.label;
-    }
-    if (typeof decoded.title === 'string' && decoded.title.length > 0) {
-      result.title = decoded.title;
-    }
-    if (typeof decoded.role === 'string' && decoded.role.length > 0) {
-      result.role = decoded.role.toLowerCase();
-    }
-    if (typeof decoded.name === 'string' && decoded.name.length > 0) {
-      result.name = decoded.name;
-    }
-    if (typeof decoded.placeholder === 'string' && decoded.placeholder.length > 0) {
-      result.placeholder = decoded.placeholder;
-    }
-    if (typeof decoded.altText === 'string' && decoded.altText.length > 0) {
-      result.altText = decoded.altText;
-    }
-    if (typeof decoded.tagName === 'string' && decoded.tagName.length > 0) {
-      result.tagName = decoded.tagName.toLowerCase();
-    }
-    if (typeof decoded.type === 'string' && decoded.type.length > 0) {
-      result.type = decoded.type.toLowerCase();
-    }
-    return result;
+    decoded = JSON.parse(json) as Record<string, unknown>;
   } catch {
     return undefined;
   }
+
+  const result: LiveElementRefPayload = {};
+  if (typeof decoded.selector === 'string' && decoded.selector.length > 0) {
+    result.selector = decoded.selector;
+  }
+  if (typeof decoded.testId === 'string' && decoded.testId.length > 0) {
+    result.testId = decoded.testId;
+  }
+  if (typeof decoded.text === 'string' && decoded.text.length > 0) {
+    result.text = decoded.text;
+  }
+  if (typeof decoded.label === 'string' && decoded.label.length > 0) {
+    result.label = decoded.label;
+  }
+  if (typeof decoded.title === 'string' && decoded.title.length > 0) {
+    result.title = decoded.title;
+  }
+  if (typeof decoded.role === 'string' && decoded.role.length > 0) {
+    result.role = decoded.role.toLowerCase();
+  }
+  if (typeof decoded.name === 'string' && decoded.name.length > 0) {
+    result.name = decoded.name;
+  }
+  if (typeof decoded.placeholder === 'string' && decoded.placeholder.length > 0) {
+    result.placeholder = decoded.placeholder;
+  }
+  if (typeof decoded.altText === 'string' && decoded.altText.length > 0) {
+    result.altText = decoded.altText;
+  }
+  if (typeof decoded.tagName === 'string' && decoded.tagName.length > 0) {
+    result.tagName = decoded.tagName.toLowerCase();
+  }
+  if (typeof decoded.type === 'string' && decoded.type.length > 0) {
+    result.type = decoded.type.toLowerCase();
+  }
+  return result;
 }
 
 function parseLiveUIActionRequest(payload: unknown): { success: true; data: LiveUIActionRequest } | { success: false; error: string } {

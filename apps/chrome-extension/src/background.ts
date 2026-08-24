@@ -51,6 +51,7 @@ import {
   shouldRetryGenericCaptureResult,
   type GenericCaptureCommand,
 } from './live-capture-routing';
+import { decodeElementRefPayload, encodeElementRefPayload } from './element-ref-codec';
 
 type RuntimeRequest =
   | { type: 'SESSION_GET_STATE' }
@@ -3221,21 +3222,6 @@ function withFrameAutomationPolicy(frame: FrameCaptureMetadata): FrameCaptureMet
   };
 }
 
-function decodeElementRefPayload(elementRef: unknown): Record<string, unknown> | undefined {
-  if (typeof elementRef !== 'string' || !elementRef.startsWith('ref:')) {
-    return undefined;
-  }
-
-  try {
-    const decoded = JSON.parse(atob(elementRef.slice(4))) as unknown;
-    return decoded && typeof decoded === 'object' && !Array.isArray(decoded)
-      ? decoded as Record<string, unknown>
-      : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 function resolveAutomationTargetSelector(target: LiveUIActionRequest['target']): string | undefined {
   if (typeof target?.selector === 'string' && target.selector.length > 0) {
     return target.selector;
@@ -3255,7 +3241,7 @@ function augmentElementRef(elementRef: unknown, frame: FrameCaptureMetadata): st
     if (!decoded) {
       return elementRef;
     }
-    return `ref:${btoa(JSON.stringify({
+    return encodeElementRefPayload({
       ...decoded,
       frameId: frame.frameId,
       frameUrl: frame.url,
@@ -3264,7 +3250,7 @@ function augmentElementRef(elementRef: unknown, frame: FrameCaptureMetadata): st
       frameSameOriginWithTop: frame.sameOriginWithTop,
       frameAutomationSupport: frame.automationSupport,
       frameAutomationUnsupportedReason: frame.automationUnsupportedReason,
-    }))}`;
+    });
   } catch {
     return elementRef;
   }
