@@ -42,6 +42,7 @@ Manual recovery:
   - `Recover session` when capture is being rejected as inactive or the session is paused/stale
   - `Retry content script` when the bound tab lost the content script
   - `Open bound tab` when you need to jump back to the tab the session is attached to
+- Content-script retries are safe on the current document: the bridge keeps its injection guard in JavaScript and does not add hydration-visible markers to `<html>` or `<body>`
 - Verify background logs in extension service worker console
 - Confirm WebSocket endpoint is reachable at `ws://127.0.0.1:8065/ws`
 

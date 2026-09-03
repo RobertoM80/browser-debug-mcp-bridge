@@ -28,6 +28,8 @@ export default defineConfig({
       output: {
         entryFileNames: '[name].js',
         chunkFileNames: '[name].js',
+        banner: (chunk) => chunk.name === 'injected-script' ? '(() => {' : '',
+        footer: (chunk) => chunk.name === 'injected-script' ? '})();' : '',
         assetFileNames: (assetInfo) => {
           if (assetInfo.name === 'popup.css') {
             return 'popup.css';

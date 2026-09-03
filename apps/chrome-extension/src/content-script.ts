@@ -2221,16 +2221,10 @@ export function installContentCapture(options: ContentCaptureOptions = {}): () =
         return;
       }
 
-      if (root.dataset.bdmcpInjected === '1') {
-        return;
-      }
-
       if (win.document.getElementById('__bdmcp_injected_script__')) {
-        root.dataset.bdmcpInjected = '1';
         return;
       }
 
-      root.dataset.bdmcpInjected = '1';
       const script = win.document.createElement('script');
       script.id = '__bdmcp_injected_script__';
       script.src = chrome.runtime.getURL('injected-script.js');
