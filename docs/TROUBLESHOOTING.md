@@ -92,6 +92,8 @@ Use compact/byte-budget options on high-volume tools:
 - `responseProfile: "compact"` on `get_recent_events`, `get_navigation_history`, `get_console_events`, `get_live_console_logs`
 - `maxResponseBytes` (default `32768`) to enforce smaller pages
 - `dedupeWindowMs` on `get_live_console_logs` to collapse repeated bursts
+- `retain` for important future messages and `mute` for known future noise; inspect
+  `bufferStats.oldestTimestamp` before treating zero matches as evidence of absence
 
 For PNG snapshots, prefer metadata-first mode:
 

@@ -35,6 +35,58 @@ describe('LiveConsoleBufferStore', () => {
     expect(result.buffered).toBe(2);
     expect(result.dropped).toBe(1);
     expect(result.logs.map((entry) => entry.message)).toEqual(['c', 'b']);
+    expect(result.oldestTimestamp).toBe(1001);
+    expect(result.newestTimestamp).toBe(1002);
+  });
+
+  it('protects retained messages from ordinary ring eviction', () => {
+    const store = new LiveConsoleBufferStore({
+      maxEntriesPerSession: 2,
+      maxRetainedEntriesPerSession: 2,
+    });
+
+    store.query('sess-retain', { retain: ['MomentMark'] });
+    store.append('sess-retain', 'console', { message: '[MomentMark] loaded', timestamp: 1000 });
+    store.append('sess-retain', 'console', { message: 'noise-a', timestamp: 1001 });
+    store.append('sess-retain', 'console', { message: 'noise-b', timestamp: 1002 });
+    store.append('sess-retain', 'console', { message: 'noise-c', timestamp: 1003 });
+
+    const result = store.query('sess-retain', { contains: 'MomentMark' });
+    expect(result.logs.map((entry) => entry.message)).toEqual(['[MomentMark] loaded']);
+    expect(result.buffered).toBe(3);
+    expect(result.regularBuffered).toBe(2);
+    expect(result.retained).toBe(1);
+    expect(result.dropped).toBe(1);
+    expect(result.retainedDropped).toBe(0);
+    expect(result.retain).toEqual(['momentmark']);
+  });
+
+  it('mutes configured noise before it consumes buffer capacity', () => {
+    const store = new LiveConsoleBufferStore({ maxEntriesPerSession: 2 });
+
+    store.query('sess-mute', { mute: ['Script error.', 'VIDEOJS: WARN'] });
+    store.append('sess-mute', 'console', { message: 'important', timestamp: 1000 });
+    store.append('sess-mute', 'console', { message: 'Script error.', timestamp: 1001 });
+    store.append('sess-mute', 'console', { message: 'VIDEOJS: WARN retry', timestamp: 1002 });
+
+    const result = store.query('sess-mute');
+    expect(result.logs.map((entry) => entry.message)).toEqual(['important']);
+    expect(result.buffered).toBe(1);
+    expect(result.muted).toBe(2);
+    expect(result.dropped).toBe(0);
+    expect(result.mute).toEqual(['script error.', 'videojs: warn']);
+  });
+
+  it('gives retention precedence when a message matches retain and mute filters', () => {
+    const store = new LiveConsoleBufferStore({ maxRetainedEntriesPerSession: 1 });
+
+    store.query('sess-priority', { retain: ['important'], mute: ['important'] });
+    store.append('sess-priority', 'console', { message: 'important evidence', timestamp: 1000 });
+
+    const result = store.query('sess-priority');
+    expect(result.logs.map((entry) => entry.message)).toEqual(['important evidence']);
+    expect(result.retained).toBe(1);
+    expect(result.muted).toBe(0);
   });
 
   it('filters by level, contains, and sinceTs', () => {
