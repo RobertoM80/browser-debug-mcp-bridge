@@ -1029,8 +1029,8 @@ const TOOL_SCHEMAS: Record<string, object> = {
       frameId: { type: 'integer', minimum: 0 },
       frameUrlContains: { type: 'string', minLength: 1 },
       selector: { type: 'string' },
-      maxDepth: { type: 'number' },
-      maxBytes: { type: 'number' },
+      maxDepth: { type: 'integer', minimum: 1, maximum: 10 },
+      maxBytes: { type: 'integer', minimum: 1_000, maximum: 1_000_000 },
     },
   },
   get_dom_document: {
@@ -4689,24 +4689,18 @@ function resolveCaptureBytes(value: unknown, fallback: number): number {
   }
 
   const floored = Math.floor(value);
-  if (floored < 1_000) {
-    return fallback;
-  }
-
-  return Math.min(floored, 1_000_000);
+  return Math.max(1_000, Math.min(floored, 1_000_000));
 }
 
 function resolveCaptureDepth(value: unknown, fallback: number): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
+  if (value === undefined) {
     return fallback;
   }
-
-  const floored = Math.floor(value);
-  if (floored < 1) {
-    return fallback;
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1 || value > 10) {
+    throw new Error('maxDepth must be an integer between 1 and 10');
   }
 
-  return Math.min(floored, 10);
+  return value;
 }
 
 function resolveCaptureAncestors(value: unknown, fallback: number): number {
