@@ -2,8 +2,9 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { getSkillInstructions } from './agent-instructions';
+import { PACKAGE_VERSION } from '../version';
 import {
   getBaseUrl,
   getCliErrorGuidance,
@@ -73,7 +74,7 @@ describe('bdmcp CLI parsing', () => {
     const server = createServer((request, response) => {
       response.setHeader('Content-Type', 'application/json');
       if (request.url === '/health') {
-        response.end(JSON.stringify({ status: 'ok', database: 'connected' }));
+        response.end(JSON.stringify({ status: 'ok', database: 'connected', version: '1.10.0' }));
         return;
       }
       response.statusCode = 404;
@@ -86,20 +87,26 @@ describe('bdmcp CLI parsing', () => {
       throw new Error('Test server did not expose a TCP port');
     }
     const baseUrl = `http://127.0.0.1:${address.port}`;
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
 
     try {
       let cliError: unknown;
       try {
-        await run(parseArgs(['tool', 'list', '--base-url', baseUrl]));
+        await run(parseArgs(['health', '--base-url', baseUrl]));
       } catch (error) {
         cliError = error;
       }
 
       expect(cliError).toBeInstanceOf(Error);
+      expect(write).toHaveBeenCalledWith(
+        `Bridge: ok (server 1.10.0, cli ${PACKAGE_VERSION})\n`,
+      );
+      expect(write).toHaveBeenCalledWith(expect.stringContaining('CLI API: unavailable'));
       await expect(getCliErrorGuidance(baseUrl, cliError)).resolves.toContain(
         'running bridge is healthy but does not expose the CLI API',
       );
     } finally {
+      write.mockRestore();
       await new Promise<void>((resolve, reject) => {
         server.close((error) => error ? reject(error) : resolve());
       });

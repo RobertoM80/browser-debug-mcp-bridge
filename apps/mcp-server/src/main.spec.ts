@@ -4,6 +4,7 @@ import { clearDatabase, getConnection, initializeDatabase } from './db';
 import { readFileSync } from 'fs';
 import { listMockHits, listMockRuns, upsertMockRoute } from './mock-store';
 import { CLI_TOKEN_HEADER, ensureCliToken } from './cli/auth';
+import { PACKAGE_VERSION } from './version';
 
 describe('MCP Server', () => {
   it('should have fastify instance', () => {
@@ -19,6 +20,7 @@ describe('MCP Server', () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
     expect(body.status).toBe('ok');
+    expect(body.version).toBe(PACKAGE_VERSION);
     expect(body.timestamp).toBeDefined();
   });
 
@@ -31,7 +33,7 @@ describe('MCP Server', () => {
     expect(response.statusCode).toBe(200);
     const body = JSON.parse(response.body);
     expect(body.name).toBe('Browser Debug MCP Bridge Server');
-    expect(body.version).toBe('1.0.0');
+    expect(body.version).toBe(PACKAGE_VERSION);
   });
 
   it('should return debug stats', async () => {

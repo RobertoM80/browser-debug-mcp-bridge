@@ -42,6 +42,9 @@ upgrade the package, and then restart it:
 npm i -g browser-debug-mcp-bridge@latest
 ```
 
+`bdmcp health` reports both versions and checks CLI API availability. It exits non-zero when the
+running bridge is healthy but too old to expose the CLI API.
+
 On Windows, stopping the bridge first is required because a running Node process can keep the
 global package directory locked and cause npm to fail with `EBUSY`.
 
