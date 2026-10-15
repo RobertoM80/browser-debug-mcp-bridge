@@ -232,6 +232,18 @@ export const GetLayoutMetricsSchema = z.object({
     .describe('Element selector (viewport if omitted)'),
 });
 
+export const GetMediaStateSchema = z.object({
+  sessionId: z.string().describe('Unique session identifier'),
+  selector: z.string().optional()
+    .describe('Optional selector for video or audio elements; all media elements when omitted'),
+  tabId: z.number().int().min(0).optional()
+    .describe('Optional tab bound to the session'),
+  frameId: z.number().int().min(0).optional()
+    .describe('Optional target frame identifier'),
+  frameUrlContains: z.string().min(1).optional()
+    .describe('Optional unique substring for target frame URL'),
+});
+
 export const CaptureUISnapshotSchema = z.object({
   sessionId: z.string().describe('Unique session identifier'),
   selector: z.string().optional()
@@ -272,6 +284,10 @@ export const GetLiveConsoleLogsSchema = z.object({
     .describe('Include runtime error events in the live stream (default true)'),
   dedupeWindowMs: z.number().int().min(0).max(60000).optional()
     .describe('Collapse repeated identical logs within this time window'),
+  retain: z.array(z.string().min(1).max(200)).max(20).optional()
+    .describe('Case-insensitive substrings to retain in a protected buffer for future console events; replaces the session retain list'),
+  mute: z.array(z.string().min(1).max(200)).max(20).optional()
+    .describe('Case-insensitive substrings to discard from future console events before they consume buffer capacity; replaces the session mute list'),
   limit: z.number().int().min(1).max(200).optional()
     .describe('Maximum number of live logs to return'),
   responseProfile: z.enum(['legacy', 'compact']).optional()

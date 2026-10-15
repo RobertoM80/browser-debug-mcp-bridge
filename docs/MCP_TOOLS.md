@@ -371,6 +371,24 @@ Returns layout and bounding-box metrics for a selector.
 }
 ```
 
+### get_media_state
+
+Returns bounded, read-only state for matching `<video>` and `<audio>` elements. When `selector`
+is omitted, it returns all media elements in the targeted frame (up to 20). The response includes
+playback flags, volume and timing, readiness/network state, playback rates, media errors, source,
+and buffered/seekable ranges.
+
+```json
+{
+  "name": "get_media_state",
+  "arguments": {
+    "sessionId": "sess_123",
+    "selector": "video",
+    "frameUrlContains": "player.example.com"
+  }
+}
+```
+
 ### get_page_state
 
 Returns a compact structured page model so flows can avoid repeated large DOM captures.
@@ -675,6 +693,8 @@ Filters:
 - required: `sessionId`
 - optional: `url` (origin), `tabId`, `levels`, `contains`, `sinceTs`, `limit`
 - optional: `dedupeWindowMs` to collapse repeated bursts
+- optional: `retain` and `mute` case-insensitive substring lists to replace the session's
+  future-write filters; pass `[]` to clear either list. Retention takes precedence over mute.
 - optional: `responseProfile: "compact"` for minimal rows (`timestamp`, `level`, `message`)
 - optional: `includeArgs` (compact mode only), `maxResponseBytes`
 
@@ -686,6 +706,8 @@ Filters:
     "url": "http://localhost:3000",
     "levels": ["info", "error"],
     "contains": "[auth]",
+    "retain": ["MomentMark"],
+    "mute": ["Script error.", "VIDEOJS: WARN"],
     "dedupeWindowMs": 1000,
     "responseProfile": "compact",
     "maxResponseBytes": 32768,
@@ -693,6 +715,12 @@ Filters:
   }
 }
 ```
+
+`retain` sends future matches to a separate protected ring; `mute` discards future matches before
+they consume buffer capacity. Existing buffered entries are unchanged. `bufferStats` reports
+`regularBuffered`, `retained`, `dropped`, `retainedDropped`, `muted`, `oldestTimestamp`, and
+`newestTimestamp` so callers can distinguish absence from evidence that predates the surviving
+window.
 
 ### capture_ui_snapshot (PNG metadata-first defaults)
 

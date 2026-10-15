@@ -1067,6 +1067,17 @@ const TOOL_SCHEMAS: Record<string, object> = {
       frameUrlContains: { type: 'string', minLength: 1 },
     },
   },
+  get_media_state: {
+    type: 'object',
+    required: ['sessionId'],
+    properties: {
+      sessionId: { type: 'string' },
+      selector: { type: 'string' },
+      tabId: { type: 'integer', minimum: 0 },
+      frameId: { type: 'integer', minimum: 0 },
+      frameUrlContains: { type: 'string', minLength: 1 },
+    },
+  },
   get_page_state: {
     type: 'object',
     required: ['sessionId'],
@@ -1415,6 +1426,16 @@ const TOOL_SCHEMAS: Record<string, object> = {
       sinceTs: { type: 'number' },
       includeRuntimeErrors: { type: 'boolean' },
       dedupeWindowMs: { type: 'number' },
+      retain: {
+        type: 'array',
+        maxItems: 20,
+        items: { type: 'string', minLength: 1, maxLength: 200 },
+      },
+      mute: {
+        type: 'array',
+        maxItems: 20,
+        items: { type: 'string', minLength: 1, maxLength: 200 },
+      },
       limit: { type: 'number' },
       responseProfile: { type: 'string' },
       includeArgs: { type: 'boolean' },
@@ -2173,6 +2194,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   get_dom_document: 'Capture the top document or one explicitly targeted frame as outline or html',
   get_computed_styles: 'Read computed CSS styles for an element in the top document or one explicitly targeted frame',
   get_layout_metrics: 'Read viewport and element layout metrics in the top document or one explicitly targeted frame',
+  get_media_state: 'Read playback, readiness, error, and buffered state for video or audio elements in one frame',
   get_page_state: 'Read an aggregate or frame-targeted compact page model for forms, buttons, modals, and viewport state',
   get_interactive_elements: 'Read aggregate or frame-targeted live refs for buttons, links, inputs, modals, and focused elements',
   get_live_session_health: 'Read live transport health and session binding details for one session',
@@ -2497,6 +2519,7 @@ type CaptureCommandName =
   | 'CAPTURE_DOM_DOCUMENT'
   | 'CAPTURE_COMPUTED_STYLES'
   | 'CAPTURE_LAYOUT_METRICS'
+  | 'CAPTURE_MEDIA_STATE'
   | 'CAPTURE_PAGE_STATE'
   | 'CAPTURE_UI_SNAPSHOT'
   | 'CAPTURE_GET_LIVE_CONSOLE_LOGS'
@@ -11338,6 +11361,36 @@ export function createV2ToolHandlers(
       };
     },
 
+    get_media_state: async (input) => {
+      const sessionId = getSessionId(input);
+      if (!sessionId) {
+        throw new Error('sessionId is required');
+      }
+
+      const selector = typeof input.selector === 'string' && input.selector.trim().length > 0
+        ? input.selector.trim()
+        : undefined;
+      const capture = await executeLiveCapture(
+        captureClient,
+        sessionId,
+        'CAPTURE_MEDIA_STATE',
+        {
+          selector,
+          ...resolveCaptureFrameTarget(input, { defaultFrameId: 0 }),
+        },
+        3_000,
+      );
+
+      return {
+        ...createBaseResponse(sessionId),
+        limitsApplied: {
+          maxResults: 20,
+          truncated: capture.truncated ?? false,
+        },
+        ...ensureCaptureSuccess(capture, sessionId),
+      };
+    },
+
     get_page_state: async (input) => {
       const sessionId = getSessionId(input);
       if (!sessionId) {
@@ -12183,6 +12236,8 @@ export function createV2ToolHandlers(
       const includeArgs = responseProfile === 'compact' && input.includeArgs === true;
       const maxResponseBytes = resolveMaxResponseBytes(input.maxResponseBytes);
       const dedupeWindowMs = resolveDurationMs(input.dedupeWindowMs, 0, 60_000);
+      const retain = normalizeOptionalStringArrayInput(input.retain, 'retain');
+      const mute = normalizeOptionalStringArrayInput(input.mute, 'mute');
       const capture = await executeLiveCapture(
         captureClient,
         sessionId,
@@ -12195,6 +12250,8 @@ export function createV2ToolHandlers(
           sinceTs,
           includeRuntimeErrors,
           dedupeWindowMs,
+          retain,
+          mute,
           limit,
         },
         3_000,
@@ -12239,6 +12296,8 @@ export function createV2ToolHandlers(
               sinceTs,
               includeRuntimeErrors,
               dedupeWindowMs,
+              retain,
+              mute,
             },
         bufferStats: payload.bufferStats,
       };

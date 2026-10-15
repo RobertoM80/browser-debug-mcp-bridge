@@ -6741,6 +6741,37 @@ describe('mcp/server V2 capture tools', () => {
     expect(response.properties).toEqual({ display: 'block', visibility: 'visible' });
   });
 
+  it('requests targeted media state through the live capture path', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          expect(command).toBe('CAPTURE_MEDIA_STATE');
+          expect(payload).toEqual({
+            selector: '#lesson',
+            frameUrlContains: 'player.example.com',
+          });
+          return {
+            ok: true,
+            payload: {
+              selector: '#lesson',
+              count: 1,
+              media: [{ tagName: 'video', paused: false }],
+            },
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'get_media_state', {
+      sessionId: 'session-v2',
+      selector: '#lesson',
+      frameUrlContains: 'player.example.com',
+    });
+
+    expect(response.limitsApplied).toEqual({ maxResults: 20, truncated: false });
+    expect(response.media).toEqual([{ tagName: 'video', paused: false }]);
+  });
+
   it('normalizes disconnected extension errors for live capture tools', async () => {
     const tools = createToolRegistry(
       createV2ToolHandlers({
@@ -6876,7 +6907,13 @@ describe('mcp/server V2 capture tools', () => {
               },
               bufferStats: {
                 buffered: 42,
+                regularBuffered: 40,
+                retained: 2,
                 dropped: 0,
+                retainedDropped: 0,
+                muted: 12,
+                oldestTimestamp: 1700000000000,
+                newestTimestamp: 1700000001000,
               },
             },
             truncated: false,
@@ -6892,6 +6929,8 @@ describe('mcp/server V2 capture tools', () => {
       levels: ['info', 'error'],
       contains: '[auth]',
       sinceTs: 1700000000000,
+      retain: ['[auth]'],
+      mute: ['Script error.'],
       limit: 25,
     });
 
@@ -6905,11 +6944,19 @@ describe('mcp/server V2 capture tools', () => {
         contains: '[auth]',
         sinceTs: 1700000000000,
         includeRuntimeErrors: true,
+        retain: ['[auth]'],
+        mute: ['Script error.'],
         limit: 25,
       },
     });
     expect(response.limitsApplied).toEqual({ maxResults: 25, truncated: false });
     expect((response.logs as Array<{ message: string }>)[0]?.message).toContain('[auth]');
+    expect(response.bufferStats).toMatchObject({
+      buffered: 42,
+      retained: 2,
+      muted: 12,
+      oldestTimestamp: 1700000000000,
+    });
   });
 
   it('executes live ui actions through the existing session command path', async () => {

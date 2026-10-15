@@ -26,6 +26,8 @@ export interface LiveConsoleQuery {
   sinceTs?: number;
   includeRuntimeErrors?: boolean;
   dedupeWindowMs?: number;
+  retain?: string[];
+  mute?: string[];
 }
 
 export interface LiveConsoleQueryLogEntry extends LiveConsoleEntry {
@@ -38,21 +40,38 @@ export interface LiveConsoleQueryResult {
   logs: LiveConsoleQueryLogEntry[];
   matched: number;
   buffered: number;
+  regularBuffered: number;
+  retained: number;
   dropped: number;
+  retainedDropped: number;
+  muted: number;
+  oldestTimestamp?: number;
+  newestTimestamp?: number;
+  retain: string[];
+  mute: string[];
   truncated: boolean;
 }
 
 interface LiveConsoleStoreOptions {
   maxEntriesPerSession?: number;
+  maxRetainedEntriesPerSession?: number;
   maxArgsPerEntry?: number;
   maxMessageChars?: number;
 }
 
+interface LiveConsoleWriteFilters {
+  retain: string[];
+  mute: string[];
+}
+
 const DEFAULT_MAX_ENTRIES_PER_SESSION = 1500;
+const DEFAULT_MAX_RETAINED_ENTRIES_PER_SESSION = 250;
 const DEFAULT_MAX_ARGS_PER_ENTRY = 25;
 const DEFAULT_MAX_MESSAGE_CHARS = 2000;
 const DEFAULT_QUERY_LIMIT = 100;
 const MAX_QUERY_LIMIT = 500;
+const MAX_WRITE_FILTERS = 20;
+const MAX_WRITE_FILTER_CHARS = 200;
 
 const ALLOWED_LEVELS: ReadonlySet<LiveConsoleLevel> = new Set(['log', 'info', 'warn', 'error', 'debug', 'trace']);
 
@@ -127,6 +146,30 @@ function normalizeContains(value: unknown): string | undefined {
 
   const trimmed = value.trim().toLowerCase();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function normalizeWriteFilters(value: unknown): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const normalized = new Set<string>();
+  for (const candidate of value) {
+    if (typeof candidate !== 'string') {
+      continue;
+    }
+    const pattern = candidate.trim().toLowerCase().slice(0, MAX_WRITE_FILTER_CHARS);
+    if (pattern.length > 0) {
+      normalized.add(pattern);
+    }
+    if (normalized.size >= MAX_WRITE_FILTERS) {
+      break;
+    }
+  }
+  return [...normalized];
 }
 
 function normalizeOrigin(value: unknown): string | undefined {
@@ -275,13 +318,20 @@ function dedupeEntries(entries: LiveConsoleEntry[], dedupeWindowMs: number): Liv
 
 export class LiveConsoleBufferStore {
   private readonly maxEntriesPerSession: number;
+  private readonly maxRetainedEntriesPerSession: number;
   private readonly maxArgsPerEntry: number;
   private readonly maxMessageChars: number;
   private readonly entriesBySession = new Map<string, LiveConsoleEntry[]>();
+  private readonly retainedEntriesBySession = new Map<string, LiveConsoleEntry[]>();
   private readonly droppedBySession = new Map<string, number>();
+  private readonly retainedDroppedBySession = new Map<string, number>();
+  private readonly mutedBySession = new Map<string, number>();
+  private readonly writeFiltersBySession = new Map<string, LiveConsoleWriteFilters>();
 
   constructor(options: LiveConsoleStoreOptions = {}) {
     this.maxEntriesPerSession = options.maxEntriesPerSession ?? DEFAULT_MAX_ENTRIES_PER_SESSION;
+    this.maxRetainedEntriesPerSession = options.maxRetainedEntriesPerSession
+      ?? DEFAULT_MAX_RETAINED_ENTRIES_PER_SESSION;
     this.maxArgsPerEntry = options.maxArgsPerEntry ?? DEFAULT_MAX_ARGS_PER_ENTRY;
     this.maxMessageChars = options.maxMessageChars ?? DEFAULT_MAX_MESSAGE_CHARS;
   }
@@ -295,6 +345,28 @@ export class LiveConsoleBufferStore {
     const entry = this.buildEntry(eventType, data, context);
     if (!entry) {
       return false;
+    }
+
+    const writeFilters = this.writeFiltersBySession.get(sessionId);
+    const normalizedMessage = entry.message.toLowerCase();
+    const shouldRetain = writeFilters?.retain.some((pattern) => normalizedMessage.includes(pattern)) === true;
+    if (shouldRetain) {
+      const retainedEntries = this.retainedEntriesBySession.get(sessionId) ?? [];
+      retainedEntries.push(entry);
+      if (retainedEntries.length > this.maxRetainedEntriesPerSession) {
+        retainedEntries.shift();
+        const dropped = this.retainedDroppedBySession.get(sessionId) ?? 0;
+        this.retainedDroppedBySession.set(sessionId, dropped + 1);
+      }
+      this.retainedEntriesBySession.set(sessionId, retainedEntries);
+      return true;
+    }
+
+    const shouldMute = writeFilters?.mute.some((pattern) => normalizedMessage.includes(pattern)) === true;
+    if (shouldMute) {
+      const muted = this.mutedBySession.get(sessionId) ?? 0;
+      this.mutedBySession.set(sessionId, muted + 1);
+      return true;
     }
 
     const entries = this.entriesBySession.get(sessionId) ?? [];
@@ -311,7 +383,10 @@ export class LiveConsoleBufferStore {
   }
 
   query(sessionId: string, query: LiveConsoleQuery = {}): LiveConsoleQueryResult {
-    const entries = this.entriesBySession.get(sessionId) ?? [];
+    this.updateWriteFilters(sessionId, query);
+    const regularEntries = this.entriesBySession.get(sessionId) ?? [];
+    const retainedEntries = this.retainedEntriesBySession.get(sessionId) ?? [];
+    const entries = [...regularEntries, ...retainedEntries];
     const levels = normalizeLevelSet(query.levels);
     const contains = normalizeContains(query.contains);
     const origin = normalizeOrigin(query.origin);
@@ -352,19 +427,52 @@ export class LiveConsoleBufferStore {
     const sorted = filtered.slice().sort((a, b) => b.timestamp - a.timestamp);
     const deduped = dedupeEntries(sorted, dedupeWindowMs);
     const logs = deduped.slice(0, limit);
+    const oldestTimestamp = entries.length > 0
+      ? Math.min(...entries.map((entry) => entry.timestamp))
+      : undefined;
+    const newestTimestamp = entries.length > 0
+      ? Math.max(...entries.map((entry) => entry.timestamp))
+      : undefined;
+    const writeFilters = this.writeFiltersBySession.get(sessionId) ?? { retain: [], mute: [] };
 
     return {
       logs,
       matched: deduped.length,
       buffered: entries.length,
+      regularBuffered: regularEntries.length,
+      retained: retainedEntries.length,
       dropped: this.droppedBySession.get(sessionId) ?? 0,
+      retainedDropped: this.retainedDroppedBySession.get(sessionId) ?? 0,
+      muted: this.mutedBySession.get(sessionId) ?? 0,
+      oldestTimestamp,
+      newestTimestamp,
+      retain: [...writeFilters.retain],
+      mute: [...writeFilters.mute],
       truncated: deduped.length > limit,
     };
   }
 
   clearSession(sessionId: string): void {
     this.entriesBySession.delete(sessionId);
+    this.retainedEntriesBySession.delete(sessionId);
     this.droppedBySession.delete(sessionId);
+    this.retainedDroppedBySession.delete(sessionId);
+    this.mutedBySession.delete(sessionId);
+    this.writeFiltersBySession.delete(sessionId);
+  }
+
+  private updateWriteFilters(sessionId: string, query: LiveConsoleQuery): void {
+    const retain = normalizeWriteFilters(query.retain);
+    const mute = normalizeWriteFilters(query.mute);
+    if (retain === undefined && mute === undefined) {
+      return;
+    }
+
+    const current = this.writeFiltersBySession.get(sessionId) ?? { retain: [], mute: [] };
+    this.writeFiltersBySession.set(sessionId, {
+      retain: retain ?? current.retain,
+      mute: mute ?? current.mute,
+    });
   }
 
   private buildEntry(
