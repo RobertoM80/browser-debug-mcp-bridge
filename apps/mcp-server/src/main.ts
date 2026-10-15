@@ -54,6 +54,7 @@ import {
 } from './mock-store.js';
 import { registerCliGateway } from './cli/gateway.js';
 import { CaptureCommandSchema, type CaptureCommand } from './websocket/messages.js';
+import { PACKAGE_VERSION } from './version.js';
 
 const fastify = Fastify({
   logger: process.env.MCP_STDIO_MODE === '1' ? false : true
@@ -404,6 +405,7 @@ fastify.get('/health', async () => {
   
   return { 
     status: 'ok', 
+    version: PACKAGE_VERSION,
     timestamp: new Date().toISOString(),
     database: dbStats.status,
     websocket: {
@@ -1289,7 +1291,7 @@ fastify.get('/sessions/:sessionId/entries', async (request) => {
 fastify.get('/', async () => {
   return { 
     name: 'Browser Debug MCP Bridge Server',
-    version: '1.0.0',
+    version: PACKAGE_VERSION,
     websocket: '/ws'
   };
 });

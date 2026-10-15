@@ -10,6 +10,7 @@ import {
   getSkillInstructions,
 } from './agent-instructions.js';
 import { CLI_TOKEN_HEADER, ensureCliToken } from './auth.js';
+import { PACKAGE_VERSION } from '../version.js';
 
 interface ParsedArgs {
   command: string[];
@@ -36,7 +37,6 @@ class BridgeRequestError extends Error {
 
 const DEFAULT_PORT = 8065;
 const DEFAULT_HOST = '127.0.0.1';
-const VERSION = '1.0.0';
 
 function parseArgs(argv: string[]): ParsedArgs {
   const command: string[] = [];
@@ -159,7 +159,7 @@ function printJson(value: unknown): void {
 }
 
 function printHelp(): void {
-  process.stdout.write(`Browser Debug MCP Bridge CLI ${VERSION}
+  process.stdout.write(`Browser Debug MCP Bridge CLI ${PACKAGE_VERSION}
 
 Usage:
   bdmcp health
@@ -485,15 +485,36 @@ async function handleFriendlyTool(baseUrl: string, parsed: ParsedArgs): Promise<
 
 async function handleHealth(baseUrl: string, json: boolean): Promise<void> {
   const health = await fetchJson(baseUrl, '/health');
+  const websocket = health.websocket as Record<string, unknown> | undefined;
+  if (!json) {
+    process.stdout.write(
+      `Bridge: ${String(health.status)} (server ${String(health.version ?? 'unknown')}, cli ${PACKAGE_VERSION})\n`,
+    );
+    process.stdout.write(`Database: ${String(health.database)}\n`);
+    process.stdout.write(`WebSocket connections: ${String(websocket?.connections ?? 0)}\n`);
+    process.stdout.write(`Active sessions: ${String(websocket?.activeSessions ?? 0)}\n`);
+  }
+
+  try {
+    await fetchJson(baseUrl, '/cli/tools');
+  } catch (error) {
+    if (!json && error instanceof BridgeRequestError && error.statusCode === 404) {
+      process.stdout.write(
+        'CLI API: unavailable - upgrade the running bridge with '
+        + '`npm i -g browser-debug-mcp-bridge@latest` and restart it.\n',
+      );
+    }
+    throw error;
+  }
+
   if (json) {
-    printJson(health);
+    printJson({
+      ...health,
+      cli: { version: PACKAGE_VERSION, api: 'available' },
+    });
     return;
   }
-  const websocket = health.websocket as Record<string, unknown> | undefined;
-  process.stdout.write(`Bridge: ${String(health.status)}\n`);
-  process.stdout.write(`Database: ${String(health.database)}\n`);
-  process.stdout.write(`WebSocket connections: ${String(websocket?.connections ?? 0)}\n`);
-  process.stdout.write(`Active sessions: ${String(websocket?.activeSessions ?? 0)}\n`);
+  process.stdout.write('CLI API: available\n');
 }
 
 function initCopilot(options: Record<string, string | boolean>): void {

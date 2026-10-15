@@ -118,6 +118,8 @@ From a local clone, use `node scripts/browser-debug-cli.cjs` in place of `bdmcp`
 If `bdmcp` reports that a healthy bridge does not expose the CLI API, stop the older bridge,
 upgrade with `npm i -g browser-debug-mcp-bridge@latest`, and restart it. On Windows, stopping the
 bridge first also prevents npm `EBUSY` errors caused by the running process locking the package.
+`bdmcp health` reports the running server and CLI versions, verifies the CLI API, and exits non-zero
+when a healthy legacy bridge must be upgraded.
 
 The CLI exposes the same bridge tool handlers through local commands and a token-protected local gateway. See [Browser Debug CLI](docs/BROWSER_DEBUG_CLI.md).
 
