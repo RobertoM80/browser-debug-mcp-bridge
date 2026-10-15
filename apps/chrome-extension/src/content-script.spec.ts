@@ -324,6 +324,27 @@ describe('content-script capture', () => {
     expect(output.result.fallbackReason).toBe('maxBytes');
   });
 
+  it('clamps small subtree limits and reports omitted classes', () => {
+    const longText = 'x'.repeat(4000);
+    document.body.innerHTML = `<div id="root" class="one two three playing-mode ad-showing"><section><p>${longText}</p></section></div>`;
+
+    const output = executeCaptureCommand(window, 'CAPTURE_DOM_SUBTREE', {
+      selector: '#root',
+      maxDepth: 0,
+      maxBytes: 300,
+    });
+    const outline = JSON.parse(output.result.outline as string) as {
+      root: { class: string; classesTruncated?: number };
+    };
+
+    expect(output.result.maxDepth).toBe(1);
+    expect(output.result.maxBytes).toBe(1_000);
+    expect(outline.root).toMatchObject({
+      class: 'one two three',
+      classesTruncated: 2,
+    });
+  });
+
   it('reports the serialized node count and depth truncation for document outlines', () => {
     document.body.innerHTML = '<main><section><iframe src="https://player.example.com"></iframe></section></main>';
 

@@ -37,11 +37,18 @@ describe('mcp/server foundation', () => {
     const tools = createToolRegistry();
     const listSessions = tools.find((tool) => tool.name === 'list_sessions');
     const lighthouseReport = tools.find((tool) => tool.name === 'run_lighthouse_report');
+    const domSubtree = tools.find((tool) => tool.name === 'get_dom_subtree');
 
     expect(listSessions).toBeDefined();
     expect(listSessions?.inputSchema).toMatchObject({ type: 'object' });
     expect(lighthouseReport).toBeDefined();
     expect(lighthouseReport?.inputSchema).toMatchObject({ type: 'object' });
+    expect(domSubtree?.inputSchema).toMatchObject({
+      properties: {
+        maxDepth: { type: 'integer', minimum: 1, maximum: 10 },
+        maxBytes: { type: 'integer', minimum: 1_000, maximum: 1_000_000 },
+      },
+    });
   });
 
   it('routes a tool call to custom handler', async () => {
@@ -6689,6 +6696,32 @@ describe('mcp/server V2 capture tools', () => {
         },
       },
     ]);
+  });
+
+  it('clamps small DOM byte budgets and rejects invalid subtree depth', async () => {
+    const captureCalls: Array<Record<string, unknown>> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, _command, payload) => {
+          captureCalls.push(payload);
+          return { ok: true, payload: { mode: 'outline', outline: '{}' } };
+        },
+      }),
+    );
+
+    await routeToolCall(tools, 'get_dom_subtree', {
+      sessionId: 'session-v2',
+      selector: '#player',
+      maxDepth: 1,
+      maxBytes: 300,
+    });
+
+    expect(captureCalls[0]).toMatchObject({ maxDepth: 1, maxBytes: 1_000 });
+    await expect(routeToolCall(tools, 'get_dom_subtree', {
+      sessionId: 'session-v2',
+      selector: '#player',
+      maxDepth: 0,
+    })).rejects.toThrow('maxDepth must be an integer between 1 and 10');
   });
 
   it('rejects malformed capture frame targets', async () => {

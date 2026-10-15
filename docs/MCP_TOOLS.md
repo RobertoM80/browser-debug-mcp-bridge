@@ -317,6 +317,9 @@ returns HTTP 400 with the offending and accepted keys. No payload key is silentl
 
 Captures a reduced DOM subtree for a selector.
 
+`maxDepth` accepts integers from 1 to 10. `maxBytes` is clamped to 1,000–1,000,000 bytes.
+Outline nodes keep the first three classes and report omitted classes in `classesTruncated`.
+
 ```json
 {
   "name": "get_dom_subtree",

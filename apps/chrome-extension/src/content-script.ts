@@ -1647,11 +1647,7 @@ function clampMaxDepth(value: unknown, fallback = 3): number {
   }
 
   const depth = Math.floor(value);
-  if (depth < 1) {
-    return fallback;
-  }
-
-  return Math.min(depth, 10);
+  return Math.max(1, Math.min(depth, 10));
 }
 
 function clampMaxBytes(value: unknown, fallback = 50_000): number {
@@ -1660,11 +1656,7 @@ function clampMaxBytes(value: unknown, fallback = 50_000): number {
   }
 
   const bytes = Math.floor(value);
-  if (bytes < 1_000) {
-    return fallback;
-  }
-
-  return Math.min(bytes, 1_000_000);
+  return Math.max(1_000, Math.min(bytes, 1_000_000));
 }
 
 function byteSize(value: string): number {
@@ -1846,7 +1838,8 @@ function buildDomOutline(root: Element, maxDepth: number, maxNodes = 400): Recor
     }
 
     visited += 1;
-    const classes = Array.from(element.classList).slice(0, 3);
+    const allClasses = Array.from(element.classList);
+    const classes = allClasses.slice(0, 3);
     const node: Record<string, unknown> = {
       tag: element.tagName.toLowerCase(),
     };
@@ -1856,6 +1849,9 @@ function buildDomOutline(root: Element, maxDepth: number, maxNodes = 400): Recor
     }
     if (classes.length > 0) {
       node.class = classes.join(' ');
+    }
+    if (allClasses.length > classes.length) {
+      node.classesTruncated = allClasses.length - classes.length;
     }
 
     if (depth >= maxDepth) {
