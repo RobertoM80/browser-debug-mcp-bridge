@@ -307,6 +307,8 @@ pnpm nx build chrome-extension
 
 The same connected session can be operated through MCP with `list_override_profiles`, `create_override_profile`, `validate_override_profile`, `observe_override_assets`, `list_observed_override_assets`, `map_next_override_assets`, `plan_next_source_override`, `enable_overrides`, `disable_overrides`, `get_override_status`, `get_override_request_log`, and `diagnose_overrides`.
 
+`enable_overrides` keeps observed-target readiness strict by default. Pass `allowUnobservedTargets: true` only when the target request will occur later, such as after navigation, lazy loading, or user interaction; other preflight safety errors still block activation.
+
 Current generator adapters:
 
 1. `nextjs` for Next.js `.next` builds

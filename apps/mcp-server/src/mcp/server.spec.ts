@@ -38,6 +38,7 @@ describe('mcp/server foundation', () => {
     const listSessions = tools.find((tool) => tool.name === 'list_sessions');
     const lighthouseReport = tools.find((tool) => tool.name === 'run_lighthouse_report');
     const domSubtree = tools.find((tool) => tool.name === 'get_dom_subtree');
+    const enableOverrides = tools.find((tool) => tool.name === 'enable_overrides');
 
     expect(listSessions).toBeDefined();
     expect(listSessions?.inputSchema).toMatchObject({ type: 'object' });
@@ -47,6 +48,11 @@ describe('mcp/server foundation', () => {
       properties: {
         maxDepth: { type: 'integer', minimum: 1, maximum: 10 },
         maxBytes: { type: 'integer', minimum: 1_000, maximum: 1_000_000 },
+      },
+    });
+    expect(enableOverrides?.inputSchema).toMatchObject({
+      properties: {
+        allowUnobservedTargets: { type: 'boolean' },
       },
     });
   });
@@ -3351,6 +3357,92 @@ describe('mcp/server V2 capture tools', () => {
       expect(enabled.active).toBe(true);
       expect(enabled.observedBeforeEnable).toMatchObject({ assetCount: 1, tabId: 7 });
       expect((enabled.preflight as { ready?: boolean }).ready).toBe(true);
+    } finally {
+      if (originalOverrideConfigPath === undefined) {
+        delete process.env.OVERRIDE_POC_CONFIG_PATH;
+      } else {
+        process.env.OVERRIDE_POC_CONFIG_PATH = originalOverrideConfigPath;
+      }
+      db.close();
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      label: 'no observed assets',
+      expectedCode: 'NO_OBSERVED_ASSETS',
+      seedUnrelatedAsset: false,
+    },
+    {
+      label: 'an unrelated observed asset',
+      expectedCode: 'TARGET_ASSET_NOT_OBSERVED',
+      seedUnrelatedAsset: true,
+    },
+  ])('arms unobserved targets when explicitly allowed with $label', async ({ expectedCode, seedUnrelatedAsset }) => {
+    const originalOverrideConfigPath = process.env.OVERRIDE_POC_CONFIG_PATH;
+    const tempRoot = mkdtempSync(join(tmpdir(), 'mcp-v2-enable-unobserved-'));
+    const db = new Database(':memory:');
+    initializeDatabase(db);
+    const captureCalls: Array<{ sessionId: string; command: string; payload: Record<string, unknown> }> = [];
+
+    try {
+      process.env.OVERRIDE_POC_CONFIG_PATH = writeReadyAssetOverrideConfig(tempRoot);
+      db.prepare(`
+        INSERT INTO sessions (session_id, created_at, last_seen_at, safe_mode, tab_id, url_last)
+        VALUES ('session-live', 1000, 1100, 0, 7, 'https://example.com/')
+      `).run();
+      if (seedUnrelatedAsset) {
+        persistObservedOverrideAssets(db, {
+          sessionId: 'session-live',
+          tabId: 7,
+          pageUrl: 'https://example.com/',
+          assets: [{
+            url: 'https://example.com/other.js',
+            ruleType: 'asset',
+            requestMethod: 'GET',
+            kind: 'script',
+            fromPerformance: true,
+          }],
+        });
+      }
+
+      const tools = createToolRegistry(
+        createV2ToolHandlers(
+          {
+            execute: async (sessionId, command, payload) => {
+              captureCalls.push({ sessionId, command, payload });
+              return {
+                ok: true,
+                payload: {
+                  active: true,
+                  configuredEnabled: true,
+                  tabId: payload.tabId,
+                  matchedRequests: 0,
+                  fulfilledRequests: 0,
+                },
+              };
+            },
+          },
+          () => db,
+          () => ({ connected: true, connectedAt: 1200, lastHeartbeatAt: 1300 }),
+        ),
+      );
+
+      const enabled = await routeToolCall(tools, 'enable_overrides', {
+        sessionId: 'session-live',
+        tabId: 7,
+        allowUnobservedTargets: true,
+      });
+
+      expect(captureCalls.map((call) => call.command)).toEqual(['CAPTURE_OVERRIDE_POC_ENABLE']);
+      expect(enabled.active).toBe(true);
+      expect(enabled.preflight).toMatchObject({
+        ready: true,
+        issues: expect.arrayContaining([
+          expect.objectContaining({ code: expectedCode, severity: 'warning' }),
+        ]),
+      });
     } finally {
       if (originalOverrideConfigPath === undefined) {
         delete process.env.OVERRIDE_POC_CONFIG_PATH;

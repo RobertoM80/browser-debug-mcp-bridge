@@ -1599,6 +1599,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
       sessionId: { type: 'string' },
       tabId: { type: 'number' },
       profileId: { type: 'string' },
+      allowUnobservedTargets: { type: 'boolean' },
     },
   },
   disable_overrides: {
@@ -3479,6 +3480,7 @@ function buildOverridePreflight(options: {
   db: Database;
   sessionId: string;
   profileId?: unknown;
+  allowUnobservedTargets?: boolean;
   getSessionConnectionState?: (sessionId: string) => SessionConnectionLookupResult | undefined;
 }): Record<string, unknown> {
   const session = options.db
@@ -3648,7 +3650,7 @@ function buildOverridePreflight(options: {
   if (observedAssets.length === 0) {
     pushOverridePreflightIssue(issues, {
       code: 'NO_OBSERVED_ASSETS',
-      severity: 'error',
+      severity: options.allowUnobservedTargets === true ? 'warning' : 'error',
       source: 'observed-assets',
       message: 'No observed production assets are stored for this session yet; the target route is not capture-ready for override enablement.',
     });
@@ -3673,7 +3675,7 @@ function buildOverridePreflight(options: {
     }));
     pushOverridePreflightIssue(issues, {
       code: 'TARGET_ASSET_NOT_OBSERVED',
-      severity: 'error',
+      severity: options.allowUnobservedTargets === true ? 'warning' : 'error',
       source: 'observed-assets',
       message: enabledRuleAssetReadiness.length === 1
         ? `Rule ${enabledRuleAssetReadiness[0].ruleId} target asset was not observed for ${enabledRuleAssetReadiness[0].requestMethod} ${enabledRuleAssetReadiness[0].targetAssetUrl}.`
@@ -11009,11 +11011,13 @@ export function createV2ToolHandlers(
         throw new Error('sessionId is required');
       }
       const tabId = resolveOptionalTabId(input.tabId);
+      const allowUnobservedTargets = input.allowUnobservedTargets === true;
       let preflight = getDb
         ? buildOverridePreflight({
             db: getDb(),
             sessionId,
             profileId: input.profileId,
+            allowUnobservedTargets,
             getSessionConnectionState,
           })
         : null;
@@ -11037,6 +11041,7 @@ export function createV2ToolHandlers(
             db: getDb(),
             sessionId,
             profileId: input.profileId,
+            allowUnobservedTargets,
             getSessionConnectionState,
           });
         } catch (error) {

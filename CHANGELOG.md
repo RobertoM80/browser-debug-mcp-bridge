@@ -23,6 +23,7 @@
 * **mcp-server:** add persisted mock route, run, and hit records with MCP CRUD and status tools
 * **mcp-server:** execute browser mock routes through the existing override fulfillment path
 * **mcp-server:** serve enabled SSR mock routes from the built-in mock endpoint
+* **mcp-server:** allow explicitly arming override targets before observation
 
 ## [1.14.1](https://github.com/RobertoM80/browser-debug-mcp-bridge/compare/browser-debug-mcp-bridge-v1.14.0...browser-debug-mcp-bridge-v1.14.1) (2026-07-14)
 
