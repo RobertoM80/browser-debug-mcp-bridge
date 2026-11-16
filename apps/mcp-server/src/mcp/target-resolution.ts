@@ -529,15 +529,23 @@ export async function resolveWorkflowActionTarget(
   const selection = selectWorkflowTargetCandidate(candidates, target);
 
   if (candidates.length === 0 || selection.outOfRange) {
+    const captureWasTruncated = capture.limitsApplied.truncated;
     throw new WorkflowTargetResolutionError(
       'workflow_target_not_found',
-      'No interactive element matched the workflow target.',
+      captureWasTruncated
+        ? `No interactive element matched within the first ${capture.limitsApplied.maxResults} captured items. The page-state capture was truncated; use target.selector or target.locator to search the live DOM without the page-state limit.`
+        : 'No interactive element matched the workflow target.',
       {
         matcher: summarizeWorkflowTargetMatcher(target),
         searchedScope: searchedScope ?? 'all-interactive',
         matchedCandidateCount: candidates.length,
         selectionStrategy: selection.selectionStrategy,
         selectedIndex: selection.selectedIndex,
+        limitsApplied: capture.limitsApplied,
+        truncation: capture.payload.truncation,
+        suggestedFallback: captureWasTruncated
+          ? 'Use target.selector or target.locator to search the live DOM without the page-state limit.'
+          : undefined,
         sampledCandidates: pickWorkflowTargetItems(capture.payload, searchedScope)
           .slice(0, 5)
           .map((item) => describeWorkflowTargetCandidate(item)),

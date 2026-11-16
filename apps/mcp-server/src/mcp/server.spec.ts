@@ -7235,6 +7235,70 @@ describe('mcp/server V2 capture tools', () => {
     });
   });
 
+  it('exposes truncated semantic target searches through execute_ui_action diagnostics', async () => {
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async () => ({
+          ok: true,
+          payload: {
+            buttons: Array.from({ length: 100 }, (_, index) => ({
+              text: `Button ${index}`,
+              selector: `#button-${index}`,
+              role: 'button',
+              name: `Button ${index}`,
+            })),
+            summary: {
+              buttons: 101,
+              links: 0,
+              inputs: 0,
+              modals: 0,
+            },
+            truncation: {
+              buttons: true,
+              links: false,
+              inputs: false,
+              modals: false,
+            },
+          },
+          truncated: true,
+        }),
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'execute_ui_action', {
+      sessionId: 'session-v2',
+      action: 'click',
+      target: {
+        scope: 'buttons',
+        role: 'button',
+        name: 'Button 100',
+      },
+    });
+
+    expect(response).toMatchObject({
+      status: 'rejected',
+      limitsApplied: {
+        maxResults: 100,
+        truncated: true,
+      },
+      failureDetails: {
+        code: 'workflow_target_not_found',
+        message: expect.stringContaining('first 100'),
+      },
+      targetResolution: {
+        limitsApplied: {
+          maxResults: 100,
+          truncated: true,
+        },
+        truncation: {
+          buttons: true,
+        },
+        suggestedFallback: 'Use target.selector or target.locator to search the live DOM without the page-state limit.',
+        strategy: 'semantic_failed',
+      },
+    });
+  });
+
   it('resolves semantic hover targets by role name and nth link candidate', async () => {
     const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
     const tools = createToolRegistry(

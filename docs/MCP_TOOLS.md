@@ -738,6 +738,8 @@ You can target by `elementRef` instead of `selector`. Frame-scoped refs encode `
 
 You can also use compact semantic target matchers. The server resolves these through `get_page_state`, then sends the resulting frame-aware `elementRef` to the extension:
 
+Semantic matching inspects at most 100 captured items per interactive scope. If that capture is truncated and no match is found, the rejected response reports `limitsApplied.truncated: true`, includes per-scope truncation details in `targetResolution`, and recommends `target.selector` or `target.locator` to search the live DOM without the page-state limit.
+
 ```json
 {
   "name": "execute_ui_action",
