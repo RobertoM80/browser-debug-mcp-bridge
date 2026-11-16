@@ -210,6 +210,47 @@ describe('target resolution', () => {
     });
   });
 
+  it('reports when a missing semantic target may be outside the capture limit', async () => {
+    const capturePageState = vi.fn().mockResolvedValue({
+      limitsApplied: {
+        maxResults: 100,
+        truncated: true,
+      },
+      payload: {
+        buttons: Array.from({ length: 100 }, (_, index) => ({
+          selector: `#button-${index}`,
+          text: `Button ${index}`,
+          role: 'button',
+          name: `Button ${index}`,
+        })),
+        truncation: {
+          buttons: true,
+          links: false,
+          inputs: false,
+          modals: false,
+        },
+      },
+    });
+
+    await expect(resolveWorkflowActionTarget('session-1', {
+      role: 'button',
+      name: 'Button 100',
+    }, capturePageState)).rejects.toMatchObject({
+      code: 'workflow_target_not_found',
+      message: expect.stringContaining('first 100'),
+      details: {
+        limitsApplied: {
+          maxResults: 100,
+          truncated: true,
+        },
+        truncation: {
+          buttons: true,
+        },
+        suggestedFallback: 'Use target.selector or target.locator to search the live DOM without the page-state limit.',
+      },
+    });
+  });
+
   it('preserves the resolver error type for callers', async () => {
     const capturePageState = vi.fn().mockResolvedValue(pageState({ buttons: [] }));
 

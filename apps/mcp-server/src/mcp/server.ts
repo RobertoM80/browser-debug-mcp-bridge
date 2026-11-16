@@ -12271,12 +12271,16 @@ export function createV2ToolHandlers(
       } catch (error) {
         if (error instanceof WorkflowTargetResolutionError) {
           const traceId = request.traceId ?? `uiaction-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+          const resolutionLimits = error.details.limitsApplied;
+          const limitsApplied = typeof resolutionLimits === 'object'
+            && resolutionLimits !== null
+            && typeof (resolutionLimits as { maxResults?: unknown }).maxResults === 'number'
+            && typeof (resolutionLimits as { truncated?: unknown }).truncated === 'boolean'
+            ? resolutionLimits as { maxResults: number; truncated: boolean }
+            : { maxResults: 1, truncated: false };
           return {
             ...createBaseResponse(sessionId),
-            limitsApplied: {
-              maxResults: 1,
-              truncated: false,
-            },
+            limitsApplied,
             action: request.action,
             status: 'rejected',
             traceId,
