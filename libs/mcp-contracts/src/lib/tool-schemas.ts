@@ -384,7 +384,7 @@ export const ListAutomationRunsSchema = z.object({
   sessionId: z.string().describe('Session identifier'),
   status: z.enum(['requested', 'started', 'succeeded', 'failed', 'rejected', 'stopped']).optional()
     .describe('Optional run status filter'),
-  action: z.enum(['click', 'hover', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload']).optional()
+  action: z.enum(['click', 'hover', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'navigate', 'reload']).optional()
     .describe('Optional action filter'),
   traceId: z.string().optional()
     .describe('Optional trace identifier filter'),

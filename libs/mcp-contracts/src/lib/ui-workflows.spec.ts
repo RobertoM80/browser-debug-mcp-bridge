@@ -64,6 +64,29 @@ describe('ui-workflows', () => {
     expect(parsed.mode).toBe('fast');
   });
 
+  it('parses navigation action steps', () => {
+    const parsed = RunUIStepsSchema.parse({
+      sessionId: 'sess_123',
+      steps: [
+        {
+          kind: 'action',
+          action: 'navigate',
+          input: {
+            url: 'https://example.com/dashboard',
+          },
+        },
+      ],
+    });
+
+    expect(parsed.steps[0]).toMatchObject({
+      kind: 'action',
+      action: 'navigate',
+      input: {
+        url: 'https://example.com/dashboard',
+      },
+    });
+  });
+
   it('parses descendant locator relations in workflow action targets', () => {
     const parsed = RunUIStepsSchema.parse({
       sessionId: 'sess_123',

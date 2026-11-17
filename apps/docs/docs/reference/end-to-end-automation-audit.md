@@ -12,7 +12,7 @@ Implementation closure: 2026-05-20
 
 Live automation uses the real bound browser session. It does not open a separate Chromium instance, Playwright profile, or external browser runtime.
 
-The current automation surface is implemented around the CDP-backed native backend (`cdp-native-v2`) for `click`, `hover`, `input`, `press_key`, `focus`, `blur`, `scroll`, and `submit`. `reload` stays on the extension tab API. The MCP server routes actions and waits through the existing live extension connection, persists automation history, attaches diagnostics, and guards repeated unchanged failures.
+The current automation surface is implemented around the CDP-backed native backend (`cdp-native-v2`) for `click`, `hover`, `input`, `press_key`, `focus`, `blur`, `scroll`, and `submit`. `navigate` and `reload` stay on the extension tab API. The MCP server routes actions and waits through the existing live extension connection, persists automation history, attaches diagnostics, and guards repeated unchanged failures.
 
 This audit is now closed as an implementation plan. What remains below are explicit product boundaries, not open engineering phases.
 

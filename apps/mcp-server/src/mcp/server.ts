@@ -284,6 +284,12 @@ const LiveUIActionRequestSchema = z.discriminatedUnion('action', [
     input: z.object({}).optional(),
   }),
   LiveUIActionBaseSchema.extend({
+    action: z.literal('navigate'),
+    input: z.object({
+      url: z.string().url(),
+    }),
+  }),
+  LiveUIActionBaseSchema.extend({
     action: z.literal('reload'),
     input: z.object({
       ignoreCache: z.boolean().optional(),
@@ -462,6 +468,12 @@ const UIWorkflowActionStepSchema = z.discriminatedUnion('action', [
   UIWorkflowActionBaseSchema.extend({
     action: z.literal('submit'),
     input: z.object({}).optional(),
+  }),
+  UIWorkflowActionBaseSchema.extend({
+    action: z.literal('navigate'),
+    input: z.object({
+      url: z.string().url(),
+    }),
   }),
   UIWorkflowActionBaseSchema.extend({
     action: z.literal('reload'),
@@ -1897,7 +1909,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     properties: {
       sessionId: { type: 'string' },
       status: { type: 'string', enum: ['requested', 'started', 'succeeded', 'failed', 'rejected', 'stopped'] },
-      action: { type: 'string', enum: ['click', 'hover', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload'] },
+      action: { type: 'string', enum: ['click', 'hover', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'navigate', 'reload'] },
       traceId: { type: 'string' },
       limit: { type: 'number' },
       offset: { type: 'number' },
@@ -1920,7 +1932,7 @@ const TOOL_SCHEMAS: Record<string, object> = {
     required: ['sessionId', 'action'],
     properties: {
       sessionId: { type: 'string' },
-      action: { type: 'string', enum: ['click', 'hover', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'reload'] },
+      action: { type: 'string', enum: ['click', 'hover', 'input', 'focus', 'blur', 'scroll', 'press_key', 'submit', 'navigate', 'reload'] },
       traceId: { type: 'string' },
       target: {
         type: 'object',

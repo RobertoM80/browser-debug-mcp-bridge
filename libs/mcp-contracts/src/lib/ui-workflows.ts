@@ -201,6 +201,12 @@ export const UIWorkflowActionStepSchema = z.discriminatedUnion('action', [
     input: z.object({}).optional(),
   }),
   UIWorkflowActionBaseSchema.extend({
+    action: z.literal('navigate'),
+    input: z.object({
+      url: z.string().url(),
+    }),
+  }),
+  UIWorkflowActionBaseSchema.extend({
     action: z.literal('reload'),
     input: z.object({
       ignoreCache: z.boolean().optional(),

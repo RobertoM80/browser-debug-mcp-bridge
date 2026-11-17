@@ -15,7 +15,7 @@ This document is now a capability reference, not an open phased plan. The prior 
 ### Action execution
 
 - `click`, `hover`, `input`, `press_key`, `focus`, `blur`, `scroll`, and `submit` use the native CDP-backed execution path
-- `reload` uses the extension tab API against the bound tab
+- `navigate` and `reload` use the extension tab API against the bound tab
 - one action is driven at a time per session
 - repeated unchanged failures are loop-guarded before another identical action is dispatched
 

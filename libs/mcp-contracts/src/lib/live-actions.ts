@@ -9,6 +9,7 @@ export const LiveUIActionSchema = z.enum([
   'scroll',
   'press_key',
   'submit',
+  'navigate',
   'reload',
 ]);
 
@@ -160,6 +161,12 @@ export const LiveUIActionRequestSchema = z.discriminatedUnion('action', [
   LiveUIActionBaseSchema.extend({
     action: z.literal('submit'),
     input: z.object({}).optional(),
+  }),
+  LiveUIActionBaseSchema.extend({
+    action: z.literal('navigate'),
+    input: z.object({
+      url: z.string().url(),
+    }),
   }),
   LiveUIActionBaseSchema.extend({
     action: z.literal('reload'),
