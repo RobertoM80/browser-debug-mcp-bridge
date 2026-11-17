@@ -710,7 +710,7 @@ Override these only when full payloads are explicitly needed.
 ### execute_ui_action
 
 Executes one live UI action in the already bound extension session without creating a new browser runtime.
-`click`, `hover`, `input`, `press_key`, `focus`, `blur`, `scroll`, and `submit` currently use the CDP-backed native automation backend (`cdp-native-v2`) for the top document, open shadow roots, and same-origin iframe targets. `reload` uses the extension tab API.
+`click`, `hover`, `input`, `press_key`, `focus`, `blur`, `scroll`, and `submit` currently use the CDP-backed native automation backend (`cdp-native-v2`) for the top document, open shadow roots, and same-origin iframe targets. `navigate` and `reload` use the extension tab API.
 
 ```json
 {
@@ -719,6 +719,19 @@ Executes one live UI action in the already bound extension session without creat
     "sessionId": "sess_123",
     "action": "click",
     "target": { "selector": "#checkout-submit" }
+  }
+}
+```
+
+Navigate the bound tab by URL, then use `wait_for_navigation_lifecycle` when the next step depends on the document loading. Navigation accepts only HTTP(S) URLs whose domain matches the session allowlist.
+
+```json
+{
+  "name": "execute_ui_action",
+  "arguments": {
+    "sessionId": "sess_123",
+    "action": "navigate",
+    "input": { "url": "https://app.example.com/dashboard" }
   }
 }
 ```

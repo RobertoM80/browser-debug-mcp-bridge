@@ -4,7 +4,7 @@ Live automation reuses the existing MCP -> server -> WebSocket -> extension sess
 
 ## `execute_ui_action`
 
-Executes one action at a time in the currently bound tab for a connected session. `click`, `hover`, `input`, `press_key`, `focus`, `blur`, `scroll`, and `submit` use the CDP-backed native automation backend (`cdp-native-v2`) for the top document, open shadow roots, and same-origin iframe targets. `reload` uses the extension tab API.
+Executes one action at a time in the currently bound tab for a connected session. `click`, `hover`, `input`, `press_key`, `focus`, `blur`, `scroll`, and `submit` use the CDP-backed native automation backend (`cdp-native-v2`) for the top document, open shadow roots, and same-origin iframe targets. `navigate` and `reload` use the extension tab API.
 
 ```json
 {
@@ -22,6 +22,21 @@ Executes one action at a time in the currently bound tab for a connected session
       "enabled": true,
       "mode": "dom",
       "styleMode": "computed-lite"
+    }
+  }
+}
+```
+
+Navigate the bound tab by URL, then use `wait_for_navigation_lifecycle` when the next step depends on the document loading. Navigation accepts only HTTP(S) URLs whose domain matches the session allowlist.
+
+```json
+{
+  "name": "execute_ui_action",
+  "arguments": {
+    "sessionId": "sess_123",
+    "action": "navigate",
+    "input": {
+      "url": "https://app.example.com/dashboard"
     }
   }
 }
@@ -126,6 +141,7 @@ Locator step kinds are `css`, `role`, `text`, `label`, `testId`, `placeholder`, 
 - `scroll`
 - `press_key`
 - `submit`
+- `navigate`
 - `reload`
 
 ### Response shape highlights

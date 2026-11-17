@@ -553,6 +553,29 @@ async function reloadTab(tabId: number, ignoreCache: boolean): Promise<void> {
   });
 }
 
+async function navigateTab(tabId: number, url: string): Promise<chrome.tabs.Tab> {
+  return new Promise<chrome.tabs.Tab>((resolve, reject) => {
+    chrome.tabs.update(tabId, { url }, (updatedTab) => {
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError) {
+        reject(new Error(runtimeError.message));
+        return;
+      }
+      if (!updatedTab) {
+        reject(new Error(`tabId ${tabId} was not available after navigation`));
+        return;
+      }
+
+      resolve(updatedTab);
+    });
+  });
+}
+
+function isHttpNavigationUrl(url: string): boolean {
+  const protocol = new URL(url).protocol;
+  return protocol === 'http:' || protocol === 'https:';
+}
+
 async function updateWindowViewport(windowId: number, width: number, height: number): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     chrome.windows.update(windowId, { width, height, focused: true }, () => {
@@ -4004,6 +4027,120 @@ async function executeCaptureCommand(
     }
 
     rememberCaptureTabForSession(context.sessionId, resolvedTab);
+
+    if (request.action === 'navigate') {
+      const traceId = request.traceId ?? createLiveUIActionTraceId();
+      const destinationUrl = request.input.url;
+      const navigationRequest = {
+        ...request,
+        traceId,
+        target: {
+          ...request.target,
+          tabId: resolvedTab.id,
+          frameId: 0,
+          url: destinationUrl,
+        },
+      } satisfies LiveUIActionRequest;
+
+      queueAutomationEvent('automation_requested', navigationRequest, {
+        startedAt,
+        tab: resolvedTab,
+      });
+
+      if (!isHttpNavigationUrl(destinationUrl) || !isUrlAllowed(destinationUrl, captureConfig.allowlist)) {
+        const rejectedResult = buildRejectedLiveActionResult(
+          navigationRequest,
+          startedAt,
+          'target_not_allowlisted',
+          'Live UI navigation is restricted to HTTP(S) destinations on allowlisted domains.',
+          { tabId: resolvedTab.id, frameId: 0, url: destinationUrl },
+        );
+        queueAutomationEvent('automation_failed', navigationRequest, {
+          startedAt,
+          result: rejectedResult,
+          tab: resolvedTab,
+        });
+        return {
+          payload: rejectedResult as unknown as Record<string, unknown>,
+        };
+      }
+
+      automationUiState = {
+        status: 'executing',
+        sessionId: context.sessionId,
+        traceId,
+        action: request.action,
+      };
+      syncAutomationBadge();
+      await syncCaptureConfigToSessionTabs(context.sessionId);
+
+      try {
+        queueAutomationEvent('automation_started', navigationRequest, {
+          startedAt,
+          tab: resolvedTab,
+        });
+        const updatedTab = await navigateTab(resolvedTab.id, destinationUrl);
+        rememberCaptureTabForSession(context.sessionId, updatedTab);
+        const successResult: LiveUIActionResult = {
+          action: 'navigate',
+          traceId,
+          status: 'succeeded',
+          executionScope: 'top-document-v1',
+          startedAt,
+          finishedAt: Date.now(),
+          target: {
+            matched: true,
+            tabId: resolvedTab.id,
+            frameId: 0,
+            url: destinationUrl,
+          },
+          result: {
+            navigated: true,
+            url: destinationUrl,
+          },
+        };
+        queueAutomationEvent('automation_succeeded', navigationRequest, {
+          startedAt,
+          result: successResult,
+          tab: updatedTab as chrome.tabs.Tab & { id: number },
+        });
+        return {
+          payload: successResult,
+        };
+      } catch (error) {
+        const failedResult: LiveUIActionResult = {
+          action: 'navigate',
+          traceId,
+          status: 'failed',
+          executionScope: 'top-document-v1',
+          startedAt,
+          finishedAt: Date.now(),
+          target: {
+            matched: true,
+            tabId: resolvedTab.id,
+            frameId: 0,
+            url: destinationUrl,
+          },
+          failureReason: {
+            code: 'action_execution_failed',
+            message: error instanceof Error ? error.message : 'Live UI navigation failed.',
+          },
+        };
+        queueAutomationEvent('automation_failed', navigationRequest, {
+          startedAt,
+          result: failedResult,
+          tab: resolvedTab,
+        });
+        throw error;
+      } finally {
+        automationUiState = {
+          status: canExecuteLiveAutomation(captureConfig) ? 'armed' : 'idle',
+          sessionId: context.sessionId,
+        };
+        syncAutomationBadge();
+        await syncCaptureConfigToSessionTabs(context.sessionId);
+      }
+    }
 
     const contentReady = await ensureContentScriptReady(resolvedTab.id);
     if (!contentReady) {

@@ -25,6 +25,18 @@ describe('live-actions', () => {
     expect(parsed.target?.tabId).toBe(7);
   });
 
+  it('parses bound-tab navigation payloads', () => {
+    const parsed = LiveUIActionRequestSchema.parse({
+      action: 'navigate',
+      input: {
+        url: 'https://example.com/dashboard',
+      },
+    });
+
+    expect(parsed.action).toBe('navigate');
+    expect(parsed.input.url).toBe('https://example.com/dashboard');
+  });
+
   it('validates structured action results', () => {
     const parsed = LiveUIActionResultSchema.parse({
       action: 'click',

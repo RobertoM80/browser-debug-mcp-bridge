@@ -7017,6 +7017,65 @@ describe('mcp/server V2 capture tools', () => {
     });
   });
 
+  it('routes bound-tab navigation through the live ui action path', async () => {
+    const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
+    const tools = createToolRegistry(
+      createV2ToolHandlers({
+        execute: async (_sessionId, command, payload) => {
+          captureCalls.push({ command, payload });
+          return {
+            ok: true,
+            payload: {
+              action: 'navigate',
+              traceId: 'trace-navigate-1',
+              status: 'succeeded',
+              executionScope: 'top-document-v1',
+              startedAt: 1700000000000,
+              finishedAt: 1700000000020,
+              target: {
+                matched: true,
+                tabId: 9,
+                frameId: 0,
+                url: 'http://localhost:3000/dashboard',
+              },
+              result: {
+                navigated: true,
+                url: 'http://localhost:3000/dashboard',
+              },
+            },
+            truncated: false,
+          };
+        },
+      }),
+    );
+
+    const response = await routeToolCall(tools, 'execute_ui_action', {
+      sessionId: 'session-v2',
+      action: 'navigate',
+      input: {
+        url: 'http://localhost:3000/dashboard',
+      },
+    });
+
+    expect(captureCalls).toEqual([
+      {
+        command: 'EXECUTE_UI_ACTION',
+        payload: {
+          action: 'navigate',
+          input: {
+            url: 'http://localhost:3000/dashboard',
+          },
+        },
+      },
+    ]);
+    expect(response.status).toBe('succeeded');
+    expect(response.actionResult).toMatchObject({
+      result: {
+        navigated: true,
+      },
+    });
+  });
+
   it('passes elementRef targets through the live ui action path', async () => {
     const captureCalls: Array<{ command: string; payload: Record<string, unknown> }> = [];
     const tools = createToolRegistry(

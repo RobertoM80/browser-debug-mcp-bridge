@@ -2071,6 +2071,40 @@ test.describe('@full live automation through MCP and extension session', () => {
         captured: expect.any(Boolean),
       },
     });
+
+    const blockedNavigation = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'navigate',
+      input: {
+        url: 'https://example.com/outside-allowlist',
+      },
+    });
+    expect(blockedNavigation.status).toBe('rejected');
+    expect(blockedNavigation.failureDetails?.code).toBe('target_not_allowlisted');
+
+    const navigationUrl = `http://127.0.0.1:${port}/automation-fixture/navigated?source=action`;
+    const navigate = await callToolJson<LiveActionResponse>(mcp.client, 'execute_ui_action', {
+      sessionId,
+      action: 'navigate',
+      input: {
+        url: navigationUrl,
+      },
+    });
+    expect(navigate.status).toBe('succeeded');
+    expect(navigate.actionResult?.result).toMatchObject({
+      navigated: true,
+      url: navigationUrl,
+    });
+
+    const navigateLifecycle = await callToolJson<WaitToolResponse>(mcp.client, 'wait_for_navigation_lifecycle', {
+      sessionId,
+      state: 'load',
+      urlContains: '/automation-fixture/navigated?source=action',
+      tabId,
+      timeoutMs: 5_000,
+    });
+    expect(navigateLifecycle.matched).toBe(true);
+    await expect(targetPage).toHaveURL(navigationUrl);
   });
 
   test('re-arms live automation automatically after refreshing the bound page', async () => {
